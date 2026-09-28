@@ -30,7 +30,7 @@ import { mountAdjective, mountKindForProject } from "./codeReviewRules";
 import { findFeeScheduleForProject, feeForProject, knownElectricalReviewRequired, type FeeScheduleLine } from "./feeSchedules";
 import { curatedPrintedFees, CURATED_SAVED_FEE_NOTE, type PrintedFeeLadder } from "./curatedAhjForms";
 import {
-  batteryStatus, SERVICE_FEEDER_CHARGE_KIND, SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND, SERVICE_FEEDER_STATE_SURCHARGE_KIND,
+  isServiceLineBaseKind, isServiceLineChargeKind, serviceFeeder200Quantity, serviceLineCounts, SERVICE_FEEDER_CHARGE_KIND,
 } from "./batteryServiceFeeder";
 import { BCD_5952_LIMITS, type ChecklistRecovery } from "./prescriptiveChecklist";
 import { bcdChecklistAnswers, bcd5952MissingFacts, bcd5952SnapshotAdditions } from "./bcdChecklistFacts";
@@ -550,19 +550,36 @@ function wrapTwoLines(text: string, width: number): [string, string] {
  *  printed beside a services quantity of 1 is the same understatement as
  *  pricing the line at $0. The per-row renewable figures are unaffected. */
 function serviceFeederOnForm(ctx: FillContext, line: FeeScheduleLine | undefined): {
-  applies: boolean; priced: boolean; baseUsd: number; stateUsd: number; communityUsd: number;
+  applies: boolean; qty: string; priced: boolean; rowUsd: number; baseUsd: number; stateUsd: number; communityUsd: number;
 } {
-  const applies = batteryStatus(ctx.snapshot) === "yes";
+  // THE QUANTITY IS THE ONE COUNT (batteryServiceFeeder.serviceFeeder200Quantity): the
+  // battery's line plus a service upgrade's line in the <=200A tier — the number the
+  // portal's "Service 0-200 amps (qty)" box is typed with. The fee line's charges carry
+  // the SAME count (feeSchedules.serviceFeederCharges reads serviceLineCounts).
+  const qty = serviceFeeder200Quantity(ctx.snapshot);
+  const lines = serviceLineCounts(ctx.snapshot);
   const charges = line?.charges ?? [];
-  const base = charges.find((c) => c.kind === SERVICE_FEEDER_CHARGE_KIND);
-  const priced = applies && base?.amountUsd != null;
-  const sum = (kind: string) => charges.filter((c) => c.kind === kind).reduce((n, c) => n + (c.amountUsd ?? 0), 0);
+  const serviceCharges = charges.filter((c) => isServiceLineChargeKind(c.kind));
+  // ANY service line this filing owes — the <=200A row's, a 201-400 A upgrade's, an upgrade no
+  // tier prices — makes a renewable-only total an understatement.
+  const applies = Number(qty) > 0 || lines.le200 > 0 || lines.t201to400 > 0 || lines.upgradeTierUnbilled
+    || serviceCharges.some((c) => isServiceLineBaseKind(c.kind));
+  const row = charges.find((c) => c.kind === SERVICE_FEEDER_CHARGE_KIND);
+  // PRICED = every service line on this filing carries its amount (either tier; an upgrade
+  // neither tier prices never does), and the <=200A row carries its own when a quantity is
+  // printed in it. Anything less leaves every whole-application figure blank.
+  const priced = applies
+    && serviceCharges.filter((c) => isServiceLineBaseKind(c.kind)).every((c) => c.amountUsd != null)
+    && (!(Number(qty) > 0) || row?.amountUsd != null);
+  const sum = (pick: (kind: string) => boolean) => serviceCharges.filter((c) => pick(c.kind)).reduce((n, c) => n + (c.amountUsd ?? 0), 0);
   return {
     applies,
+    qty,
     priced,
-    baseUsd: priced ? base!.amountUsd! : 0,
-    stateUsd: priced ? sum(SERVICE_FEEDER_STATE_SURCHARGE_KIND) : 0,
-    communityUsd: priced ? sum(SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND) : 0,
+    rowUsd: priced && row?.amountUsd != null ? row.amountUsd : 0,
+    baseUsd: priced ? sum((k) => isServiceLineBaseKind(k)) : 0,
+    stateUsd: priced ? sum((k) => /_state_surcharge$/.test(k)) : 0,
+    communityUsd: priced ? sum((k) => /_community_surcharge$/.test(k)) : 0,
   };
 }
 
@@ -616,9 +633,9 @@ function printedLadderFee(name: string, ctx: FillContext): string {
   const usd = (cents: number) => money(cents / 100);
   // The kVA row's own amount (it fills the bracket's Total through electricalTier*Total).
   if (name === "electricalBaseFee") return usd(fees.base);
-  // The ladder prices the renewable row alone. A battery job's services/feeders line is not on it, so
-  // no whole-application figure is written — the same rule as an unpriced services line on a saved
-  // schedule (serviceFeederOnForm): a renewable-only total beside a battery understates the permit.
+  // The ladder prices the renewable row alone. A services/feeders line (a battery's, a service
+  // upgrade's) is not on it, so no whole-application figure is written — the same rule as an unpriced
+  // services line on a saved schedule (serviceFeederOnForm): a renewable-only total understates the permit.
   if (serviceFeederOnForm(ctx, undefined).applies) return "";
   if (name === "electricalSubtotal") return usd(fees.base);
   // A known plan-review trigger adds a charge the ladder does not compute: no surcharge, no total.
@@ -694,8 +711,8 @@ function computed(name: string, ctx: FillContext): string {
     case "servicesFeeders200Total": {
       const line = savedElectricalLine(ctx);
       const svc = serviceFeederOnForm(ctx, line);
-      if (name === "servicesFeeders200Qty") return svc.applies ? "1" : "";
-      return svc.priced ? money(svc.baseUsd) : "";
+      if (name === "servicesFeeders200Qty") return Number(svc.qty) > 0 ? svc.qty : "";
+      return svc.priced && Number(svc.qty) > 0 ? money(svc.rowUsd) : "";
     }
     // electricalBaseFee is the RENEWABLE (kVA) line's own amount — it fills the
     // kVA row and the renewable-table subtotal, and older stored maps also put it

@@ -55,7 +55,9 @@ import type { ProjectRecord } from "../../shared/src/types";
 import type { FeeBracket, FeeScheduleRecord } from "./feeSchedules";
 import { feeForProject, findFeeScheduleForProject } from "./feeSchedules";
 import { FEE_TIER_DC_FIELD, FEE_TIER_RATING_FIELD, feeBracketFieldKey, tierBoundsFromLabel } from "../../portal-bot/src/feeBracketQuantity";
-import { SERVICE_FEEDER_200A_FIELD, isServiceFeeder200Label, serviceFeeder200Quantity } from "./batteryServiceFeeder";
+import {
+  SERVICE_FEEDER_200A_FIELD, SERVICE_FEEDER_400A_FIELD, isServiceFeeder200Label, isServiceFeeder400Label, serviceLineQuantities,
+} from "./batteryServiceFeeder";
 
 /** The project shape this needs — the same Pick feeForProject takes, so a caller
  *  that can evaluate a fee can always call this. */
@@ -201,7 +203,11 @@ function feeTierRatingField(project: FeeBracketProject): Record<string, string> 
  *  fee lists only; a building application or a utility interconnection form has
  *  no such box, so the key simply goes unread there. */
 function serviceFeederQuantityFields(project: FeeBracketProject): Record<string, string> {
-  return { [SERVICE_FEEDER_200A_FIELD]: serviceFeeder200Quantity(project.parserSnapshot as Record<string, unknown> | null | undefined) };
+  // BOTH service tiers from the ONE count (batteryServiceFeeder.serviceLineQuantities): a
+  // battery, and a service upgrade in the tier of the main it leaves behind (live Corvallis
+  // 2026-09-28: "Service 0-200 amps (qty)" stayed 0 on a job upgrading to a 200 A main).
+  const q = serviceLineQuantities(project.parserSnapshot as Record<string, unknown> | null | undefined);
+  return { [SERVICE_FEEDER_200A_FIELD]: q.le200, [SERVICE_FEEDER_400A_FIELD]: q.t201to400 };
 }
 
 /** The kVA bracket half — see the module header. */
@@ -266,6 +272,7 @@ export function feeBracketFieldForLabel(label: string): string {
   // "200 amps" as a bound. The two recognisers are disjoint — the services one
   // refuses any label carrying "kva" — so the order only saves a parse.
   if (isServiceFeeder200Label(text)) return SERVICE_FEEDER_200A_FIELD;
+  if (isServiceFeeder400Label(text)) return SERVICE_FEEDER_400A_FIELD;
   const parsed = tierBoundsFromLabel(text);
   if (!parsed) return "";
   return feeBracketFieldKey(parsed.minKw, parsed.maxKw);

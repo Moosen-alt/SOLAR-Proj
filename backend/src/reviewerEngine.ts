@@ -7,6 +7,7 @@ import { findApplicationProfile } from "./applicationDocs";
 import { permitProcessFor } from "./permitProcess";
 import { evidenceForTopic, evidenceLines, fieldValue, requirementsForTopic, type EvidenceTopic, type ProjectEvidence } from "./projectEvidence";
 import { nowIso } from "./time";
+import { hasMpuScope } from "./serviceScope";
 import { resolveValuation } from "./valuation";
 import { knownPowerClerkUtility } from "./utilityIdentity";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
@@ -1168,14 +1169,5 @@ function addInstallerCallouts(project: ProjectRecord, profile: AhjProcessProfile
   }
 }
 
-// Detect a main-panel / service upgrade in the parsed scope. Drives the MPU permit
-// callout above. Deliberately keyed on upgrade language (not "derate", which also
-// appears as a 120%-rule remedy that isn't itself an MPU).
-function hasMpuScope(project: ProjectRecord): boolean {
-  const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
-  const text = [
-    snap.projectDescriptionText, snap.description, snap.scopeText, snap.electricalCalcText,
-    snap.sitePlanNotesText, snap.mpu, snap.serviceUpgrade,
-  ].map((v) => (v == null ? "" : String(v))).join(" ").toLowerCase();
-  return /\bmpu\b|main panel upgrade|main service panel upgrade|service (panel )?upgrade|\bmsp upgrade\b|panel upgrade|meter.?main upgrade/.test(text);
-}
+// Main-panel / service-upgrade detection is the ONE predicate (serviceScope.hasMpuScope) —
+// the MPU permit track and the electrical fee lines read the same answer.
