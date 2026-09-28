@@ -8,6 +8,10 @@ import { resolvePermitPath } from "./permitPath";
 import { logger } from "./logger";
 
 const COOLDOWN_MS = 24 * 60 * 60 * 1000;
+/** A pass whose form search COULD NOT RUN holds research shut this long instead of 24h — short, so
+ *  "we could not look" is retried soon, never zero, so a persistently failing search is not paid for
+ *  on every Stage. */
+export const LOOKUP_FAILED_RETRY_MS = 60 * 60 * 1000;
 
 /** What Stage's acquisition did, for the caller that wants to say so (every current caller may
  *  ignore it). `acquisition`:
@@ -21,8 +25,8 @@ export interface OfficialDocumentsPreparation {
   /** sourceUrl: the PDF a download was attempted from, when one was. lookupFailed: the form search
    *  for that slot could not run (not a finding about the AHJ). */
   results: Array<{ formType: string; status: string; message: string; sourceUrl?: string; lookupFailed?: boolean }>;
-  /** TRUE when this pass claimed the cooldown and then RELEASED it because a form search could not
-   *  run — the next Stage searches again. */
+  /** TRUE when this pass claimed the 24h cooldown and then SHORTENED it to LOOKUP_FAILED_RETRY_MS
+   *  because a form search could not run — a Stage after that back-off searches again. */
   cooldownReleased?: boolean;
 }
 
@@ -80,17 +84,18 @@ export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord
       acquisition = "failed";
       logger.warn("official-documents", "Form acquisition failed; filling available stored templates. Missing-document gates remain active.", { projectId: project.id });
     }
-    // A SEARCH THAT COULD NOT RUN RELEASES THE CLAIM (Waltham, 09-25: the one Stage search aborted at
+    // A SEARCH THAT COULD NOT RUN SHORTENS THE CLAIM (Waltham, 09-25: the one Stage search aborted at
     // its 180s budget, and the claim it made before awaiting held the AHJ's research shut for 24h —
     // "we could not look" became a day of "no form"). The claim is still made BEFORE the await
-    // (retries and simultaneous projects must not amplify paid research); it is handed back only when
-    // a slot's search could not run, and only if it is still OURS (restored to the prior attempt, or
-    // removed when there was none). A search that ran and found nothing keeps the cooldown.
+    // (retries and simultaneous projects must not amplify paid research); when a slot's search could
+    // not run, and only if the claim is still OURS, it is shortened to a SHORT BACK-OFF
+    // (LOOKUP_FAILED_RETRY_MS) — never released to zero: an AHJ whose search keeps failing (output that
+    // cannot be parsed, a budget it always overruns) would otherwise pay for a search on EVERY Stage /
+    // learn / auto-stage (forms-find skeptic). A search that ran and found nothing keeps the full cooldown.
     if (open && results.some((r) => r.lookupFailed)) {
-      if (prior) db.run("UPDATE ahj_form_acquisition_attempts SET attempted_at = ? WHERE scope_key = ? AND attempted_at = ?", [prior.attempted_at, key, claimedAt]);
-      else db.run("DELETE FROM ahj_form_acquisition_attempts WHERE scope_key = ? AND attempted_at = ?", [key, claimedAt]);
+      db.run("UPDATE ahj_form_acquisition_attempts SET attempted_at = ? WHERE scope_key = ? AND attempted_at = ?", [claimedAt - COOLDOWN_MS + LOOKUP_FAILED_RETRY_MS, key, claimedAt]);
       cooldownReleased = db.get<{ attempted_at: number }>("SELECT attempted_at FROM ahj_form_acquisition_attempts WHERE scope_key = ?", [key])?.attempted_at !== claimedAt;
-      logger.warn("official-documents", `The form search could not run for ${project.ahj}; the 24h cooldown claim was released so the next Stage searches again.`,
+      logger.warn("official-documents", `The form search could not run for ${project.ahj}; the 24h cooldown claim was shortened to ${Math.round(LOOKUP_FAILED_RETRY_MS / 60_000)} minutes, so a Stage after that searches again (Find official form retries now).`,
         { projectId: project.id, detail: results.filter((r) => r.lookupFailed).map((r) => `${r.formType}: ${r.message}`).join(" | ").slice(0, 800) });
     }
     // SAY WHAT IS STILL MISSING. The live incident was a Stage that quietly went on without the

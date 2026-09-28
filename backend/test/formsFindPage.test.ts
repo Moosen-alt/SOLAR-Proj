@@ -11,12 +11,18 @@
 //   MUST-PASS    the residential application is found on the AHJ's own forms page and stored; a
 //                search result of that shape on the AHJ's own site is taken; the forms page is kept
 //                as its own KB note segment (a verified row's facts are not overwritten); a search
-//                that could not run is reported as such and the cooldown is released; the audit
-//                keeps the message; a download from a host just read waits the polite gap.
+//                that could not run is reported as such and the 24h cooldown is shortened to a short
+//                back-off; the audit keeps the message; every download waits the polite gap after the
+//                LAST request to its host (on the real clock too); a generic slot is satisfied by the
+//                building blank it was re-typed to (no re-search).
 //   MUST-EXCLUDE a fee schedule, an agenda, a checklist, a commercial-only / tax application, an
 //                off-site link, a utility host and an HTML page that is not a PDF are never stored
-//                (and the excluded links are never even requested); a completed empty search keeps
-//                the cooldown.
+//                (and the excluded links are never even requested); another jurisdiction's site (another
+//                town's .gov, the state's .gov, a same-state town's .ma.us) is never read, taken or
+//                noted; any "<X> Permit Application" that does not name this job's work, and another
+//                department's form whatever else it says, is never taken; a REFUSED forms page's site is
+//                asked nothing more; a completed empty search keeps the cooldown, and a failing one is
+//                not re-paid on every Stage.
 // No network: a LOCAL http fixture server answers every request (the fetch stub forwards each
 // URL's host + path to it and records the URL). No model: the research result is injected.
 //
@@ -47,7 +53,7 @@ const repo = await import("../src/repository");
 const auto = await import("../src/ahjFormAuto");
 const catalog = await import("../src/permitPlatformCatalog");
 const { createPageReader } = await import("../src/agencyPageReader");
-const { prepareOfficialDocuments } = await import("../src/prepareOfficialDocuments");
+const { prepareOfficialDocuments, LOOKUP_FAILED_RETRY_MS } = await import("../src/prepareOfficialDocuments");
 const kb = await import("../src/knowledgeBase");
 
 const db = await openDatabase();
@@ -559,37 +565,57 @@ try {
   check("B1 MUST-PASS a MISSING forms page (404) is not a refusal: the search result on that site is still taken", b1b.status === "acquired" && b1b.sourceUrl === MS_APP
     && requested.includes(MS_APP), JSON.stringify({ b1b, requested }));
 
-  // ═══ T1 A SEARCH THAT COULD NOT RUN — reported as such, and the cooldown claim is released ═══════
+  // ═══ T1 A SEARCH THAT COULD NOT RUN — reported as such; the 24h claim is SHORTENED to a short back-off ═══
+  // Never kept for 24h ("we could not look" is not a day of "no form") and never released to zero (an AHJ
+  // whose search keeps failing would pay for a search on EVERY Stage / learn / auto-stage — skeptic).
   const T = "https://www.timeoutville.ma.us";
   const T_APP = `${T}/DocumentCenter/View/901/Residential-Application`;
+  const T_KEY = "ma|city of timeoutville|engineered";
+  const DAY = 24 * 60 * 60 * 1000;
   serveHtml(`${T}/forms`, civicPage("Forms", [[T_APP.slice(T.length), "Residential Application"]]));
   servePdf(T_APP, await acroPdf("TIMEOUTVILLE Residential Application"));
   researchFor.set("City of Timeoutville", { lookupFailed: true, lookupError: "Request was aborted." });
   const tJob = mkJob("City of Timeoutville", "Timeoutville");
   researchCalls = [];
+  const t1From = Date.now();
   const t1 = await prepareOfficialDocuments(db, tJob, { llm, research: true, formsPage: fp() });
+  const t1To = Date.now();
   const t1r = t1.results.find((r) => r.formType === "permit_application") ?? t1.results[0];
   check("T1 the Stage ran the full pass and its search was asked", t1.acquisition === "full" && researchCalls.includes("City of Timeoutville"), JSON.stringify({ t1, researchCalls }));
   check("T1 MUST-PASS the result is 'could not run' — not a finding about the AHJ", t1r?.status === "not_found" && t1r.lookupFailed === true
     && /The form search could not run: Request was aborted\. — not a finding about City of Timeoutville/.test(t1r.message) && !/No downloadable PDF form was found/.test(t1r.message),
     JSON.stringify(t1r));
-  check("T1 MUST-PASS the 24h cooldown claim is released (no row: there was no prior attempt)", t1.cooldownReleased === true && cooldownRow("City of Timeoutville") == null,
-    JSON.stringify({ released: t1.cooldownReleased, row: cooldownRow("City of Timeoutville") }));
-  // The next Stage searches again — and this time the search runs and the form is found.
+  const t1Row = cooldownRow("City of Timeoutville");
+  check("T1 MUST-PASS the 24h claim is shortened to the short back-off (it reopens LOOKUP_FAILED_RETRY_MS after the claim)", t1.cooldownReleased === true && t1Row != null
+    && t1Row.attempted_at >= t1From - DAY + LOOKUP_FAILED_RETRY_MS && t1Row.attempted_at <= t1To - DAY + LOOKUP_FAILED_RETRY_MS && LOOKUP_FAILED_RETRY_MS > 0 && LOOKUP_FAILED_RETRY_MS <= 2 * 60 * 60 * 1000,
+    JSON.stringify({ released: t1.cooldownReleased, row: t1Row, t1From, LOOKUP_FAILED_RETRY_MS }));
+  // MUST-EXCLUDE: never released to zero — a Stage inside the back-off (the search still failing) does not
+  // pay for another search; it runs the free pass.
+  researchCalls = [];
+  const t1x = await prepareOfficialDocuments(db, tJob, { llm, research: true, formsPage: fp() });
+  check("T1 MUST-EXCLUDE inside the back-off the next Stage does not search again (a persistently failing search is not paid for on every Stage)",
+    t1x.acquisition === "within-cooldown" && researchCalls.length === 0, JSON.stringify({ t1x, researchCalls }));
+  // After the back-off (the claim moved back past it, as time would), the next Stage searches again — and
+  // this time the search runs and the form is found.
+  db.run("UPDATE ahj_form_acquisition_attempts SET attempted_at = attempted_at - ? WHERE scope_key = ?", [LOOKUP_FAILED_RETRY_MS + 1000, T_KEY]);
   researchFor.set("City of Timeoutville", { formsPageUrl: `${T}/forms` });
   researchCalls = [];
+  const t1bFrom = Date.now();
   const t1b = await prepareOfficialDocuments(db, tJob, { llm, research: true, formsPage: fp() });
-  check("T1 the next Stage is the full pass again, searches, and acquires the form", t1b.acquisition === "full" && researchCalls.includes("City of Timeoutville")
+  check("T1 after the back-off the next Stage is the full pass again, searches, and acquires the form", t1b.acquisition === "full" && researchCalls.includes("City of Timeoutville")
     && t1b.results.some((r) => r.status === "acquired") && rows("City of Timeoutville").some((r) => r.source_url === T_APP), JSON.stringify({ t1b, researchCalls }));
-  check("T1 ...and that completed pass keeps its claim", cooldownRow("City of Timeoutville") != null, JSON.stringify(cooldownRow("City of Timeoutville")));
-  // A prior attempt older than 24h is restored, not erased.
+  check("T1 ...and that completed pass keeps its full 24h claim", (cooldownRow("City of Timeoutville")?.attempted_at ?? 0) >= t1bFrom && !t1b.cooldownReleased,
+    JSON.stringify(cooldownRow("City of Timeoutville")));
+  // A prior attempt older than 24h: the shortened claim is the back-off, never the prior's time (that
+  // would reopen at once — the release-to-zero this replaces).
   const tJob2 = mkJob("City of Oldclaim", "Oldclaim");
   const old = Date.now() - 25 * 60 * 60 * 1000;
   db.run("INSERT INTO ahj_form_acquisition_attempts(scope_key, attempted_at) VALUES (?, ?)", ["ma|city of oldclaim|engineered", old]);
   researchFor.set("City of Oldclaim", { lookupFailed: true, lookupError: "Request timed out." });
+  const t2From = Date.now();
   const t2 = await prepareOfficialDocuments(db, tJob2, { llm, research: true, formsPage: fp() });
-  check("T1 a released claim restores the prior attempt's time", t2.acquisition === "full" && t2.cooldownReleased === true && cooldownRow("City of Oldclaim")?.attempted_at === old,
-    JSON.stringify({ t2: t2.cooldownReleased, row: cooldownRow("City of Oldclaim"), old }));
+  check("T1 a failed search after a prior attempt older than 24h holds the back-off, not the prior's time", t2.acquisition === "full" && t2.cooldownReleased === true
+    && (cooldownRow("City of Oldclaim")?.attempted_at ?? 0) >= t2From - DAY + LOOKUP_FAILED_RETRY_MS, JSON.stringify({ t2: t2.cooldownReleased, row: cooldownRow("City of Oldclaim"), old }));
 
   // ═══ T2 MUST-EXCLUDE — a completed search that found nothing KEEPS the cooldown ═══════════════════
   researchFor.set("City of Emptyville", { notes: "" });
@@ -652,7 +678,7 @@ try {
     && db.query("SELECT id FROM llm_calls").length === 0, JSON.stringify(db.query("SELECT job_type, status FROM job_queue")));
 
   assert.equal(failed.length, 0, `${failed.length} check(s) failed: ${failed.join(" | ")}`);
-  console.log(`formsFindPage: ${passed} checks passed — the AHJ's own forms page and its own search results yield its residential application (never a fee schedule, agenda, checklist, commercial/tax form, off-site link, utility host or HTML page); a search that could not run says so and releases the Stage cooldown, a completed empty one keeps it; the find audit and the KB keep the why; a verified row is not overwritten`);
+  console.log(`formsFindPage: ${passed} checks passed — the AHJ's own forms page and its own search results yield its residential application (never a fee schedule, agenda, checklist, commercial/tax form, off-site link, utility host or HTML page); never another jurisdiction's site or another department's "<X> Permit Application" (Wiring is electrical); every download waits the gap after the LAST request to its host, and a refused site is asked nothing more; a search that could not run says so and shortens the Stage cooldown to a short back-off (never zero), a completed empty one keeps it; a re-typed building blank satisfies the generic slot; the find audit and the KB keep the why; a verified row is not overwritten`);
 } finally {
   delete process.env.ANTHROPIC_API_KEY;
   globalThis.fetch = realFetch;

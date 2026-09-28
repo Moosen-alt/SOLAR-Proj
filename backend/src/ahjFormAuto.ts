@@ -530,7 +530,8 @@ export interface EnsureFormResult {
   permitType?: string;
   /** TRUE when the form SEARCH could not run (llm.findAhjFormUrl lookupFailed: an abort, a timeout,
    *  unparseable output) and nothing else produced the form — "we could not look", never "this AHJ
-   *  has no form". Stage releases its 24h cooldown claim on it (prepareOfficialDocuments). */
+   *  has no form". Stage shortens its 24h cooldown claim to a short back-off on it
+   *  (prepareOfficialDocuments.LOOKUP_FAILED_RETRY_MS — never to zero). */
   lookupFailed?: boolean;
 }
 
