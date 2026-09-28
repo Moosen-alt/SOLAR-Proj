@@ -612,6 +612,18 @@ console.log("\nB-2. ONE SIGNER, ONE NAME — only ONE declarant with ONE Print N
     assert.equal(got.length, 1, JSON.stringify(got));
     assert.deepEqual(got[0].fields, ["NAME", "Print Name"]);
   });
+  // The same prose drawn as TWO text runs, split right before "signature" (a PDF splits runs anywhere):
+  // what a line starts with is read off the whole visual line, never off a run.
+  const P2split = await blankOf(({ t, box }) => {
+    t("I,", 40, 700); box("NAME", 50, 696, 300, 13); t(", as Owner/Authorized Agent", 360, 697);
+    t("hereby declare that the statements are true; I understand my", 40, 680); t("signature below is made under oath.", 300, 680);
+    box("Print Name", 40, 650, 400, 13); t("Print Name", 42, 638);
+    t("Signature of Owner/Agent", 40, 610);
+  });
+  await check("MUST-EXCLUDE: the same prose split into two runs at \"signature\" is still prose — FLAGGED", async () => {
+    const got = await conflictsOf(P2split, { NAME: "computed.applicantSignerName", "Print Name": "project.homeownerName" });
+    assert.equal(got.length, 1, JSON.stringify(got));
+  });
   await check("a signature LINE starts with \"Signature\", optionally after at most three signer words; prose that mentions one is not a line", () => {
     for (const s of ["Signature", "Signature of Owner/Agent", LONG_OWNER_SIG, "Owner's Signature", "Contractor / Agent Signature:", "Owner or Authorized Agent Signature"]) assert.ok(isSignatureLine(s), s);
     // A four-word prefix is past the cap: not read as a separator (the pair is flagged — the safe side).
