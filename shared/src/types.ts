@@ -3343,6 +3343,14 @@ export interface RecipeStep {
    *  signing statement): the step types that part of the client's authorized signer
    *  (splitSignerName), never the whole name, never a contact's. Only on signature steps. */
   signerNamePart?: "first" | "last";
+  /** Set when this step's recorded answer was withheld from the shared recipe and the step replays
+   *  BLANK for a person to answer — why, in words (e.g. a company-identity literal the save guard
+   *  refused to persist). Metadata only: never part of the step's label or matching. */
+  operatorItem?: string;
+  /** companyFacts.companyFactStamp of the client whose job recorded this company ATTESTATION (a
+   *  check/select answering a fact about the installer company). Replayed only for that client's
+   *  jobs; on any other job (or when absent) the step is left for a person. Opaque, never the id. */
+  companyFactOf?: string;
   /** See StepFingerprint — heal tie-break metadata captured at record time. */
   fingerprint?: StepFingerprint;
 }

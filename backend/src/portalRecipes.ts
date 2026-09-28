@@ -23,6 +23,7 @@ import { FEE_BRACKET_FIELD_PREFIX } from "../../portal-bot/src/feeBracketQuantit
 import { filingValuationText } from "./valuation";
 import { planSetDisconnectPart, standardDisconnectConflicts } from "./baselineRules";
 import { clientCompanyFactFields } from "./clients";
+import { companyFactStamp, isCompanyAttestationStep, isCompanyIdentityLabel } from "../../shared/src/companyFacts";
 
 type Row = Record<string, unknown>;
 
@@ -766,6 +767,39 @@ function fnv1a(joined: string): string {
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
+/**
+ * THE SAVE GUARD FOR COMPANY IDENTITY (leak sweep 2026-09-28, company-leak-3). An UNBOUND free-text
+ * literal under a company-identity label (companyFacts.isCompanyIdentityLabel — insurer, policy,
+ * bond, HIC/CSL/CCB/UBI registration, website, title, supervising/master electrician, contractor /
+ * company / business, the contractor's split street) is the learn company's answer. The binder had
+ * its chance to bind it to a key (insuranceCarrier, installerStreetNumber, ccbLicenseNumber…); what
+ * is still a literal is never persisted into a recipe every company replays: the value is dropped
+ * and the step replays BLANK, named for a person (step.operatorItem). Bound, sensitive and
+ * closed-vocabulary steps are untouched.
+ */
+/** Stamp each company ATTESTATION step (companyFacts.isCompanyAttestationStep) with the opaque stamp
+ *  of the client whose job recorded it, so replay answers it only for that client's own jobs
+ *  (recipeReplayBinding R8). No client: nothing stamped — the step is then always left for a person. */
+export function stampCompanyAttestations(steps: RecipeStep[], clientId: string | null | undefined): RecipeStep[] {
+  const stamp = companyFactStamp(clientId);
+  if (!stamp) return steps ?? [];
+  return (steps ?? []).map((st) => (isCompanyAttestationStep(st) && !st.companyFactOf ? { ...st, companyFactOf: stamp } : st));
+}
+
+export function withholdCompanyIdentityLiterals(steps: RecipeStep[]): { steps: RecipeStep[]; withheld: number } {
+  let withheld = 0;
+  const out = (steps ?? []).map((st) => {
+    if (!st || st.action !== "fill" || st.field || st.sensitive || !String(st.value ?? "").trim()) return st;
+    const label = [st.selector?.label, st.selector?.name, st.selector?.placeholder, st.note].filter(Boolean).join(" ");
+    if (!isCompanyIdentityLabel(label)) return st;
+    withheld++;
+    const next: RecipeStep = { ...st, operatorItem: "company identity — the recorded answer was one company's, so the shared recipe leaves this box for a person" };
+    delete next.value;
+    return next;
+  });
+  return { steps: out, withheld };
+}
+
 // Save the recorded steps (called by the recorder when the admin finishes, and by every
 // auto-learn terminal path). The STATUS is the thing that decides whether a recipe replays
 // unattended on real filings, so it is only ever changed by a caller that says so.
@@ -813,7 +847,9 @@ export function savePortalRecipeSteps(
     s(db.get<Row>("SELECT prev_steps_json FROM portal_recipes WHERE id = ?", [recipeId])?.prev_steps_json) || "[]", []);
   const incoming = steps ?? [];
   const shallower = status !== "complete" && recipeDepth(snapshot) > recipeDepth(incoming);
-  const finalSteps = shallower ? snapshot : incoming;
+  // A SHARED RECIPE NEVER CARRIES ONE COMPANY'S IDENTITY AS A LITERAL (leak sweep 2026-09-28) — the
+  // invariant lives here, where every writer passes, and applies to whichever steps are kept.
+  const finalSteps = withholdCompanyIdentityLiterals(shallower ? snapshot : incoming).steps;
   const depthNote = shallower
     ? `[kept the deeper recording: this save carried ${recipeDepth(incoming)} filled field(s), the row already had ${recipeDepth(snapshot)}]`
     : "";
@@ -2349,8 +2385,11 @@ export function appendHumanPatchSteps(
   recipeId: string,
   newSteps: RecipeStep[],
   projectFields: Record<string, string>,
+  /** The client whose job this patch was demonstrated on — stamps its company attestations. */
+  clientId?: string | null,
 ): PortalRecipe {
   const recipe = getPortalRecipe(db, recipeId);
+  newSteps = stampCompanyAttestations(newSteps, clientId);
   // DEFENSE IN DEPTH: the capture script already refuses submit/pay clicks, but a
   // mislabeled button can slip through (a real run recorded a bare "Submit" click).
   // Patches merge BEFORE the terminal stop markers — replayable position — so a

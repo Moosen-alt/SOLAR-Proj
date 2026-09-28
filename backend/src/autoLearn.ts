@@ -30,7 +30,7 @@ import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/a
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
 import { getDecryptedCredentialForPortal, getDecryptedCredentialByUrl, listPortalCredentials, nearestStoredLogins, recordLoginOutcome } from "./portalCredentials";
 import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics";
-import { RECIPE_FIELD_DESCRIPTIONS, deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey, portalEntityEvidence } from "./portalRecipes";
+import { RECIPE_FIELD_DESCRIPTIONS, deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey, portalEntityEvidence, stampCompanyAttestations } from "./portalRecipes";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
 import { projectDocsByType } from "./projectDocuments";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
@@ -909,7 +909,7 @@ async function autoLearnPortalInner(
       if (humanPatch.count === 1) {
         addAuditLog(db, projectId, "human", "operator", "portal.recipe_human_patch_started", { scope: scopeType });
       }
-      if (humanPatch.recipeId) appendHumanPatchSteps(db, humanPatch.recipeId, [step], projectFields);
+      if (humanPatch.recipeId) appendHumanPatchSteps(db, humanPatch.recipeId, [step], projectFields, project.clientId);
       else humanPatch.buffer.push(step);
     } catch { /* capture merge is best-effort — never disturb the operator's session */ }
   };
@@ -1482,7 +1482,9 @@ async function autoLearnPortalInner(
   // matches project data AMBIGUOUSLY (>1 field) can't be safely auto-bound, so treat it as a hard
   // blocker — never promote a contaminated recipe to trusted.
   const { steps: boundSteps, bound: boundLiterals, ambiguous: ambiguousLiterals, portalConstants } =
-    convertLiteralsToBoundFields(learn.steps, projectFields);
+    // Company attestations are stamped with THIS job's client first (recipeReplayBinding R8 answers
+    // them only for that client; any other company's job leaves them for a person).
+    convertLiteralsToBoundFields(stampCompanyAttestations(learn.steps, project.clientId), projectFields);
   if (ambiguousLiterals.length) {
     verification.issues.push(
       `Recorded literal value(s) match this project's data but could not be uniquely bound to a field (${ambiguousLiterals.slice(0, 6).map((a) => `"${a.value}"→${a.candidates.join("/")}`).join(", ")}). These would replay verbatim onto other projects — review before trusting.`,
@@ -1708,7 +1710,7 @@ async function autoLearnPortalInner(
   // baseline steps can't overwrite them).
   humanPatch.recipeId = stub.id;
   if (humanPatch.buffer.length) {
-    try { appendHumanPatchSteps(db, stub.id, humanPatch.buffer.splice(0), projectFields); } catch { /* best-effort */ }
+    try { appendHumanPatchSteps(db, stub.id, humanPatch.buffer.splice(0), projectFields, project.clientId); } catch { /* best-effort */ }
   }
   // Submit observed in the pre-flush window (human corrected + submitted before the
   // recipe row landed) — apply the promotion now that the row exists.

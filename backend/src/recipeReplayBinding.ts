@@ -46,11 +46,15 @@
 //      contract price (jobValue / contractAmount) or frozen as a figure binds to THIS project's
 //      declaredValuation (the operator formula the PDF application files). A contract-price box keeps
 //      the contract.
+//   R8 COMPANY ATTESTATIONS (leak sweep 2026-09-28) — a check/select answering a fact about the
+//      installer company replays only on the job of the company that recorded it (step.companyFactOf);
+//      elsewhere a check is not replayed and a select replays blank, named for a person.
 import type { CitedFact, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { stateRulesFor } from "./permitProcess";
 import { feeBracketFieldKey, parseFeeBracketFieldKey, sameFeeTier, tierBoundsFromLabel } from "../../portal-bot/src/feeBracketQuantity";
 import { issuingAgencyRow } from "../../portal-bot/src/addressVersion";
 import { DECLARED_VALUATION_FIELD, rebindsToValuation } from "./valuation";
+import { companyFactStamp, isCompanyAttestationStep } from "../../shared/src/companyFacts";
 export { sameFeeTier };
 
 export interface ReplayBindingChange {
@@ -129,7 +133,7 @@ const POSITIONAL_SERVICE_LIST = /cbListServices_\d+|rptAgency_ctl\d+/i;
 export function bindRecipeForReplay(input: {
   steps: RecipeStep[];
   portalUrl?: string;
-  project: Pick<ProjectRecord, "state" | "ahj"> & { city?: string; parserSnapshot?: Record<string, unknown> };
+  project: Pick<ProjectRecord, "state" | "ahj"> & { city?: string; parserSnapshot?: Record<string, unknown>; clientId?: string | null };
   fieldValues: Record<string, string>;
   track: string | null | undefined;
   /** Set when the recipe was learned for ANOTHER entity (findBorrowableRecipe). */
@@ -171,6 +175,24 @@ export function bindRecipeForReplay(input: {
       if (m) {
         record("stripped", `clicks the specific filed record ${m[0]} — replaying it would open a previous customer's record`);
         return;
+      }
+    }
+
+    // R8 — a COMPANY ATTESTATION (workers'-comp exemption, "no employees", insurance type, "I'm a
+    // contractor", one company's licence option) is answered only for the company whose job recorded
+    // it (step.companyFactOf, stamped at learn). On any other company's job — or an unstamped legacy
+    // step — it is left for a person: a check is not replayed, a select replays blank. Never the
+    // learn company's sworn answer on someone else's application.
+    if (isCompanyAttestationStep(step)) {
+      const own = Boolean(step.companyFactOf) && step.companyFactOf === companyFactStamp(input.project.clientId);
+      if (!own) {
+        const why = `a company attestation ("${label.slice(0, 50)}") recorded on ${step.companyFactOf ? "another company's" : "a"} job — left for a person, never another company's answer`;
+        if (step.action === "check") {
+          record("stripped", why);
+          return;
+        }
+        step = { ...step, value: "", field: REPLAY_BLANK_FIELD, operatorItem: why };
+        record("blanked", why);
       }
     }
 

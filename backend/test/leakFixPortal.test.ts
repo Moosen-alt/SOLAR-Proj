@@ -409,5 +409,90 @@ await check("MUST-PASS: the company-fact keys come from THIS job's client, alway
   assert.ok(Object.prototype.hasOwnProperty.call(noClient, "bondExpiration"));
 });
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+section("P6  a company's identity and attestations never travel in a shared recipe");
+const { isCompanyIdentityLabel, isCompanyAttestationStep, companyFactStamp } = await import("../../shared/src/companyFacts");
+const { looksLikeProjectData } = await import("../../portal-bot/src/adapters/recipeAdapter");
+const { REPLAY_BLANK_FIELD } = await import("../src/recipeReplayBinding");
+const IDENTITY_LABELS = ["Insurance Carrier", "Policy Number", "Bond Number", "Workers Comp Carrier", "Workers' Compensation Policy #", "HIC Registration #",
+  "Registration Number", "Title", "Website", "Master Electrician", "Supervisor", "CCB #", " ConStNum", " ConStName", " WCStrNum", " MailStName"];
+await check("MUST-PASS: the replay guard refuses a recorded literal under every company-identity label the sweep found (control ids split into words)", () => {
+  for (const l of IDENTITY_LABELS) {
+    assert.equal(isCompanyIdentityLabel(l) || looksLikeProjectData(l, "x1"), true, `${l} is not company identity`);
+    assert.equal(looksLikeProjectData(l, "808"), true, `replay would type the learn company's answer under "${l}"`);
+  }
+});
+await check("MUST-EXCLUDE: the portal's own vocabulary still replays", () => {
+  for (const [l, v] of [["Job Category", "STAND-ALONE"], ["Permit Name", "Solar PV System Installation"], ["Energy Source", "Solar"], ["Type of Work", "Alteration"], ["Description of Service", "Residential"]]) {
+    assert.equal(looksLikeProjectData(l, v), false, `${l} = ${v} would be blanked`);
+    assert.equal(isCompanyIdentityLabel(l), false, `${l} read as company identity`);
+  }
+});
+const rec = PR.startPortalRecording(db, { scopeType: "ahj", state: "MA", ahj: "City of Testford", portalUrl: "https://permits.testford.example/", createdBy: "test" });
+await check("MUST-PASS: the save guard never persists an unbound company-identity literal (bind it or blank it, named)", () => {
+  const saved = PR.savePortalRecipeSteps(db, rec.id, [
+    { action: "fill", selector: { label: "Insurance Carrier" }, value: "Acme Mutual Test", note: "Insurance Carrier" },
+    { action: "fill", selector: { label: " ConStNum" }, value: "808", note: " ConStNum" },
+    { action: "fill", selector: { label: "HIC Registration #" }, value: "HIC-000000", note: "HIC Registration #" },
+    { action: "fill", selector: { label: "Owner Name" }, field: "homeownerName", note: "Owner Name" },
+    { action: "fill", selector: { label: "Energy Source" }, value: "Solar", note: "Energy Source" },
+    { action: "select", selector: { label: "Insurance Type" }, value: "General Liability", note: "Insurance Type" },
+  ], { status: "recording" });
+  const raw = db.get<{ steps_json: string }>("SELECT steps_json FROM portal_recipes WHERE id = ?", [rec.id])!.steps_json;
+  for (const secret of ["Acme Mutual Test", "\"808\"", "HIC-000000"]) assert.ok(!raw.includes(secret), `persisted ${secret}`);
+  assert.ok(saved.steps.slice(0, 3).every((s) => s.value === undefined && /company identity/.test(String(s.operatorItem))));
+  assert.equal(saved.steps[3].field, "homeownerName", "MUST-EXCLUDE: a bound step");
+  assert.equal(saved.steps[4].value, "Solar", "MUST-EXCLUDE: a portal constant");
+  assert.equal(saved.steps[5].value, "General Liability", "MUST-EXCLUDE: a closed-vocabulary select is the attestation rule's, not the literal guard's");
+});
+await check("MUST-PASS: a human patch binds a company fact the client has on file, and withholds one it has not", () => {
+  const fields = PR.resolveRecipeFieldValues(db, addition, "AHJ");
+  const r = PR.appendHumanPatchSteps(db, rec.id, [
+    { action: "fill", selector: { label: "Insurance Carrier" }, value: "Acme Mutual Test", note: "human-patch: Insurance Carrier" },
+    { action: "fill", selector: { label: "Bond Number" }, value: "B-99999", note: "human-patch: Bond Number" },
+  ], fields, alpha.id);
+  const patched = r.steps.filter((s) => String(s.note ?? "").startsWith("human-patch"));
+  assert.equal(patched[0].field, "insuranceCarrier");
+  assert.equal(patched[1].value, undefined);
+  assert.ok(!db.get<{ steps_json: string }>("SELECT steps_json FROM portal_recipes WHERE id = ?", [rec.id])!.steps_json.includes("B-99999"));
+});
+const attestations: RecipeStep[] = [
+  { action: "check", selector: { label: "I am a sole proprietor or partnership and have no employees working for me in any capacity" }, value: "true", note: "I am a sole proprietor or partnership and have no employees" },
+  { action: "select", selector: { label: "Licenses:" }, value: "HC Elec State ES 11774", note: "Licenses:" },
+  { action: "check", selector: { label: "A liability insurance policy" }, value: "true", note: "A liability insurance policy" },
+  { action: "check", selector: { label: "Yes, I'm a contractor for this project" }, value: "true", note: "Yes, I'm a contractor for this project" },
+];
+const benign: RecipeStep[] = [
+  { action: "check", selector: { label: "I have read and agree to the terms and conditions" }, value: "true", note: "I have read and agree to the terms and conditions" },
+  { action: "check", selector: { label: "I certify under the pains and penalties of perjury that the information is true" }, value: "true", note: "certification" },
+  { action: "check", selector: { label: "Installer" }, value: "true", note: "Installer" },
+  { action: "check", selector: { label: "Residential Solar" }, value: "true", note: "application type" },
+  { action: "select", selector: { label: "Energy Source" }, value: "Solar PV", note: "Energy Source" },
+];
+await check("MUST-PASS/EXCLUDE: the attestation predicate — company facts yes, the notices and portal vocabulary no", () => {
+  for (const s of attestations) assert.equal(isCompanyAttestationStep(s), true, String(s.note));
+  for (const s of benign) assert.equal(isCompanyAttestationStep(s), false, String(s.note));
+  assert.equal(isCompanyAttestationStep({ action: "click", isFinalSubmit: true, selector: { label: "Submit" } }), false);
+});
+await check("MUST-PASS: on ANOTHER company's job a stamped attestation is left for a person (check not replayed, select blank)", () => {
+  const learned = PR.stampCompanyAttestations([...attestations, ...benign], alpha.id);
+  assert.ok(learned.slice(0, 4).every((s) => s.companyFactOf === companyFactStamp(alpha.id)));
+  assert.ok(learned.slice(4).every((s) => !s.companyFactOf), "a benign step was stamped");
+  assert.ok(!String(companyFactStamp(alpha.id)).includes(alpha.id), "the stamp must not carry the client id");
+  const onBeta = replay(learned, {}, { project: { state: "MA", ahj: "City of Testford", clientId: beta.id } });
+  const labels = onBeta.steps.map((s) => String(s.note));
+  assert.ok(!labels.some((l) => /sole proprietor|liability insurance|I'm a contractor/.test(l)), `replayed: ${labels.join(" | ")}`);
+  const lic = onBeta.steps.find((s) => s.note === "Licenses:")!;
+  assert.equal(lic.field, REPLAY_BLANK_FIELD);
+  assert.equal(lic.value, "");
+  assert.equal(onBeta.steps.length, learned.length - 3, "MUST-EXCLUDE: the notices / role / type / energy steps all replay");
+});
+await check("MUST-EXCLUDE: on the SAME company's job the stamped attestations replay; an unstamped one never does", () => {
+  const learned = [...PR.stampCompanyAttestations(attestations.slice(0, 2), alpha.id), attestations[2]];
+  const onAlpha = replay(learned, {}, { project: { state: "MA", ahj: "City of Testford", clientId: alpha.id } });
+  assert.deepEqual(onAlpha.steps.map((s) => s.value), ["true", "HC Elec State ES 11774"]);
+  assert.equal(onAlpha.changes.filter((c) => c.kind === "stripped").length, 1, "the unstamped liability-insurance check must be left for a person");
+});
+
 console.log(`\n${passed} passed, ${failures} failed`);
 if (failures) process.exit(1);
