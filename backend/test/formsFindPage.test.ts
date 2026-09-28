@@ -62,12 +62,12 @@ const check = (name: string, cond: unknown, detail = ""): void => {
 };
 
 // ── the local fixture server: "<host>/<path>" -> a response ─────────────────────────────────────
-const routes = new Map<string, { type: string; body: Buffer | string }>();
+const routes = new Map<string, { type: string; body: Buffer | string; status?: number }>();
 const server = http.createServer((req, res) => {
   const key = decodeURIComponent(String(req.url || "")).replace(/^\//, "");
   const r = routes.get(key);
   if (!r) { res.writeHead(404, { "content-type": "text/html" }); res.end("<html><body>Page not found</body></html>"); return; }
-  res.writeHead(200, { "content-type": r.type });
+  res.writeHead(r.status ?? 200, { "content-type": r.type });
   res.end(r.body);
 });
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -535,6 +535,29 @@ try {
     JSON.stringify({ gapMs: rcAt(RC_MODEL) - rcAt(`${RC}/forms`) }));
   check("F3 MUST-PASS the application waited the gap after the model's FAILED link — the last request to that host", rcAt(RC_APP) - rcAt(RC_MODEL) >= GAP - 10,
     JSON.stringify({ gapMs: rcAt(RC_APP) - rcAt(RC_MODEL) }));
+
+  // ═══ B1 A REFUSED FORMS PAGE — nothing the harvest found on that site is requested (go gently) ═══════
+  // The forms page answers 403 with a challenge: the reader backs the host off, and the search results on
+  // that site (which WOULD serve a PDF) are dropped rather than becoming the next requests to a host that
+  // just refused us. A MISSING page (404) is not a refusal: its site's search results are still taken.
+  const RF = "https://www.refuseton.ma.us";
+  const RF_APP = `${RF}/DocumentCenter/View/1400/Residential-Application`;
+  routes.set(`${RF}/forms`.replace(/^https?:\/\//, ""), { type: "text/html; charset=utf-8", status: 403, body: "<html><head><title>Just a moment...</title></head><body>Checking your browser before accessing. Cloudflare Ray ID</body></html>" });
+  servePdf(RF_APP, await acroPdf("REFUSETON Residential Application"));
+  researchFor.set("Town of Refuseton", { formsPageUrl: `${RF}/forms`, searchResults: [{ url: RF_APP, title: "Residential Application | Refuseton, MA" }] });
+  requested = [];
+  const b1 = await auto.ensureAhjFormTemplate(db, llm, mkJob("Town of Refuseton", "Refuseton"), "permit_application", { formsPage: fp() });
+  check("B1 MUST-EXCLUDE a refused forms page: the search result on that site is never requested or stored", b1.status === "not_found" && rows("Town of Refuseton").length === 0
+    && JSON.stringify(requested) === JSON.stringify([`${RF}/forms`]), JSON.stringify({ b1, requested }));
+  check("B1 the not-found says the page refused the read, and nothing else was asked of that site", /refused the read .*nothing else was requested from that site/.test(b1.message), b1.message);
+  const MS = "https://www.missington.ma.us";
+  const MS_APP = `${MS}/DocumentCenter/View/1401/Residential-Application`;
+  servePdf(MS_APP, await acroPdf("MISSINGTON Residential Application"));
+  researchFor.set("Town of Missington", { formsPageUrl: `${MS}/forms-moved`, searchResults: [{ url: MS_APP, title: "Residential Application | Missington, MA" }] });
+  requested = [];
+  const b1b = await auto.ensureAhjFormTemplate(db, llm, mkJob("Town of Missington", "Missington"), "permit_application", { formsPage: fp() });
+  check("B1 MUST-PASS a MISSING forms page (404) is not a refusal: the search result on that site is still taken", b1b.status === "acquired" && b1b.sourceUrl === MS_APP
+    && requested.includes(MS_APP), JSON.stringify({ b1b, requested }));
 
   // ═══ T1 A SEARCH THAT COULD NOT RUN — reported as such, and the cooldown claim is released ═══════
   const T = "https://www.timeoutville.ma.us";

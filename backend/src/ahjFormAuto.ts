@@ -28,7 +28,7 @@ import { bcd5952Template } from "./bcd5952Template";
 import { iowaPvWorksheetTemplate, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import { curatedFormSource, curatedFormMap } from "./curatedAhjForms";
 import { agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, formAuthorityFor, rowBelongsToAuthority, TRACK_FORM_TYPES, type FormAuthority } from "./applicationDocsAgency";
-import { PAGE_READ_MIN_GAP_MS, type PageReader } from "./agencyPageReader";
+import { isRefusal, PAGE_READ_MIN_GAP_MS, type PageReader } from "./agencyPageReader";
 import { applicationFormLinks, classifyApplicationDocument, documentSlugWords, isAhjFormsSite, DOCUMENT_URL, type ApplicationDiscipline } from "./permitPlatformCatalog";
 import { isUtilityPlatformUrl, portalHostOf, registrableDomain } from "./portalChannel";
 
@@ -693,6 +693,9 @@ async function harvestApplicationCandidates(
     Number(disciplineFitsSlot(b.discipline, formType)) - Number(disciplineFitsSlot(a.discipline, formType)) || b.score - a.score;
   const notes: string[] = [];
   const fromPage: FormCandidate[] = [];
+  /** Sites that REFUSED the forms page read (a challenge, a wall, 401/403/429 — isRefusal): nothing
+   *  this harvest found is requested from them (go gently — the reader has backed the host off). */
+  const refusedDomains = new Set<string>();
   const page = String(research.formsPageUrl || "");
   if (page) {
     const host = portalHostOf(page);
@@ -709,7 +712,12 @@ async function harvestApplicationCandidates(
         const read = await reader.read(page);
         noteHostHit(page);
         if (read.finalUrl) noteHostHit(read.finalUrl);
-        if (!read.ok || read.kind !== "html") {
+        if (!read.ok && isRefusal(read.status, read.reason)) {
+          // A REFUSAL IS NOT ASKED AGAIN IN THE SAME BREATH: the search results on that site are
+          // dropped too (they would be the next requests to a host that just refused us).
+          for (const h of [host, portalHostOf(read.finalUrl)]) if (h) refusedDomains.add(registrableDomain(h));
+          notes.push(`The forms page ${page} refused the read (${read.reason || `HTTP ${read.status}`}), so nothing else was requested from that site — not a finding about ${project.ahj}.`);
+        } else if (!read.ok || read.kind !== "html") {
           notes.push(`The forms page ${page} could not be read (${read.reason || read.kind}), so its links were not checked — not a finding about ${project.ahj}.`);
         } else {
           const links = applicationFormLinks([read], names, project.state).filter((l) => kindOk(l.text, l.href)).sort(rank);
@@ -725,7 +733,7 @@ async function harvestApplicationCandidates(
   for (const r of research.searchResults ?? []) {
     const host = portalHostOf(r.url);
     if (!host || isUtilityPlatformUrl(r.url) || fromPage.some((c) => c.url === r.url)) continue;
-    if (!isAhjFormsSite(host, names, project.state)) continue;
+    if (!isAhjFormsSite(host, names, project.state) || refusedDomains.has(registrableDomain(host))) continue;
     const doc = classifyApplicationDocument(r.title, r.url);
     if (!doc || !kindOk(r.title, r.url)) continue;
     fromSearch.push({ url: r.url, label: r.title, origin: "search-result", ...doc });
