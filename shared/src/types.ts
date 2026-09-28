@@ -1051,6 +1051,9 @@ export interface SubmittalTrack {
   recipeId?: string;
   /** The scope type used to look up the recipe — "ahj" or "utility". */
   recipeScopeType?: "ahj" | "utility";
+  /** No recipe of its own: the recipe this project's LAST run of this track borrowed (another entity's,
+   *  same portal — portalRecipes.findBorrowableRecipe), read from that run's result. null = none used. */
+  borrowedRecipe?: { recipeId: string; recipeVersion: number | null; learnedFor: string; recordType: string; portalHost: string; lastUsedAt: string } | null;
 }
 
 export interface PermitStatusCheck {

@@ -590,6 +590,27 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
       "SELECT id, status, portal_url FROM portal_recipes WHERE profile_key = ? ORDER BY version DESC LIMIT 1",
       [profileKey],
     );
+    // NO RECIPE OF ITS OWN IS NOT "NOTHING RAN" (operator 09-28: "if we're using the Coos Bay recipe can
+    // we make it say that somewhere? They just look blank"). Stage borrows a recipe learned for another
+    // entity on the same portal (portalRecipes.findBorrowableRecipe) and records it on the run
+    // (result_json.borrowedRecipe). The card says which one THIS project's last run of this track used.
+    const borrowedRecipe = recipeRow ? null : (() => {
+      for (const r of db.query<Row>(
+        "SELECT result_json, started_at FROM portal_runs WHERE project_id = ? AND permit_type = ? ORDER BY started_at DESC LIMIT 5",
+        [project.id, type],
+      )) {
+        try {
+          const b = (JSON.parse(s(r.result_json) || "{}") as { borrowedRecipe?: Record<string, unknown> }).borrowedRecipe;
+          if (b && typeof b.recipeId === "string" && b.recipeId) {
+            return {
+              recipeId: String(b.recipeId), recipeVersion: Number(b.recipeVersion) || null, learnedFor: String(b.learnedFor ?? ""),
+              recordType: String(b.recordType ?? ""), portalHost: String(b.portalHost ?? ""), lastUsedAt: s(r.started_at),
+            };
+          }
+        } catch { /* an unreadable result is simply not evidence */ }
+      }
+      return null;
+    })();
 
     // Fallback portal URL when no recipe exists yet — used by the credential-matching
     // chip so the operator can store a login before recording. Try in order:
@@ -644,6 +665,7 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
       recipePortalUrl: (recipeRow ? s(recipeRow.portal_url) : undefined) || kbPortalUrl,
       recipeId: recipeRow ? s(recipeRow.id) : undefined,
       recipeScopeType: scopeType,
+      borrowedRecipe,
     };
   });
 }

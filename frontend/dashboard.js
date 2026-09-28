@@ -4457,7 +4457,14 @@ function trackCardHtml(t) {
         ${t.recipeStatus === "recording" && t.recipeId ? `<button type="button" class="secondary" data-track-finish-recipe="${esc(t.recipeId)}" title="You've verified (and fixed) the captured fill in the review browser — save it as the replayable recipe and close the review browser"><i data-lucide="check-circle-2"></i><span>Recording looks right — save recipe</span></button>` : ""}
       </div>`
     : `<div class="track-recipe track-recipe--none" data-track-type="${esc(t.type)}">
-        <span class="track-recipe-badge badge-none"><i data-lucide="circle-dashed"></i> No bot recipe yet</span>
+        ${t.borrowedRecipe
+          // NO RECIPE OF ITS OWN, BUT THE LAST RUN BORROWED ONE (operator 09-28: "if we're using the Coos
+          // Bay recipe can we make it say that somewhere?"). Say whose, for which record type.
+          ? `<span class="track-recipe-badge badge-ok" title="This jurisdiction has no recording of its own. Stage replayed a recording learned for ${esc(t.borrowedRecipe.learnedFor)} on the same portal (${esc(t.borrowedRecipe.portalHost)}), bound to this project's data. Check every jurisdiction-specific answer before submitting.">
+              <i data-lucide="copy-check"></i> Bot recipe: borrowed from ${esc(t.borrowedRecipe.learnedFor)}${t.borrowedRecipe.recordType ? ` (${esc(t.borrowedRecipe.recordType)}${t.borrowedRecipe.recipeVersion ? `, v${esc(t.borrowedRecipe.recipeVersion)}` : ""})` : ""}
+            </span>
+            <span class="muted" style="font-size:11px">Same portal, used on this project's last run. Record one for ${esc(t.label.replace(/\s*\(.*$/, ""))} below if its steps differ.</span>`
+          : `<span class="track-recipe-badge badge-none"><i data-lucide="circle-dashed"></i> No bot recipe yet</span>`}
         <div class="track-record-steps">
           <button type="button" class="secondary" data-track-open-recorder="${esc(t.type)}" data-scope="${esc(t.recipeScopeType || "ahj")}" title="Launch a browser session to record this portal — the bot will replay it on future projects"><i data-lucide="play"></i><span>Open recorder</span></button>
           <span class="track-record-arrow muted">→</span>
