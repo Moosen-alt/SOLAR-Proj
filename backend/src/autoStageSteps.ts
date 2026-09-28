@@ -40,14 +40,25 @@ export interface StageStepOutcome {
 }
 
 /**
- * Enqueue the auto chain for a project, deduped: a project with a pending stage_step job does
+ * Enqueue the auto chain for a project, deduped: a project with a PENDING stage_step job does
  * not get a second one (re-saving a project three times must not build the packet three times).
  * Called from the parser save/update routes — the two doors a project enters a stage through.
+ *
+ * PENDING ONLY — NEVER RUNNING (dry run 2026-09-28, B1). Evidence that arrives while a chain is
+ * RUNNING must be seen by a chain that starts after it. The parser page creates the project (which
+ * enqueues a chain, claimed ~5 ms later by the instant kick) and uploads the plan set a few hundred
+ * ms after; the chain had already passed STEP 0 with no plan set on file, and the upload's enqueue
+ * was dropped as a duplicate of the RUNNING job — so every project saved from the parser page sat
+ * un-split behind "required documents missing" over sheets it already had. Counting 'running'
+ * protected nothing: jobQueue's PROJECT_BUSY_SQL already keeps a second stage_step for the same
+ * project PENDING until the running one finishes, so two chains never run at once. At most one
+ * follow-up waits; later saves and uploads fold into it. It cannot loop: only HTTP routes call
+ * this, never the chain's own steps.
  */
 export function enqueueStageSteps(db: AppDb, projectId: string): boolean {
   if (!autoStageStepsEnabled()) return false;
   const pending = db.get<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM job_queue WHERE job_type = 'stage_step' AND project_id = ? AND status IN ('pending','running')",
+    "SELECT COUNT(*) AS n FROM job_queue WHERE job_type = 'stage_step' AND project_id = ? AND status = 'pending'",
     [projectId],
   );
   if (Number(pending?.n ?? 0) > 0) return false;
