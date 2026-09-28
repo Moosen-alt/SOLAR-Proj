@@ -258,6 +258,33 @@ export function extractStatedStatus(rawStatusText: string): string {
   return m ? m[1].trim().replace(/\s+/g, " ") : "";
 }
 
+// ACCELA'S RECORD-PAGE CHROME IS NOT THE RECORD (live 2026-09-28, a City of Corvallis building
+// record reading "Record Status: Received"). On a record not yet issued, Accela prints the "Add to
+// Existing Collection … Create a New Collection" widget where an issued record prints "Expiration
+// Date", so STATUS_LINE finds no end to the value and the whole page is scanned — and two pieces
+// of chrome on it then speak for the record:
+//   - the record-detail heading pair "More Details" › "Additional Information" (the section that
+//     holds Job Value) matched correctionPattern's "additional information": correction_flagged;
+//   - the anonymous visitor's invitation "To schedule inspections, pay fees or upload documents,
+//     please log in to your account." matched readyForIssuePattern's "pay fees": ready_for_issue,
+//     a POSITIVE reading on a trusted poll, once the heading was gone.
+// Both are removed from the text before any pattern runs; the patterns themselves are unchanged
+// (a missed correction is worse than a false one — the previous attempt to "fix" this by rewriting
+// the patterns lost real corrections). Deliberately narrow:
+//   - the heading only when "Additional Information" DIRECTLY follows "More Details" (whitespace or
+//     one > › » | - between, or glued), and never when it goes on to ask for something ("…
+//     Additional Information Needed / Required / Requested" stays, and still reads as a correction);
+//   - the invitation only as that whole sentence — "pay fees" anywhere else still counts.
+// "More Details" itself is kept. The stated status is extracted from the page BEFORE this runs.
+const ACCELA_DETAIL_HEADING =
+  /More\s+Details\s*(?:[>›»|-]\s*)?Additional\s+Information(?!\s*(?:is\s+)?(?:needed|required|requested))/gi;
+const ACCELA_VISITOR_INVITATION =
+  /To\s+schedule\s+inspections,\s*pay\s+fees\s+or\s+upload\s+documents,\s*please\s+log\s*in\s+to\s+your\s+account\.?/gi;
+
+export function withoutAccelaRecordChrome(text: string): string {
+  return text.replace(ACCELA_DETAIL_HEADING, "More Details ").replace(ACCELA_VISITOR_INVITATION, " ").replace(/\s+/g, " ").trim();
+}
+
 // A LOGIN PAGE IS NOT A STATUS. A status check whose session has lapsed lands on the
 // portal's sign-in screen, and that page's text scrapes like any other: the monitor recorded
 // "PowerClerk Log In Username: Password: ..." as the status of three live interconnection
@@ -310,11 +337,32 @@ function nemApproved(statusLabel: string, confidence: number, message: string): 
   };
 }
 
+/** The fall-through reading's label: no rule matched the words at all. */
+const UNMATCHED_STATUS_LABEL = "Needs human review";
+
 function classifyStatusOnly(rawStatusText: string, track: TrackKind): PermitStatusClassification {
   const stated = extractStatedStatus(rawStatusText);
   // Keep the full text when the portal states nothing — that is the old behaviour, and the
   // only behaviour available for portals that render status as prose.
-  const text = stated || clean(rawStatusText);
+  const scanned = stated || clean(rawStatusText);
+  // Accela's record-page chrome is removed from whichever text is scanned — AFTER the stated
+  // status was pulled out of the raw page, so extraction is exactly what it was.
+  const withoutChrome = withoutAccelaRecordChrome(scanned);
+  const read = classifyScannedText(withoutChrome, stated, track);
+  // A CORRECTION THE HEADING RAISED STANDS WHEN THE PAGE'S OWN WORDS SAY NOTHING. Removing the
+  // chrome may let the page's own words answer (the live "Received" -> waiting). When they answer
+  // nothing at all — a status no rule knows, e.g. "Corr. Required" on a record page whose value
+  // STATUS_LINE could not end — the page reads as it always did if that was a correction: a missed
+  // correction is worse than a false one. Only a CORRECTION is restored: a fee reading the visitor
+  // invitation produced is a positive written to the project and the client, and never comes back.
+  if (withoutChrome !== scanned && read.outcome === "needs_human_review" && read.statusLabel === UNMATCHED_STATUS_LABEL) {
+    const base = classifyScannedText(scanned, stated, track);
+    if (base.outcome === "correction_flagged") return base;
+  }
+  return read;
+}
+
+function classifyScannedText(text: string, stated: string, track: TrackKind): PermitStatusClassification {
   const lower = text.toLowerCase();
 
   if (!text) {
@@ -451,7 +499,7 @@ function classifyStatusOnly(rawStatusText: string, track: TrackKind): PermitStat
 
   return {
     outcome: "needs_human_review",
-    statusLabel: "Needs human review",
+    statusLabel: UNMATCHED_STATUS_LABEL,
     confidence: 0.45,
     reviewedByAhj: false,
     readyForIssue: false,
