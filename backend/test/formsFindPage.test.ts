@@ -564,7 +564,33 @@ try {
   check("B1 MUST-EXCLUDE a refused forms page: the search result on that site is never requested or stored", b1.status === "not_found" && rows("Town of Refuseton").length === 0
     && JSON.stringify(requested) === JSON.stringify([`${RF}/forms`]), JSON.stringify({ b1, requested }));
   check("B1 the not-found says the page refused the read, and nothing else was asked of that site", /refused the read .*nothing else was requested from that site/.test(b1.message), b1.message);
-  const MS = "https://www.missington.ma.us";
+  // B1c THE MODEL'S OWN LINK on the refused site is not requested either (skeptic P6b: it was, right after
+  // a message saying nothing else was). It SERVES a PDF, so a door that admits it WOULD store it.
+  const RM = "https://www.refusemodel.ma.us";
+  const RM_MODEL = `${RM}/DocumentCenter/View/1402/Residential-Application`;
+  routes.set(`${RM}/forms`.replace(/^https?:\/\//, ""), { type: "text/html; charset=utf-8", status: 403, body: "<html><head><title>Just a moment...</title></head><body>Checking your browser before accessing. Cloudflare Ray ID</body></html>" });
+  servePdf(RM_MODEL, await acroPdf("REFUSEMODEL Residential Application"));
+  researchFor.set("Town of Refusemodel", { formsPageUrl: `${RM}/forms`, candidateUrls: [RM_MODEL] });
+  requested = [];
+  const b1c = await auto.ensureAhjFormTemplate(db, llm, mkJob("Town of Refusemodel", "Refusemodel"), "permit_application", { formsPage: fp() });
+  check("B1c MUST-EXCLUDE the model's own link on the refused site is never requested or stored", b1c.status === "not_found" && rows("Town of Refusemodel").length === 0
+    && JSON.stringify(requested) === JSON.stringify([`${RM}/forms`]), JSON.stringify({ b1c, requested }));
+  check("B1c the message is true: nothing else was requested (the model's link named), and it does not report 'no form was found'",
+    /nothing else was requested from that site/.test(b1c.message) && /1 other link\(s\) on that site .* were not requested either/.test(b1c.message)
+    && !/No downloadable PDF form was found/.test(b1c.message), b1c.message);
+  // MUST-PASS: the model's link on ANOTHER site is still requested and stored (only the refused site is spared).
+  const RD = "https://www.refusedocs.ma.us";
+  const RD_MODEL = `${RD}/DocumentCenter/View/1403/Residential-Application`;
+  const RD_ELSE = "https://docs.refusedocsfiles.com/Residential-Application.pdf";
+  routes.set(`${RD}/forms`.replace(/^https?:\/\//, ""), { type: "text/html; charset=utf-8", status: 403, body: "<html><head><title>Just a moment...</title></head><body>Checking your browser before accessing. Cloudflare Ray ID</body></html>" });
+  servePdf(RD_MODEL, await acroPdf("REFUSEDOCS Residential Application"));
+  servePdf(RD_ELSE, await acroPdf("REFUSEDOCS2 Residential Application"));
+  researchFor.set("Town of Refusedocs", { formsPageUrl: `${RD}/forms`, candidateUrls: [RD_MODEL, RD_ELSE] });
+  requested = [];
+  const b1d = await auto.ensureAhjFormTemplate(db, llm, mkJob("Town of Refusedocs", "Refusedocs"), "permit_application", { formsPage: fp() });
+  check("B1c MUST-PASS a link on another site is still requested and stored", b1d.status === "acquired" && b1d.sourceUrl === RD_ELSE
+    && JSON.stringify(requested) === JSON.stringify([`${RD}/forms`, RD_ELSE]), JSON.stringify({ b1d, requested }));
+  const MS ="https://www.missington.ma.us";
   const MS_APP = `${MS}/DocumentCenter/View/1401/Residential-Application`;
   servePdf(MS_APP, await acroPdf("MISSINGTON Residential Application"));
   researchFor.set("Town of Missington", { formsPageUrl: `${MS}/forms-moved`, searchResults: [{ url: MS_APP, title: "Residential Application | Missington, MA" }] });

@@ -685,8 +685,8 @@ async function harvestApplicationCandidates(
   applicationKind: "prescriptive" | "structural" | null,
   research: AhjFormUrlResult,
   fp: FormsPageOptions,
-): Promise<{ candidates: FormCandidate[]; note: string }> {
-  if (!APPLICATION_FORM_TYPES.includes(formType)) return { candidates: [], note: "" };
+): Promise<{ candidates: FormCandidate[]; note: string; refusedDomains: Set<string> }> {
+  if (!APPLICATION_FORM_TYPES.includes(formType)) return { candidates: [], note: "", refusedDomains: new Set<string>() };
   const names = [project.ahj].filter(Boolean);
   // The other of the two building-side applications is not this one (the same test the KB links pass).
   const kindOk = (label: string, url: string) => {
@@ -744,7 +744,7 @@ async function harvestApplicationCandidates(
   }
   fromSearch.sort(rank);
   if (fromSearch.length) notes.push(`${fromSearch.length} search result(s) on ${project.ahj}'s site name a permit application.`);
-  return { candidates: [...fromPage, ...fromSearch.slice(0, MAX_SEARCH_CANDIDATES).map(({ score: _s, ...c }) => c)], note: notes.join(" ") };
+  return { candidates: [...fromPage, ...fromSearch.slice(0, MAX_SEARCH_CANDIDATES).map(({ score: _s, ...c }) => c)], note: notes.join(" "), refusedDomains };
 }
 
 // Classify a downloaded PDF into a form_type from its name/URL, so one research
@@ -1068,15 +1068,22 @@ export async function ensureAhjFormTemplate(
   const fp = opts.formsPage ?? {};
   const harvest = await harvestApplicationCandidates(project, formType, applicationKind, research, fp);
   const candidates: FormCandidate[] = [];
+  // ONE ANSWER TO "MAY THIS PASS ASK THAT HOST AGAIN": a site that REFUSED the forms page read is asked
+  // nothing more in this pass — whoever proposed the URL (the model's own list, the KB row, the harvest).
+  // The model's link on a host that just answered 403 was still requested, after a message saying
+  // nothing else was (forms-find skeptic, P6b).
+  let skippedOnRefused = 0;
   const addCandidate = (c: FormCandidate) => {
     if (neverTheApplication(c.url, formType) || candidates.some((x) => x.url === c.url)) return;
+    const host = portalHostOf(c.url);
+    if (host && harvest.refusedDomains.has(registrableDomain(host))) { skippedOnRefused++; return; }
     candidates.push(c);
   };
   for (const url of research.candidateUrls) addCandidate({ url, label: "", origin: "research" });
   for (const c of harvest.candidates) addCandidate(c);
   for (const url of kbHint?.pdfUrls || []) addCandidate({ url, label: "", origin: "kb" });
   const candidateUrls = candidates.map((c) => c.url);
-  const harvestNote = harvest.note ? ` ${harvest.note}` : "";
+  const harvestNote = `${harvest.note ? ` ${harvest.note}` : ""}${skippedOnRefused ? ` ${skippedOnRefused} other link(s) on that site (the search's or the knowledge base's) were not requested either.` : ""}`;
   // "WE COULD NOT LOOK" IS NOT "THERE IS NO FORM" (Waltham, 09-25: the search aborted at its 180s
   // budget and Stage reported "No downloadable PDF form was found" — then held the 24h cooldown).
   const couldNotRun = research.lookupFailed
@@ -1094,7 +1101,10 @@ export async function ensureAhjFormTemplate(
     return {
       status: "not_found",
       permitType: permitType.callout,
-      message: `Permitting type: ${permitType.callout}${research.notes ? ` ${research.notes}` : ` No downloadable PDF form was found for ${project.ahj} — submit through the method above.`}${harvestNote}${portalNote}${reqNote}`,
+      // A refused site is not "no form": nothing was downloaded because nothing more was asked of it.
+      message: `Permitting type: ${permitType.callout}${research.notes ? ` ${research.notes}` : harvest.refusedDomains.size
+        ? ` No form was downloaded for ${project.ahj}: its site refused the read. Retry Find official form later, or upload the official blank.`
+        : ` No downloadable PDF form was found for ${project.ahj} — submit through the method above.`}${harvestNote}${portalNote}${reqNote}`,
     };
   }
 
