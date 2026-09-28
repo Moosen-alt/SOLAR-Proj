@@ -630,14 +630,32 @@ await check("…and the discipline vocabulary is recipeDisciplineForTrack's, not
 // complete", and that is how two permits passed through with an application unattached.
 // ---------------------------------------------------------------------------
 await check("A PACKET MISSING A REQUIRED DOCUMENT SAYS SO", () => {
+  // Coos Bay's electrical application is a curated public seed Stage downloads itself (gates-proper
+  // C1) — with downloads OFF nothing will fetch it, so it is the operator's, and named as missing.
+  const prev = process.env.AHJ_FORM_DOWNLOADS;
+  process.env.AHJ_FORM_DOWNLOADS = "off";
+  try {
+    const pkg = getApplicationDocumentPackage(db, missingEle.id);
+    const missingDocs = pkg.missingDocuments || [];
+    assert.ok(missingDocs.length > 0,
+      "the packet reported nothing missing while a required permit application was not attached");
+    assert.ok(missingDocs.some((d) => d.docType === "electrical_application"),
+      `the missing document must be named: ${JSON.stringify(missingDocs.map((d) => d.docType))}`);
+    assert.match(missingDocs.find((d) => d.docType === "electrical_application")!.why, /Coos Bay/,
+      "…and say whose requirement it is");
+  } finally {
+    if (prev === undefined) delete process.env.AHJ_FORM_DOWNLOADS; else process.env.AHJ_FORM_DOWNLOADS = prev;
+  }
+});
+
+await check("…and a form Stage downloads itself is NAMED as such, never silently dropped (gates-proper C1)", () => {
   const pkg = getApplicationDocumentPackage(db, missingEle.id);
-  const missingDocs = pkg.missingDocuments || [];
-  assert.ok(missingDocs.length > 0,
-    "the packet reported nothing missing while a required permit application was not attached");
-  assert.ok(missingDocs.some((d) => d.docType === "electrical_application"),
-    `the missing document must be named: ${JSON.stringify(missingDocs.map((d) => d.docType))}`);
-  assert.match(missingDocs.find((d) => d.docType === "electrical_application")!.why, /Coos Bay/,
-    "…and say whose requirement it is");
+  const named = [...(pkg.missingDocuments || []), ...(pkg.acquiredAtStagingDocuments || [])];
+  assert.ok(named.some((d) => d.docType === "electrical_application"),
+    `the electrical application vanished from the packet: ${JSON.stringify(named.map((d) => d.docType))}`);
+  const acquired = (pkg.acquiredAtStagingDocuments || []).find((d) => d.docType === "electrical_application");
+  assert.ok(acquired && acquired.via === "curated" && /co\.coos\.or\.us/.test(acquired.sourceUrl),
+    `named with its source: ${JSON.stringify(acquired)}`);
 });
 
 await check("…WITHOUT being folded into missingFields, which four other things read", () => {

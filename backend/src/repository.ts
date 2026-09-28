@@ -78,12 +78,14 @@ import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
 import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor } from "./permitProcess";
 import { bindRecipeForReplay, describeReplayBinding } from "./recipeReplayBinding";
-import { agencyListStatusResolver, documentInventory, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
+import { agencyListStatusResolver, documentInventory, missingFilledAtStaging, owedDocumentAction, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
+import type { StageAcquiredForm } from "./formAcquisitionPlan";
 import { agencyListReplacesLine, issuingAgencyDocumentList } from "./applicationDocsAgency";
 import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 // Static cycle (nextStep imports repository), used at CALL time only on both sides — the same
 // shape as correctionAgent. getProjectList needs the rule table synchronously.
 import { compactNextStep, decideNextStep, loadNextStepFacts } from "./nextStep";
+import { correctionHoldScope, criticalFieldHoldScope, findingHoldScope, GATE_TRACKS, scopeHoldsTrack, tracksHeld, type GateHoldScope } from "./gateScope";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient, parseStateLicenses } from "./clients";
 import { assertSubmissionPaid } from "./submissionFees";
@@ -3391,7 +3393,14 @@ export function documentPresenceLine(label: string, via: string): string {
 // away left the document check a WARNING whose advisory document was named nowhere (e6b3afde —
 // the count line and 4 present lines filled the cap first). Those lines are never capped; the
 // rest share the cap. Order is kept, so the count line stays first.
-const GATE_EVIDENCE_NAMES_A_DOCUMENT = /^(Filled at staging:|MISSING \(required\):|Missing \(advisory\):)/;
+const GATE_EVIDENCE_NAMES_A_DOCUMENT = /^(Filled at staging:|Stage downloads and fills it:|MISSING \(required\):|Missing \(advisory\):)/;
+
+/** How Stage gets a form it acquires itself, in words (the gate's evidence line). */
+function acquisitionSentence(a: StageAcquiredForm | undefined): string {
+  if (!a) return "Stage acquires it before it counts";
+  if (a.via === "research") return `no free copy is on file; Stage's form research runs for ${a.authority} (the 24h cooldown is open) — if it finds nothing, Stage stops and says so`;
+  return `${a.authority}'s ${a.via === "curated" ? "published form (a checked, hash-locked copy)" : "application PDF the per-job lookup cites"} is downloaded from ${a.sourceUrl} and filled before Stage counts — if the download fails, Stage stops and says so`;
+}
 const GATE_EVIDENCE_CAP = 6;
 
 /** The contractor licence on file for the project's state: Oregon's CCB for an Oregon job; else a
@@ -3574,6 +3583,10 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
           ? `Waiting on the customer's utility bill for the ${waitingOnBill.join(" and ").toLowerCase()} number — upload it or send an intake request. The permit side can proceed.`
           : "Use this record as the source for every form, portal, and tracker.",
       source: "project.fields",
+      // Each missing field holds only the filings that ask for it — the scope prepareSubmission's
+      // own field gate uses (gateScope.criticalFieldHoldScope): an account number never holds the
+      // AHJ permit, the AHJ never holds the utility's application.
+      ...(missingCritical.length ? { holds: missingCritical.map((label) => ({ label: `Missing: ${label}`, tracks: tracksHeld(criticalFieldHoldScope(label)) })) } : {}),
     }),
     submitGateCheck({
       id: "submitting-client",
@@ -3657,6 +3670,8 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
           ? "Set the permit path on Manual entry → Permit path (prescriptive vs engineered) before staging the AHJ permit."
           : "Permit path is confirmed.",
         source: "permit.path",
+        // prepareSubmission asks the path only off the NEM lane.
+        ...(gatePermitPath === "unknown" ? { holds: [{ label: "Permit path not confirmed", tracks: tracksHeld("permit") }] } : {}),
       }),
     submitGateCheck({
       id: "qc-human-review",
@@ -3697,6 +3712,15 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       ],
       nextAction: reviewerBlockers.length || learnedHistoricalBlockers.length ? "Clear AHJ blocker callouts and learned historical gaps before staging." : reviewerWarnings.length || historicalMissing.length || blockedPermitSteps.length ? "Confirm warnings and checklist gaps with evidence." : "PermitFlow requirements are clear.",
       source: "requirements.reviewer.history",
+      // Each finding holds only the filings it is about (gateScope.findingHoldScope: a structural
+      // conflict holds the building permit, not the utility's application nor the separate
+      // electrical permit); a learned pattern by its own words (historicalBlockerScope).
+      ...(reviewerBlockers.length || learnedHistoricalBlockers.length ? {
+        holds: [
+          ...reviewerBlockers.map((f) => ({ label: f.title, tracks: tracksHeld(findingHoldScope(f)) })),
+          ...learnedHistoricalBlockers.map((item) => ({ label: `Historical blocker: ${item.title}`, tracks: tracksHeld(historicalBlockerScope(historicalReport, item)) })),
+        ],
+      } : {}),
     }),
     submitGateCheck({
       id: "ahj-nem-docs",
@@ -3730,30 +3754,49 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
     // here put "The submit gate is blocked: … checklist, filled" and phase BLOCKED beside an
     // ENABLED Stage portals (29cd57b5, e6b3afde). prepareSubmission still re-counts after its
     // fill, so a blank that fails to fill is still refused there.
+    //
+    // A FORM STAGE DOWNLOADS ITSELF IS NOT OWED EITHER (gates-proper C1): the issuing agency's curated
+    // seed (Michael's Marion B-01S / E-01), a cited agency PDF the model may map, the AHJ's own seed /
+    // the BCD 5952, or research on an open cooldown — owedMissingDocuments' third bucket, read off the
+    // acquisition's own plan. It is said ("Stage downloads and fills it") and never blocks; the check
+    // is a WARNING so it is seen. What IS owed says what to do about it: a form nothing will fetch is
+    // "find the official form or upload the blank", a file is "attach it or split it out".
     submitGateCheck({
       id: "document-inventory",
       title: "Required documents attached",
       lane: gateDocs.owed.some((d) => d.lane === "nem") && !gateDocs.owed.some((d) => d.lane === "permit") ? "nem" : "permit",
-      status: gateDocs.owed.length ? "blocker" : docInventory.missingAdvisory.length ? "warning" : "pass",
+      status: gateDocs.owed.length ? "blocker" : docInventory.missingAdvisory.length || gateDocs.acquiredAtStaging.length ? "warning" : "pass",
       ownerRole: "Permit Ops",
       requirement: "Every required submittal document must be attached as a file (or identified in the uploaded plan set) before staging — the AHJ rejects incomplete packages.",
       evidence: [
-        `${docInventory.presence.filter((d) => d.present).length}/${docInventory.required.length} required documents present${gateDocs.filledAtStaging.length ? `, ${gateDocs.filledAtStaging.length} more filled from a stored template at staging` : ""}.`,
+        `${docInventory.presence.filter((d) => d.present).length}/${docInventory.required.length} required documents present${gateDocs.filledAtStaging.length ? `, ${gateDocs.filledAtStaging.length} more filled from a stored template at staging` : ""}${gateDocs.acquiredAtStaging.length ? `, ${gateDocs.acquiredAtStaging.length} more downloaded and filled by Stage` : ""}.`,
         ...docInventory.presence.filter((d) => d.present).slice(0, 4).map((d) => documentPresenceLine(d.label, d.via)),
         ...gateDocs.filledAtStaging.map((d) => `Filled at staging: ${d.label} — the form's template is on file; staging fills it and offers it to any upload slot that asks for it (check the portal's attachment list before submitting)`),
+        ...gateDocs.acquiredAtStaging.map((d) => `Stage downloads and fills it: ${d.label} — ${acquisitionSentence(gateDocs.acquiredVia.get(d))}`),
         ...gateDocs.owed.map((d) => `MISSING (required): ${d.label} — ${d.why}`),
         ...docInventory.missingAdvisory.map((d) => `Missing (advisory): ${d.label}`),
       ],
       nextAction: gateDocs.owed.length
-        ? `Attach or split out the missing document(s) before staging: ${gateDocs.owed
-            .map((d) => (d.docType === "structural_letter" && d.why ? `${d.label} — ${d.why}` : d.label))
+        ? `Missing before staging: ${gateDocs.owed
+            .map((d) => `${d.docType === "structural_letter" && d.why ? `${d.label} (${d.why})` : d.label} — ${owedDocumentAction(d)}`)
             .join("; ")}.`
         : docInventory.missingAdvisory.length
           ? "Confirm the advisory document(s) are included in the plan set."
-          : gateDocs.filledAtStaging.length
-            ? `All required documents are attached; staging fills the rest from stored templates: ${gateDocs.filledAtStaging.map((d) => d.label).join("; ")}.`
-            : "All required documents are attached.",
+          : gateDocs.acquiredAtStaging.length
+            ? `Nothing to attach: Stage downloads and fills ${gateDocs.acquiredAtStaging.map((d) => d.label).join("; ")}${gateDocs.filledAtStaging.length ? `, and fills ${gateDocs.filledAtStaging.map((d) => d.label).join("; ")} from stored templates` : ""}. If a download fails, Stage says so and stops.`
+            : gateDocs.filledAtStaging.length
+              ? `All required documents are attached; staging fills the rest from stored templates: ${gateDocs.filledAtStaging.map((d) => d.label).join("; ")}.`
+              : "All required documents are attached.",
       source: "documents.inventory",
+      // Each owed document holds the filings prepareSubmission's own filter says carry it
+      // (stagingMissingDocuments: lane, then discipline) — asked here once, for every track.
+      ...(gateDocs.owed.length ? {
+        holds: gateDocs.owed.map((d) => ({
+          label: d.label,
+          action: owedDocumentAction(d),
+          tracks: GATE_TRACKS.filter((t) => stagingMissingDocuments({ ...docInventory, missingBlocking: [d] }, t).length > 0),
+        })),
+      } : {}),
     }),
     submitGateCheck({
       id: "nem-preflight",
@@ -4819,6 +4862,12 @@ function assembleApplicationDocumentPackage(db: AppDb, projectId: string) {
     const row = (d: DocPresence) => ({ docType: d.docType, label: d.label, lane: d.lane, why: d.why });
     pkg.missingDocuments = gateDocs.owed.map(row);
     pkg.filledAtStagingDocuments = gateDocs.filledAtStaging.map(row);
+    pkg.acquiredAtStagingDocuments = gateDocs.acquiredAtStaging.map((d) => ({
+      ...row(d),
+      why: acquisitionSentence(gateDocs.acquiredVia.get(d)),
+      via: gateDocs.acquiredVia.get(d)?.via ?? "curated",
+      sourceUrl: gateDocs.acquiredVia.get(d)?.sourceUrl ?? "",
+    }));
     pkg.missingDocumentsStatus = "resolved";
   } catch (err) {
     // Leave missingDocuments ABSENT on purpose: [] would be a claim we cannot make.
@@ -5573,6 +5622,14 @@ export function classifyCorrectionTrack(...parts: Array<string | null | undefine
 export function correctionOnTrack(want: "permit" | "nem", ...parts: Array<string | null | undefined>): boolean {
   const track = classifyCorrectionTrack(...parts);
   return track === want || track === "unclassified";
+}
+
+/** WHICH FILINGS A LEARNED HISTORICAL BLOCKER HOLDS (gates-proper C2): its own words and its
+ *  cause's, classified by classifyCorrectionTrack (strong signals only) — an unclassified item
+ *  holds every filing. The gate's permit-requirements check and prepareSubmission ask this. */
+export function historicalBlockerScope(report: HistoricalFailureReport, item: HistoricalFailureReport["checklist"][number]): GateHoldScope {
+  const cause = report.topRejectionCauses.find((c) => c.signature === item.sourceCauseSignature);
+  return correctionHoldScope(classifyCorrectionTrack(item.title, item.why, item.action, cause?.title, cause?.rootCause, cause?.requiredAction));
 }
 
 export async function reopenCorrectionOnPortal(
@@ -7404,6 +7461,77 @@ export function stagingMissingDocuments(inventory: DocumentInventory, track?: Su
 }
 
 /**
+ * THE REQUIRED DOCUMENTS A STAGED DRAFT DID NOT CARRY — how Approve judges a draft that already exists
+ * (gates-proper C1). Never the pre-Stage look-ahead: a draft is judged by what went up with it, not by
+ * what Stage would acquire now, and not by what is on disk now. Michael Sheridan's electrical draft
+ * (191e45c8) was staged at 18:47Z, before the Marion E-01 existed; once the E-01 was fetched and filled
+ * (02:19Z) the disk said "present", and Approve would have read the draft as complete.
+ *
+ * The track's required blocking rows (stagingMissingDocuments' own lane / discipline filter) are
+ * checked against the run's recorded payload (`packagedDocTypes`, written at staging). A run staged
+ * before that record existed is judged by POSITIVE proof only: a row on file now whose every upload /
+ * stored template arrived AFTER the draft was staged was not in it; a row with no such proof is taken
+ * as carried (no false stop on a legacy draft). A row not on file now was not carried either.
+ * `onFileNow` says which fix applies: re-stage (it is on file now), or get it on file first.
+ */
+export function draftDocumentGaps(
+  db: AppDb,
+  project: ProjectRecord,
+  run: { started_at?: unknown; result_json?: unknown },
+  track: SubmittalTrackType | null,
+): Array<{ label: string; onFileNow: boolean }> {
+  const inv = documentInventory(db, project);
+  const trackRows = stagingMissingDocuments({ ...inv, missingBlocking: inv.presence.filter((p) => p.blocking) }, track ?? undefined);
+  const result = parseJson<Record<string, unknown>>(text(run.result_json) || "{}", {});
+  const carried = Array.isArray(result.packagedDocTypes) ? (result.packagedDocTypes as unknown[]).map(String) : null;
+  const startedMs = Date.parse(text(run.started_at));
+  // A row not on disk that the staging-time fill produces from a stored template: the draft's own
+  // staging ran that fill, so it carried the form if the template was on file then (its age decides,
+  // below). Anything else not on disk was not in the draft.
+  const produced = missingFilledAtStaging(db, project, trackRows.filter((d) => !d.present));
+  // THE SAME PACKAGING ON BOTH SIDES: the recorded list is Object.keys(packagedDocumentsByType) at
+  // staging, so a row is judged only under a key that packaging gives it NOW — a document the
+  // payload keys another way (an alias, a family key), or would not carry on this track anyway, is
+  // no proof of anything, and never a reason to refuse a fresh draft.
+  const nowPackaged = carried ? new Set(Object.keys(packagedDocumentsByType(db, project, track))) : null;
+  const templateIds = carried ? [] : loadStoredTemplates(db, project.ahj, project.state).map((t) => t.templateId);
+  const out: Array<{ label: string; onFileNow: boolean }> = [];
+  for (const d of trackRows) {
+    const keys = [d.docType, ...(d.altDocTypes || [])];
+    if (!d.present && !produced.has(d)) { out.push({ label: d.label, onFileNow: false }); continue; }
+    if (d.via === "in plan set") continue; // the plan set carries it
+    if (carried && nowPackaged) {
+      // A FORM THE STAGING FILL MAKES FROM A STORED TEMPLATE, not filled here yet, is judged against
+      // the RECORD alone (skeptic gates-proper MF2): nothing on disk can speak for it, and a template
+      // stored after the draft (by another job — templates are shared) must not read as "carried".
+      if (!d.present && produced.has(d)) {
+        if (!keys.some((k) => carried.includes(k))) out.push({ label: d.label, onFileNow: true });
+        continue;
+      }
+      const packagedKeys = keys.filter((k) => nowPackaged.has(k));
+      if (packagedKeys.length && !packagedKeys.some((k) => carried.includes(k))) out.push({ label: d.label, onFileNow: true });
+      continue;
+    }
+    if (Number.isFinite(startedMs) && documentArrivedAfter(db, project, keys, startedMs, templateIds)) out.push({ label: d.label, onFileNow: true });
+  }
+  return out;
+}
+
+/** Did every copy of these document types (uploads, and the stored templates a filled form comes
+ *  from) arrive after `sinceMs`? false when nothing dated is found — no proof, no claim. */
+function documentArrivedAfter(db: AppDb, project: ProjectRecord, keys: string[], sinceMs: number, templateIds: string[]): boolean {
+  const ph = keys.map(() => "?").join(", ");
+  const times: number[] = db.query<Row>(`SELECT uploaded_at FROM project_documents WHERE project_id = ? AND doc_type IN (${ph})`, [project.id, ...keys])
+    .map((r) => Date.parse(text(r.uploaded_at)));
+  if (templateIds.length) {
+    const rows = db.query<Row>(`SELECT created_at FROM ahj_form_templates WHERE id IN (${templateIds.map(() => "?").join(", ")}) AND form_type IN (${ph})`, [...templateIds, ...keys]);
+    times.push(...rows.map((r) => Date.parse(text(r.created_at))));
+  }
+  const dated = times.filter(Number.isFinite);
+  return dated.length > 0 && dated.every((t) => t > sinceMs);
+}
+
+/**
  * THE OPERATOR'S HOLD, as the reason a person gave for it — or null when the project is not held.
  *
  * `blocked` is the one status no automation writes (setProjectStatusByOperator is its only
@@ -7666,11 +7794,16 @@ export async function prepareSubmission(
   // pending item hold staging?" let the gate go green while this 409 still refused.
   const pendingCount = detail.humanReviewItems.filter(isCriticalReviewItem).length;
   const reviewerReport = buildReviewerReportFor(db, detail.project);
-  const reviewerBlockers = reviewerReport.findings.filter((finding) => finding.severity === "blocker");
+  // ONLY THE FINDINGS THAT HOLD THIS FILING (gateScope — the answer the gate, Stage and Approve
+  // read): a structural conflict does not refuse the utility's application or the separate
+  // electrical permit. A trackless stage (null) is held by every finding.
+  const reviewerBlockers = reviewerReport.findings.filter((finding) => finding.severity === "blocker"
+    && scopeHoldsTrack(findingHoldScope(finding), track ?? null));
   const historicalReport = buildHistoricalFailureReport(db, projectId, null);
   const learnedHistoricalMissing = historicalReport.checklist.filter((item) => {
     const cause = historicalReport.topRejectionCauses.find((candidate) => candidate.signature === item.sourceCauseSignature);
-    return item.status === "missing" && Boolean(cause && cause.count > 0 && cause.severity === "blocker");
+    return item.status === "missing" && Boolean(cause && cause.count > 0 && cause.severity === "blocker")
+      && scopeHoldsTrack(historicalBlockerScope(historicalReport, item), track ?? null);
   });
   if (failCount > 0 || pendingCount > 0 || reviewerBlockers.length > 0 || learnedHistoricalMissing.length > 0) {
     throw new HttpError(409, "Submission staging blocked until QC failures, required human review items, and AHJ reviewer gate blockers are resolved.", {
@@ -7713,7 +7846,9 @@ export async function prepareSubmission(
   const lane = track === "nem" ? "nem" : track ? "permit" : null;
   const missingDocs = stagingMissingDocuments(inv, track);
   if (missingDocs.length > 0) {
-    throw new HttpError(409, `Submission staging blocked: required document(s) not attached — ${missingDocs.map((d) => d.label).join("; ")}. Attach or split out each document before staging so the AHJ/utility receives a complete package.`, {
+    // Each document says its own fix (owedDocumentAction — the gate's words): a form Stage could not
+    // acquire is found / uploaded as a blank; a file is attached or split out of the plan set.
+    throw new HttpError(409, `Submission staging blocked: required document(s) not attached${track !== "nem" ? " after Stage's own form acquisition and fill" : ""} — ${missingDocs.map((d) => `${d.label} (${owedDocumentAction(d)})`).join("; ")}. The AHJ/utility must receive a complete package.`, {
       missingDocuments: missingDocs.map((d) => ({ docType: d.docType, label: d.label, lane: d.lane })),
     });
   }
@@ -8866,7 +9001,9 @@ export async function prepareSubmission(
           String((result as Record<string, unknown>).debugDir ?? ""),
           // Persist WHICH adapter actually drove this run — the autopilot approve path
           // must never mock-submit a run that a real adapter staged (see autopilot.ts).
-          asJson({ ...result, actor: runActorLabel, harnessAbort: outcome.harnessAbort || undefined, submissionVerdict: outcome.submissionVerdict ?? undefined, borrowedRecipe: borrowedRecord }),
+          // packagedDocTypes: WHAT THIS DRAFT WAS HANDED (the track-scoped payload) — Approve judges a
+          // draft by it (draftDocumentGaps), never by what is on disk later (gates-proper C1).
+          asJson({ ...result, actor: runActorLabel, harnessAbort: outcome.harnessAbort || undefined, submissionVerdict: outcome.submissionVerdict ?? undefined, borrowedRecipe: borrowedRecord, packagedDocTypes: Object.keys(docsByType) }),
           pauseReason, runId],
       );
 

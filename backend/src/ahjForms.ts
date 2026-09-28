@@ -1193,6 +1193,24 @@ export async function inspectFormFields(pdfBytes: Uint8Array): Promise<{ isXfa: 
   return { isXfa, fields };
 }
 
+/**
+ * WHOSE IS A REQUIRED FIELD THE FILL LEFT BLANK (gates-proper C4) — the one answer the fill result and
+ * the "application field(s) still blank" card read. By the field's SOURCE key first (a label is prose):
+ *   - "agency": a fee, surcharge, subtotal or total the form could not price (computed.*Fee /
+ *     *Surcharge / *Subtotal / *Total) — the issuing agency computes it from its own schedule (Marion
+ *     County in its portal; Coos County at intake). Not the operator's data, never a reason to wait.
+ *   - "planning_office": a land-use approval number / date — issued by the planning office, and only
+ *     where the project needed one.
+ *   - "operator": everything else — project data the operator can add, or complete on the form.
+ */
+export type RequiredFieldOwner = "agency" | "planning_office" | "operator";
+export function requiredFieldOwner(label: string, source: string): RequiredFieldOwner {
+  const src = String(source ?? "");
+  if (/^computed\.[A-Za-z]*(Fee|Surcharge|Subtotal|Total)$/.test(src)) return "agency";
+  if (/^snapshot\.landUse/i.test(src) || /land[-\s]?use approval/i.test(String(label ?? ""))) return "planning_office";
+  return "operator";
+}
+
 export interface FilledFormResult {
   formId: string;
   formName: string;
@@ -1200,6 +1218,8 @@ export interface FilledFormResult {
   outputPath?: string;
   filledFieldCount?: number;
   unmappedRequested?: string[];
+  /** For a blank in unmappedRequested that is NOT the operator's data: whose it is (requiredFieldOwner). */
+  requestedFieldOwners?: Record<string, RequiredFieldOwner>;
   message?: string;
   /** Whether this form's mapping is human-verified. Registry forms are inherently
    *  verified; stored auto/uploaded forms start false until the operator confirms. */
@@ -1285,7 +1305,21 @@ export async function fillLoadedForm(
   const resultFormName = checklist.recognized
     ? "Oregon BCD 5952 - Prescriptive Solar PV Installation Checklist"
     : def.formName;
-  const missingRequired = Object.entries(def.requiredFields ?? {}).filter(([, source]) => !resolveSource(source, ctx).trim()).map(([label]) => label);
+  const missingRequiredEntries = Object.entries(def.requiredFields ?? {}).filter(([, source]) => !resolveSource(source, ctx).trim());
+  const missingRequired = missingRequiredEntries.map(([label]) => label);
+  // WHO SUPPLIES EACH BLANK (gates-proper C4 — requiredFieldOwner, the one answer). A fee, a
+  // surcharge or a grand total the form could not price is the AGENCY's to compute (Marion County
+  // prices the E-01 in its own portal); a land-use approval comes from the planning office. Neither is
+  // "resolve in QC / Human Review". The labels stay in unmappedRequested (the blank is still SAID);
+  // requestedFieldOwners tells the screen whose it is.
+  const requestedFieldOwners: Record<string, RequiredFieldOwner> = {};
+  for (const [label, source] of missingRequiredEntries) {
+    const owner = requiredFieldOwner(label, source);
+    if (owner !== "operator") requestedFieldOwners[label] = owner;
+  }
+  const operatorMissing = missingRequired.filter((l) => !requestedFieldOwners[l]);
+  const agencyMissing = missingRequired.filter((l) => requestedFieldOwners[l] === "agency");
+  const officeMissing = missingRequired.filter((l) => requestedFieldOwners[l] === "planning_office");
   // Say where the fees came from whenever the printed ladder priced this form (no saved line on file —
   // the same savedElectricalLine answer the fee cells used).
   const printedFeeNote = ctx.printedFeeLadder && printedLadderApplies(ctx)
@@ -1297,7 +1331,9 @@ export async function fillLoadedForm(
   const notes = printedFeeNote
     ? (def.notes ?? []).map((n) => n.split(CURATED_SAVED_FEE_NOTE).map((s) => s.trim()).filter(Boolean).join(" "))
     : (def.notes ?? []);
-  const completionMessage = [checklistMessage, missingRequired.length ? `Still needs: ${missingRequired.join("; ")}.` : "",
+  const completionMessage = [checklistMessage, operatorMissing.length ? `Still needs: ${operatorMissing.join("; ")}.` : "",
+    officeMissing.length ? `From the planning / land-use office (when it applies): ${officeMissing.join("; ")}.` : "",
+    agencyMissing.length ? `Left for the agency to compute: ${agencyMissing.join("; ")}.` : "",
     printedFeeNote, ...notes].filter(Boolean).join(" ") || undefined;
 
   // Both flat and AcroForm templates can have additional fields without widgets.
@@ -1357,7 +1393,8 @@ export async function fillLoadedForm(
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.writeFileSync(outputPath, await doc.save());
     return { formId: def.id, formName: resultFormName, status: "filled", outputPath, filledFieldCount: drawn,
-      unmappedRequested: [...checklist.omittedTextFields, ...missingRequired], message: completionMessage };
+      unmappedRequested: [...checklist.omittedTextFields, ...missingRequired], message: completionMessage,
+      ...(Object.keys(requestedFieldOwners).length ? { requestedFieldOwners } : {}) };
   }
 
   const form = doc.getForm();
@@ -1485,6 +1522,7 @@ export async function fillLoadedForm(
     filledFieldCount: filled,
     unmappedRequested: [...unmapped, ...missingRequired],
     message: completionMessage,
+    ...(Object.keys(requestedFieldOwners).length ? { requestedFieldOwners } : {}),
   };
 }
 

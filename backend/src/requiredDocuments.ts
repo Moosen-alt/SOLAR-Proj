@@ -53,6 +53,7 @@ import {
 } from "./applicationDocsAgency";
 import { filledApplicationForms, heldUnfillableAgencyBlanks } from "./ahjForms";
 import { requirementSlots } from "./requirementSlots";
+import { stageAcquiresForm, stageAcquisitionFor, type StageAcquiredForm, type StageAcquisition } from "./formAcquisitionPlan";
 
 export interface RequiredDocItem {
   /** project_documents.doc_type this maps to (or a synthetic key for path docs). */
@@ -1167,10 +1168,56 @@ export function missingFilledAtStaging(db: AppDb, project: ProjectRecord, missin
  * lane test pins that instead of trusting it. A row a person must supply (a PE letter, a plan
  * sheet, a NEM spec) is always owed.
  */
-export function owedMissingDocuments(db: AppDb, project: ProjectRecord, inventory: DocumentInventory): { owed: DocPresence[]; filledAtStaging: DocPresence[] } {
+export function owedMissingDocuments(db: AppDb, project: ProjectRecord, inventory: DocumentInventory): OwedDocuments {
   const produced = missingFilledAtStaging(db, project, inventory.missingBlocking);
   const filledAtStaging = inventory.missingBlocking.filter((d) => d.lane === "permit" && produced.has(d));
-  return { owed: inventory.missingBlocking.filter((d) => !filledAtStaging.includes(d)), filledAtStaging };
+  const rest = inventory.missingBlocking.filter((d) => !filledAtStaging.includes(d));
+  // THE THIRD BUCKET (gates-proper C1): a permit-lane application Stage DOWNLOADS and fills itself —
+  // the issuing agency's curated seed, a cited agency PDF the model may map, the AHJ's own curated
+  // seed / the BCD 5952, or paid research on an open cooldown (formAcquisitionPlan.stageAcquiresForm,
+  // the same plan the acquisition executes). Michael's Marion B-01S / E-01 held staging as "Attach or
+  // split out" while Stage fetched them in 1.5 s. prepareSubmission's post-fill count is still the hard
+  // line: a download that fails, or research that finds nothing, is refused there, in words.
+  const acquiredVia = new Map<DocPresence, StageAcquiredForm>();
+  let acq: StageAcquisition | null = null;
+  for (const d of rest) {
+    if (d.lane !== "permit" || !isApplicationFormRow(d)) continue;
+    acq ??= stageAcquisitionFor(db, project);
+    const got = stageAcquiresForm(db, project, d.docType, d.applicationKind, acq);
+    if (got) acquiredVia.set(d, got);
+  }
+  const acquiredAtStaging = rest.filter((d) => acquiredVia.has(d));
+  return { owed: rest.filter((d) => !acquiredVia.has(d)), filledAtStaging, acquiredAtStaging, acquiredVia };
+}
+
+export interface OwedDocuments {
+  /** What the operator must supply before Stage can succeed. */
+  owed: DocPresence[];
+  /** Missing now; the staging-time fill produces it from a stored template. */
+  filledAtStaging: DocPresence[];
+  /** Missing now; Stage downloads (or researches) the blank and fills it — prepareSubmission's
+   *  post-fill count still refuses if that comes back empty. */
+  acquiredAtStaging: DocPresence[];
+  acquiredVia: Map<DocPresence, StageAcquiredForm>;
+}
+
+/** An application-family row (a form the system acquires and fills), not a file a person supplies. */
+export function isApplicationFormRow(d: Pick<DocPresence, "docType" | "altDocTypes">): boolean {
+  return [d.docType, ...(d.altDocTypes || [])].some((k) => APPLICATION_DOC_TYPES.has(k));
+}
+
+/**
+ * WHAT THE OPERATOR DOES ABOUT AN OWED DOCUMENT — said on the row, so the gate, the Stage reason and
+ * the 409 say the same thing. A form the system acquires and fills, that no free source or research
+ * pass will get, is a form to FIND (App Docs → Find missing official forms) or a blank to upload — not
+ * something to "attach or split out" (the old wording sent the operator to split a plan set for the
+ * county's application). Anything else (a plan sheet, a PE letter, a spec, a bill) is attached or
+ * split out of the plan set.
+ */
+export function owedDocumentAction(d: Pick<DocPresence, "docType" | "altDocTypes" | "lane">): string {
+  return d.lane === "permit" && isApplicationFormRow(d)
+    ? "find the official form (App Docs → Find missing official forms) or upload the blank"
+    : "attach it or split it out of the plan set";
 }
 
 // ---------------------------------------------------------------------------

@@ -56,6 +56,7 @@ import type {
   NextStepWhy,
   ProjectRecord,
   ProjectStatus,
+  SubmitGateHold,
   SubmitGateReport,
   SubmittalTrackType,
 } from "../../shared/src/types";
@@ -64,6 +65,7 @@ import { isTrackDone, requiredTracks, trackPermitTypes } from "./submittalTracks
 import { trackKind } from "./permitMonitor";
 import { parseJson } from "./json";
 import { billingTrack } from "./submissionFees";
+import { findingHoldScope, gateCheckDefaultScope, scopeHoldsTrack, tracksHeld } from "./gateScope";
 import {
   buildReviewerReportFor,
   getProjectDetail,
@@ -133,12 +135,30 @@ export function reviewInfoFromResultJson(resultJson: unknown): { reviewMismatche
 }
 
 /** Reviewer-gate blockers exactly as prepareSubmission and runAutopilotApproval judge them
- *  (the text report, no cached vision verdicts). Read-only via withoutCodeResearch. */
-export function reviewerBlockerList(db: AppDb, project: ProjectRecord): Array<{ code: string; detail: string }> {
+ *  (the text report, no cached vision verdicts). Read-only via withoutCodeResearch. Each carries
+ *  the filings it holds (gateScope.findingHoldScope — the answer prepareSubmission filters by), so
+ *  a reader judging ONE track asks reviewerBlockersFor, never the bare list. */
+export function reviewerBlockerList(db: AppDb, project: ProjectRecord): ReviewerBlocker[] {
   const report = withoutCodeResearch(() => buildReviewerReportFor(db, project));
   return report.findings
     .filter((finding) => finding.severity === "blocker")
-    .map((finding) => ({ code: finding.id, detail: finding.title }));
+    .map((finding) => ({ code: finding.id, detail: finding.title, tracks: tracksHeld(findingHoldScope(finding)) }));
+}
+
+export interface ReviewerBlocker { code: string; detail: string; /** The filings it holds; absent = every one. */ tracks?: SubmittalTrackType[] }
+
+/** THE REVIEWER BLOCKERS THAT HOLD A FILING OF `track` (null = an unknown track: every blocker).
+ *  The one filter Approve (autopilot), the next step's Approve button and runAutopilotApproval use. */
+export function reviewerBlockersFor<T extends ReviewerBlocker>(blockers: T[], track: SubmittalTrackType | null): T[] {
+  return blockers.filter((b) => track === null || !b.tracks || b.tracks.includes(track));
+}
+
+/** Does a gate blocker hold a filing of `track`? Its per-item `holds` when it carries them, else the
+ *  check's own default scope (gateScope.gateCheckDefaultScope: the permit path never holds NEM;
+ *  anything else holds every filing — an unknown never clears); a null track is held by every blocker. */
+export function gateBlockerHoldsTrack(b: { id: string; holds?: Array<{ tracks: SubmittalTrackType[] }> }, track: SubmittalTrackType | null): boolean {
+  if (track === null) return true;
+  return b.holds ? b.holds.some((h) => h.tracks.includes(track)) : scopeHoldsTrack(gateCheckDefaultScope(b.id), track);
 }
 
 /**
@@ -211,9 +231,9 @@ export interface NextStepFacts {
   portalReadings: number;
   approvedRunIds: string[];
   /** Detail tier only (undefined on the list tier). */
-  gate?: { decision: SubmitGateReport["decision"]; blockers: Array<{ id: string; title: string; nextAction: string }> };
-  /** Detail tier only: reviewer blockers as the approve route judges them. */
-  reviewerBlockers?: Array<{ code: string; detail: string }>;
+  gate?: { decision: SubmitGateReport["decision"]; blockers: Array<{ id: string; title: string; nextAction: string; holds?: SubmitGateHold[] }> };
+  /** Detail tier only: reviewer blockers as the approve route judges them (each with its tracks). */
+  reviewerBlockers?: ReviewerBlocker[];
 }
 
 const ON_PORTAL = new Set(["awaiting_human_submit", "submitted", "paused_for_human"]);
@@ -442,7 +462,9 @@ const GATE_BLOCKER_ASK: Record<string, string> = {
   "permit-path": "confirm the permit path (prescriptive vs engineered)",
   "qc-human-review": "QC failures or pending review items",
   "permit-requirements": "the designer has to clear the reviewer findings",
-  "document-inventory": "required document(s) are missing — attach or split them out",
+  // The fix is per document (find the form / upload the blank, or attach / split out) — it rides
+  // in the check's nextAction, the `why` line; the headline names only the problem.
+  "document-inventory": "required document(s) are missing",
 };
 
 const TRACK_NAME: Record<SubmittalTrackType, string> = {
@@ -588,17 +610,25 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
     }
   }
 
-  // 7. Submit-gate / reviewer blockers (detail tier).
-  if (unfinished.length && facts.gate?.decision === "blocked" && facts.gate.blockers.length) {
+  // 7. Submit-gate / reviewer blockers (detail tier) — only those that hold a filing still to be
+  //    made (gateScope: a structural finding does not hold a utility application that is all that
+  //    is left, and a blocker holding only filed tracks holds nothing).
+  const holding = facts.gate?.decision === "blocked"
+    ? facts.gate.blockers.filter((b) => unfinished.some((t) => gateBlockerHoldsTrack(b, t.track)))
+    : [];
+  if (unfinished.length && holding.length) {
     // Reviewer findings / learned rejection patterns are the DESIGNER's to fix (the plan set
     // changes); every other gate blocker (fields, client/CCB, permit path, documents to attach)
     // is the operator's. The headline is the first blocker's own next action, not its check name.
-    const first = facts.gate.blockers[0];
+    const first = holding[0];
     const designer = first.id === "permit-requirements";
-    const more = facts.gate.blockers.length > 1 ? ` (+${facts.gate.blockers.length - 1} more)` : "";
+    const more = holding.length > 1 ? ` (+${holding.length - 1} more)` : "";
+    // Name the filings it holds when it does not hold them all.
+    const heldTracks = unfinished.filter((t) => holding.some((b) => gateBlockerHoldsTrack(b, t.track)));
+    const partial = heldTracks.length < unfinished.length ? ` — it holds the ${trackList(heldTracks)}` : "";
     return make("gate_blocked", designer ? "designer" : "me", "today",
-      `The submit gate is blocked: ${GATE_BLOCKER_ASK[first.id] ?? first.title.toLowerCase()}${more}.`,
-      facts.gate.blockers.map((b) => why(b.nextAction, "submitGate")),
+      `The submit gate is blocked: ${GATE_BLOCKER_ASK[first.id] ?? first.title.toLowerCase()}${more}${partial}.`,
+      holding.map((b) => why(b.nextAction, "submitGate")),
       designer ? btn("openReviewerPacketBtn", "Open Correction Packet") : null);
   }
   passedGateRule = true;
@@ -627,7 +657,11 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
     const awaitingApproval = staged.filter((t) => !approvedRuns.has(t.stagedRun!.id));
     const approved = staged.filter((t) => approvedRuns.has(t.stagedRun!.id));
     if (awaitingApproval.length) {
-      const approveRefused = facts.reviewerBlockers && facts.reviewerBlockers.length > 0;
+      // The draft Approve acts on is the NEWEST awaiting one (autopilot.awaitingPortalRun); it is
+      // refused only by a reviewer blocker that holds ITS track (gateScope — the filter
+      // getAutopilotState's canApprove applies too).
+      const newest = [...awaitingApproval].sort((a, b) => String(b.stagedRun!.startedAt).localeCompare(String(a.stagedRun!.startedAt)))[0];
+      const approveRefused = reviewerBlockersFor(facts.reviewerBlockers ?? [], newest.track).length > 0;
       return make("staged_awaiting_submit", "me", "today",
         gateChecked
           ? `The ${trackList(awaitingApproval)} application is staged on the ${agencies(facts, awaitingApproval)} portal — review it, approve, then click its submit yourself.`
@@ -753,7 +787,7 @@ export function loadFullNextStepFacts(db: AppDb, projectId: string): NextStepFac
       ...facts,
       gate: {
         decision: gate.decision,
-        blockers: gate.checks.filter((c) => c.status === "blocker").map((c) => ({ id: c.id, title: c.title, nextAction: c.nextAction })),
+        blockers: gate.checks.filter((c) => c.status === "blocker").map((c) => ({ id: c.id, title: c.title, nextAction: c.nextAction, ...(c.holds ? { holds: c.holds } : {}) })),
       },
       reviewerBlockers: reviewerBlockerList(db, project),
     };
