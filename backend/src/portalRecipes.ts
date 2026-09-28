@@ -1698,6 +1698,15 @@ function certifiedModelFields(
   return out;
 }
 
+/** THE SITE CONTACT'S PHONE WHEN NONE IS ON FILE (operator ruling 2026-09-28: "elec got held up at
+ *  the site contact phone #, assuming due to there not being one on file, if that happens just do
+ *  000-000-0000"). A required portal phone box with no number stopped the replay; the operator's
+ *  practice is this placeholder. Only when neither the homeowner's nor the owner's phone is known. */
+export const NO_SITE_CONTACT_PHONE = "000-000-0000";
+export function homeownerPhoneOrNone(snapshotFlat: Record<string, unknown>): string {
+  return String(snapshotFlat.homeownerPhone || snapshotFlat.ownerPhone || "").trim() || NO_SITE_CONTACT_PHONE;
+}
+
 /**
  * `track` is the filing this run is for ("building" / "electrical" / "combo" / "mpu" / "nem"; null
  * when the caller cannot say). REQUIRED on purpose: the licence keys answer "the licence THIS permit
@@ -1838,11 +1847,11 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     // homeowner's, which is who the utility would reach about this address anyway. Never
     // blank — an empty required contact field fails the submission outright.
     ubAccountHolderEmail: String(snapshotFlat.ubAccountHolderEmail || snapshotFlat.homeownerEmail || ""),
-    ubAccountHolderPhone: String(snapshotFlat.ubAccountHolderPhone || snapshotFlat.homeownerPhone || ""),
+    ubAccountHolderPhone: String(snapshotFlat.ubAccountHolderPhone || "").trim() || homeownerPhoneOrNone(snapshotFlat),
     homeownerFirstName,
     homeownerLastName,
     homeownerEmail: String(snapshotFlat.homeownerEmail || snapshotFlat.ownerEmail || ""),
-    homeownerPhone: String(snapshotFlat.homeownerPhone || snapshotFlat.ownerPhone || ""),
+    homeownerPhone: homeownerPhoneOrNone(snapshotFlat),
     street: streetOnly || project.projectAddress,
     // Accela-style address SEARCH forms take the number and CORE street name in separate
     // boxes. The learner's work-location pass records its fills bound to these keys so a
@@ -1855,7 +1864,7 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     // SEGMENTED PHONE parts. Accela renders a US phone as three boxes (area/prefix/line);
     // recording the digits as literals would replay the LEARN project's phone number for
     // every future project, so each segment binds to its own derived key.
-    ...phoneSegmentKeys("homeownerPhone", String(snapshotFlat.homeownerPhone || snapshotFlat.ownerPhone || "")),
+    ...phoneSegmentKeys("homeownerPhone", homeownerPhoneOrNone(snapshotFlat)),
     projectAddress: project.projectAddress,
     city: project.city,
     state: project.state,
