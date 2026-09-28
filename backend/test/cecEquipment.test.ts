@@ -119,6 +119,56 @@ process.env.AUTOPILOT_AUTO_START = "0"; // deterministic tests — no background
   // A revision-letter SUBSTITUTION is a different SKU, not a typo.
   check("revision-letter substitution (/M for /N) → refuses",
     cm("ZXM7-UHLDD108-440/M", 440) === "", cm("ZXM7-UHLDD108-440/M", 440));
+
+  // 5c) ONE PREDICATE (dry-run 2026-09-28 B15): QC asks what the portal fill asks
+  // (cecListing -> certifiedModelFor first). The plan set's "UHLD" at 440 W is the listed
+  // "UHLDD": the fill files that name, so QC must not say "not found" — it says, as
+  // information, which name the portal sees. A genuinely absent model still warns.
+  const cecRows = (pid: string) => db.query<{ rule_id: string; qc_status: string; severity: string; message: string }>(
+    "SELECT rule_id, qc_status, severity, message FROM qc_results WHERE project_id = ? AND rule_id LIKE 'cec.%'", [pid]);
+  const dropped = createProject(db, {
+    owner: "CEC Test", ahj: "City of Testville", state: "OR", utility: "PGE",
+    moduleMake: "ZNShine Solar", moduleModel: "ZXM7-UHLD108-440/N", moduleWattage: 440,
+  } as never).project.id;
+  runQcForProject(db, dropped);
+  const droppedRows = cecRows(dropped);
+  check("QC: a model the fill files under its listed name is NOT reported not-found",
+    !droppedRows.some((r) => r.qc_status === "warning"), JSON.stringify(droppedRows));
+  check("QC: …it names the listed spelling the portal sees, as information",
+    droppedRows.length === 1 && droppedRows[0].qc_status === "pass" && droppedRows[0].severity === "info" && /"ZXM7-UHLDD108-440\/N"/.test(droppedRows[0].message), JSON.stringify(droppedRows));
+  check("isCecListed agrees with the fill (make + wattage)", isCecListed(db, "module", "ZXM7-UHLD108-440/N", "ZNShine Solar", 440));
+  const exact = createProject(db, {
+    owner: "CEC Test", ahj: "City of Testville", state: "OR", utility: "PGE",
+    moduleMake: "ZNShine Solar", moduleModel: "ZXM7-UHLDD108-440/N", moduleWattage: 440,
+  } as never).project.id;
+  runQcForProject(db, exact);
+  check("QC: an exact listing writes no CEC row at all", cecRows(exact).length === 0, JSON.stringify(cecRows(exact)));
+  importCecRows(db, "module", [
+    M("ZXM7-UHLDD108-440/N", 440), M("ZXM7-UHLDD108-445/N", 445), M("ZXM7-SHLDD120-435/M", 435),
+    M("ZXM6-NH144-440/M {Blk}", 440), M("ZXM6-NH144-440/M {Wht}", 440), M("ZXM8-TEST108-450/N [Blk]", 450),
+  ]);
+  const suffixed = createProject(db, {
+    owner: "CEC Test", ahj: "City of Testville", state: "OR", utility: "PGE",
+    moduleMake: "ZNShine Solar", moduleModel: "ZXM8-TEST108-450/N", moduleWattage: 450,
+  } as never).project.id;
+  check("fixture sanity: the suffixed listing is the certified name", cm("ZXM8-TEST108-450/N", 450) === "ZXM8-TEST108-450/N [Blk]", cm("ZXM8-TEST108-450/N", 450));
+  runQcForProject(db, suffixed);
+  check("QC: a bracketed listing suffix is not another spelling — no row", !cecRows(suffixed).some((r) => r.severity === "info"), JSON.stringify(cecRows(suffixed)));
+  const absent = createProject(db, {
+    owner: "CEC Test", ahj: "City of Testville", state: "OR", utility: "PGE",
+    moduleMake: "ZNShine Solar", moduleModel: "ZXM9-NOPE108-999/Q", moduleWattage: 999,
+  } as never).project.id;
+  runQcForProject(db, absent);
+  check("QC MUST-EXCLUDE: a genuinely absent model still warns",
+    cecRows(absent).length === 1 && cecRows(absent)[0].qc_status === "warning", JSON.stringify(cecRows(absent)));
+  const noWatts = createProject(db, {
+    owner: "CEC Test", ahj: "City of Testville", state: "OR", utility: "PGE",
+    moduleMake: "ZNShine Solar", moduleModel: "ZXM7-UHLD108-440/N",
+  } as never).project.id;
+  runQcForProject(db, noWatts);
+  check("QC MUST-EXCLUDE: with no wattage the one-letter repair is refused, so the warning stays",
+    cecRows(noWatts).some((r) => r.qc_status === "warning"), JSON.stringify(cecRows(noWatts)));
+
   // Two same-wattage listings each one letter away → ambiguous, say nothing.
   importCecRows(db, "module", [M("ZXM6-NH144-440/MA", 440), M("ZXM6-NH144-440/MB", 440)]);
   check("two one-letter candidates → refuses",

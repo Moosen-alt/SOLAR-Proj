@@ -28,12 +28,13 @@ import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { isDocumentDateStale } from "./documentDate";
 import { mountAdjective, mountKindForProject } from "./codeReviewRules";
 import { findFeeScheduleForProject, feeForProject, knownElectricalReviewRequired, type FeeScheduleLine } from "./feeSchedules";
-import { curatedPrintedFees, CURATED_SAVED_FEE_NOTE, type PrintedFeeLadder } from "./curatedAhjForms";
+import { curatedPrintedFees, curatedFormMapForHash, curatedFormSourcesFor, CURATED_SAVED_FEE_NOTE, type PrintedFeeLadder } from "./curatedAhjForms";
+import { bcd5952TemplateForHash } from "./bcd5952Template";
 import {
   batteryStatus, SERVICE_FEEDER_CHARGE_KIND, SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND, SERVICE_FEEDER_STATE_SURCHARGE_KIND,
 } from "./batteryServiceFeeder";
 import { BCD_5952_LIMITS, type ChecklistRecovery } from "./prescriptiveChecklist";
-import { bcdChecklistAnswers, bcd5952MissingFacts, bcd5952SnapshotAdditions } from "./bcdChecklistFacts";
+import { bcdChecklistAnswers, bcd5952FailedRows, bcd5952MissingFacts, bcd5952SnapshotAdditions } from "./bcdChecklistFacts";
 import { iowaPvWorksheetValues } from "./iowaPvWorksheet";
 import { documentFetchDisabled } from "./documentFetch";
 import {
@@ -232,8 +233,12 @@ export interface AhjFormDefinition {
   overlayFields?: OverlayField[];
   // operator-signature image placements (applied to both fill modes)
   signatureFields?: SignaturePlacement[];
-  /** Runtime-only recovery for unverified stored checklists. Never set on
-   *  registry or human-verified definitions and never persisted to field maps. */
+  /** Runtime-only: recover the BCD 5952's Yes/No answers from the project's evidenced facts. Set on
+   *  every STORED definition, verified or not (dry-run 2026-09-28 B6: marking a 5952 verified used
+   *  to switch this off, so a verified checklist went out with no answers drawn). Safe on a verified
+   *  map: recovery recognises only the exact printed 5952 revision and only ADDS rows the map does
+   *  not already answer — it never rewrites a mapped field (prescriptiveChecklist.ts). Never set on
+   *  registry definitions and never persisted to field maps. */
   recoverPrescriptiveCheckboxes?: boolean;
   notes?: string[];
   requiredFields?: Record<string, string>;
@@ -1469,6 +1474,10 @@ export interface FilledFormResult {
   /** Whether this form's mapping is human-verified. Registry forms are inherently
    *  verified; stored auto/uploaded forms start false until the operator confirms. */
   verified?: boolean;
+  /** Stored forms only: the fill used the BUILT-IN map written in code for this exact blank (by its
+   *  sha256 — effectiveStoredFieldMap), not an automatically derived one. No mapping verification is
+   *  asked for it; the filled PDF is still reviewed before filing. */
+  builtInMap?: boolean;
   /** ahj_form_templates row id (stored forms only), for the verify action. */
   templateId?: string;
   /** True when signature placements are hand-tuned on the registry def, so the
@@ -1526,8 +1535,10 @@ export async function fillLoadedForm(
     const [{ extractLabels }, { recoverBcd5952Checklist, BCD_5952_LIMITS }] = await Promise.all([
       import("./formTextLayer"), import("./prescriptiveChecklist"),
     ]);
+    // A human-verified stored map (unverifiedMap === false) is filled as written: its answers are
+    // recovered, its map is not repaired (hard rule 3).
     checklist = recoverBcd5952Checklist(doc, await extractLabels(templateBytes), def.overlayFields,
-      def.textFields, Object.values(def.checkboxes ?? {}).map((r) => r.source));
+      def.textFields, Object.values(def.checkboxes ?? {}).map((r) => r.source), { repairMap: def.unverifiedMap !== false });
     // A checklist's printed thresholds control its answers, even when a cached
     // project evaluation used different jurisdiction limits. Do not mutate ctx.
     // (Oregon's own form: its printed limits over Oregon's — never "jurisdiction only".)
@@ -1550,9 +1561,14 @@ export async function fillLoadedForm(
   // NAME THE MISSING FACT, NOT THE ROW: "roof material and layer count" on a project whose roof
   // material was parsed read as "it filled metal roofing" (bcdChecklistFacts.bcd5952MissingFacts).
   const unresolvedChecklistRows = checklist.recognized ? bcd5952MissingFacts(ctx.project).map((m) => m.missing) : [];
+  // A ROW THAT ANSWERS NO IS SAID, WITH ITS CLAUSE (bcdChecklistFacts.bcd5952FailedRows — the list the
+  // submit gate's permit-path warning reads too): the form itself says a No row may not go on the
+  // prescriptive path.
+  const failedChecklistRows = checklist.recognized ? bcd5952FailedRows(ctx.project).map((f) => f.clause) : [];
   const checklistMessage = checklist.recognized
     ? "BCD 5952: filled independently supported answers. Review the completed PDF before filing."
       + (unresolvedChecklistRows.length ? ` Still needs evidence: ${unresolvedChecklistRows.join("; ")}.` : "")
+      + (failedChecklistRows.length ? ` Answers No (the checklist says a No row may not be submitted on the prescriptive path): ${failedChecklistRows.join("; ")}.` : "")
     : undefined;
   // The cached research title can claim several applications were combined,
   // while the actual two-page PDF is only this checklist.
@@ -2139,7 +2155,7 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
       [issuerNote, message, staleNote].filter(Boolean).join(" ") || undefined;
     try {
       const result = await fillLoadedForm(stored.def, stored.bytes, ctx, path.join(outDir, `${stored.def.id}.pdf`));
-      forms.push({ ...result, ...dated, message: withNote(result.message), verified: stored.verified, templateId: stored.templateId });
+      forms.push({ ...result, ...dated, message: withNote(result.message), verified: stored.verified, builtInMap: stored.builtInMap, templateId: stored.templateId });
     } catch (err) {
       // Keep the verify/re-map affordance alive even when the fill errors, so the
       // operator can re-map or delete a broken template instead of being stuck.
@@ -2149,6 +2165,7 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
         status: "error",
         message: withNote(`Fill failed: ${(err as Error).message || String(err)}`),
         verified: stored.verified,
+        builtInMap: stored.builtInMap,
         templateId: stored.templateId,
         ...dated,
       });
@@ -2193,7 +2210,12 @@ export interface StoredTemplate {
   def: AhjFormDefinition;
   bytes: Uint8Array;
   templateId: string;
+  /** A PERSON verified this row's map (field_map.verified === true). Unchanged by builtInMap: it also
+   *  decides which agency form replaces the AHJ's own and which stored rows acquisition protects. */
   verified: boolean;
+  /** The row is filled from the BUILT-IN map written in code for its exact blank (effectiveStoredFieldMap),
+   *  not from the automatically derived copy stored on it — no person is asked to verify that mapping. */
+  builtInMap: boolean;
   documentDate: string;
   documentStale: boolean;
   sourceUrl: string;
@@ -2218,12 +2240,80 @@ function storedFormTrack(formType: string): string | null {
   return trackForFormType(formType);
 }
 
+/** A stored row's field map, as the fill reads it. */
+export type StoredRowFieldMap = { formName?: string; sourceUrl?: string; sourceHash?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; radioGroups?: Record<string, { source: string; equals?: string; option: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[]; verified?: boolean; verifiedAt?: string; lastCheckedAt?: string; applicationKind?: string; requiredFields?: Record<string,string>; notes?: string; preserveInteractive?: boolean; fieldFontSizes?: Record<string,number>; operatorItems?: OperatorItem[] };
+
+/**
+ * THE BUILT-IN MAP FOR ONE EXACT BLANK, by its sha256 — the hash-locked maps written in code
+ * (bcd5952Template: Oregon's statewide BCD 440-5952; curatedAhjForms: each curated authority's own
+ * application). The same hash-keyed builders acquisition's byte-keyed ones delegate to, so the two
+ * cannot disagree about which map a blank has. A curated map applies only to a row of an authority
+ * that holds THAT seed (a harvest can store the Coos County PDF under any AHJ's name — the Coos Bay
+ * map never attaches to a stranger's row); the BCD checklist is the state's form, stored per AHJ.
+ * null for any other hash — a label-anchored template (Iowa's worksheet) is not hash-locked.
+ */
+export function codeTemplateMapFor(sourceHash: string, sourceUrl: string, authority: { ahj: string; state: string }): StoredRowFieldMap | null {
+  const hash = String(sourceHash || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(hash)) return null;
+  const bcd = bcd5952TemplateForHash(hash, sourceUrl);
+  if (bcd) return bcd as StoredRowFieldMap;
+  const curated = curatedFormMapForHash(hash, sourceUrl);
+  if (curated && curatedFormSourcesFor(authority.ahj, authority.state).some((s) => s.hash === hash)) return curated.map as StoredRowFieldMap;
+  return null;
+}
+
+/**
+ * THE MAP A STORED ROW IS FILLED FROM — one answer for the fill (storedTemplateFromRow) and the verify
+ * route (server.ts PATCH /api/ahj-templates/:id/verify), so what a person verifies is what they saw.
+ *
+ * A row whose blank is a hash-locked code template (its stamped field_map.sourceHash) and that NO
+ * PERSON verified reads the CURRENT code map, not the copy stamped into it at store (dry-run
+ * 2026-09-28 B6: a 5952 row stored 09-19 still filled the owner phone from the old source and
+ * printed at auto-size; the Coos County electrical row lacked the battery services line added since
+ * — acquisition answers "exists" for good, so a code fix never reached an older row). Read-time
+ * only: nothing is written. A VERIFIED row is never swapped (hard rule 3) — it fills exactly what a
+ * person confirmed. Kept from the stored row: its hash, check time and stamped application kind.
+ */
+export function effectiveStoredFieldMap(row: { ahj_name: string; state: string; field_map: string; source_url?: string }): { map: StoredRowFieldMap; builtInMap: boolean } {
+  const stored = parseJson<StoredRowFieldMap>(String(row.field_map || "{}"), {});
+  if (stored.verified === true) return { map: stored, builtInMap: false };
+  const code = codeTemplateMapFor(String(stored.sourceHash || ""), String(stored.sourceUrl || row.source_url || ""), { ahj: String(row.ahj_name || ""), state: String(row.state || "") });
+  if (!code) return { map: stored, builtInMap: false };
+  return {
+    map: {
+      ...code,
+      sourceHash: stored.sourceHash,
+      ...(stored.lastCheckedAt ? { lastCheckedAt: stored.lastCheckedAt } : {}),
+      ...(stored.applicationKind ? { applicationKind: stored.applicationKind } : {}),
+      verified: false,
+    },
+    builtInMap: true,
+  };
+}
+
+/**
+ * A PERSON marks a stored row's mapping verified (or not) — PATCH /api/ahj-templates/:id/verify.
+ * They verify WHAT THEY PREVIEWED: the map the fill used (effectiveStoredFieldMap). An unverified row
+ * of a hash-locked blank fills from the CURRENT built-in map, so recording the stale copy stamped
+ * into the row would switch the fill back to the old map the moment it was verified (a verified row
+ * is never swapped — hard rule 3). Un-verifying keeps the row's own map. false when no such row.
+ */
+export function setStoredTemplateVerified(db: AppDb, templateId: string, verified: boolean): boolean {
+  const row = db.get<{ field_map: string; ahj_name: string; state: string; source_url: string }>(
+    "SELECT field_map, ahj_name, state, source_url FROM ahj_form_templates WHERE id = ?", [templateId]);
+  if (!row) return false;
+  const map: StoredRowFieldMap = verified ? { ...effectiveStoredFieldMap(row).map } : parseJson<StoredRowFieldMap>(String(row.field_map || "{}"), {});
+  map.verified = verified;
+  map.verifiedAt = verified ? nowIso() : undefined;
+  db.run("UPDATE ahj_form_templates SET field_map = ?, updated_at = ? WHERE id = ?", [JSON.stringify(map), nowIso(), templateId]);
+  return true;
+}
+
 /** A stored row as a fillable definition; null when its map could fill nothing. */
 function storedTemplateFromRow(row: TemplateRow, issuedBy = ""): StoredTemplate | null {
   if (!row.pdf_blob) return null;
   const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
-  let map: { formName?: string; sourceUrl?: string; sourceHash?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; radioGroups?: Record<string, { source: string; equals?: string; option: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[]; verified?: boolean; requiredFields?: Record<string,string>; notes?: string; preserveInteractive?: boolean; fieldFontSizes?: Record<string,number>; operatorItems?: OperatorItem[] } = {};
-  map = parseJson(row.field_map, {});
+  const { map, builtInMap } = effectiveStoredFieldMap(row);
   const textFields = map.textFields || {};
   const overlayFields = map.overlayFields || [];
   const signatureFields = map.signatureFields || [];
@@ -2250,7 +2340,8 @@ function storedTemplateFromRow(row: TemplateRow, issuedBy = ""): StoredTemplate 
       preserveInteractive: map.preserveInteractive,
       fieldFontSizes: map.fieldFontSizes,
       notes: map.notes ? [map.notes] : undefined,
-      recoverPrescriptiveCheckboxes: map.verified !== true,
+      // Every stored row, verified or not — see the field's own comment (B6).
+      recoverPrescriptiveCheckboxes: true,
       operatorItems: Array.isArray(map.operatorItems) ? map.operatorItems : undefined,
       unverifiedMap: map.verified !== true,
       formTrack: storedFormTrack(String(row.form_type || "")),
@@ -2258,6 +2349,7 @@ function storedTemplateFromRow(row: TemplateRow, issuedBy = ""): StoredTemplate 
     bytes: new Uint8Array(row.pdf_blob),
     templateId: row.id,
     verified: map.verified === true,
+    builtInMap,
     documentDate: String(row.document_date || ""),
     documentStale: isDocumentDateStale(String(row.document_date || "")),
     sourceUrl: String(row.source_url || map.sourceUrl || ""),

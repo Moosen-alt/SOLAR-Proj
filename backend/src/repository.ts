@@ -143,7 +143,8 @@ import { customerBillOnFile, runQcForProject, WAITING_ON_BILL_ISSUE_TYPE, type Q
 import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
 import { disciplineFor } from "./docDiscipline";
-import { resolvePermitPath } from "./permitPath";
+import { resolvePermitPath, usStateCode } from "./permitPath";
+import { bcd5952FailedRows } from "./bcdChecklistFacts";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
 import type { PvWorksheetGateInput } from "./pvWorksheetGate";
 import { resolveEffectiveCodeContext, ensureCodeProfilesResearched, resolvePermitPathForProject, recordApprovedDesignObservation, isStructuralPermitTrack } from "./codeProfiles";
@@ -3537,12 +3538,19 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   // template must NOT block the submit.
   const gatePathResolution = resolvePermitPathForProject(db, project);
   const gatePermitPath = gatePathResolution.path;
+  // The rows of this job's BCD 5952 that answer No (bcdChecklistFacts — the list the fill note
+  // reads). Oregon's checklist only; read for the permit-path check below.
+  const prescriptiveChecklistNo = usStateCode(project.state) === "OR" ? bcd5952FailedRows(project).map((f) => f.clause) : [];
   // Read the STORED kind, exactly as buildFilledFormsForProject's fill gate does. With the
   // name alone, a stamped-structural blank whose filename claims neither kind counted as
   // "allowed" on a PRESCRIPTIVE project — so its unverified mapping blocked the submit
   // gate over a form this project will never file.
+  // A form filled from the BUILT-IN map written in code for its exact blank (by sha256 —
+  // ahjForms.effectiveStoredFieldMap) was never derived automatically: it is not asked for a
+  // "Mark verified" (dry-run 2026-09-28 B6 — the gate asked a person to verify the BCD 5952 and the
+  // Coos County electrical maps, and verifying would have locked in their outdated stored copies).
   const unverifiedForms = loadStoredTemplates(db, project.ahj, project.state)
-    .filter((t) => !t.verified && formAllowedForPath(t.def.formName, gatePermitPath, t.applicationKind));
+    .filter((t) => !t.verified && !t.builtInMap && formAllowedForPath(t.def.formName, gatePermitPath, t.applicationKind));
   const stagedRun = detail.portalRuns.find((run) => run.status === "awaiting_human_submit");
   // "SUBMITTED" MEANS EVERY REQUIRED FILING, NOT ANY ONE (S7). This was "any submission is
   // submitted, or the status says so" — so a project whose NEM application was filed while its
@@ -3641,7 +3649,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       // operator still sees + clears it before they submit.
       status: unverifiedForms.length ? "warning" : "pass",
       ownerRole: "Permit Coordinator",
-      requirement: "Auto-acquired/uploaded AHJ permit forms are filled by AI-derived field and signature placement. A human must preview each filled form and mark its mapping verified before the final submit.",
+      requirement: "An auto-acquired or uploaded AHJ form whose field and signature placement was derived automatically (read from the PDF or mapped by AI) must be previewed by a person and its mapping marked verified before the final submit. A form filled from a built-in map written for its exact official revision (matched by the blank's fingerprint) needs no mapping verification.",
       evidence: unverifiedForms.length
         ? unverifiedForms.map((t) => `Unverified mapping: ${t.def.formName}`)
         : ["All matched AHJ forms are built-in or operator-verified."],
@@ -3676,13 +3684,23 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
         id: "permit-path",
         title: "Permit path confirmed (prescriptive vs engineered)",
         lane: "permit",
-        status: gatePermitPath === "unknown" ? "blocker" : "pass",
+        // A PRESCRIPTIVE path whose own BCD 5952 answers a row No is said, never staged silently: the
+        // checklist says a No row may not be submitted on the prescriptive path (dry-run B4c). Operator
+        // ruling pending: a 5952 No row warns, it does not route engineered — the screen
+        // (permitPath.ts) routes on the roofing row only, so the path resolves prescriptive here
+        // (a real issued Coos Bay permit for a 48 in / 120 mph Exposure C design was prescriptive).
+        status: gatePermitPath === "unknown" ? "blocker" : gatePermitPath === "prescriptive" && prescriptiveChecklistNo.length ? "warning" : "pass",
         ownerRole: "Permit Coordinator",
         requirement: "The prescriptive and engineered (PE-stamped) permit applications are mutually exclusive and the AHJ accepts exactly one. The permit path must be confirmed before the AHJ permit can be staged.",
-        evidence: [gatePermitPath === "unknown" ? "Permit path not yet confirmed for this project." : `Permit path: ${gatePermitPath}.`],
+        evidence: [
+          gatePermitPath === "unknown" ? "Permit path not yet confirmed for this project." : `Permit path: ${gatePermitPath}.`,
+          ...(gatePermitPath === "prescriptive" ? prescriptiveChecklistNo.map((clause) => `BCD 5952 ${clause}`) : []),
+        ],
         nextAction: gatePermitPath === "unknown"
           ? "Set the permit path on Manual entry → Permit path (prescriptive vs engineered) before staging the AHJ permit."
-          : "Permit path is confirmed.",
+          : gatePermitPath === "prescriptive" && prescriptiveChecklistNo.length
+            ? "The permit path is prescriptive, but this job's BCD 5952 answers a row No — and the checklist says a No row may not be submitted on the prescriptive path. Confirm with the AHJ, change the design (e.g. re-space the attachments), or choose the engineered path (Manual entry → Permit path)."
+            : "Permit path is confirmed.",
         source: "permit.path",
         // prepareSubmission asks the path only off the NEM lane.
         ...(gatePermitPath === "unknown" ? { holds: [{ label: "Permit path not confirmed", tracks: tracksHeld("permit") }] } : {}),

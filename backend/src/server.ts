@@ -84,7 +84,9 @@ import { getKpiReport } from "./kpi";
 import {
   ahjFormRegistry,
   buildFilledFormsForProject,
+  effectiveStoredFieldMap,
   fetchFormTemplate,
+  setStoredTemplateVerified,
   filledFormPath,
   inspectFormFields,
   matchingForms,
@@ -2477,11 +2479,17 @@ app.get("/api/ahj-templates", (req, res) => {
   const rows = state
     ? db.query(`SELECT ${cols} FROM ahj_form_templates WHERE state = ? ORDER BY ahj_name`, [state])
     : db.query(`SELECT ${cols} FROM ahj_form_templates ORDER BY state, ahj_name`);
-  res.json(rows.map((r) => ({
-    ...r,
-    fieldMap: parseJson<Record<string, unknown>>(String(r.field_map ?? ""), {}),
-    provenance: templateProvenance(r as Record<string, unknown>),
-  })));
+  res.json(rows.map((r) => {
+    // The map the fill USES (ahjForms.effectiveStoredFieldMap): a built-in map for an exact blank
+    // shows as such, never the stale copy stamped into the row.
+    const effective = effectiveStoredFieldMap(r as { ahj_name: string; state: string; field_map: string; source_url?: string });
+    return {
+      ...r,
+      fieldMap: effective.map,
+      builtInMap: effective.builtInMap,
+      provenance: templateProvenance(r as Record<string, unknown>),
+    };
+  }));
 });
 
 // Re-map a stored template's fields from its stored blob (AcroForm first, then
@@ -2504,13 +2512,9 @@ app.post("/api/ahj-templates/:id/remap", asyncHandler(async (req, res) => {
 // Mark a stored form's mapping verified (or not) — gates real submit. The
 // operator does this after previewing the filled PDF.
 app.patch("/api/ahj-templates/:id/verify", (req, res) => {
-  const row = db.get<{ field_map: string }>("SELECT field_map FROM ahj_form_templates WHERE id = ?", [String(req.params.id)]);
-  if (!row) throw new HttpError(404, "Template not found.");
-  const map = parseJson<Record<string, unknown>>(row.field_map, {});
   const verified = req.body?.verified !== false; // default true
-  map.verified = verified;
-  map.verifiedAt = verified ? new Date().toISOString() : undefined;
-  db.run("UPDATE ahj_form_templates SET field_map = ?, updated_at = ? WHERE id = ?", [JSON.stringify(map), new Date().toISOString(), String(req.params.id)]);
+  // A person verifies WHAT THEY PREVIEWED (ahjForms.setStoredTemplateVerified).
+  if (!setStoredTemplateVerified(db, String(req.params.id), verified)) throw new HttpError(404, "Template not found.");
   res.json({ id: String(req.params.id), verified });
 });
 

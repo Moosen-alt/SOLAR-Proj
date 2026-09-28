@@ -640,6 +640,13 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
   if (windSpeed != null && speedCap != null && windSpeed > speedCap) {
     screenFailures.push(`ultimate design wind speed ${windSpeed} mph > ${speedCap} mph ${whose} cap${wind ? ` at exposure ${wind.toUpperCase()}` : ""}`);
   }
+  // THE OTHER BCD 5952 ROWS DO NOT ROUTE THE PATH — operator ruling pending: a 5952 No row warns, it
+  // does not route engineered (dry-run 2026-09-28 B4c). A comp-shingle job at 48 in o.c., 120 mph
+  // Exposure C answers the attachment row No, yet a real issued Coos Bay permit for that design was
+  // filed prescriptive. So only the roofing row (above) is a screen input; any other No row
+  // (bcdChecklistFacts.bcd5952FailedRows) is a permit-path WARNING on the submit gate naming the
+  // clause (repository.ts getSubmitGateReport). To route on them instead, push each failed row
+  // (except roofing, and framing when the spacing check above already failed) into screenFailures.
   if (screenFailures.length) {
     basis.push(`Structural prescriptive screen failed: ${screenFailures.join("; ")}.`);
     return finalize("engineered", "structural-screen");

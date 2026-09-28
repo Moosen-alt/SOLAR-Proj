@@ -174,6 +174,54 @@
     existingBuildingArea: /AREA|SQ/i,
   };
   const FORMULA = /[=×]|\bMAX\.?\b|\bALLOW|\d\s*%|\bx\s*\d/i;
+  // A CALCULATED LIMIT — the ONLY reading withoutCalculations may set aside. FORMULA above only stops
+  // a number counting as STATED (the safe direction: the value stays unsure). Dropping a reading is
+  // the unsafe direction: a plan set's own worked sizing that disagrees with another sheet ("DC
+  // SYSTEM SIZE: 20 x 440W = 8.80 KW DC" vs "SYSTEM SIZE: 8.4 KW DC", "1.25 x 29A = 36.25A, USE 40A
+  // PV BREAKER" vs "(N) 30A PV BREAKER") IS a conflict the reviewer must see. So a reading is a
+  // calculated limit only when ALL of these hold:
+  //   1. its excerpt carries an arithmetic expression (ARITHMETIC, within one clause) ending in
+  //      "= <result>" — a labelled value ("WIND SPEED = 110 MPH"), a lumber size ("2 X 6 RAFTERS")
+  //      and a bare limit ("6\" MAX") are readings;
+  //   2. the calculation labels that RESULT as a limit: MAX / MAXIMUM / ALLOW / ALLOWABLE / ALLOWED /
+  //      LIMIT right after the result ("= 40A max PV OCPD") or opening/closing the label that heads
+  //      the calculation ("MAX PV OCPD (200A x 120%) - 200A = 40A");
+  //   3. the reading's value IS that result (numerically: "40A", "40" and 40 are one value), and the
+  //      number appears nowhere else in the excerpt (a line that also states "(N) 40A PV BREAKER"
+  //      states it);
+  //   4. the field itself is not a limit (a field named max/limit/allow is read FROM such a line).
+  const ARITHMETIC = /×|\d\s*%|\bx\s*\(?\d|\*\s*\(?\d|\d\s*\)?\s*[/+]\s*\(?\d|\)\s*[-+]\s*\(?\d/i;
+  const LIMIT_WORD = /^(?:MAX(?:IMUM)?|ALLOW(?:ABLE|ED)?|LIMITS?)$/;
+  const RESULT_UNIT = /^(?:A|AMPS?|AMPERES?|KW|KWDC|KWAC|W|WATTS?|V|VOLTS?|VDC|VAC|KVA|PSF|MPH|IN|INCH(?:ES)?|FT|%|"|')$/;
+  const numbersIn = (s) => (String(s).match(/\d+(?:\.\d+)?/g) || []).map(Number);
+  /** The results in an excerpt that a calculation labels as a limit (rules 1 and 2), as numbers. */
+  function limitResults(excerpt) {
+    const t = clean(excerpt).toUpperCase();
+    const out = [];
+    for (const m of t.matchAll(/=\s*\$?(\d+(?:\.\d+)?)/g)) {
+      const head = t.slice(0, m.index);
+      let start = 0;
+      for (const b of head.matchAll(/;|[.,](?=\s)/g)) start = b.index + b[0].length;
+      const left = head.slice(start);
+      if (!ARITHMETIC.test(left)) continue;
+      const tail = t.slice(m.index + m[0].length).split(/[;,]|\.(?=\s|$)/)[0];
+      const w = tail.split(/[\s()[\]]+/).filter(Boolean);
+      const after = LIMIT_WORD.test(w[0] || '') || (RESULT_UNIT.test(w[0] || '') && LIMIT_WORD.test(w[1] || ''));
+      const opAt = left.search(/[\d(]/);
+      const label = (opAt < 0 ? left : left.slice(0, opAt)).replace(/[^A-Z]+/g, ' ').trim().split(' ').filter(Boolean);
+      const before = label.length > 0 && (LIMIT_WORD.test(label[0]) || LIMIT_WORD.test(label[label.length - 1]));
+      if (after || before) out.push(Number(m[1]));
+    }
+    return out;
+  }
+  /** Rules 1-4: this reading is a limit a calculation worked out, not a reading of the field. */
+  function isCalculatedLimit(r) {
+    if (!r || !r.excerpt || /MAX|LIMIT|ALLOW/i.test(String(r.field || ''))) return false;
+    const n = numbersIn(r.value)[0];
+    if (n === undefined) return false;
+    if (numbersIn(clean(r.excerpt)).filter((x) => x === n).length !== 1) return false;
+    return limitResults(r.excerpt).includes(n);
+  }
   const NOT_THIS_AREA = /ROOF\s+AREA|ARRAY\s+AREA|LOT\s+(?:AREA|SIZE)/i;
 
   // Who supplies a field nothing in the packet states.
@@ -354,6 +402,22 @@
   const quote = (r) => (r.excerpt ? `: "${clean(r.excerpt).slice(0, 120)}"` : '');
   const fmtReading = (r) => `${r.value} (${where(r)}${quote(r)})`;
 
+  // A CALCULATED LIMIT IS NOT A READING OF THE FIELD (dry-run 2026-09-28 B15). Every plan set that
+  // prints the 705.12 check — "(200A x 120%) - 200A = 40A max PV OCPD; 30A breaker installed" — raised
+  // a fake "PV breaker 30 A vs 40 A" conflict: 40 A is the maximum worked out in a formula, the SLD
+  // states 30 A. Only a reading that isCalculatedLimit (the limit-labelled RESULT of a calculation,
+  // and the reading's value is that result) is set aside — any other calculation line is a reading,
+  // and its disagreement stays a CONFLICT. It is set aside only while at least one other reading
+  // quotes a plain line; if every reading is a calculated limit, nothing is dropped. A reading with no
+  // excerpt is never dropped (an uncited reading is still a reading).
+  function withoutCalculations(rs) {
+    const plain = rs.filter((r) => r.excerpt && !isCalculatedLimit(r));
+    if (!plain.length) return { kept: rs, dropped: [] };
+    return { kept: rs.filter((r) => !isCalculatedLimit(r)), dropped: rs.filter(isCalculatedLimit) };
+  }
+  const allAgree = (rs) => rs.length > 0 && new Set(rs.map((r) => String(r.value).toUpperCase())).size === 1;
+  const calculationNote = (dropped) => dropped.map((d) => `${d.value} is a calculated limit, not a reading (${where(d)}${quote(d)})`).join('; ');
+
   /**
    * passes:   [{ kind:'vision'|'text', label, docsGiven:[docKind...], response:{fields, lowConfidenceFields, notes, conflicts?, uncertainties?, resolutions?} }]
    * attached: [docKind...] the documents on the page
@@ -392,8 +456,16 @@
 
     // (a) conflicts the model reported — resolve by rule where a rule exists.
     for (const [field, c] of conflictByField) {
-      const rs = c.readings.map((r) => ({ field, value: r.value, source: r.source || 'plan_set', sheet: r.sheet || '', excerpt: r.excerpt || '' }));
+      const all = c.readings.map((r) => ({ field, value: r.value, source: r.source || 'plan_set', sheet: r.sheet || '', excerpt: r.excerpt || '' }));
       if (field === 'owner') continue; // handled by the account-holder rule below
+      // A calculated limit is not a conflict peer: the plain readings decide (withoutCalculations).
+      const calc = withoutCalculations(all);
+      if (calc.dropped.length && allAgree(calc.kept)) {
+        resolved.push({ field, value: calc.kept[0].value, how: `stated on the ${where(calc.kept[0])}${quote(calc.kept[0])}; ${calculationNote(calc.dropped)}`, evidence: calc.kept[0] });
+        done.add(field);
+        continue;
+      }
+      const rs = calc.kept;
       if (STRUCTURAL_FIELDS.has(field)) {
         const letter = rs.filter((r) => r.source === 'structural_letter');
         const letterValues = [...new Set(letter.map((r) => String(r.value)))];
@@ -406,7 +478,7 @@
           continue;
         }
       }
-      pushConflict(field, rs, c.note ? clean(c.note) : '');
+      pushConflict(field, rs, [c.note ? clean(c.note) : '', calculationNote(calc.dropped)].filter(Boolean).join(' — '));
     }
 
     // (b) owner — the utility bill's account holder is the account of record for NEM.
@@ -493,14 +565,25 @@
         }
       }
       if (rs.length >= 2 && new Set(rs.map((r) => String(r.value).toUpperCase())).size > 1) {
-        if (STRUCTURAL_FIELDS.has(field)) {
-          const letter = rs.filter((r) => r.source === 'structural_letter');
-          const lv = [...new Set(letter.map((r) => String(r.value)))];
-          const mismatch = lv.length === 1 ? sealedSourceMismatch(letter, rs.filter((r) => r.source !== 'structural_letter')) : '';
-          if (mismatch) { pushConflict(field, rs, [mismatch, reason].filter(Boolean).join(' — ')); continue; }
-          if (lv.length === 1) { resolved.push({ field, value: letter[0].value, how: `sealed structural letter governs the plan set (sealed-source rule): letter ${fmtReading(letter[0])} over ${rs.filter((r) => r.source !== 'structural_letter').map(fmtReading).join(', ')}`, evidence: letter[0] }); done.add(field); continue; }
+        // A calculated limit is not a conflict peer (withoutCalculations) — unless the read itself
+        // doubts the plain reading (guessed / unreadable), which stays the reviewer's question.
+        const calc = kind === 'guessed' || kind === 'unreadable' ? { kept: rs, dropped: [] } : withoutCalculations(rs);
+        if (calc.dropped.length && allAgree(calc.kept)) {
+          const best = calc.kept.reduce((a, b) => (b.confidence > a.confidence ? b : a));
+          resolved.push({ field, value: best.value, how: `stated on the ${where(best)}${quote(best)}; ${calculationNote(calc.dropped)}`, evidence: best });
+          done.add(field);
+          continue;
         }
-        pushConflict(field, rs, reason);
+        const peers = calc.kept;
+        const why = [reason, calculationNote(calc.dropped)].filter(Boolean).join(' — ');
+        if (STRUCTURAL_FIELDS.has(field)) {
+          const letter = peers.filter((r) => r.source === 'structural_letter');
+          const lv = [...new Set(letter.map((r) => String(r.value)))];
+          const mismatch = lv.length === 1 ? sealedSourceMismatch(letter, peers.filter((r) => r.source !== 'structural_letter')) : '';
+          if (mismatch) { pushConflict(field, peers, [mismatch, why].filter(Boolean).join(' — ')); continue; }
+          if (lv.length === 1) { resolved.push({ field, value: letter[0].value, how: `sealed structural letter governs the plan set (sealed-source rule): letter ${fmtReading(letter[0])} over ${peers.filter((r) => r.source !== 'structural_letter').map(fmtReading).join(', ')}`, evidence: letter[0] }); done.add(field); continue; }
+        }
+        pushConflict(field, peers, why);
         continue;
       }
       const r = rs[0];
