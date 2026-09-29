@@ -230,6 +230,9 @@ await check("C1 no permit_process_lookup job is queued for the near-miss name; c
   const jq = await import("../src/jobQueue");
   clearInterval(jq.startJobWorker(db)); // the worker flag stays; no tick ever runs
   process.env.ANTHROPIC_API_KEY = "sk-ant-test-not-a-real-key";
+  // The enqueue's instant kick claims and runs the queued lookup in-process: point the SDK at a
+  // closed local port so the fake key never reaches the real API (ECONNREFUSED, no 401s sent).
+  process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:9";
   const jobs = (frag: string) => db.query<{ id: string; status: string; payload: string }>(
     "SELECT id, status, payload FROM job_queue WHERE job_type = 'permit_process_lookup' AND payload LIKE ? ORDER BY created_at", [`%${frag}%`]);
   try {
@@ -245,6 +248,7 @@ await check("C1 no permit_process_lookup job is queued for the near-miss name; c
     assert.equal(jobs("srowanmere").length, 0);
   } finally {
     delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_BASE_URL;
     db.run("UPDATE job_queue SET status = 'failed' WHERE job_type = 'permit_process_lookup' AND status IN ('pending','running')");
   }
 });
