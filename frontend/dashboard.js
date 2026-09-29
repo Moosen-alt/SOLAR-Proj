@@ -6301,7 +6301,30 @@ function filledFormBlanks(forms) {
 }
 
 function documentVerdictHtml(pkg, formMissingFields = [], agencyComputedFields = []) {
-  const missingFields = [...new Set([...(pkg.missingFields || []), ...formMissingFields])];
+  // ONE BLANK, ONE LINE. The same printed field named twice — "Tax map/parcel no.:" by one form and
+  // "Tax map/parcel number." by another, "Cross street/directions to job site" with and without its
+  // colon — is listed once, keeping the line that says more (a note in brackets wins). The key is the
+  // label before its note: lowercased, "number" / "no." / "#" read alike, punctuation dropped. A
+  // "— the box named …" suffix stays in the key: two boxes that share a label are two blanks.
+  const blankKey = (item) => {
+    const text = String(item || "").replace(/\s+/g, " ").trim();
+    const noteAt = text.search(/ \x28/);
+    const label = noteAt > 0 ? text.slice(0, noteAt) : text;
+    return label.toLowerCase()
+      .replace(/\bnumber\b|\bnum\b|\bno\b|#/g, " no ")
+      .replace(/[^a-z0-9/&]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
+  const blankScore = (item) => (/ \x28/.test(String(item)) ? 1000 : 0) + String(item).length;
+  const bestBlank = new Map();
+  for (const item of [...(pkg.missingFields || []), ...formMissingFields]) {
+    const key = blankKey(item);
+    if (!key) continue;
+    const prev = bestBlank.get(key);
+    if (prev === undefined || blankScore(item) > blankScore(prev)) bestBlank.set(key, item);
+  }
+  const missingFields = [...bestBlank.values()];
   const agencyFields = [...new Set(agencyComputedFields)];
   const inventoryResolved = pkg.missingDocumentsStatus === "resolved";
   const missingDocs = inventoryResolved ? (pkg.missingDocuments || []) : [];
