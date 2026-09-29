@@ -1897,10 +1897,13 @@ Rules:
     //   · an API error instrument() had already retried (and the SDK before it) — up to 4 more attempts;
     //   · a safety refusal — the same bytes refused the same way, paid for twice;
     //   · a 32000-token truncation — re-running it from 16000 repeats both calls for the same cap.
-    // A PAGE-IMAGE read starts at 32000: eight scanned sheets measured 17,552 output tokens
-    // (set A, 2026-09-27), so a 16000 start always truncated and paid for a wasted first call
-    // (16k tokens, ~155 s) before the 2x retry. Text reads keep the measured 16000.
-    const outBudget = images.length ? 32000 : 16000;
+    // EVERY read starts at 32000. A page-image read measured 17,552 output tokens (eight scanned
+    // sheets, set A, 2026-09-27); a TEXT read of an installer's full plan set measured 16,470
+    // (live intake test, WA, 2026-09-29), with two more at 13,110 and 13,451 — so the earlier
+    // "measured 16000" for text was the dev corpus, not production, and a 16000 start truncated,
+    // paid ~155 s for the wasted call, then re-ran at 32000 (5.2 min for one step). A larger cap
+    // costs nothing unless it is used: only tokens actually written are billed.
+    const outBudget = 32000;
     const attempt = async (note: string) => {
       const info: { stopReason?: string | null } = {};
       const text = await this.askLong("extractProjectFields", system, user, outBudget, undefined, images, info);

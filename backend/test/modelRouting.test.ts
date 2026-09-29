@@ -222,7 +222,9 @@ console.log("wire");
 const INTAKE = { planText: "=== SHEET PV-1 === SYSTEM SIZE 10800WATTS DC", defaultState: "AZ" };
 const GOOD_JSON = JSON.stringify({ fields: { dcKw: { value: 10.8, confidence: 0.9, evidence: { source: "plan_set", sheet: "PV-1", excerpt: "SYSTEM SIZE10800WATTS DC" } } }, lowConfidenceFields: [], notes: "" });
 
-await check("default intake request: claude-opus-5, effort high, 16000, no advisor beta", async () => {
+// 32000, not 16000: a live text read needed 16,470 output tokens (2026-09-29) and the 16000 start
+// truncated, wasting a ~155 s call before the 2x retry. The cap is free unless used.
+await check("default intake request: claude-opus-5, effort high, 32000, no advisor beta", async () => {
   captured = []; queue = [{ text: GOOD_JSON }];
   const out = await provider.extractProjectFields(INTAKE);
   assert.equal(out.fields.dcKw?.value, 10.8);
@@ -230,7 +232,7 @@ await check("default intake request: claude-opus-5, effort high, 16000, no advis
   const c = calls()[0];
   assert.equal(c.body.model, "claude-opus-5");
   assert.equal(oc(c)?.effort, "high");
-  assert.equal(c.body.max_tokens, 16000);
+  assert.equal(c.body.max_tokens, 32000);
   assert.ok(!String(c.headers["anthropic-beta"] || "").includes("advisor"), "no advisor beta by default");
 });
 
@@ -301,7 +303,7 @@ await check("an UNREADABLE intake response is still retried once (the one retry 
 await check("KILL-TEST: truncation at the 2x ceiling is NOT re-sent from the top (was up to 4 full calls)", async () => {
   captured = []; queue = [{ text: '{"fields":{"dcKw":', stop: "max_tokens" }, { text: '{"fields":{"dcKw":{"value"', stop: "max_tokens" }];
   await assert.rejects(() => provider.extractProjectFields(INTAKE));
-  assert.deepEqual(calls().map((c) => c.body.max_tokens), [16000, 32000], "16000 then its 2x retry, then stop");
+  assert.deepEqual(calls().map((c) => c.body.max_tokens), [32000, 64000], "32000 then its 2x retry, then stop");
 });
 
 await check("the wrapper does NOT retry a client timeout (the SDK already retried it; each attempt may be billed)", () => {
