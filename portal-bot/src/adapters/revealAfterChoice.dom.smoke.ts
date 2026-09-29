@@ -20,7 +20,13 @@
 //      (planner vision, review, bundle PNGs) masks it;
 //   4. a replay of the learned steps on ANOTHER project types that project's values;
 //   5. a project with no value on file leaves the box blank AND says so, by label;
-//   6. a page whose choice reveals nothing costs no extra planner call.
+//   6. a page whose choice reveals nothing costs no extra planner call;
+//   7. a portal that REPEATS the typed account in a validation error ("Account number … could
+//      not be found", role=alert, Next refused) leaks it nowhere: not to the planner (the
+//      recovery hint quotes that error — askPlanner, the one door, scrubs every request string),
+//      not in result.portalNotices / validationBlocks (→ backend verification.issues), events or
+//      bundle files; and a run that TYPED a secret saves no trace.zip (the trace records the typed
+//      value raw) — trace_discarded_secret_typed names the boxes by label.
 //
 // Run: npx tsx portal-bot/src/adapters/revealAfterChoice.dom.smoke.ts
 import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
@@ -46,7 +52,7 @@ const ACCT_LABEL = "PGE Account Number for point of interconnection";
 // PowerClerk-shaped, one URL, two wizard steps (PowerClerk renders every step at one URL).
 // The review step ECHOES the typed account and meter as text, as real review pages do — the
 // harshest case for "the secret never leaves the process".
-const page1 = (reveal: boolean, dropFirst = false): string => `<!doctype html><html><head><title>Edit Project</title></head><body>
+const page1 = (reveal: boolean, dropFirst = false, refuse = false): string => `<!doctype html><html><head><title>Edit Project</title></head><body>
 <div id="step1">
   <h2>Description of Service</h2>
   <fieldset class="form-group">
@@ -101,6 +107,23 @@ const page1 = (reveal: boolean, dropFirst = false): string => `<!doctype html><h
   // PowerClerk renders ONE step at a time: Next replaces the step, and the review echoes what the
   // portal SAVED (the blur autosave) — so a value typed but never committed reviews as blank.
   document.getElementById('next').addEventListener('click', function () {
+    ${reveal && refuse ? `
+    // ?refuse=1: the portal's account lookup REFUSES the typed number and REPEATS IT BACK in a
+    // validation alert, and Next stays put — until the lookup is satisfied (the smoke sets
+    // acctAccepted once the planner has been told why the page is stuck).
+    var acctBox = document.getElementById('acct');
+    if (acctBox && !window.acctAccepted) {
+      var err = document.getElementById('acctErr');
+      if (!err) {
+        err = document.createElement('div');
+        err.id = 'acctErr';
+        err.setAttribute('role', 'alert');
+        err.className = 'alert alert-danger';
+        document.getElementById('step1').insertBefore(err, document.getElementById('next'));
+      }
+      err.textContent = 'Account number ' + (acctBox.value || saved.acct || '') + ' could not be found. Check the number on the bill.';
+      return;
+    }` : ""}
     ${reveal ? `document.getElementById('rvAcct').textContent = saved.acct || '';
     document.getElementById('rvMtr').textContent = saved.mtr || '';` : ""}
     document.getElementById('step1').remove();
@@ -111,7 +134,7 @@ const page1 = (reveal: boolean, dropFirst = false): string => `<!doctype html><h
 
 const server = http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/html" });
-  res.end(page1(!String(req.url || "").startsWith("/noreveal"), /[?&]drop=1\b/.test(String(req.url || ""))));
+  res.end(page1(!String(req.url || "").startsWith("/noreveal"), /[?&]drop=1\b/.test(String(req.url || "")), /[?&]refuse=1\b/.test(String(req.url || ""))));
 });
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
 const port = (server.address() as { port: number }).port;
@@ -126,23 +149,27 @@ const leaks = (text: string): string[] => SECRETS.filter((s) => text.toLowerCase
 
 // The planner the backend would build: it never holds a secret, so it cannot fill one. It
 // answers the choice and the rating, advances, and calls review when the page says review.
-function makePlanner(requests: Array<Omit<LearnPlanRequest, "screenshotBase64"> & { hadShot: boolean }>): LearnPlanner {
+// `onStuckHint` runs when the recovery hint carries the portal's refusal ("could not be found").
+function makePlanner(requests: Array<Omit<LearnPlanRequest, "screenshotBase64"> & { hadShot: boolean }>, onStuckHint?: () => Promise<void>): LearnPlanner {
   return async (req) => {
     const { screenshotBase64, ...rest } = req;
     requests.push({ ...rest, hadShot: !!screenshotBase64 });
     if (/please review/i.test(req.bodyText)) return { fills: [], atReview: true };
-    if (req.alreadyFilledLabels.length > 0) return { fills: [], atReview: false }; // a re-scan
+    if (onStuckHint && /could not be found/i.test(req.recoveryHint ?? "")) await onStuckHint();
+    const next = req.fields.findIndex((f) => f.fieldType === "button" && /^next$/i.test(f.label));
+    const advanceSelectorIndex = next >= 0 ? next : undefined;
+    // A re-scan (its advance is ignored) or a page already answered (a refused Next): advance only.
+    if (req.alreadyFilledLabels.length > 0) return { fills: [], advanceSelectorIndex, atReview: false };
     const at = (label: string, type?: string) => req.fields.findIndex((f) => f.label === label && (!type || f.fieldType === type));
     const fills: Array<{ selectorIndex: number; value: string; field?: string }> = [];
     if (at(CHOICE, "radio") >= 0) fills.push({ selectorIndex: at(CHOICE, "radio"), value: "true" });
     if (at("Main Service Entrance Rating (Amps)") >= 0) fills.push({ selectorIndex: at("Main Service Entrance Rating (Amps)"), value: "200", field: "mainServiceRating" });
-    const next = req.fields.findIndex((f) => f.fieldType === "button" && /^next$/i.test(f.label));
-    return { fills, advanceSelectorIndex: next >= 0 ? next : undefined, atReview: false };
+    return { fills, advanceSelectorIndex, atReview: false };
   };
 }
 
 // Every screenshot the learner takes, with what its mask covered at that moment.
-type Shot = { secretOnPage: boolean; masked: number; reviewTextMasked: boolean };
+type Shot = { secretOnPage: boolean; masked: number; reviewTextMasked: boolean; alertShown: boolean; alertMasked: boolean };
 function spyScreenshots(page: Page, shots: Shot[], secret: string): void {
   const orig = page.screenshot.bind(page);
   (page as unknown as { screenshot: unknown }).screenshot = async (opts?: Parameters<Page["screenshot"]>[0]) => {
@@ -156,7 +183,10 @@ function spyScreenshots(page: Page, shots: Shot[], secret: string): void {
     for (const m of (opts?.mask ?? [])) masked += await m.count().catch(() => 0);
     const reviewShown = await page.locator("#step2").isVisible().catch(() => false);
     const reviewTextMasked = !reviewShown || (await page.locator("#rvAcct[data-al-secret], #rvAcct:has([data-al-secret])").count().catch(() => 0)) > 0;
-    shots.push({ secretOnPage: onPage, masked, reviewTextMasked });
+    // The refusal alert repeats the typed account as text — it must be masked like the review echo.
+    const alertShown = await page.locator("#acctErr").isVisible().catch(() => false);
+    const alertMasked = !alertShown || (await page.locator("#acctErr[data-al-secret], #acctErr:has([data-al-secret])").count().catch(() => 0)) > 0;
+    shots.push({ secretOnPage: onPage, masked, reviewTextMasked, alertShown, alertMasked });
     return orig(opts);
   };
 }
@@ -182,10 +212,16 @@ async function learnOn(url: string, project: Partial<ProjectRecord>, tag: string
   // three learns that run side by side each keep their own.
   process.env.AUTOLEARN_RUN_DIR = runDir;
   const requests: Array<Omit<LearnPlanRequest, "screenshotBase64"> & { hadShot: boolean }> = [];
-  const adapter = new AutoLearnAdapter("PGE PowerClerk (reveal smoke)", makePlanner(requests), { policyProfile: "none" });
+  // A ?refuse=1 portal accepts the account once the planner has been told why the page is stuck.
+  const holder: { page?: Page } = {};
+  const accept = async (): Promise<void> => {
+    await holder.page?.evaluate(() => { (globalThis as unknown as { acctAccepted?: boolean }).acctAccepted = true; }).catch(() => null);
+  };
+  const adapter = new AutoLearnAdapter("PGE PowerClerk (reveal smoke)", makePlanner(requests, accept), { policyProfile: "none" });
   const context = await browser.newContext();
   await context.addInitScript("globalThis.__name = globalThis.__name || function (fn) { return fn; };");
   const page = await context.newPage();
+  holder.page = page;
   await page.goto(url);
   const shots: Shot[] = [];
   spyScreenshots(page, shots, String(project.accountNumber ?? "\u0000"));
@@ -198,10 +234,12 @@ async function learnOn(url: string, project: Partial<ProjectRecord>, tag: string
 }
 
 // Three learns side by side (each walks the portal's own entry look first, ~60 s apiece):
-// A = the reveal on a project with secrets, E = the reveal with none on file, N = no reveal.
+// A = the reveal on a project with secrets (its portal drops each box's first save AND refuses Next,
+// repeating the typed account, until the planner is told why), E = the reveal with none on file,
+// N = no reveal.
 lap("learns A, E, N");
 const [a, e, n] = await Promise.all([
-  learnOn(`${base}/app?drop=1`, A as Partial<ProjectRecord>, "a"),
+  learnOn(`${base}/app?drop=1&refuse=1`, A as Partial<ProjectRecord>, "a"),
   learnOn(`${base}/app`, {} as Partial<ProjectRecord>, "e"),
   learnOn(`${base}/noreveal`, A as Partial<ProjectRecord>, "n"),
 ]);
@@ -234,8 +272,42 @@ await check("both secret steps are recorded AFTER the choice that revealed them,
   assert.deepEqual({ s: acct.sensitive, v: acct.value, f: acct.field }, { s: true, v: "", f: "accountNumber" });
   assert.deepEqual({ s: mtr.sensitive, v: mtr.value, f: mtr.field }, { s: true, v: "", f: "meterNumber" });
 });
-await check("the secret is in no planner request (fields, body text, filled labels)", () =>
+// A's portal refuses Next with an alert that REPEATS the typed account until the planner has been
+// told why (the recovery hint quotes the portal's validation errors) — the harshest planner input.
+await check("precondition: the portal's refusal (repeating the typed account) reached the planner in the recovery hint, masked to a last-4", () => {
+  const hinted = a.requests.filter((r) => /could not be found/i.test(r.recoveryHint ?? ""));
+  assert.ok(hinted.length > 0, `no planner request carried the refusal in its recovery hint (${a.requests.length} request(s)) — the leak check below would prove nothing`);
+  assert.ok(hinted.some((r) => (r.recoveryHint ?? "").includes(A.accountNumber.slice(-4))), "the hint dropped the account entirely (expected a masked last-4)");
+});
+await check("the secret is in no planner request, under ANY key (fields, body text, filled labels, recovery hint, title, url)", () =>
   assert.deepEqual(leaks(JSON.stringify(a.requests)), [], "a planner request carried a secret"));
+await check("ONE planner door: autoLearnAdapter.ts reaches this.planner in exactly one place, askPlanner's scrubbed call", () => {
+  const src = fs.readFileSync(new URL("./autoLearnAdapter.ts", import.meta.url), "utf8");
+  const code = src.split("\n").filter((l) => !/^\s*(\*|\/\/)/.test(l) && /this\.planner\b/.test(l));
+  assert.equal(code.length, 1, `this.planner is reached ${code.length} times:\n${code.map((l) => l.trim()).join("\n")}`);
+  assert.match(code[0], /return this\.planner\(this\.scrubPlanRequest\(req\)\)/);
+});
+await check("the refusal is kept only scrubbed: result.portalNotices / validationBlocks (→ backend verification.issues) and every other result field", () => {
+  assert.ok((a.result.portalNotices ?? []).some((x) => /could not be found/i.test(x)), "precondition: the refusal was not recorded as a portal notice");
+  assert.ok((a.result.validationBlocks ?? []).some((x) => /could not be found/i.test(x)), "precondition: the refusal was not recorded as a validation block");
+  const { reviewScreenshotBase64: _shot, ...resultText } = a.result;
+  assert.deepEqual(leaks(JSON.stringify(resultText)), [], "a result field carried a secret");
+});
+await check("the refusal is in the bundle's events only scrubbed (portal_notice / validation_blocked)", () => {
+  const ev = fs.readFileSync(path.join(a.dir, "events.jsonl"), "utf8");
+  const lines = ev.split("\n").filter((l) => /"type":"(portal_notice|validation_blocked)"/.test(l) && /could not be found/i.test(l));
+  assert.ok(lines.length > 0, "precondition: no portal_notice / validation_blocked event recorded the refusal");
+  assert.deepEqual(leaks(lines.join("\n")), []);
+});
+await check("a run that TYPED a secret saves no trace.zip; trace_discarded_secret_typed names the boxes by label — a run that typed none keeps its trace", () => {
+  assert.ok(fs.existsSync(path.join(n.dir, "trace.zip")), "positive control: the no-reveal run (no secret typed) saved no trace.zip — the check would prove nothing");
+  assert.ok(!fs.existsSync(path.join(a.dir, "trace.zip")), "trace.zip was saved for a run that typed the account and meter (the trace records the typed value raw)");
+  const ev = fs.readFileSync(path.join(a.dir, "events.jsonl"), "utf8").split("\n").find((l) => l.includes('"type":"trace_discarded_secret_typed"'));
+  assert.ok(ev, "no trace_discarded_secret_typed event");
+  const labels = (JSON.parse(ev!) as { labels?: string[] }).labels ?? [];
+  assert.ok(labels.includes(ACCT_LABEL) && labels.includes("Meter Number"), `the event does not name both boxes: ${JSON.stringify(labels)}`);
+  assert.deepEqual(leaks(ev!), []);
+});
 await check("the secret is in no recorded step and not in the result message", () =>
   assert.deepEqual(leaks(JSON.stringify(a.result.steps) + a.result.message + JSON.stringify(a.result.reviewScreen)), []));
 await check("the secret is in no JSON artifact of the debug bundle (events, sidecars, page captures)", () => {
@@ -248,6 +320,8 @@ await check("the review page was reached with the secret on it, and the planner 
   const unmasked = withSecret.filter((s) => s.masked < 2);
   assert.equal(unmasked.length, 0, `${unmasked.length}/${withSecret.length} screenshot(s) taken with the secret on the page masked fewer than its two boxes`);
   assert.ok(withSecret.every((s) => s.reviewTextMasked), "the review page echoes the account as text and that text was not masked");
+  assert.ok(withSecret.some((s) => s.alertShown), "no screenshot was taken while the refusal alert was up — the check below would prove nothing");
+  assert.ok(withSecret.every((s) => s.alertMasked), "the refusal alert repeats the account as text and a screenshot left it unmasked");
 });
 await check("the run names what the choice REVEALED (revealed_controls, labels only) — and a no-reveal page logs none", () => {
   const evA = fs.readFileSync(path.join(a.dir, "events.jsonl"), "utf8");
