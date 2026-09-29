@@ -63,6 +63,40 @@ const tests: Array<[string, () => void | Promise<void>]> = [
     assert.ok(true, "no throw on fakes");
   }),
 
+  test("a run that TYPED a secret: the trace is stopped WITHOUT saving, the event names labels only, the rest stays", async () => {
+    const stops: Array<unknown> = [];
+    const fakePage = () => ({
+      context: () => ({
+        tracing: {
+          start: async () => undefined,
+          stop: async (opts?: { path?: string }) => {
+            stops.push(opts);
+            if (opts?.path) fs.writeFileSync(opts.path, "zip");
+          },
+        },
+      }),
+    });
+    // Positive control: without discard the trace IS saved (so the check below cannot pass vacuously).
+    const kept = LearnRunDebug.start("trace-kept")!;
+    await kept.startTrace(fakePage());
+    await kept.stopTrace(fakePage());
+    assert.ok(fs.existsSync(path.join(kept.dir, "trace.zip")), "a trace with no secret typed is saved");
+
+    const dbg = LearnRunDebug.start("trace-secret")!;
+    await dbg.startTrace(fakePage());
+    dbg.writeJson("p001-plan.json", { page: 1 });
+    await dbg.stopTrace(fakePage(), { discard: { event: "trace_discarded_secret_typed", labels: ["Meter Number", "PGE Account Number"] } });
+    const last = stops[stops.length - 1] as { path?: string } | undefined;
+    assert.ok(!last || !last.path, `tracing.stop was given a path: ${JSON.stringify(last)}`);
+    assert.ok(!fs.existsSync(path.join(dbg.dir, "trace.zip")), "trace.zip was saved for a run that typed a secret");
+    const events = fs.readFileSync(path.join(dbg.dir, "events.jsonl"), "utf8");
+    const ev = events.split("\n").find((l) => l.includes('"type":"trace_discarded_secret_typed"'));
+    assert.ok(ev, "no trace_discarded_secret_typed event");
+    assert.deepEqual(JSON.parse(ev!).labels, ["Meter Number", "PGE Account Number"]);
+    assert.ok(!events.includes('"type":"trace_saved"'), "a discarded trace reported trace_saved");
+    assert.ok(fs.existsSync(path.join(dbg.dir, "p001-plan.json")), "the rest of the bundle stays");
+  }),
+
   test("AUTOLEARN_RUN_DEBUG=0 disables the recorder entirely", () => {
     process.env.AUTOLEARN_RUN_DEBUG = "0";
     try {
