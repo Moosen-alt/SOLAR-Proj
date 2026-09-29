@@ -3368,14 +3368,26 @@ function reviewItemBuckets(items) {
   return out;
 }
 
+// WHICH STAGE THE STEPPER OPENS. The server's stageIndex, with one step forward: a
+// `ready_to_stage` project whose submit gate says "can stage" has finished Build & Validate —
+// the work left is Submit. Live 2026-09-28: the gate read "0 blockers … can stage" while
+// Submit sat padlocked "Not reached". The status alone cannot say it (ready_to_stage is also
+// written before the reviewer gate has passed, and QC's may-it-move rule reads the stage
+// map), so this is display only, and only when the gate is THIS project's.
+function stepperStageIndex(d, gate) {
+  const idx = Number.isInteger(d?.stageIndex) ? d.stageIndex : 0;
+  if (idx === 1 && d?.project?.status === "ready_to_stage" && gate && gate.projectId === d.project.id && gate.canPrepareSubmission === true) return 2;
+  return idx;
+}
+
 // Apply the pipeline-stepper state to the five stage accordions: completed stages
 // collapse with a check, the current stage opens, future stages lock. Driven by
-// state.detail.stageIndex (computed server-side). A blocked project paints a red
-// overlay on its active stage rather than getting its own stage.
+// state.detail.stageIndex (computed server-side) via stepperStageIndex. A blocked project
+// paints a red overlay on its active stage rather than getting its own stage.
 function applyStageState() {
   const d = state.detail;
   if (!d) return;
-  const active = Number.isInteger(d.stageIndex) ? d.stageIndex : 0;
+  const active = stepperStageIndex(d, state.submitGate);
   // Default expand/collapse: current stage open, others closed. But a stage the
   // operator manually opened (tracked in state.stageOverrides via summary clicks)
   // must STAY open across re-renders and navigation — otherwise the Submit gate
