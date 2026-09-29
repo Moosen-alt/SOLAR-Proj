@@ -52,32 +52,61 @@ export interface AhjNearMiss {
 
 const MAX_DISTANCE = 2;
 
-/** Abbreviations a title block and a postal address spell differently; folded BEFORE the distance
- *  ("Ft Worth" / "Fort Worth" is distance 2 and would otherwise fire). */
-const ABBREVIATIONS: Record<string, string> = { st: "saint", ste: "sainte", ft: "fort", mt: "mount", pt: "point" };
+/** Abbreviations a title block and a postal address spell differently, folded BEFORE the distance
+ *  ("Ft Worth" / "Fort Worth" is distance 2 and would otherwise fire). The USPS suffix-word
+ *  shortenings a postal city carries ("Happy Vly", "N Plains", "Citrus Hts") are the same class
+ *  (verify round 2, 2026-09-29). */
+const ABBREVIATIONS: Record<string, string> = {
+  st: "saint", ste: "sainte", ft: "fort", mt: "mount", pt: "point", pnt: "point", prt: "port",
+  n: "north", s: "south", e: "east", w: "west", no: "north", so: "south",
+  hts: "heights", hgts: "heights", spgs: "springs", spg: "springs", jct: "junction", jctn: "junction",
+  vly: "valley", bch: "beach", cyn: "canyon", mtn: "mountain", hbr: "harbor", lk: "lake", crk: "creek",
+  rdg: "ridge", vlg: "village", ctr: "center", pk: "park", stn: "station", hls: "hills", gdns: "gardens",
+  mnr: "manor", fls: "falls", frk: "fork", sq: "square", isl: "island", grv: "grove", plns: "plains",
+};
+
+/** Diacritics are spelling, not letters: "Española" and "Espanola" are one place (NM). Folded
+ *  BEFORE the stripper, which would otherwise turn the accented letter into a space and leave a
+ *  one-edit gap. */
+function deaccent(s: string): string {
+  return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
 
 /** "st helens" -> "sainthelens": token abbreviations expanded, then everything but [a-z0-9] dropped. */
 function foldCore(core: string): string {
   return core.split(/\s+/).filter(Boolean).map((t) => ABBREVIATIONS[t] ?? t).join("").replace(/[^a-z0-9]/g, "");
 }
 
-/** Levenshtein distance, bounded: returns null as soon as the distance must exceed `max`. */
+/** Edit distance with adjacent transposition as ONE edit (optimal string alignment), bounded:
+ *  returns null as soon as the distance must exceed `max`. A swapped pair ("Bned" / "Bend") is the
+ *  commonest typing slip and must read as one edit, or the short-name guard below silences it. */
 export function boundedEditDistance(a: string, b: string, max: number): number | null {
   if (Math.abs(a.length - b.length) > max) return null;
   if (a === b) return 0;
+  let prev2: number[] | null = null;
   let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
   for (let i = 1; i <= a.length; i++) {
     const cur = [i];
     let rowMin = i;
     for (let j = 1; j <= b.length; j++) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
-      if (cur[j] < rowMin) rowMin = cur[j];
+      let d = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (prev2 && i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d = Math.min(d, prev2[j - 2] + 1);
+      cur[j] = d;
+      if (d < rowMin) rowMin = d;
     }
     if (rowMin > max) return null;
+    prev2 = prev;
     prev = cur;
   }
   return prev[b.length] <= max ? prev[b.length] : null;
+}
+
+/** The spellings the shared KB may hold for one place: as typed, the bare core, and the core
+ *  under each municipal prefix — the shipped reference carries "City of Yamhill" while a title
+ *  block may print "Yamhill" (verify round 2). Exact keys only; never the fuzzy resolvers. */
+function knownSpellings(asTyped: string, core: string): string[] {
+  return [asTyped, core, ...["city", "town", "village", "borough"].map((p) => `${p} of ${core}`)];
 }
 
 /**
@@ -97,8 +126,8 @@ export function ahjCityNearMiss(
   const ahjName = String(ahj || "").trim();
   const cityName = String(city || "").trim();
   if (!ahjName || !cityName) return null;
-  const a = jurisdictionIdentity(ahjName, state);
-  const c = jurisdictionIdentity(cityName, state);
+  const a = jurisdictionIdentity(deaccent(ahjName), state);
+  const c = jurisdictionIdentity(deaccent(cityName), state);
   if (a.type === "county" || a.type === "parish") return null;
   const ahjCore = foldCore(a.core);
   const cityCore = foldCore(c.core);
@@ -106,7 +135,7 @@ export function ahjCityNearMiss(
   const distance = boundedEditDistance(ahjCore, cityCore, MAX_DISTANCE);
   if (distance == null || distance < 1) return null;
   if (distance * 2 >= Math.max(ahjCore.length, cityCore.length)) return null;
-  if (isKnown && (isKnown(ahjName) || isKnown(a.core))) return null;
+  if (isKnown && knownSpellings(ahjName, a.core).some((n) => isKnown(n))) return null;
   return { ahjCore, cityCore, distance };
 }
 

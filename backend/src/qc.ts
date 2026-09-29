@@ -321,11 +321,27 @@ export function runQcForProject(db: AppDb, projectId: string, options: QcRunOpti
       } else if (ahjNearMiss) {
         // The question rides the ahj field's ONE item (ensureReviewItem dedupes per field against any
         // status): filed pending with its own issue type; a pending row is refreshed so an edit to a
-        // second near-miss name shows the new value and message. Never re-opened once a person
+        // second near-miss name shows the new value and message. Never re-opened once a PERSON
         // answered — a Save Edit of the same value IS the confirmation, and a value a person typed
-        // into a resolved blank-AHJ item is theirs.
+        // into a resolved blank-AHJ item is theirs. But an item the SYSTEM closed (the blank-AHJ
+        // blocker auto-resolved the moment a value arrived — through PUT /api/projects/:id or the
+        // parser page — and that value is itself a near-miss) never had THIS question answered by
+        // anyone: it reopens as the near-miss (verify round 2, 2026-09-29).
         const parserValue = parserField(payload, check.fieldName) || ctx.ahj;
-        ensureReviewItem(db, projectId, check.fieldName, AHJ_NEAR_MISS_ISSUE_TYPE, parserValue, message, false);
+        const prior = db.get<{ id: string; status: string; issue_type: string; notes: string }>(
+          "SELECT id, status, issue_type, notes FROM human_review_items WHERE project_id = ? AND field_name = ? LIMIT 1",
+          [projectId, check.fieldName],
+        );
+        const systemClosedOtherQuestion = prior && prior.status !== "pending" && prior.issue_type !== AHJ_NEAR_MISS_ISSUE_TYPE
+          && /^Auto-resolved/.test(prior.notes || "");
+        if (systemClosedOtherQuestion) {
+          db.run(
+            "UPDATE human_review_items SET status = 'pending', issue_type = ?, parser_value = ?, notes = ?, updated_at = ? WHERE id = ?",
+            [AHJ_NEAR_MISS_ISSUE_TYPE, parserValue, message, nowIso(), prior!.id],
+          );
+        } else {
+          ensureReviewItem(db, projectId, check.fieldName, AHJ_NEAR_MISS_ISSUE_TYPE, parserValue, message, false);
+        }
         db.run(
           "UPDATE human_review_items SET issue_type = ?, notes = ?, parser_value = ?, updated_at = ? WHERE project_id = ? AND field_name = ? AND status = 'pending'",
           [AHJ_NEAR_MISS_ISSUE_TYPE, message, parserValue, nowIso(), projectId, check.fieldName],

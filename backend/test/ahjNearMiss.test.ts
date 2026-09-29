@@ -170,7 +170,8 @@ await check("A5 the pure predicate: Prospr/Prosper, Albuqerque/Albuquerque, Lake
   assert.equal(ahjCityNearMiss("City of Prospr", "Prosper", "TX", () => true), null, "a KB-known name is never a typo");
   const asked: string[] = [];
   ahjCityNearMiss("City of Prospr", "Prosper", "TX", (n) => { asked.push(n); return false; });
-  assert.deepEqual(asked, ["City of Prospr", "prospr"], "the KB is asked about the name as typed AND its stripped core");
+  assert.deepEqual(asked, ["City of Prospr", "prospr", "city of prospr", "town of prospr", "village of prospr", "borough of prospr"],
+    "the KB is asked about the name as typed, its stripped core, and the core under each municipal prefix (the reference holds some names prefixed)");
   assert.equal(knownJurisdictionName(db, "OR", "Monroe"), true, "reference seed (sanitized_reference)");
   assert.equal(knownJurisdictionName(db, "OR", "City of Monroe"), false, "exact keys: the prefixed form is not itself seeded (the predicate probes the core)");
   assert.equal(boundedEditDistance("smonroe", "monroe", 2), 1);
@@ -311,6 +312,63 @@ await check("C2 the chain's acquire_forms step waits for the answer (build_docs 
   } finally {
     delete process.env.AUTO_STAGE_STEPS;
   }
+});
+
+console.log("\nE. VERIFY ROUND 2 — the system-closed blank item, spelling classes, transpositions, prefixed KB spellings");
+await check("E1 MUST-PASS: a project born with a BLANK AHJ, given a good name (the blank item auto-resolves), then a near-miss through updateProject, is asked — the system-closed item reopens as the question (still ONE item on the field)", () => {
+  const pid = mk({ ahj: "" });
+  assert.deepEqual(ahjItems(pid).map((i) => i.issueType), ["AHJ"], "the blank check's blocker item first");
+  updateProject(db, pid, { ahj: "City of Monroe" });
+  assert.equal(ahjItems(pid)[0].status, "approved", "the SYSTEM closed the blank item when a good value arrived");
+  assert.match(ahjItems(pid)[0].notes, /Auto-resolved/);
+  updateProject(db, pid, { ahj: "City Of Smonroe" });
+  const items = ahjItems(pid);
+  assert.equal(items.length, 1, `items on the field: ${items.length}`);
+  assert.equal(items[0].status, "pending");
+  assert.equal(items[0].issueType, AHJ_NEAR_MISS_ISSUE_TYPE);
+  assert.match(items[0].notes, /Smonroe/);
+  assert.equal(ahjRow(pid).qcStatus, "warning");
+  assert.equal(getSubmitGateReport(db, pid).canPrepareSubmission, false, "the reopened question holds staging");
+});
+await check("E2 MUST-EXCLUDE: a blank-AHJ item a PERSON answered with the near-miss value stays theirs — no reopen", () => {
+  const pid = mk({ ahj: "" });
+  const blank = ahjItems(pid)[0];
+  humanVerify(db, pid, { reviewItemId: blank.id, action: "edit", fieldValue: "City Of Smonroe" });
+  assert.equal(getProjectDetail(db, pid).project.ahj, "City Of Smonroe");
+  rerunQc(db, pid);
+  assert.equal(pendingAhj(pid).length, 0, "a value a person typed is theirs");
+  assert.equal(ahjItems(pid).length, 1);
+});
+await check("E1b MUST-PASS: the same sequence where the typo arrives while the blank item is still PENDING converts that item into the question (no second item)", () => {
+  const pid = mk({ ahj: "" });
+  updateProject(db, pid, { ahj: "City Of Smonroe" });
+  assert.deepEqual(ahjItems(pid).map((i) => [i.issueType, i.status]), [[AHJ_NEAR_MISS_ISSUE_TYPE, "pending"]]);
+});
+await noQuestion("a diacritic-only difference (City of Española / Espanola, NM)", { ahj: "City of Española", city: "Espanola", state: "NM", zip: "87532", utility: "PNM" });
+await noQuestion("a diacritic-only difference the other way (Cañon City / Canon City, CO)", { ahj: "Cañon City", city: "Canon City", state: "CO", zip: "81212", utility: "Xcel Energy" });
+await noQuestion("USPS suffix shortening (City of Happy Valley / Happy Vly)", { ahj: "City of Happy Valley", city: "Happy Vly", zip: "97086" });
+await noQuestion("USPS direction shortening (City of North Plains / N Plains)", { ahj: "City of North Plains", city: "N Plains", zip: "97133" });
+await noQuestion("USPS 'Hts' (City of Citrus Heights / Citrus Hts, CA)", { ahj: "City of Citrus Heights", city: "Citrus Hts", state: "CA", zip: "95610", utility: "SMUD" });
+await check("E3 MUST-PASS: an adjacent-letter swap on a 4-letter city is one edit and is asked (City of Bned / Bend)", () => {
+  assert.equal(boundedEditDistance("bned", "bend", 2), 1, "a transposition is ONE edit");
+  assert.equal(boundedEditDistance("smonroe", "monroe", 2), 1);
+  assert.equal(boundedEditDistance("abcd", "badc", 2), 2, "two swaps are two edits");
+  const pid = mk({ ahj: "City of Bned", city: "Bend", zip: "97701" });
+  assert.deepEqual(ahjItems(pid).map((i) => i.issueType), [AHJ_NEAR_MISS_ISSUE_TYPE]);
+});
+await check("E4 MUST-EXCLUDE: the KB holds the PREFIXED spelling (City of Thornbury, verified) and the plan set prints the bare name one letter from the city", () => {
+  saveVerifiedAhjProfile(db, { state: "OR", ahj: "City of Thornbury", verifiedBy: "test-operator" });
+  assert.equal(knownJurisdictionName(db, "OR", "Thornbury"), false, "exact keys: the bare spelling is not on file");
+  assert.equal(ahjCityNearMiss("Thornbury", "Thornbary", "OR", (n) => knownJurisdictionName(db, "OR", n)), null, "the predicate probes the prefixed spellings too");
+  const pid = mk({ ahj: "Thornbury", city: "Thornbary" });
+  assert.deepEqual(ahjItems(pid).map((i) => i.issueType), []);
+  assert.equal(ahjRow(pid).qcStatus, "pass");
+});
+await check("E5 pure predicate: diacritics and USPS folds do not fire; a genuine slip beside them still does", () => {
+  assert.equal(ahjCityNearMiss("City of Española", "Espanola", "NM"), null);
+  assert.equal(ahjCityNearMiss("City of North Plains", "N Plains", "OR"), null);
+  assert.notEqual(ahjCityNearMiss("City of Espanolla", "Espanola", "NM"), null, "a doubled letter is still a slip");
+  assert.notEqual(ahjCityNearMiss("City of Norht Plains", "N Plains", "OR"), null, "a swap beside a USPS fold is still a slip");
 });
 
 console.log("\nD. KILL — with the predicate disabled the must-pass case files nothing (the fixture depends on the fix)");
