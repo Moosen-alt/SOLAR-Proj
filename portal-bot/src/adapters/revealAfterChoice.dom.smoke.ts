@@ -279,8 +279,12 @@ await check("precondition: the portal's refusal (repeating the typed account) re
   assert.ok(hinted.length > 0, `no planner request carried the refusal in its recovery hint (${a.requests.length} request(s)) — the leak check below would prove nothing`);
   assert.ok(hinted.some((r) => (r.recoveryHint ?? "").includes(A.accountNumber.slice(-4))), "the hint dropped the account entirely (expected a masked last-4)");
 });
-await check("the secret is in no planner request, under ANY key (fields, body text, filled labels, recovery hint, title, url)", () =>
-  assert.deepEqual(leaks(JSON.stringify(a.requests)), [], "a planner request carried a secret"));
+await check("the secret is in no planner request, under ANY key (fields, body text, filled labels, recovery hint, title, url)", () => {
+  // Key names only in the message — never the value.
+  const keys = new Set<string>();
+  for (const r of a.requests) for (const [k, v] of Object.entries(r)) if (leaks(JSON.stringify(v ?? "")).length) keys.add(k);
+  assert.deepEqual(leaks(JSON.stringify(a.requests)), [], `a planner request carried a secret, under: ${[...keys].join(", ")}`);
+});
 await check("ONE planner door: autoLearnAdapter.ts reaches this.planner in exactly one place, askPlanner's scrubbed call", () => {
   const src = fs.readFileSync(new URL("./autoLearnAdapter.ts", import.meta.url), "utf8");
   const code = src.split("\n").filter((l) => !/^\s*(\*|\/\/)/.test(l) && /this\.planner\b/.test(l));
@@ -291,7 +295,8 @@ await check("the refusal is kept only scrubbed: result.portalNotices / validatio
   assert.ok((a.result.portalNotices ?? []).some((x) => /could not be found/i.test(x)), "precondition: the refusal was not recorded as a portal notice");
   assert.ok((a.result.validationBlocks ?? []).some((x) => /could not be found/i.test(x)), "precondition: the refusal was not recorded as a validation block");
   const { reviewScreenshotBase64: _shot, ...resultText } = a.result;
-  assert.deepEqual(leaks(JSON.stringify(resultText)), [], "a result field carried a secret");
+  const keys = Object.entries(resultText).filter(([, v]) => leaks(JSON.stringify(v ?? "")).length).map(([k]) => k);
+  assert.deepEqual(leaks(JSON.stringify(resultText)), [], `a result field carried a secret: ${keys.join(", ")}`);
 });
 await check("the refusal is in the bundle's events only scrubbed (portal_notice / validation_blocked)", () => {
   const ev = fs.readFileSync(path.join(a.dir, "events.jsonl"), "utf8");
