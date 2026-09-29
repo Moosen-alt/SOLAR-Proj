@@ -1542,9 +1542,11 @@ async function autoLearnPortalInner(
     bodyText: reviewBody,
   });
   // Vision verification can be disabled (PORTAL_VISION_VERIFY=0). NOTE: the review screenshot
-  // is a RAW render and may contain portal-rendered PII (account/meter numbers shown as text)
-  // that the DOM/text path masks — it is sent to the model and written to data/screenshots, so
-  // treat it as sensitive.
+  // is a render of the portal and may contain portal-rendered PII — it is sent to the model and
+  // written to data/screenshots, so treat it as sensitive. The PROJECT's own account/meter
+  // numbers (which a learn now types, by name) are masked in it by the learner (withSecretMask:
+  // the boxes it typed plus any element echoing one; no picture at all if the mask cannot be
+  // built) — the vision prompt is told the pink boxes are deliberate.
   let visionVerification: typeof textVerification | null = null;
   if (learn.reviewScreenshotBase64 && process.env.PORTAL_VISION_VERIFY !== "0") {
     try {
@@ -1552,8 +1554,8 @@ async function autoLearnPortalInner(
         screenshotBase64: learn.reviewScreenshotBase64,
         mimeType: "image/png",
         // The SAME filtered list the text verifier gets (it used to receive every scraped field,
-        // account and meter numbers included). The screenshot itself is still a raw render —
-        // masking it is the L2 work, recorded as open.
+        // account and meter numbers included). The screenshot masks the project's own secrets
+        // (learner withSecretMask); any OTHER portal-rendered PII in it is still a raw render.
         reviewFields: nonSensitiveReviewFields,
         projectFields,
         bodyText: reviewBody,
