@@ -149,6 +149,60 @@ export function anchorPlacement(items: LabelItem[], opts: AnchorOpts): { x: numb
   return { x: lbl.x + lbl.width + gap, y: lbl.y };
 }
 
+/** Letters and digits only — "E-mail:" and "Email:" read alike, "PROPERTY OWNER" and "Property Owner". */
+const looseNorm = (s: string): string => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/**
+ * WHICH PRINTED LABEL A MAPPED PLACEMENT BELONGS TO, near where the map put it. A flat form repeats
+ * its labels ("Name:", "Address:", "Phone:" in the owner, contractor AND applicant blocks), and a
+ * vision map names the repeat by its section ("Property Owner - Name:", "Required data: Valuation:"),
+ * which no single text item prints. In order:
+ *  1. the whole label (exact, or the short prefix findLabel accepts) — of several, the nearest the
+ *     map's point;
+ *  2. a section-qualified label: the section header item, then the NEAREST item printing the tail
+ *     BELOW that header (within 160pt) — "Applicant - Name:" is the Name under APPLICANT, even when
+ *     the map's y drifted into the Address row beneath it;
+ *  3. the tail alone, nearest the map's point;
+ *  4. a label-like item just LEFT of the map's point on its own line (±9pt).
+ * null when nothing reasonable matches (the caller keeps the map's own point).
+ */
+export function resolvePlacementLabel(items: LabelItem[], label: string, page: number, point: { x: number; y: number }): LabelItem | null {
+  const pool = items.filter((i) => i.page === page && i.str.trim());
+  const near = (cands: LabelItem[]): LabelItem | null => cands.length
+    ? [...cands].sort((a, b) => (Math.abs(a.y - point.y) + Math.abs(a.x - point.x) * 0.05) - (Math.abs(b.y - point.y) + Math.abs(b.x - point.x) * 0.05))[0]
+    : null;
+  const matches = (it: LabelItem, want: string): boolean => {
+    const s = norm(it.str), w = norm(want);
+    if (!w) return false;
+    if (s === w || (s.startsWith(w) && s.length <= w.length + 3)) return true;
+    const ls = looseNorm(it.str), lw = looseNorm(want);
+    return Boolean(lw) && ls === lw;
+  };
+  const whole = pool.filter((it) => matches(it, label));
+  if (whole.length) return near(whole);
+  // "Section - Label" / "Section: Label" — the header, then the tail beneath it.
+  const split = /^(.{3,60}?)\s*(?:\s[-–—]\s|:\s+)\s*(.{2,60})$/.exec(String(label || "").trim());
+  if (split) {
+    const [, head, tail] = split;
+    const lh = looseNorm(head);
+    const tails = pool.filter((it) => matches(it, tail));
+    const headers = lh.length >= 3 ? pool.filter((it) => looseNorm(it.str).startsWith(lh)) : [];
+    let best: { it: LabelItem; score: number } | null = null;
+    for (const h of headers) {
+      const under = tails.filter((t) => t.y < h.y - 1 && h.y - t.y <= 160).sort((a, b) => b.y - a.y)[0];
+      if (!under) continue;
+      const score = Math.abs(under.y - point.y);
+      if (!best || score < best.score) best = { it: under, score };
+    }
+    if (best) return best.it;
+    if (tails.length) return near(tails);
+  }
+  // A label-like item on the map point's own line, ending just left of it.
+  const left = pool.filter((it) => Math.abs(it.y - point.y) <= 9 && it.x < point.x && it.x + it.width <= point.x + 8 && point.x - (it.x + it.width) <= 90);
+  const labelish = left.filter((it) => /[:#?]\s*$/.test(it.str.trim()));
+  return near(labelish.length ? labelish : left);
+}
+
 /** A label ending in ":" or "#" takes its value to the RIGHT; a bare caption
  *  ("Print Name") takes it ABOVE the caption (on the blank line). */
 export function sideForLabel(labelStr: string): "right" | "above" {

@@ -12,12 +12,14 @@ import { requiredTracks } from "./submittalTracks";
 import { planSetLicenceWarning, planSetPrintedLicences } from "./clientMatch";
 import type { CaptionSide, LabelItem, WidgetCaptions, WidgetRect } from "./formTextLayer";
 import {
-  attestsAttachedDocument, contactShapeRefusal, isLicenceHolderSlot, isTotalRow, isValuationSlot, licenceSourceRef, operatorItemLabels,
+  attestsAttachedDocument, captionSourceRule, contactShapeRefusal, isLicenceHolderSlot, isTotalRow, isValuationSlot, licenceSourceRef, operatorItemLabels,
   OREGON_CCB_SOURCE, signerNameConflicts, slotLicenceRef, STATE_LICENCE_SOURCE, TYPED_LICENCE_PREFIX, widgetContactKind, widgetLabel,
   type LicenceSourceRef, type OperatorItem, type PlacedWidget,
 } from "./formFieldChecks";
 import { namesWorkersComp, workersCompAffidavitItem } from "./formFieldChecks";
 import { HttpError } from "./httpError";
+import { logger } from "./logger";
+import type { PageGeometry } from "./formRowGeometry";
 import { isLicenceHolderRole, loadDefaultSignaturesByRole } from "./signatures";
 import { nowIso } from "./time";
 import { resolveValuation } from "./valuation";
@@ -1713,14 +1715,40 @@ export async function fillLoadedForm(
     // "off a bit" drift. Falls back to x/y for unlabeled fields / no text layer /
     // label-not-found, so nothing regresses. Text layer is read at most once.
     let anchorFor: ((f: OverlayField) => { x: number; y: number } | null) | null = null;
+    // ROW SNAP (formRowGeometry.rowSnapPlacement): a labelled placement is drawn INSIDE the row its
+    // printed label sits in — the page's own rules and shaded header bands, read once per blank —
+    // never on the rule (Yamhill County, live 2026-09-28: every owner/contractor/applicant value
+    // struck through), never in a header band, a header with blank rows under it filled across them.
+    // An unverified map's row is its LABEL's (resolvePlacementLabel, near the map's point); a verified
+    // map's row is the one its own point names — the text moves only within the cell a person
+    // confirmed (hard rule 3). FLAT_FORM_ROW_SNAP=0 turns it off (release #11 placement).
+    const rowSnapOn = process.env.FLAT_FORM_ROW_SNAP !== "0";
+    let textItems: LabelItem[] = [];
+    let geometry: PageGeometry[] = [];
+    let snapTools: typeof import("./formRowGeometry") | null = null;
+    let resolveLabel: typeof import("./formTextLayer").resolvePlacementLabel | null = null;
     if ((def.overlayFields ?? []).some((f) => f.label && f.label.trim())) {
       try {
-        const { extractLabels, hasTextLayer, anchorPlacement, sideForLabel } = await import("./formTextLayer");
+        const { extractLabels, hasTextLayer, anchorPlacement, sideForLabel, resolvePlacementLabel } = await import("./formTextLayer");
         const items = await extractLabels(templateBytes);
         if (hasTextLayer(items)) {
-          anchorFor = (f) => (f.label && f.label.trim())
-            ? anchorPlacement(items, { page: f.page, label: f.label, side: sideForLabel(f.label), size: f.size ?? 9 })
-            : null;
+          textItems = items;
+          resolveLabel = resolvePlacementLabel;
+          anchorFor = (f) => {
+            if (!f.label || !f.label.trim()) return null;
+            // The printed label near the map's point, and ITS side ("Job site address:" prints a colon
+            // the map's "Job site address" dropped — the value goes right of it, not above it).
+            // (A check mark keeps release #11's anchoring: it sits in its box, beside its caption.)
+            if (rowSnapOn && def.unverifiedMap && !/^lit:.{0,2}$/.test(String(f.source || ""))) {
+              const L = resolvePlacementLabel(items, f.label, f.page, { x: f.x, y: f.y });
+              return L ? anchorPlacement([L], { page: f.page, label: L.str, side: sideForLabel(L.str), size: f.size ?? 9 }) : null;
+            }
+            return anchorPlacement(items, { page: f.page, label: f.label, side: sideForLabel(f.label), size: f.size ?? 9 });
+          };
+          if (rowSnapOn) {
+            snapTools = await import("./formRowGeometry");
+            geometry = await snapTools.extractPageGeometry(templateBytes);
+          }
         }
       } catch { /* keep anchorFor null → use stored x/y */ }
     }
@@ -1732,9 +1760,15 @@ export async function fillLoadedForm(
         if (!checkboxRuleChecked({ source: field.onlyIf.source, equals: field.onlyIf.equals }, cond)) return { skip: true, overlaySource: "", text: "", printed: "", overlayRef: null };
       }
       // A recognized checklist may repair a stored placement's SOURCE (never its map).
-      const overlaySource = checklist.overlaySourceOverrides?.[index] ?? field.source;
-      let text = resolveSource(overlaySource, ctx);
+      let overlaySource = checklist.overlaySourceOverrides?.[index] ?? field.source;
       const printed = String(field.label ?? "").trim();
+      // THE PARCEL BOX AND THE DESCRIPTION OF WORK (formFieldChecks.captionSourceRule): on a map nobody
+      // verified, the printed label decides — a parcel box never takes the description of work.
+      if (def.unverifiedMap && printed) {
+        const bound = captionSourceRule(printed, overlaySource);
+        if (bound) overlaySource = bound.source;
+      }
+      let text = resolveSource(overlaySource, ctx);
       // The printed label names its licence (unverified maps) — the same rule as a widget's caption.
       let overlayRef: LicenceSourceRef | null = null;
       if (def.unverifiedMap && printed && ctx.licences) {
@@ -1785,6 +1819,28 @@ export async function fillLoadedForm(
       const overlayRefusal = printed ? contactShapeRefusal(widgetContactKind({ name: "", caption: printed }), text) : null;
       if (overlayRefusal) { operatorItems.push({ label: `${printed} (left blank: ${overlayRefusal})` }); continue; }
       const size = field.size ?? 9;
+      // A check mark ("lit:X") sits in its box where the map put it: a row snap would move it right
+      // of its caption.
+      const isMark = /^lit:/.test(overlaySource) && text.trim().length <= 2;
+      const pageGeometry = printed && !isMark && snapTools ? geometry.find((g) => g.page === field.page) : undefined;
+      if (pageGeometry && snapTools) {
+        const point = { x: field.x, y: field.y };
+        const L = def.unverifiedMap && resolveLabel ? resolveLabel(textItems, printed, field.page, point) : null;
+        // No label to anchor the row (a verified map, or none found): the row is the one release #11's
+        // own position names — the label-anchored point, else the map's — and only y moves into it.
+        const start = L ? point : ((anchorFor ? anchorFor(field) : null) ?? point);
+        const snap = snapTools.rowSnapPlacement({
+          geometry: pageGeometry, items: textItems, label: L, point: start, text, size,
+          widthOf: (t, s) => font.widthOfTextAtSize(t, s),
+        });
+        if (snap) {
+          for (const line of snap.lines) page.drawText(line.text, { x: line.x, y: line.y, size: line.size, font, color: rgb(0, 0, 0) });
+          if (snap.truncated) operatorItems.push({ label: `${printed} (the value is longer than the form's box — check it on the filled form and complete it by hand)` });
+          drawn += 1;
+          continue;
+        }
+        logger.info("forms", "flat-form row snap found no row; the map's own position is used", { form: def.formName, label: printed, page: field.page, labelFound: Boolean(L) });
+      }
       if (field.maxWidth) {
         while (text.length > 1 && font.widthOfTextAtSize(text, size) > field.maxWidth) {
           text = text.slice(0, -1);
@@ -1797,6 +1853,15 @@ export async function fillLoadedForm(
       const anchored = anchorFor ? anchorFor(field) : null;
       const nx = (anchored ? anchored.x : field.x) + (Number(process.env.OVERLAY_NUDGE_X) || 0);
       const ny = (anchored ? anchored.y : field.y) + (Number(process.env.OVERLAY_NUDGE_Y) || 0);
+      // NEVER IN A SHADED HEADER BAND (an unverified map): a value the rows could not take is named
+      // for the operator rather than drawn over "JOB SITE INFORMATION AND LOCATION".
+      if (pageGeometry && snapTools && def.unverifiedMap && !isMark) {
+        const box = { x0: nx, y0: ny - 0.22 * size, x1: nx + font.widthOfTextAtSize(text, size), y1: ny + 0.72 * size };
+        if (snapTools.headerBands(pageGeometry, textItems).some((b) => box.x0 < b.x1 && box.x1 > b.x0 && box.y0 < b.y1 && box.y1 > b.y0)) {
+          operatorItems.push({ label: `${printed} (no row for it could be found on the form — complete it by hand)` });
+          continue;
+        }
+      }
       page.drawText(text, { x: nx, y: ny, size, font, color: rgb(0, 0, 0) });
       drawn += 1;
     }

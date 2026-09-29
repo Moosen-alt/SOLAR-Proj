@@ -193,6 +193,52 @@ export function isTotalRow(w: Pick<PlacedWidget, "name" | "caption">): boolean {
   return /\btotal\b/i.test(`${w.name} ${w.caption || ""}`);
 }
 
+// ---- The parcel box and the description of work ---------------------------------------------------
+
+/** A parcel / APN / tax lot / tax map / map-and-lot box. */
+const PARCEL_SLOT = /\bparcel\b|\bapn\b|\btax\s*(?:lot|map|account)\b|\bmap\s*(?:and|&|\/)\s*(?:tax\s*)?lot\b|\bassessor'?s?\s*(?:parcel|map|account)\b/i;
+/** …but never the parcel's size, area or zoning, and never a box that also asks for the address or a
+ *  name ("Site address or parcel #" takes whichever the operator gives it). */
+const NOT_PARCEL_ID = /\b(?:size|area|acres?|acreage|sq|square|zon(?:e|ing)|frontage|width|depth|address|street|name|owner)\b/i;
+export const PARCEL_SOURCE = "snapshot.parcelNumber";
+/** A description-of-work box ("DESCRIPTION OF WORK", "Scope of work", "Project description"). */
+const DESCRIPTION_SLOT = /\bdescription\s+of\s+(?:the\s+)?(?:proposed\s+)?(?:work|project|improvements?)\b|\bscope\s+of\s+(?:the\s+)?work\b|\bwork\s+description\b|\bproject\s+description\b|\bdescribe\s+(?:the\s+)?(?:proposed\s+)?work\b/i;
+export const DESCRIPTION_SOURCE = "computed.descriptionOfWork";
+const printedWords = (s: string | undefined): string => tidy(String(s || "").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_+/g, " "));
+
+export function isParcelSlot(caption: string | undefined): boolean {
+  const t = printedWords(caption);
+  return PARCEL_SLOT.test(t) && !NOT_PARCEL_ID.test(t);
+}
+export function isDescriptionSlot(caption: string | undefined): boolean {
+  return DESCRIPTION_SLOT.test(printedWords(caption));
+}
+
+/**
+ * THE PARCEL BOX AND THE DESCRIPTION OF WORK, BY WHAT THE BOX PRINTS (Yamhill County's building
+ * application, live 2026-09-28: the description of work was written into "Tax map/parcel no" and its
+ * own rows stayed blank). The one rule the map sanitisation (sanitizeAcroMap, placements included)
+ * and the flat fill (unverified maps only — a person's verified binding stands, hard rule 3) read:
+ *  - a parcel / tax lot / tax map / APN box takes the project's parcel number, or stays blank —
+ *    never another value;
+ *  - a description-of-work box takes the project's description of work (a constant the map wrote
+ *    there is a description too, and stands).
+ * A check mark (lit:X) and an operator item are never rebound. null = the source stands.
+ */
+export function captionSourceRule(caption: string | undefined, source: string): { source: string; why: string } | null {
+  const src = String(source ?? "").trim();
+  if (!src || src.startsWith("operator:") || /^lit:.{0,2}$/.test(src)) return null;
+  if (isParcelSlot(caption)) {
+    if (src === PARCEL_SOURCE || /parcel|taxlot|maplot|\bapn\b/i.test(src.replace(/[^A-Za-z.]/g, ""))) return null;
+    return { source: PARCEL_SOURCE, why: "a parcel box takes the project's parcel number (or stays blank)" };
+  }
+  if (isDescriptionSlot(caption)) {
+    if (/^computed\.descriptionOfWork/.test(src) || src.startsWith("lit:")) return null;
+    return { source: DESCRIPTION_SOURCE, why: "a description-of-work box takes the project's description of work" };
+  }
+  return null;
+}
+
 // ---- B4: one signer, one name ---------------------------------------------------------------------
 
 const PRINT_NAME = /\bprint(?:ed)?\s*name\b|\bname\s*\(?\s*print/i;
@@ -460,6 +506,13 @@ export function sanitizeAcroMap(input: {
     if (attestsAttachedDocument(`${w.name} ${w.caption || ""}`)) {
       delete textFields[name];
       operatorItems.push({ field: name, label: widgetLabel(w) });
+      continue;
+    }
+    // THE PARCEL BOX AND THE DESCRIPTION OF WORK (captionSourceRule): the printed caption decides.
+    const bound = captionSourceRule(String(w.caption || "").trim() || w.name, source);
+    if (bound) {
+      textFields[name] = bound.source;
+      notes.push(`"${name}" prints "${widgetLabel(w)}" — ${bound.why}; its source ${source} was rebound to ${bound.source}.`);
       continue;
     }
     if (source === "computed.applicantSignerName" && (isLicenceHolderSlot(w.name) || isLicenceHolderSlot(w.caption))) {
