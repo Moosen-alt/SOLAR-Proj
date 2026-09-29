@@ -2028,7 +2028,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   /** REQUIRED secret-looking boxes this run left blank (no value on file) — labels only. The
    *  required-field sweep excludes secret boxes (a project with no account on file must not block
    *  a recipe's promotion forever), so without this list the blank was silent. */
-  private readonly secretsLeftBlank: string[] = [];
+  private readonly secretsLeftBlank: Array<{ label: string; bound: boolean }> = [];
   /** True once the delegated final submit actually went through. Read by the caller. */
   finalSubmitClicked = false;
   /** The completion/receipt page as text + URL, captured while standing on it. */
@@ -7272,9 +7272,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       : "";
     // Its own channel, not verifyWarning: a secret box left blank for want of a value on file is
     // a person's job at review (and the recipe's binding fills it on replay), not a recipe fault.
-    const secretWarning = this.secretsLeftBlank.length > 0
-      ? ` 🔒 Left blank for you — no value on file for: ${this.secretsLeftBlank.slice(0, 6).join(", ")}. Type it at review before submit (the recipe binds it by name, so a replay fills it once the project carries it).`
-      : "";
+    const boundBlank = this.secretsLeftBlank.filter((s) => s.bound).map((s) => s.label);
+    const unboundBlank = this.secretsLeftBlank.filter((s) => !s.bound).map((s) => s.label);
+    const secretWarning =
+      (boundBlank.length
+        ? ` 🔒 Left blank for you — no value on file for: ${boundBlank.slice(0, 6).join(", ")}. Type it at review before submit (the recipe binds it by name, so a replay fills it once the project carries it).`
+        : "")
+      + (unboundBlank.length
+        ? ` 🔒 Left blank for you — required, and no binding a replay can resolve: ${unboundBlank.slice(0, 6).join(", ")}. A person types it on every filing until a project field exists for it.`
+        : "");
     const message = reachedReview
       ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.${validationWarning}${docsWarning}${verifyWarning}${secretWarning}${noticeWarning}${choiceWarning}`
       : filledSomething
@@ -7329,7 +7335,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       missingRequiredDocs,
       validationBlocks,
       portalNotices: portalNotices.length ? portalNotices.slice(0, 5) : undefined,
-      secretsLeftBlank: this.secretsLeftBlank.length ? [...this.secretsLeftBlank] : undefined,
+      secretsLeftBlank: this.secretsLeftBlank.length ? this.secretsLeftBlank.map((s) => s.label) : undefined,
     };
   }
 
@@ -8419,11 +8425,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         this.secretControls.push(field.selector);
       }
       if (!value.trim() && field.required) {
-        // A REQUIRED secret box this learn left blank — the project has no value on file (or the
-        // box has no binding a replay can resolve). Not a trust blocker: the recipe binds it by
-        // name and a replay fills it once the project carries it. But never silent again.
+        // A REQUIRED secret box this learn left blank — the project has no value on file, or the
+        // box has no binding a replay can resolve (a "Tax ID"-shaped box the deterministic pass
+        // records with no field). Not a trust blocker. But never silent again, and the hand-off
+        // says which of the two it is: only a bound one is filled by a later replay.
         const label = String(field.label ?? "").slice(0, 80);
-        if (label && !this.secretsLeftBlank.includes(label)) this.secretsLeftBlank.push(label);
+        if (label && !this.secretsLeftBlank.some((s) => s.label === label)) this.secretsLeftBlank.push({ label, bound: !!step.field });
         this.debug?.event({ type: "required_secret_unfilled", labels: [label], binding: step.field ?? null });
       }
     } else if (fillReq.field && (!this.bindableFields.size || this.bindableFields.has(fillReq.field))

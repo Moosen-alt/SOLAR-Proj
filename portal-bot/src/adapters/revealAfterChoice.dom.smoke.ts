@@ -79,7 +79,10 @@ const page1 = (reveal: boolean, dropFirst = false): string => `<!doctype html><h
         '<div class="form-group"><label for="acct">${ACCT_LABEL}</label><span class="text-danger"> * </span>' +
         '<input id="acct" type="text" required></div>' +
         '<div class="form-group"><label for="mtr">Meter Number</label><span class="text-danger"> * </span>' +
-        '<input id="mtr" type="text" required></div>';
+        '<input id="mtr" type="text" required></div>' +
+        // A required secret-shaped box NO project field binds: left blank, and said so honestly.
+        '<div class="form-group"><label for="tax">Customer Tax ID</label><span class="text-danger"> * </span>' +
+        '<input id="tax" type="text" required></div>';
       ['acct', 'mtr'].forEach(function (id) {
         var first = ${dropFirst ? "true" : "false"};
         document.getElementById(id).addEventListener('blur', function () {
@@ -298,6 +301,11 @@ await check("the planner was asked about the revealed boxes by LABEL (no value) 
     assert.match(events, /"type":"required_secret_unfilled"/, "no required_secret_unfilled event");
     assert.ok(events.includes(ACCT_LABEL) && events.includes("Meter Number"), "the event does not name both boxes");
     assert.match(e.result.message, /PGE Account Number for point of interconnection/, "the hand-off message does not name the account box");
+  });
+  await check("the hand-off tells a bound blank (a replay fills it) from an unbound one (a person, every time)", () => {
+    assert.match(e.result.message, /no value on file for: [^.]*PGE Account Number for point of interconnection[^.]*Meter Number[^.]*\. Type it at review/, "the bound blanks are not reported as bound");
+    assert.match(e.result.message, /no binding a replay can resolve: Customer Tax ID\./, "the unbound blank is not reported as unbound");
+    assert.ok(!/no value on file for: [^.]*Customer Tax ID/.test(e.result.message), "the unbound box is wrongly promised a replay fill");
   });
   await e.context.close();
 }
