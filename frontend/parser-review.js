@@ -577,7 +577,12 @@
       // buildings — which one the form means is a person's call.
       const house = firstUnnegated(ARRAY_ON_HOUSE, t);
       if (house) return out('', `the plan set reads "${upper(acc[0])}" and "${upper(house[0])}" — arrays on two buildings`, true);
-      return out(STRUCTURE_OPTIONS[4], `the plan set reads "${upper(acc[0])}" and puts no array on the house`);
+      // ROUND 3 CONSERVATIVE CLOSE (skeptic MF1): an accessory building is NEVER derived. Plan sets put
+      // arrays on the garage AND the house, describe an existing array "to remain", or say "not in
+      // scope" in wordings no phrase list closes, and a wrong "Accessory" fills a legal form. The
+      // phrase is quoted as evidence and the structure is asked (operator ruling 2026-09-28: single
+      // family most of the time — derived only when the plan set names no other building).
+      return out('', `the plan set reads "${upper(acc[0])}" — the array may be on an accessory building, so the structure is asked`, true);
     }
     // (1)/(3) ANY OTHER BUILDING NAMED, anywhere — asked. The phrase beside the work (a roof label /
     // module count / trench beside the word) is QUOTED as evidence only; it decides nothing.

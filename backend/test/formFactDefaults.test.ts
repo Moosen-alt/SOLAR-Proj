@@ -213,22 +213,22 @@ try {
   // [case, plan text, the server's answer, the page's answer ("defer" = the page stores nothing)]
   const TABLE: Array<[string, string, string, string]> = [
     ["residence", "PAT EXAMPLE RESIDENCE  PV-1 COVER SHEET", SF, SF],
-    ["array on a detached garage", "PAT EXAMPLE RESIDENCE  SITE PLAN  (N) PV ARRAY ON (E) DETACHED GARAGE", ACC, ACC],
-    ["array on the roof of the detached garage", "PAT EXAMPLE RESIDENCE  (N) MODULES INSTALLED ON THE ROOF OF THE EXISTING DETACHED GARAGE", ACC, ACC],
-    ["ADU", "PAT EXAMPLE RESIDENCE  (N) SOLAR PANELS ON ADU ROOF", ACC, ACC],
-    ["accessory dwelling unit", "MODULES MOUNTED ON ACCESSORY DWELLING UNIT  SITE PLAN", ACC, ACC],
-    ["shed / barn", "PAT EXAMPLE RESIDENCE  PV ARRAY ON (N) SHED", ACC, ACC],
+    ["array on a detached garage", "PAT EXAMPLE RESIDENCE  SITE PLAN  (N) PV ARRAY ON (E) DETACHED GARAGE", "", ""],
+    ["array on the roof of the detached garage", "PAT EXAMPLE RESIDENCE  (N) MODULES INSTALLED ON THE ROOF OF THE EXISTING DETACHED GARAGE", "", ""],
+    ["ADU", "PAT EXAMPLE RESIDENCE  (N) SOLAR PANELS ON ADU ROOF", "", ""],
+    ["accessory dwelling unit", "MODULES MOUNTED ON ACCESSORY DWELLING UNIT  SITE PLAN", "", ""],
+    ["shed / barn", "PAT EXAMPLE RESIDENCE  PV ARRAY ON (N) SHED", "", ""],
     ["duplex", "PAT EXAMPLE DUPLEX  UNITS: 2  ARRAY ON ROOF", DUP, DUP],
     // Round 3 (rule 4): a townhouse is not derived — asked, as on base.
     ["townhouse (round 3: asked)", "PAT EXAMPLE TOWNHOUSE  PV ON ROOF", "", ""],
     // Round-1 skeptic probes: ordinary scope-of-work wording for an array on a detached building.
-    ["scope: PV SYSTEM ON A DETACHED GARAGE", "PAT EXAMPLE RESIDENCE  SCOPE: INSTALL (N) 7.2 KW PV SYSTEM ON A DETACHED GARAGE", ACC, ACC],
-    ["SOLAR MODULES ON THE ROOF OF AN EXISTING DETACHED GARAGE", "PAT EXAMPLE RESIDENCE  INSTALLATION OF 18 SOLAR MODULES ON THE ROOF OF AN EXISTING DETACHED GARAGE", ACC, ACC],
-    ["PHOTOVOLTAIC SYSTEM ON DETACHED GARAGE", "PAT EXAMPLE RESIDENCE  PHOTOVOLTAIC SYSTEM ON DETACHED GARAGE", ACC, ACC],
-    ["ROOFTOP SOLAR ON DETACHED SHOP", "PAT EXAMPLE RESIDENCE  ROOFTOP SOLAR ON DETACHED SHOP", ACC, ACC],
-    ["ROOF MOUNTED PV ON DETACHED GARAGE", "PAT EXAMPLE RESIDENCE  ROOF MOUNTED PV ON DETACHED GARAGE", ACC, ACC],
-    ["ARRAY LOCATED ON EXISTING POLE BARN", "PAT EXAMPLE RESIDENCE  ARRAY LOCATED ON EXISTING POLE BARN", ACC, ACC],
-    ["a later un-negated accessory phrase still counts", "PAT EXAMPLE RESIDENCE  NO PV ON (E) SHED  (N) PV ARRAY ON (E) DETACHED GARAGE", ACC, ACC],
+    ["scope: PV SYSTEM ON A DETACHED GARAGE", "PAT EXAMPLE RESIDENCE  SCOPE: INSTALL (N) 7.2 KW PV SYSTEM ON A DETACHED GARAGE", "", ""],
+    ["SOLAR MODULES ON THE ROOF OF AN EXISTING DETACHED GARAGE", "PAT EXAMPLE RESIDENCE  INSTALLATION OF 18 SOLAR MODULES ON THE ROOF OF AN EXISTING DETACHED GARAGE", "", ""],
+    ["PHOTOVOLTAIC SYSTEM ON DETACHED GARAGE", "PAT EXAMPLE RESIDENCE  PHOTOVOLTAIC SYSTEM ON DETACHED GARAGE", "", ""],
+    ["ROOFTOP SOLAR ON DETACHED SHOP", "PAT EXAMPLE RESIDENCE  ROOFTOP SOLAR ON DETACHED SHOP", "", ""],
+    ["ROOF MOUNTED PV ON DETACHED GARAGE", "PAT EXAMPLE RESIDENCE  ROOF MOUNTED PV ON DETACHED GARAGE", "", ""],
+    ["ARRAY LOCATED ON EXISTING POLE BARN", "PAT EXAMPLE RESIDENCE  ARRAY LOCATED ON EXISTING POLE BARN", "", ""],
+    ["a later un-negated accessory phrase still counts", "PAT EXAMPLE RESIDENCE  NO PV ON (E) SHED  (N) PV ARRAY ON (E) DETACHED GARAGE", "", ""],
     // Another building BESIDE the work (never "single-family" — asked). The real OR shape (cf1c56aa):
     // a roof label and module count on the garage, a GARAGE SYSTEM label, a trench.
     ["real shape: GARAGE ROOF #2 (07) / GARAGE SYSTEM- / MAIN HOUSE SYSTEM- / 22-ft trench", "PAT EXAMPLE RESIDENCE  PV-1 SITE PLAN  ROOF #1 (05) EXAMPLE EX-440 SLOPE: 25 AZIM.: 180  GARAGE ROOF #2 (07) EXAMPLE EX-440 SLOPE: 27 AZIM.: 199  ROOF #3 (05) EXAMPLE EX-440  ROOF #01 ROOF #02 ROOF #03 ~22'-0\" TRENCH TO BE 24\" DEEP  GARAGE SYSTEM- MAIN HOUSE SYSTEM-", "", ""],
@@ -279,7 +279,7 @@ try {
     ["ROOF 2 (GARAGE) (07)", "PAT EXAMPLE RESIDENCE  ROOF 1 (05)  ROOF 2 (GARAGE) (07) EXAMPLE EX-440", "", ""],
     ["DETACHED GARAGE ROOF 2 (07)", "PAT EXAMPLE RESIDENCE  DETACHED GARAGE ROOF 2 (07) EXAMPLE EX-440", "", ""],
     ["(N) PV ARRAYS ON DETACHED GARAGE ROOF (a plural subject: asked, not answered)", "PAT EXAMPLE RESIDENCE  (N) PV ARRAYS ON DETACHED GARAGE ROOF", "", ""],
-    ["bare SHOP: an array-on phrase is an accessory building", "PAT EXAMPLE RESIDENCE  (N) PV ARRAY ON (E) SHOP", ACC, ACC],
+    ["bare SHOP: an array-on phrase is an accessory building", "PAT EXAMPLE RESIDENCE  (N) PV ARRAY ON (E) SHOP", "", ""],
     ["bare SHOP: SHOP ROOF (12)", "PAT EXAMPLE RESIDENCE  SHOP ROOF (12) EXAMPLE EX-440", "", ""],
     ["bare SHOP: a module count beside it", "PAT EXAMPLE RESIDENCE  SHOP (N) 12 MODULES", "", ""],
     ["bare SHOP: SHOP ARRAY label", "PAT EXAMPLE RESIDENCE  SHOP ARRAY 4.4 KW", "", ""],
@@ -416,7 +416,8 @@ try {
       const sb = PR.structureBasis(text, {});
       const named = WORDS.test(withoutAttached(text));
       if (named !== words.length > 0) bad.push(`${name}: the page's word list (${JSON.stringify(words)}) and the independent reading (${named}) disagree`);
-      if (words.length && sb.option !== ACC) {
+      // An array-on phrase naming an accessory building abstains on its OWN quoted phrase (round-3 close).
+      if (words.length && sb.option !== ACC && !/may be on an accessory building/.test(String(sb.basis))) {
         wordRows++;
         if (sb.option !== "") bad.push(`${name}: answered ${sb.option} over ${words.join(", ")}`);
         // The items the evidence NAMES (each `WORD ("…context…")`), the quoted context set aside — a
@@ -516,14 +517,16 @@ try {
     assert.equal(String(reload(p.id).parserSnapshot.structureDescription ?? ""), "");
   });
 
-  await check("(S3) MUST-PASS: the array on a DETACHED GARAGE -> Accessory building, not asked; the forms read it (no Single Family tick)", async () => {
+  await check("(S3) MUST-EXCLUDE (round-3 close): the array on a DETACHED GARAGE is never derived — ASKED, the phrase quoted; no structure fill, no Single Family tick", async () => {
     const p = await withPlanSet(GARAGE);
-    assert.ok(!(await askedKeys(p.id)).includes("structureDescription"));
+    const d = agency.structureDescriptionOf(p.parserSnapshot);
+    assert.equal(d.value, "");
+    assert.match(d.basis, /PV ARRAY ON \(E\) DETACHED GARAGE" — the array may be on an accessory building, so the structure is asked/, d.basis);
+    assert.ok((await askedKeys(p.id)).includes("structureDescription"), "asked, never derived");
     const f = await fillAll(p, "s3");
-    assert.match(f.printed, /Accessory building \(garage\/shed\)/);
-    assert.match(String(f.r5952.message), /Structure: Accessory building \(garage\/shed\) — from the plan set \(the plan set reads "PV ARRAY ON \(E\) DETACHED GARAGE" and puts no array on the house; operator ruling 2026-09-28\)/);
-    assert.ok(!f.coosSfd, "an accessory building is not a single-family dwelling");
-    assert.equal(f.b01sSfdOrAccessory, "Yes_4", "Marion B-01S admits an accessory building");
+    assert.doesNotMatch(f.printed, /Accessory building \(garage\/shed\)/);
+    assert.doesNotMatch(String(f.r5952.message), /Structure:/);
+    assert.ok(!f.coosSfd, "never ticked single-family over an accessory phrase");
   });
 
   await check("(S4) MUST-EXCLUDE (round 3, the conservative rule): a shed / detached garage merely DRAWN is ASKED — never Single-family; the 5952 box blank, no Single Family tick, no structure note", async () => {
@@ -610,7 +613,8 @@ try {
     assert.equal(res.structureDescription, undefined, "a person's key is never written by the page");
     // The plan-set read's layout answer: agreeing adds its words; disagreeing is a question.
     const agree = buildPayload({ planDoc: { text: GARAGE.join("\n") }, llmStructureReading: { value: ACC, excerpt: "ARRAY ON DETACHED GARAGE" } });
-    assert.equal(agree.structureFromPlan, ACC);
+    // Round-3 close: an accessory building is never derived — text and read agreeing still ASK.
+    assert.equal(agree.structureFromPlan, "");
     const disagree = buildPayload({ planDoc: { text: RESIDENCE.join("\n") }, llmStructureReading: { value: ACC, excerpt: "ARRAY ON BARN ROOF" } });
     assert.equal(disagree.structureFromPlan, "");
     assert.match(String(disagree.structureFromPlanBasis), /confirm which building carries the array/);
@@ -645,7 +649,7 @@ try {
     // Saved through the real create path, the server reads the stored derivation (and the question
     // is not asked); a stored disagreement is asked even though the text alone would answer.
     const saved = repo.createProject(db, { clientId: client.id, ...JOB, ...agree } as never).project;
-    assert.deepEqual([agency.structureDescriptionOf(reload(saved.id).parserSnapshot).value, agency.structureDescriptionOf(reload(saved.id).parserSnapshot).source], [ACC, "plan"]);
+    assert.equal(agency.structureDescriptionOf(reload(saved.id).parserSnapshot).value, "", "an accessory building saved from the page is asked (never derived)");
     const split = repo.createProject(db, { clientId: client.id, ...JOB, ...disagree, projectDescriptionText: RESIDENCE.join(" ") } as never).project;
     assert.equal(agency.structureDescriptionOf(reload(split.id).parserSnapshot).value, "");
     assert.ok((await askedKeys(split.id)).includes("structureDescription"));
