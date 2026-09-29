@@ -30,6 +30,8 @@ import { isPathTenantedHost, isVendorDomain, portalHostOf, portalTenantOf, regis
 import { curatedFormSourcesFor } from "./curatedAhjForms";
 import { resolvePermitPath } from "./permitPath";
 import { requirementTrack } from "./requirementSlots";
+import { parserReview, type StructureBasis } from "./parserReviewShared";
+import { structureType } from "./codeReviewRules";
 
 export type FormTrack = "building" | "electrical";
 
@@ -672,12 +674,84 @@ export function structureMeaningOf(snapshot: Record<string, unknown> | undefined
   return structureTypeMeaning(structureAnswerOf(snapshot));
 }
 
-/** The project's structure answer as written: the first non-empty of structureDescription,
- *  constructionCategory, occupancyType. */
+/** The project's structure answer: the first non-empty of structureDescription,
+ *  constructionCategory, occupancyType — and, where that says nothing about the structure (empty, or
+ *  an occupancy classification like "R-3"), the answer the PLAN SET gives (structureDescriptionOf,
+ *  operator ruling 2026-09-28). An explicit "Other" is never answered over. */
 export function structureAnswerOf(snapshot: Record<string, unknown> | undefined): string {
   const s = snapshot ?? {};
-  return [s.structureDescription, s.constructionCategory, s.occupancyType]
+  const explicit = [s.structureDescription, s.constructionCategory, s.occupancyType]
     .map((v) => String(v ?? "").trim()).find(Boolean) ?? "";
+  if (explicit && (structureTypeMeaning(explicit) !== null || /^other$/i.test(explicit))) return explicit;
+  return structureDescriptionOf(s).value || explicit;
+}
+
+// ── THE STRUCTURE DESCRIPTION, FROM A PERSON OR FROM THE PLAN SET ─────────────────────────
+// Operator ruling 2026-09-28: "Single family most of the time, but can be an ADU/Accessory/garage
+// you can see it on the plan-set how its laid out." Oregon's BCD 5952 asks "What structure is the
+// array installed on?", and a real job whose plan set read "<NAME> RESIDENCE", one dwelling unit,
+// array on the house, was ASKED it. The answer now comes from, in order:
+//   1. a PERSON — structureDescription (the portal question / Manual entry), or the Manual-entry
+//      structure type "manufactured" (structureTypeOverride);
+//   2. the parser page's derivation at intake (structureFromPlan + structureFromPlanBasis — it saw the
+//      plan-set read's own layout answer too); a basis with no option there means the page found
+//      evidence that disagreed, so nothing is taken;
+//   3. the SAME derivation at read time over the plan-set text on file, for projects saved before it.
+// 2 and 3 are frontend/parser-review.js structureBasis — ONE regex family (parserReviewShared).
+// A derived answer never overrides a person, and never contradicts the project's own stated
+// category (a parsed / answered constructionCategory or occupancy that MEANS another structure, or an
+// explicit "Other") — that is a question, not a pick.
+export interface StructureDescription {
+  /** One of STRUCTURE_DESCRIPTION_OPTIONS (a person's answer is returned as written); "" = ask. */
+  value: string;
+  source: "answer" | "plan" | "";
+  /** The words that decided a plan-set answer (or why none was taken); "" for a person's answer. */
+  basis: string;
+}
+const STRUCTURE_TEXT_KEYS = ["planSetExtractedText", "sitePlanNotesText", "roofPlanNotesText", "projectDescriptionText", "description"];
+const structureMemo = new WeakMap<object, StructureDescription>();
+export function structureDescriptionOf(snapshot: Record<string, unknown> | undefined): StructureDescription {
+  const s = snapshot ?? {};
+  const answered = String(s.structureDescription ?? "").trim();
+  if (answered) return { value: answered, source: "answer", basis: "" };
+  if (String(s.structureTypeOverride ?? "").trim().toLowerCase() === "manufactured") {
+    return { value: "Manufactured home", source: "answer", basis: "Manual entry: structure type manufactured / mobile (HUD) home" };
+  }
+  const memo = structureMemo.get(s);
+  if (memo) return memo;
+  // Whether the HOUSE is a manufactured home: the one predicate for that (codeReviewRules.structureType
+  // — parsed field, then the package text with code titles / disclaimers set aside). The derivation
+  // never reads it for itself.
+  const house = structureType({ parserSnapshot: s } as unknown as ProjectRecord);
+  const manufactured = house.kind === "manufactured_home" ? "yes" as const : "no" as const;
+  const manufacturedBasis = manufactured === "yes" ? `the structure type reads manufactured home (${house.source}${house.excerpt ? `: "${house.excerpt}"` : ""})` : "";
+  const stored = parserReview.structureOption(s.structureFromPlan);
+  const storedBasis = String(s.structureFromPlanBasis ?? "").trim();
+  const text = STRUCTURE_TEXT_KEYS.map((k) => String(s[k] ?? "")).filter((t) => t.trim()).join("\n");
+  // The page's answer at intake is taken only where the round-3 rule (2026-09-28) could still have
+  // produced it over the text on file: an accessory building, or a single-family / duplex answer over
+  // text that names no other building (the page read the plan set alone; the server's text also
+  // carries the site-plan notes and the description). Anything else (a townhouse or manufactured
+  // home stored before the rule) is re-derived here — which asks.
+  const storedHolds = stored === "Accessory building (garage/shed)"
+    || ((stored === "Single-family dwelling" || stored === "Two-family dwelling (duplex)") && !parserReview.otherBuildingWords(text).length);
+  const derived: StructureBasis =
+    // The page's answer at intake — unless the house predicate says manufactured and the page did
+    // not put the array on another building.
+    storedHolds && !(manufactured === "yes" && stored !== "Accessory building (garage/shed)")
+      ? { option: stored, basis: storedBasis || "derived from the plan set at intake" }
+    : !stored && storedBasis ? { option: "", basis: storedBasis }
+    : parserReview.structureBasis(text, { dwellingUnits: s.dwellingUnits, manufactured, manufacturedBasis });
+  let out: StructureDescription = derived.option ? { value: derived.option, source: "plan", basis: derived.basis } : { value: "", source: "", basis: derived.basis };
+  if (out.value) {
+    const stated = [s.constructionCategory, s.occupancyType].map((v) => String(v ?? "").trim()).find(Boolean) ?? "";
+    const statedMeaning = stated ? structureTypeMeaning(stated) : null;
+    const siteBuilt = house.kind === "site_built" && out.value === "Manufactured home";
+    const contradicts = siteBuilt || /^other$/i.test(stated) || (statedMeaning !== null && statedMeaning !== structureTypeMeaning(out.value));
+    if (contradicts) out = { value: "", source: "", basis: `${out.basis}, but the project states "${siteBuilt ? "site-built" : stated}" — confirm the structure` };
+  }
+  structureMemo.set(s, out);
+  return out;
 }
 
 /** EXPLICIT single-family evidence in the structure answer ("Single-family dwelling", "SFD", "single

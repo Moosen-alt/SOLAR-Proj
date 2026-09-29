@@ -28,7 +28,7 @@
 import type { ProjectRecord } from "../../shared/src/types";
 import { parseRating } from "./codeReviewRules";
 import { evidenceForTopic } from "./projectEvidence";
-import { structureMeaningOf } from "./applicationDocsAgency";
+import { structureAnswerOf, structureDescriptionOf, structureMeaningOf } from "./applicationDocsAgency";
 
 export interface WorksheetQuestion { key: string; label: string; options: string[]; kind: "form-fact" }
 export interface IowaPvWorksheet {
@@ -438,7 +438,14 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   }
 
   // ── page 3: location ───────────────────────────────────────────────────────────────────
-  set("p3.loc12fam", onBuilding && oneTwo ? "X" : "", oneTwo ? `derived: ${units != null ? `${units} dwelling unit(s)` : catOneTwo ? `occupancy "${cat}"` : `structure "${[s.structureDescription, s.occupancyType].map((v) => String(v ?? "").trim()).find(Boolean) ?? ""}"`}` : "dwelling units / occupancy not parsed");
+  // The structure named as the ONE predicate resolved it — a plan-set derivation (operator ruling
+  // 2026-09-28) with the words that decided it.
+  const structureWords = (): string => {
+    const answer = structureAnswerOf(s);
+    const d = structureDescriptionOf(s);
+    return `structure "${answer}"${d.source === "plan" && d.value === answer ? ` (from the plan set: ${d.basis})` : ""}`;
+  };
+  set("p3.loc12fam", onBuilding && oneTwo ? "X" : "", oneTwo ? `derived: ${units != null ? `${units} dwelling unit(s)` : catOneTwo ? `occupancy "${cat}"` : structureWords()}` : "dwelling units / occupancy not parsed");
   set("p3.locOther", "", "");
   set("p3.locNotBuilding", ground && !roof ? "X" : "", ground && !roof ? "derived: ground mount" : "");
   if (onBuilding && !oneTwo) ask("dwellingUnits", "How many dwelling units are in the building the array is on?", ["1", "2", "3 or more"]);

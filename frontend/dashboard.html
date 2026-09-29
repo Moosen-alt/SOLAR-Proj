@@ -754,6 +754,17 @@
                     </select>
                   </label>
                   <div class="manual-entry-hint">A manufactured home cannot use the prescriptive path and needs engineering that carries the load to the foundation. Your answer here overrides what the plan-set text suggests.</div>
+                  <label class="manual-entry-field">Structure description (the building the array is on — permit forms print it)
+                    <select id="manualStructureDescription">
+                      <option value="">From the plan set (asked when it does not show it)</option>
+                      <option value="Single-family dwelling">Single-family dwelling</option>
+                      <option value="Two-family dwelling (duplex)">Two-family dwelling (duplex)</option>
+                      <option value="Townhouse">Townhouse</option>
+                      <option value="Manufactured home">Manufactured home</option>
+                      <option value="Accessory building (garage/shed)">Accessory building (garage/shed)</option>
+                    </select>
+                  </label>
+                  <div class="manual-entry-hint">Blank reads the plan set: single-family unless it shows the array on a detached garage / shed / ADU, or a duplex, townhouse or manufactured home (each form's fill note names the words it read). An answer here always wins.</div>
                   <label class="manual-entry-field">Homeowner email
                     <input id="manualHomeownerEmail" type="email" placeholder="owner@example.com" />
                   </label>

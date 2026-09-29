@@ -3986,6 +3986,13 @@ function applyExtraction(result, applied, opts = {}){
       state.suggestedClient[fieldId] = entry.value;
       return;
     }
+    // The plan-set read's answer to "which building carries the array" is EVIDENCE for the structure
+    // derivation at save time (ParserReview.structureBasis), never the project's structureDescription
+    // itself — that key is a person's answer (see buildSystemPayload).
+    if (fieldId === 'structureDescription'){
+      if (!state.llmStructureReading) state.llmStructureReading = { value: entry.value, excerpt: (entry.evidence && entry.evidence.excerpt) || '' };
+      return;
+    }
 
     // 1) Record into the snapshot we merge at save time (canonical keys).
     if (LLM_SNAPSHOT_KEYS.has(fieldId)){
@@ -4379,6 +4386,7 @@ async function runParse(){
   state.llmAssist = null;
   state.llmSnapshot = {};
   state.llmEvidence = [];
+  state.llmStructureReading = null;
   state.passes = [];
   state.reviewItems = null;
   state.passNotes = null;
@@ -5680,6 +5688,27 @@ function buildSystemPayload() {
   // Drop empties that came in from the snapshot itself.
   for (const k of Object.keys(payload)) {
     if (payload[k] === '' || payload[k] === null || (typeof payload[k] === 'number' && Number.isNaN(payload[k]))) delete payload[k];
+  }
+  // THE BUILDING THE ARRAY IS ON, FROM THE PLAN SET (operator ruling 2026-09-28: "Single family most
+  // of the time, but can be an ADU/Accessory/garage you can see it on the plan-set how its laid out").
+  // ONE derivation (ParserReview.structureBasis — the server runs the same file for projects already
+  // on file) over the plan text, the plan-set read's own layout answer and the unit count. Saved as
+  // the INTAKE's answer with its evidence (structureFromPlan / structureFromPlanBasis), NEVER as
+  // structureDescription: that key is a person's answer (the structure question, Manual entry), a
+  // re-save merges over the stored project, and writing it here would overwrite an answer given
+  // since. The server reads a person's answer first. Sent even when empty, so a re-parse replaces
+  // an earlier derivation instead of leaving it behind; not sent at all when nothing was parsed, or
+  // when only the server's manufactured-home reading can settle it (defer).
+  {
+    const planText = (state.planDoc && state.planDoc.text) || '';
+    const reading = state.llmStructureReading || null;
+    if (planText || reading) {
+      const sb = ParserReview.structureBasis(planText, { reading, dwellingUnits: payload.dwellingUnits });
+      if (!sb.defer) {
+        payload.structureFromPlan = sb.option;
+        payload.structureFromPlanBasis = sb.basis;
+      }
+    }
   }
   // THE PLAN SET'S TITLE-BLOCK LICENCE, KEPT AS A REFERENCE (never a fill value). An OBJECT on
   // purpose: the recipe value map skips objects, so a plan set's printed number — possibly another

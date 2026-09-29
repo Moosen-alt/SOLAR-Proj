@@ -3675,6 +3675,7 @@ function renderRecordPortal() {
     if ($("manualPermitPathHint")) $("manualPermitPathHint").textContent = choice.hint;
   }
   setIfIdle("manualStructureType", snap.structureTypeOverride ? String(snap.structureTypeOverride) : "unknown");
+  setIfIdle("manualStructureDescription", snap.structureDescription ? String(snap.structureDescription) : "");
   setIfIdle("manualHomeownerEmail", snap.homeownerEmail != null ? String(snap.homeownerEmail) : "");
   setIfIdle("manualHomeownerPhone", snap.homeownerPhone != null ? String(snap.homeownerPhone) : "");
   setIfIdle("manualDescription", desc);
@@ -3705,6 +3706,16 @@ async function saveManualEntry() {
   const structureTypeChoice = ($("manualStructureType")?.value || "").trim();
   const structureTypeOnFile = String(state.detail?.project?.parserSnapshot?.structureTypeOverride || "unknown");
   if (structureTypeChoice && structureTypeChoice !== structureTypeOnFile) payload.structureTypeOverride = structureTypeChoice;
+  // STRUCTURE DESCRIPTION (the building the array is on) — a person's answer, which wins over the
+  // plan-set derivation (operator ruling 2026-09-28). Sent only when it differs from what is on file;
+  // clearing it ("") hands the answer back to the plan set.
+  // An answer on file that none of the options spells (the select shows it blank) is never wiped by
+  // saving another field.
+  const structureDescSel = $("manualStructureDescription");
+  const structureDescChoice = (structureDescSel?.value || "").trim();
+  const structureDescOnFile = String(state.detail?.project?.parserSnapshot?.structureDescription || "").trim();
+  const structureDescShown = !structureDescOnFile || Array.from(structureDescSel?.options || []).some((o) => o.value === structureDescOnFile);
+  if (structureDescSel && structureDescChoice !== structureDescOnFile && (structureDescShown || structureDescChoice)) payload.structureDescription = structureDescChoice;
   if (email) payload.homeownerEmail = email;
   if (phone) payload.homeownerPhone = phone;
   if (desc) payload.projectDescriptionText = desc;
@@ -6111,6 +6122,10 @@ function bcd5952ClauseNotes(form) {
     if (/metal/.test(roof)) note("roof material and layer count", "Roofing: Yes — via the metal-roof clause");
     else if (/compos|asphalt/.test(roof) && max("roofLayers", 2) === true) note("roof material and layer count", "Roofing: Yes — via ≤2 layers composition shingle (not the metal-roof clause)");
     else if (/wood|shake/.test(roof) && max("roofLayers", 1) === true) note("roof material and layer count", "Roofing: Yes — via ≤1 layer wood shake (not the metal-roof clause)");
+    // An UNSTATED layer count passes on the operator's default (backend roofCovering.oregonRoofingRow,
+    // operator ruling 2026-09-28 "Assume 1-2 layers is good") — the note names the assumption.
+    else if (/compos|asphalt/.test(roof) && num("roofLayers") == null) note("roof material and layer count", "Roofing: Yes — via ≤2 layers composition shingle; layer count not stated, assumed 1-2 layers (operator ruling 2026-09-28)");
+    else if (/wood|shake/.test(roof) && num("roofLayers") == null) note("roof material and layer count", "Roofing: Yes — via single-layer wood shake; layer count not stated, assumed one layer (operator ruling 2026-09-28)");
   }
 
   const exposure = str("wind").toUpperCase();

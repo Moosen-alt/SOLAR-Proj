@@ -20,7 +20,7 @@
 // ---------------------------------------------------------------------------
 
 import type { PrescriptiveLimits, ProjectRecord } from "../../shared/src/types";
-import { classifyRoofCovering, oregonRoofingRowQualifies } from "./roofCovering";
+import { assumedRoofLayersNote, classifyRoofCovering, oregonRoofingRowQualifies } from "./roofCovering";
 
 export type PermitPath = "prescriptive" | "engineered" | "unknown";
 
@@ -620,6 +620,11 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
   if (layersFail) {
     screenFailures.push(`${snap(project, "roofLayers")} existing layer(s) of "${roofMaterial}" — the BCD 5952 roofing row admits no more than two layers of composition (one of wood shingles/shakes)`);
   }
+  // AN UNSTATED LAYER COUNT PASSES ON THE OPERATOR'S DEFAULT (roofCovering.oregonRoofingRow, operator
+  // ruling 2026-09-28) — said in the basis, so the path never rests on an assumption nobody can see.
+  const assumedLayers = stateCode === "OR" && !nonPrescriptiveRoof
+    ? assumedRoofLayersNote(roofMaterial, snap(project, "roofMaterialSubtype"), snap(project, "roofLayers")) : "";
+  if (assumedLayers) basis.push(`Roofing: ${assumedLayers}.`);
   if (nonPrescriptiveRoof && stateCode === "OR") {
     screenFailures.push(covering.family === "tile"
       ? `roofing material "${roofMaterial}"${covering.subtype && !roofMaterial.toLowerCase().includes(covering.subtype.toLowerCase()) ? ` (${covering.subtype})` : ""} is tile — not a prescriptive-eligible covering (the BCD 5952 roofing row admits only metal, single-layer wood shingles/shakes, or <=2-layer composition), so tile-roof PV is non-prescriptive in Oregon: file the engineered/structural application`
