@@ -403,6 +403,45 @@ await check("SYNTHETIC (verified): a point ON a rule moves up into that row, x k
   assert.ok(parcelRow.some((t) => /^Install/.test(t)), `verified binding rebound: ${JSON.stringify(parcelRow)}`);
 });
 
+// ---------------------------------------------------------------------------------------------
+// 4. Two other layouts the same engine meets on unknown forms: a SHADED LABEL CELL with its white
+//    value cell beside it (a row, not a section header), and a caption printed UNDER its line.
+// ---------------------------------------------------------------------------------------------
+async function syntheticBlank2(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([612, 792]);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const rule = (y: number, x0: number, x1: number) => page.drawRectangle({ x: x0, y: y - 0.35, width: x1 - x0, height: 0.7, color: rgb(0, 0, 0) });
+  page.drawRectangle({ x: 36, y: 700, width: 100, height: 18, color: rgb(0.85, 0.85, 0.85) });
+  page.drawText("Owner Name", { x: 40, y: 706, size: 9, font });
+  rule(700, 36, 356); rule(718, 36, 356);
+  page.drawRectangle({ x: 135.65, y: 700, width: 0.7, height: 18, color: rgb(0, 0, 0) });
+  rule(650, 40, 250);
+  page.drawText("Print Name", { x: 40, y: 641, size: 8, font });
+  page.drawText("Date", { x: 280, y: 641, size: 8, font });
+  rule(650, 280, 356);
+  for (const [i, t] of ["Example County", "Owner Authorization", "Office use only", "Permit number", "Received by"].entries()) page.drawText(t, { x: 400, y: 760 - i * 14, size: 9, font });
+  return doc.save();
+}
+const syn2 = await syntheticBlank2();
+const s2Items = await extractLabels(syn2);
+const s2Geo = (await extractPageGeometry(syn2))[0];
+await check("SHADED LABEL CELL: the value goes in the white cell beside it on the same row (never the rows below, never the shaded cell)", async () => {
+  const def = { ...yamhillDef([P("project.homeownerName", 150, 699.8, "Owner Name", 200)]), id: "tmpl-synthetic-2" };
+  const lines = await drawnLines((await fill(def, syn2, ctx)).bytes, s2Items);
+  const name = lines.find((l) => l.text === v("project.homeownerName"));
+  assert.ok(name, `not drawn: ${JSON.stringify(lines)}`);
+  assert.ok(name.x >= 136 && name.y >= 700.35 + 1.5 && name.y <= 700.35 + 3.5, JSON.stringify(name));
+});
+await check("CAPTION UNDER ITS LINE: a bare caption ('Print Name') takes the value on the line above it, stopping before the next caption's line", async () => {
+  const def = { ...yamhillDef([P("client.installerCompanyName", 40, 640, "Print Name", 200)]), id: "tmpl-synthetic-3" };
+  const lines = await drawnLines((await fill(def, syn2, ctx)).bytes, s2Items);
+  const who = lines.find((l) => l.text === v("client.installerCompanyName"));
+  assert.ok(who, `not drawn: ${JSON.stringify(lines)}`);
+  assert.ok(Math.abs(who.x - 40) < 0.6 && who.y >= 650.35 + 1.5 && who.y <= 650.35 + 3.5 && who.x1 <= 250, JSON.stringify(who));
+  assert.deepEqual(rowViolations(s2Geo, s2Items, lines, []), []);
+});
+
 console.log("");
 if (failures) {
   console.error(`flatFormRowSnap: ${failures} FAILED, ${passed} passed`);

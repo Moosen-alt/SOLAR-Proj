@@ -384,7 +384,18 @@ export function rowSnapPlacement(input: SnapInput): SnapResult | null {
   if (L) {
     const lh = L.height > 0 ? L.height : size0;
     const band = headers.find((b) => L.y >= b.y0 - 1 && L.y <= b.y1 && L.x >= b.x0 - 2 && L.x < b.x1);
-    if (band) return rowsBelow(band.y0, band.x0, band.x1);
+    if (band) {
+      // A shaded LABEL CELL with its value cell beside it (the row's rule runs on past the band): the
+      // same row, right of the band. Otherwise a section header: the blank rows under it.
+      const rowRule = g.hRules.filter((r) => !r.band && Math.abs(r.yTop - band.y0) <= 1.5 && r.x0 <= band.x1 + 3 && r.x1 >= band.x1 + MIN_ROOM)
+        .sort((a, b) => b.x1 - a.x1)[0];
+      if (rowRule) {
+        const xStart = Math.max(L.x + L.width + 4, band.x1 + 3);
+        const xEnd = rowEnd(g, items, xStart, rowRule.yTop, band.y1, rowRule.x1);
+        if (xEnd - xStart >= MIN_ROOM) return inRow(rowRule, band.y1, xStart, xEnd, null, "row");
+      }
+      return rowsBelow(band.y0, band.x0, band.x1);
+    }
     const under = ruleUnder(g, L.y, L.x + 1, 7, 0.5);
     if (under) {
       const over = ruleOver(g, L.y, L.x + 1, Math.max(4, 0.6 * lh), 40);
