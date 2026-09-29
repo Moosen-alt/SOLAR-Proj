@@ -2921,6 +2921,7 @@ Return ONLY JSON:
 
   async verifyPortalFillVision(input: PortalFillVisionVerifyInput): Promise<PortalFillVerification> {
     const system = `You are a QA agent verifying that a solar permit portal was filled correctly. You will be shown a screenshot of the review/confirm screen. Compare what you see against the project's authoritative data. Flag any mismatch.
+Solid pink/magenta rectangles are DELIBERATE masks over secrets (utility account / meter numbers) the automation typed and must not show you: never list them as a match, a mismatch or an issue.
 Return ONLY JSON:
 {"matches":[{"label":"<field>","expected":"<project value>","found":"<value on screen>","ok":<bool>}],
  "overallConfidence":"low|medium|high",

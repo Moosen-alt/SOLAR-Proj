@@ -25,7 +25,7 @@ import path from "node:path";
 import fs from "node:fs";
 import type { AppDb } from "./db";
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../shared/src/types";
-import { FINAL_SUBMIT_GATE_SENTENCE } from "../../shared/src/portalSafety";
+import { FINAL_SUBMIT_GATE_SENTENCE, redactSecretValues } from "../../shared/src/portalSafety";
 import { perJobAnswerKeyFor, perJobControlOfField } from "../../shared/src/perJobQuestions";
 import { parseHasBattery } from "../../shared/src/batteryControls";
 import { learnPortal, browserLimiter } from "../../portal-bot/src/index";
@@ -159,23 +159,10 @@ export function projectSecretValues(project: ProjectRecord): string[] {
  *  2026-09-25): the site-plan line "...tied to exterior utility meter #77 902 323, new PV AC
  *  disconnect ... within 10' of the utility meter" matched the disconnect topic, went into the
  *  design digest, and carried the meter number to the model on every planner call.
- *  Identifier-shaped secrets (5+ digits) are matched digit-for-digit with separators ignored
- *  (spaces, dashes, dots, '#', '/'), never inside a longer digit run; other secrets only when
- *  they carry a digit and are 6+ chars (a meter-keyed word like "exterior" is not an identifier
- *  and must not erase that word from the notes). */
-export function redactSecretValues(text: string, secrets: Iterable<string>): string {
-  let out = text;
-  for (const secret of secrets) {
-    const digits = secret.replace(/\D/g, "");
-    if (digits.length >= 5) {
-      const pattern = digits.split("").join("[\\s\\-\\u2013.#/]*");
-      out = out.replace(new RegExp(`(?<!\\d)${pattern}(?!\\d)`, "g"), "[redacted]");
-    } else if (secret.length >= 6 && /\d/.test(secret)) {
-      out = out.replace(new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "[redacted]");
-    }
-  }
-  return out;
-}
+ *  The ONE scrub lives in shared/src/portalSafety.ts — the learner scrubs its page text with it
+ *  too, once it has typed the project's account/meter into a portal. Re-exported here for the
+ *  backend's callers and the kbLearnLookup test. */
+export { redactSecretValues };
 
 function digestLines(project: ProjectRecord, maxChars: number, matches: (line: string) => boolean, secrets: string[] = []): string {
   const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
@@ -1583,9 +1570,11 @@ async function autoLearnPortalInner(
     bodyText: reviewBody,
   });
   // Vision verification can be disabled (PORTAL_VISION_VERIFY=0). NOTE: the review screenshot
-  // is a RAW render and may contain portal-rendered PII (account/meter numbers shown as text)
-  // that the DOM/text path masks — it is sent to the model and written to data/screenshots, so
-  // treat it as sensitive.
+  // is a render of the portal and may contain portal-rendered PII — it is sent to the model and
+  // written to data/screenshots, so treat it as sensitive. The PROJECT's own account/meter
+  // numbers (which a learn now types, by name) are masked in it by the learner (withSecretMask:
+  // the boxes it typed plus any element echoing one; no picture at all if the mask cannot be
+  // built) — the vision prompt is told the pink boxes are deliberate.
   let visionVerification: typeof textVerification | null = null;
   if (learn.reviewScreenshotBase64 && process.env.PORTAL_VISION_VERIFY !== "0") {
     try {
@@ -1593,8 +1582,8 @@ async function autoLearnPortalInner(
         screenshotBase64: learn.reviewScreenshotBase64,
         mimeType: "image/png",
         // The SAME filtered list the text verifier gets (it used to receive every scraped field,
-        // account and meter numbers included). The screenshot itself is still a raw render —
-        // masking it is the L2 work, recorded as open.
+        // account and meter numbers included). The screenshot masks the project's own secrets
+        // (learner withSecretMask); any OTHER portal-rendered PII in it is still a raw render.
         reviewFields: nonSensitiveReviewFields,
         projectFields,
         bodyText: reviewBody,

@@ -2,12 +2,13 @@ import fs from "fs";
 import { preferredRowLabel, rankAddressVersions, type SiteIdentity } from "../addressVersion";
 import { imageToPdfBytes, pdfNameFor, shouldConvertToPdf } from "../imageToPdf";
 import path from "path";
-import type { Page, Frame } from "playwright";
+import type { Page, Frame, Locator } from "playwright";
 import type { ProjectRecord, RecipeSelector, RecipeStep, StepFingerprint } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { selectWithFallback, readClosedComboboxOptions } from "../comboboxFill";
-import { detectChallengeFrame, frameSelectorFor, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
+import { detectChallengeFrame, frameSelectorFor, maskId, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
+import { applyFormatHint } from "../formatHint";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin, lastRevealTrail, loginFormPresent, holdForPerson } from "./loginFlow";
 import { enterApplicationFlow, isExcludedEntryLabel, normalizeEntryLabel, chooseApplicationType } from "./applicationEntry";
@@ -19,7 +20,7 @@ import { parseStreetName, parseStreetNumber, parseStreetLine, correctTruncatedAd
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
-import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, isSignatureNameLabel, isTypeSignatureToggleLabel, reviewSignals as sharedReviewSignals, splitSignerName } from "../../../shared/src/portalSafety";
+import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, isSignatureNameLabel, isTypeSignatureToggleLabel, redactSecretValues, reviewSignals as sharedReviewSignals, splitSignerName } from "../../../shared/src/portalSafety";
 import { BATTERY_DECLARATION_QUESTION, batteryControlKind, batteryDeclarationAnswer } from "../../../shared/src/batteryControls";
 import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, backstopFor, isStoppingAbort, drainOwnWrites, unsavedAtReviewWarning, portalOwnCallsBlockedAtReview, reviewBlockedCallsLine } from "../filingBackstop";
 import { hostOfUrl, sameCredentialScope } from "../siteOf";
@@ -195,6 +196,10 @@ export interface LearnResult {
    *  services were returned for this address") — the walk stopped on them (stopReason
    *  "not_served") and the backend keeps nothing learned here under the AHJ (portal-truth D5). */
   notServed?: string;
+  /** REQUIRED secret boxes (account / meter number…) this learn left blank because the project
+   *  has no value on file — labels only. Not a trust blocker (the recipe binds them by name); a
+   *  person types them at review. Undefined when none. */
+  secretsLeftBlank?: string[];
   /** The FULL url (query string included) of the application this run worked on, captured
    *  where it stopped. Without it there is no way to audit the right application afterwards:
    *  a portal list can hold several drafts for the same customer, and auditing "the first" or
@@ -1783,6 +1788,10 @@ interface AppliedFill {
   required: boolean;
   /** Radio-group identity of the filled field (see ExtractedField.group). */
   group?: string;
+  /** Set when this fill TYPED the project's own secret, read by name (accountNumber /
+   *  meterNumber): the read-back then checks the box is non-empty and re-types it by the same
+   *  name. The value itself is never held here. */
+  secretBinding?: string;
 }
 
 export interface UploadSlot {
@@ -2010,6 +2019,24 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private permitDiscipline = "";
   /** Set when the review page's own save was still pending when the learn handed over (B3). */
   private reviewUnsavedWarning = "";
+  /** THE PROJECT'S OWN SECRETS, READ BY NAME AT FILL TIME (hard rule 2). Live on PGE (2026-09-28):
+   *  the re-scan found the revealed "PGE Account Number for point of interconnection" and "Meter
+   *  Number" boxes, recorded each bound by name — and typed "" into both, because nothing read the
+   *  value; the portal's review page reported both as Missing Required Fields. A recorded step
+   *  types, on replay, fieldValues[binding]; the learn now types the same thing (secretFillValue).
+   *  Never a planner input, never a step's literal, never logged. */
+  private secretSource: Partial<Record<string, string>> = {};
+  /** Every secret value this run actually TYPED, in memory only, so each text and screenshot that
+   *  leaves the process (planner, review verifier, debug bundle) can be scrubbed / masked of it. */
+  private readonly typedSecrets = new Set<string>();
+  /** The controls this run typed a secret into — masked in every screenshot. */
+  private readonly secretControls: RecipeSelector[] = [];
+  /** Their labels (never values) — named when the run's trace is discarded for holding a secret. */
+  private readonly typedSecretLabels: string[] = [];
+  /** REQUIRED secret-looking boxes this run left blank (no value on file) — labels only. The
+   *  required-field sweep excludes secret boxes (a project with no account on file must not block
+   *  a recipe's promotion forever), so without this list the blank was silent. */
+  private readonly secretsLeftBlank: Array<{ label: string; bound: boolean }> = [];
   /** True once the delegated final submit actually went through. Read by the caller. */
   finalSubmitClicked = false;
   /** The completion/receipt page as text + URL, captured while standing on it. */
@@ -2706,16 +2733,21 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       })).catch(() => null);
       const tooTall = !!dims && dims.h > MAX_EDGE;
       const tooWide = !!dims && dims.w > MAX_EDGE;
-      if (tooTall || tooWide) {
-        const buf = await this.page.screenshot({
-          type: "png",
-          clip: { x: 0, y: 0, width: Math.min(dims!.w, MAX_EDGE), height: Math.min(dims!.h, MAX_EDGE) },
-        });
-        this.debug?.event({ type: "plan_screenshot_clipped", pageSize: `${dims!.w}x${dims!.h}`, clippedTo: `${Math.min(dims!.w, MAX_EDGE)}x${Math.min(dims!.h, MAX_EDGE)}` });
+      // The planner's picture never shows a secret the run knows (hard rule 2): masked, or none.
+      const page = this.page;
+      return await this.withSecretMask("plan screenshot", async (mask) => {
+        if (tooTall || tooWide) {
+          const buf = await page.screenshot({
+            type: "png",
+            clip: { x: 0, y: 0, width: Math.min(dims!.w, MAX_EDGE), height: Math.min(dims!.h, MAX_EDGE) },
+            ...(mask ? { mask } : {}),
+          });
+          this.debug?.event({ type: "plan_screenshot_clipped", pageSize: `${dims!.w}x${dims!.h}`, clippedTo: `${Math.min(dims!.w, MAX_EDGE)}x${Math.min(dims!.h, MAX_EDGE)}` });
+          return Buffer.from(buf as Buffer).toString("base64");
+        }
+        const buf = await page.screenshot({ type: "png", fullPage: true, ...(mask ? { mask } : {}) });
         return Buffer.from(buf as Buffer).toString("base64");
-      }
-      const buf = await this.page.screenshot({ type: "png", fullPage: true });
-      return Buffer.from(buf as Buffer).toString("base64");
+      });
     } catch {
       return undefined;
     }
@@ -3300,7 +3332,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // What discipline this run is filing. Held on the instance so the fill guard can refuse
       // a record type that contradicts it — the planner sees one page at a time and does not.
       this.permitDiscipline = String(project.permitType ?? "");
+      // The secrets a recorded step binds by name, read from the SAME project fields the replay's
+      // value map uses (portalRecipes.resolveRecipeFieldValues: accountNumber / meterNumber).
+      this.secretSource = {
+        accountNumber: String(project.accountNumber ?? "").trim(),
+        meterNumber: String(project.meterNumber ?? "").trim(),
+      };
+      this.debug?.setScrubber((text) => this.scrubSecrets(text));
       result = await this.learnImpl(context, project);
+      // The message quotes the portal (validation errors, notices) — a portal can echo an account.
+      result = { ...result, message: this.scrubSecrets(result.message) };
       // Hand-off first (the route comes off), then every abort up to that moment is counted.
       await backstop?.dispose().catch(() => null);
       // WHAT THE PERSON TAKING THE REVIEW PAGE MUST KNOW (dryrun-0928 B3 + B14), in the hand-off itself:
@@ -3342,7 +3383,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     } finally {
       await backstop?.dispose().catch(() => null);
       this.stopHeartbeat();
-      await this.debug?.stopTrace(this.page);
+      // A run that TYPED a secret has it in the trace raw (the fill's value, every DOM snapshot
+      // after it) — hard rule 2: that trace is discarded, not saved; the rest of the bundle stays.
+      await this.debug?.stopTrace(this.page, this.typedSecrets.size > 0
+        ? { discard: { event: "trace_discarded_secret_typed", labels: [...this.typedSecretLabels] } }
+        : undefined);
       this.debug?.finalize({
         outcome: result ? (result.pauseReason ? "paused" : result.ok ? "ok" : "failed") : "error",
         ok: result?.ok ?? false,
@@ -5005,7 +5050,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // exactly what the bot saw and what it changed without re-running blind. Best-effort only;
     // PNGs alone can be disabled with AUTOLEARN_DEBUG_SCREENSHOTS=0 (sidecars still written).
     const saveDebugShot = async (label: string) => {
-      await this.debug?.screenshot(this.page, label);
+      // Bundle PNGs mask a known secret too (the trace stays the documented raw render).
+      // Fails closed like the others: a secret typed and no mask buildable = no PNG this time.
+      if (this.debug && this.page && typeof this.page.screenshot === "function") {
+        await this.withSecretMask("bundle screenshot", (mask) => this.debug!.screenshot(this.page, label, { mask }));
+      }
       // And keep the page's own markup, blanked of the operator's data — this is what the
       // offline portal replica is built from (see learnDebug.capturePageHtml).
       await this.debug?.capturePageHtml(this.page, label);
@@ -5118,7 +5167,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         url = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
         try { visitedPaths.add(new URL(url).pathname.toLowerCase()); } catch { /* non-URL (test fakes) */ }
         const rawBody = await this.page.locator("body").innerText().catch(() => "");
-        bodyText = (redactStatusText(String(rawBody)) ?? "").slice(0, 2000);
+        // The planner's page text: every secret this run knows scrubbed first (a page that echoes
+        // an account typed earlier), then the long-digit-run mask.
+        bodyText = (redactStatusText(this.scrubSecrets(String(rawBody))) ?? "").slice(0, 2000);
       } catch (err) {
         return fail(steps, this.portalName, `Failed to scrape page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`, null, pageCount, portalNotices);
       }
@@ -5684,7 +5735,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const visibleIdx = fields.map((_f, i) => i).filter((i) => !signatureFieldIdx.has(i));
       const plannerFields = visibleIdx.length === fields.length ? fields : visibleIdx.map((i) => fields[i]);
       try {
-        plan = await this.planner({ url, pageTitle, fields: plannerFields, bodyText, alreadyFilledLabels, isDashboard, recoveryHint: recoveryHint || undefined, screenshotBase64: planShot });
+        plan = await this.askPlanner({ url, pageTitle, fields: plannerFields, bodyText, alreadyFilledLabels, isDashboard, recoveryHint: recoveryHint || undefined, screenshotBase64: planShot });
       } catch (err) {
         this.debug?.event({ type: "planner_error", page: pageCount, message: err instanceof Error ? err.message : String(err) });
         return fail(steps, this.portalName, `Planner failed on page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`, null, pageCount, portalNotices);
@@ -5850,7 +5901,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // WHAT DID THE PORTAL SAY? Read it here, on every page, before deciding anything —
         // this is the only place that sees a page which advanced INTO an error.
         {
-          const notices = await collectPortalNoticesFrom(this.page);
+          // Scrubbed before they are kept: a portal repeats a typed account back ("Account number …
+          // could not be found"), and these leave the process (result.portalNotices, messages).
+          const notices = (await collectPortalNoticesFrom(this.page)).map((n) => this.scrubSecrets(n));
           const fresh = notices.filter((n) => !portalNotices.includes(n));
           if (fresh.length) {
             for (const n of fresh) portalNotices.push(n);
@@ -6437,6 +6490,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             sensitive,
             required: !!field.required,
             group: field.group,
+            secretBinding: this.typedSecretBinding(step),
           });
         }
       }
@@ -6472,6 +6526,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             expected: "",
             sensitive: true,
             required: !!field.required,
+            secretBinding: this.typedSecretBinding(step),
           });
         }
       }
@@ -6503,6 +6558,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const MAX_RESCAN_PASSES = 7;
         let computedThisPage = false;
         let lateEquipTried = false;
+        let lastRevealSig = "";
         for (let rescanPass = 0; rescanPass < MAX_RESCAN_PASSES; rescanPass++) {
           let revealedThisPass = 0;
           try {
@@ -6537,6 +6593,24 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                 !alreadyFilledLabels.includes(f.label) &&
                 !inFilledGroup(f),
             );
+            // WHAT THE FILLS REVEALED, NAMED (labels only). newFillable above is "not filled yet",
+            // which includes every optional box that was there from the start; the operator's
+            // question after a live miss (PGE 2026-09-28, the account/meter boxes a choice
+            // revealed) is which controls APPEARED. Identity = section + label + type against the
+            // page's entry scrape. Diagnostic only — it changes nothing that is planned or filled.
+            {
+              const idOf = (f: ExtractedField): string => `${String(f.section ?? "").trim()}\u0000${String(f.label ?? "").trim()}\u0000${f.fieldType}`;
+              const atEntry = new Set(fields.map(idOf));
+              const appeared = postFields.filter((f) => f.label && f.fieldType !== "button" && !atEntry.has(idOf(f)));
+              const sig = appeared.map(idOf).join("\u0001");
+              if (appeared.length && sig !== lastRevealSig) {
+                lastRevealSig = sig;
+                this.debug?.event({
+                  type: "revealed_controls", page: pageCount, pass: rescanPass + 1,
+                  labels: appeared.slice(0, 12).map((f) => `${(f.label || "").slice(0, 60)}${f.required ? " *" : ""}`),
+                });
+              }
+            }
             if (newFillable.length === 0) {
               // A cascade can reveal a SECOND section reusing bare labels the first
               // section already "filled" ("Manufacturer"/"Model") — those are invisible
@@ -6563,7 +6637,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             let postBodyText = bodyText;
             try {
               const rawBody2 = await this.page.evaluate(() => (document.body?.innerText ?? "")).catch(() => "");
-              postBodyText = (redactStatusText(String(rawBody2)) ?? "").slice(0, 2000);
+              postBodyText = (redactStatusText(this.scrubSecrets(String(rawBody2))) ?? "").slice(0, 2000);
             } catch { /* keep the original snippet */ }
 
             // Ask the planner to fill the newly-visible NON-sensitive fields. Pass the full
@@ -6571,7 +6645,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             // skip fields already handled this page.
             let postPlan: LearnPlanResponse = { fills: [], atReview: false };
             try {
-              postPlan = await this.planner({
+              postPlan = await this.askPlanner({
                 url,
                 pageTitle,
                 fields: postFields,
@@ -6636,6 +6710,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                   expected: "",
                   sensitive: true,
                   required: !!nf.required,
+                  secretBinding: this.typedSecretBinding(step),
                 });
               }
             }
@@ -6836,9 +6911,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
               // The completion page is the receipt: it carries the number the portal just
               // issued, and it is the only place that number appears before the record list
               // catches up. Grab it while we are standing on it.
-              this.finalSubmitPageText = String(
+              this.finalSubmitPageText = this.scrubSecrets(String(
                 (await this.page!.locator("body").innerText().catch(() => "")) ?? "",
-              ).replace(/\s+/g, " ").trim().slice(0, 4000);
+              ).replace(/\s+/g, " ").trim()).slice(0, 4000);
               this.finalSubmitUrl = (() => { try { return String(this.page!.url?.() ?? ""); } catch { return ""; } })();
               this.debug?.event({ type: "final_submit_done", url: this.finalSubmitUrl.slice(0, 120) });
             } else {
@@ -7066,8 +7141,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             const blockers = await this.collectValidationErrors();
             if (blockers.length > 0) {
               this.debug?.event({ type: "validation_blocked", page: pageCount, errors: blockers.slice(0, 10) });
+              // Raw here on purpose: its one reader is the recovery hint, which reaches the planner
+              // only through askPlanner (the scrub door). validationBlocks LEAVES the process
+              // (result → backend verification.issues + trust-gate blockers), so it is kept scrubbed
+              // — a portal repeats a typed account back in its error.
               lastValidationErrors = blockers;
-              for (const b of blockers) if (!validationBlocks.includes(b)) validationBlocks.push(b);
+              for (const raw of blockers) {
+                const b = this.scrubSecrets(raw);
+                if (!validationBlocks.includes(b)) validationBlocks.push(b);
+              }
               // Remove the advance step we just recorded — it didn't actually work.
               if (steps.length && steps[steps.length - 1].note?.startsWith("advance:")) steps.pop();
             }
@@ -7231,11 +7313,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const noticeWarning = portalNotices.length > 0
       ? ` 📣 The portal reported: ${portalNotices.slice(0, 5).join(" | ")}`
       : "";
+    // Its own channel, not verifyWarning: a secret box left blank for want of a value on file is
+    // a person's job at review (and the recipe's binding fills it on replay), not a recipe fault.
+    const boundBlank = this.secretsLeftBlank.filter((s) => s.bound).map((s) => s.label);
+    const unboundBlank = this.secretsLeftBlank.filter((s) => !s.bound).map((s) => s.label);
+    const secretWarning =
+      (boundBlank.length
+        ? ` 🔒 Left blank for you — no value on file for: ${boundBlank.slice(0, 6).join(", ")}. Type it at review before submit (the recipe binds it by name, so a replay fills it once the project carries it).`
+        : "")
+      + (unboundBlank.length
+        ? ` 🔒 Left blank for you — required, and no binding a replay can resolve: ${unboundBlank.slice(0, 6).join(", ")}. A person types it on every filing until a project field exists for it.`
+        : "");
     const message = reachedReview
-      ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.${validationWarning}${docsWarning}${verifyWarning}${noticeWarning}${choiceWarning}`
+      ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.${validationWarning}${docsWarning}${verifyWarning}${secretWarning}${noticeWarning}${choiceWarning}`
       : filledSomething
-        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}${noticeWarning}${choiceWarning}`
-        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}${noticeWarning}${choiceWarning}`;
+        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}${secretWarning}${noticeWarning}${choiceWarning}`
+        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}${secretWarning}${noticeWarning}${choiceWarning}`;
 
     // Capture the review page screenshot when we've reached the review screen. fullPage:true so
     // the vision verifier sees the WHOLE review — a viewport-only shot would let an off-screen
@@ -7249,8 +7342,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         if (typeof this.page.waitForLoadState === "function") {
           await this.page.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => {});
         }
-        const buf = await this.page.screenshot({ type: "png", fullPage: true });
-        reviewScreenshotBase64 = buf.toString("base64");
+        // Sent to the vision verifier (a model) and saved to data/screenshots: every secret the run
+        // knows is masked, or no picture is sent (withSecretMask fails closed after a typed secret).
+        const buf = await this.withSecretMask("review screenshot", (mask) =>
+          this.page!.screenshot({ type: "png", fullPage: true, ...(mask ? { mask } : {}) }));
+        if (!buf) break;
+        reviewScreenshotBase64 = Buffer.from(buf as Buffer).toString("base64");
       } catch (err) {
         if (attempt === 1) {
           console.error(`[auto-learn] ${this.portalName}: review screenshot capture failed — ${(err as Error)?.message || err}`);
@@ -7281,6 +7378,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       missingRequiredDocs,
       validationBlocks,
       portalNotices: portalNotices.length ? portalNotices.slice(0, 5) : undefined,
+      secretsLeftBlank: this.secretsLeftBlank.length ? this.secretsLeftBlank.map((s) => s.label) : undefined,
     };
   }
 
@@ -7955,6 +8053,166 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     } catch { return "not-segmented"; }
   }
 
+  // ---------------------------------------------------------------------------
+  // SECRETS BY NAME (hard rule 2). A recorded step for an account/meter box carries no literal,
+  // only its binding; the replay types fieldValues[binding] (applyFormatHint'd to the label's
+  // printed format). The learn types the SAME value from the SAME project fields, at fill time,
+  // so a learn completes the page a replay would. The value is never a planner input, never a
+  // step's literal, never an event; every text and picture that leaves the process afterwards
+  // is scrubbed or masked of it.
+  // ---------------------------------------------------------------------------
+
+  /** What a step bound to `binding` types for this project — "" for anything but an identifier
+   *  binding, or when the project has no value on file. */
+  private secretFillValue(binding: string | undefined, label: string): string {
+    if (!binding || !IDENTIFIER_FIELDS.has(binding)) return "";
+    const raw = String(this.secretSource[binding] ?? "").trim();
+    return raw ? applyFormatHint(raw, label) : "";
+  }
+
+  /** The binding a recorded step TYPED a secret for (undefined when it typed none). */
+  private typedSecretBinding(step: RecipeStep | null | undefined): string | undefined {
+    const b = step?.sensitive ? String(step.field ?? "") : "";
+    return b && IDENTIFIER_FIELDS.has(b) && String(this.secretSource[b] ?? "").trim() ? b : undefined;
+  }
+
+  /** Every secret the run knows of: the project's own values plus the formatted forms it typed. */
+  private knownSecrets(): string[] {
+    const out = new Set<string>(this.typedSecrets);
+    for (const v of Object.values(this.secretSource)) if (v && v.trim()) out.add(v.trim());
+    return Array.from(out);
+  }
+
+  /** Text leaving the process (a planner prompt, the review verifier, the debug bundle) never
+   *  carries a secret the run knows: the ONE scrub (shared redactSecretValues), keeping a last-4 the
+   *  way redactStatusText already does for long digit runs — the review check (B8) reads a last-4. */
+  private scrubSecrets(text: string, secrets: string[] = this.knownSecrets()): string {
+    if (!secrets.length || !text) return text;
+    return redactSecretValues(text, secrets, (hit) => maskId(hit.replace(/[^0-9A-Za-z]/g, "")));
+  }
+
+  /** THE ONE PLANNER DOOR (hard rule 2). Every planner call in this adapter goes through here —
+   *  nothing else may call `this.planner` — and EVERY string of the request passes the run's secret
+   *  scrub first: url, page title, body text, the recovery hint (it quotes the portal's validation
+   *  errors, and a portal repeats a typed account back: "Account number … could not be found"),
+   *  filled labels, and each field's label / options / section / href / selector / fingerprint (a
+   *  portal can list "Service account 7734009155" as an option or a button name). A copy: same
+   *  length and order, so the planner's indices still mean the caller's list. The screenshot is
+   *  not text — it is masked where it is taken (capturePlanScreenshot). */
+  private askPlanner(req: LearnPlanRequest): Promise<LearnPlanResponse> {
+    return this.planner(this.scrubPlanRequest(req));
+  }
+
+  private scrubPlanRequest(req: LearnPlanRequest): LearnPlanRequest {
+    // Always a fresh copy (the caller's lists keep growing after the call); a no-op scrub when the
+    // run knows no secret.
+    const secrets = this.knownSecrets();
+    const walk = (v: unknown): unknown => {
+      if (typeof v === "string") return this.scrubSecrets(v, secrets);
+      if (Array.isArray(v)) return v.map(walk);
+      if (v && typeof v === "object") {
+        const out: Record<string, unknown> = {};
+        for (const [k, x] of Object.entries(v as Record<string, unknown>)) out[k] = walk(x);
+        return out;
+      }
+      return v;
+    };
+    const { screenshotBase64, ...text } = req;
+    return { ...(walk(text) as Omit<LearnPlanRequest, "screenshotBase64">), screenshotBase64 };
+  }
+
+  /** A screenshot that may leave the process (vision planner, review verifier, bundle PNG) with
+   *  every rendering of a known secret MASKED: the boxes this run typed one into, plus any element
+   *  whose value or text carries one (a review page echoes it). `take` receives the mask. When the
+   *  run TYPED a secret and the mask cannot be built, no picture is taken at all (undefined) —
+   *  fail closed, and say so. With no secret known the screenshot is exactly the old one. */
+  private async withSecretMask<T>(why: string, take: (mask: Locator[] | undefined) => Promise<T>): Promise<T | undefined> {
+    const secrets = this.knownSecrets();
+    if (!secrets.length || !this.page || typeof this.page.evaluate !== "function") return take(undefined);
+    const pats = secrets.map((s) => {
+      const digits = s.replace(/\D/g, "");
+      return digits.length >= 5 ? { digits, literal: "" } : { digits: "", literal: s.toLowerCase() };
+    }).filter((p) => p.digits || p.literal.length >= 4);
+    let tagged = 0;
+    let tagOk = true;
+    try {
+      // Plain loops only: a function DECLARED inside an evaluated body needs the __name shim.
+      tagged = Number(await this.page.evaluate((ps: Array<{ digits: string; literal: string }>) => {
+        let n = 0;
+        // A box holding one (typed here, or pre-filled by the portal).
+        for (const el of Array.from(document.querySelectorAll("input, textarea"))) {
+          const v = String((el as HTMLInputElement).value || "");
+          if (!v) continue;
+          const vd = v.replace(/\D/g, "");
+          const vl = v.toLowerCase();
+          for (const p of ps) {
+            if ((p.digits && vd.indexOf(p.digits) >= 0) || (p.literal && vl.indexOf(p.literal) >= 0)) { el.setAttribute("data-al-secret", "1"); n++; break; }
+          }
+        }
+        // Text rendering one (a review page's "Account: 7734009155"). Most pages carry none, so
+        // the whole-body check keeps the element walk off the common path.
+        const bt = String(document.body ? document.body.textContent || "" : "");
+        const btd = bt.replace(/\D/g, "");
+        const btl = bt.toLowerCase();
+        let textHas = false;
+        for (const p of ps) {
+          if ((p.digits && btd.indexOf(p.digits) >= 0) || (p.literal && btl.indexOf(p.literal) >= 0)) { textHas = true; break; }
+        }
+        if (!textHas) return n;
+        for (const el of Array.from(document.querySelectorAll("body *"))) {
+          const tag = el.tagName;
+          if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT" || tag === "INPUT" || tag === "TEXTAREA") continue;
+          const text = String(el.textContent || "");
+          if (!text) continue;
+          const td = text.replace(/\D/g, "");
+          const tl = text.toLowerCase();
+          let hit = false;
+          for (const p of ps) {
+            if ((p.digits && td.indexOf(p.digits) >= 0) || (p.literal && tl.indexOf(p.literal) >= 0)) { hit = true; break; }
+          }
+          if (!hit) continue;
+          // The SMALLEST element carrying the whole secret: skip an ancestor when a child element
+          // carries it too (masking <body> would blank the whole picture).
+          let childCarries = false;
+          for (const c of Array.from(el.children)) {
+            const ct = String(c.textContent || "");
+            const cd = ct.replace(/\D/g, "");
+            const cl = ct.toLowerCase();
+            for (const p of ps) {
+              if ((p.digits && cd.indexOf(p.digits) >= 0) || (p.literal && cl.indexOf(p.literal) >= 0)) { childCarries = true; break; }
+            }
+            if (childCarries) break;
+          }
+          if (childCarries) continue;
+          el.setAttribute("data-al-secret", "1");
+          n++;
+        }
+        return n;
+      }, pats));
+    } catch {
+      tagOk = false;
+    }
+    const controls: Locator[] = [];
+    for (const sel of this.secretControls) {
+      const loc = await this.locator(sel).catch(() => null);
+      if (loc) controls.push(loc as Locator);
+    }
+    if (!tagOk && this.typedSecrets.size > 0) {
+      this.debug?.event({ type: "secret_mask_unavailable", why: why.slice(0, 60), controls: controls.length });
+      return undefined;
+    }
+    const mask = [...(tagged > 0 ? [this.page.locator("[data-al-secret]")] : []), ...controls];
+    try {
+      return await take(mask.length ? mask : undefined);
+    } finally {
+      if (tagged > 0) {
+        await this.page.evaluate(() => {
+          for (const el of Array.from(document.querySelectorAll("[data-al-secret]"))) el.removeAttribute("data-al-secret");
+        }).catch(() => null);
+      }
+    }
+  }
+
   /** Every planned field write. It runs inside an own-write window on the network backstop
    *  (autosubmit-close item 7): the write's own per-field autosave on a page that reads as review
    *  (a Terms checkbox the planner checks at review, before lockReview) is the write's commit, not
@@ -7976,7 +8234,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // `let`: the battery-declaration guard below may correct the planner's answer from project
     // data, and the correction is written back to fillReq so the caller's AppliedFill.expected
     // (read from fillReq.value after this returns) verifies the value that actually went in.
-    let value = fillReq.value ?? "";
+    const answerComesFromFixedOptions = field.fieldType === "select" || field.fieldType === "radio" || field.fieldType === "checkbox";
+    // A SECRET BOUND BY NAME TYPES THE PROJECT'S OWN VALUE — the one the recorded step will type
+    // on every replay — never the planner's (it holds no secret, so anything it offers for an
+    // account box is invented), and never "" when the project has one (live PGE 2026-09-28: both
+    // revealed boxes typed "", and the portal's review listed them as Missing Required Fields).
+    const secretByName = sensitive && !answerComesFromFixedOptions && IDENTIFIER_FIELDS.has(String(fillReq.field ?? ""));
+    let value = secretByName ? this.secretFillValue(String(fillReq.field), field.label || "") : (fillReq.value ?? "");
     const isCheckable = field.fieldType === "checkbox" || field.fieldType === "radio";
     const action: RecipeStep["action"] =
       field.fieldType === "select" ? "select" : isCheckable ? "check" : "fill";
@@ -8265,8 +8529,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // Narrowed for RECORDING only. Redaction of what we SEND the planner is unchanged and
     // stays deliberately broad, because under-redacting an account number is the worse
     // failure. An account number is not a dropdown, so keeping a select/radio/checkbox
-    // answer leaks nothing.
-    const answerComesFromFixedOptions = field.fieldType === "select" || field.fieldType === "radio" || field.fieldType === "checkbox";
+    // answer leaks nothing. (answerComesFromFixedOptions is computed at the top.)
     if (sensitive && !answerComesFromFixedOptions) {
       // Password fields are login credentials handled by the login step — never record as
       // a form fill step (the planner may send one but we drop it here to avoid replaying
@@ -8276,6 +8539,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       step.sensitive = true;
       step.value = "";
       step.field = fillReq.field || undefined;
+      if (secretByName && value) {
+        // Held in memory only, so every later text/picture leaving the process is scrubbed of it.
+        this.typedSecrets.add(value);
+        this.secretControls.push(field.selector);
+        const typedLabel = String(field.label ?? "").slice(0, 80);
+        if (typedLabel && !this.typedSecretLabels.includes(typedLabel)) this.typedSecretLabels.push(typedLabel);
+      }
+      if (!value.trim() && field.required) {
+        // A REQUIRED secret box this learn left blank — the project has no value on file, or the
+        // box has no binding a replay can resolve (a "Tax ID"-shaped box the deterministic pass
+        // records with no field). Not a trust blocker. But never silent again, and the hand-off
+        // says which of the two it is: only a bound one is filled by a later replay.
+        const label = String(field.label ?? "").slice(0, 80);
+        if (label && !this.secretsLeftBlank.some((s) => s.label === label)) this.secretsLeftBlank.push({ label, bound: !!step.field });
+        this.debug?.event({ type: "required_secret_unfilled", labels: [label], binding: step.field ?? null });
+      }
     } else if (fillReq.field && (!this.bindableFields.size || this.bindableFields.has(fillReq.field))
       && !(answerComesFromFixedOptions && IDENTIFIER_FIELDS.has(String(fillReq.field)))) {
       // Data-bound to a project/client field — resolved at replay time.
@@ -8446,16 +8725,25 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // make hasHardBlockers true → trusted=false → the recipe is stuck in "recording" forever
       // and staging re-runs autolearn instead of replaying. Skip them here (collectUnfilledRequired
       // and the deterministic trust check already exclude sensitive fields for the same reason).
-      if (a.sensitive) continue;
+      // ...UNLESS THIS RUN TYPED THE PROJECT'S OWN VALUE BY NAME (secretBinding): then a blank
+      // read-back is the portal dropping a real fill, exactly like any other field, and it is
+      // re-typed by the same name (the value is re-read, never held on the fill record).
+      if (a.sensitive && !a.secretBinding) continue;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const loc = (await this.locator(a.selector)) as any;
       if (!loc) continue;
       if (await this.fieldHoldsValue(loc, a)) continue;
 
-      // One re-apply attempt. Sensitive fields are never retyped here (we don't keep the
-      // literal); select fields go back through the combobox fallback.
+      // One re-apply attempt. A sensitive field is re-typed only by its binding; select fields
+      // go back through the combobox fallback.
       try {
-        if (a.sensitive || !a.expected) {
+        if (a.secretBinding) {
+          const again = this.secretFillValue(a.secretBinding, a.label);
+          if (again && typeof loc.fill === "function") {
+            await loc.fill(again, { timeout: 5000 });
+            if (typeof loc.blur === "function") await loc.blur().catch(() => {});
+          }
+        } else if (a.sensitive || !a.expected) {
           // nothing to retype — fall through to the re-check
         } else if (a.fieldType === "select") {
           await selectWithFallback(this.page!, loc, a.expected);
@@ -8822,7 +9110,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const rawBody = await this.page.locator("body").innerText().catch(() => "");
       bodyText = (redactStatusText(String(rawBody)) ?? "").slice(0, 2000);
     } catch { bodyText = ""; }
-    const validationErrors = await this.collectValidationErrors().catch(() => [] as string[]);
+    // Scrubbed: the verdict's reason quotes the first error into an event and a console line.
+    const validationErrors = (await this.collectValidationErrors().catch(() => [] as string[])).map((v) => this.scrubSecrets(v));
     const verdict = classifyTerminalSubmitPage({ fields, bodyText, validationErrors });
     if (!verdict.terminal) {
       // A DISTINCT REASON, NAMED. "The walk stopped" and "the walk stopped because this page
@@ -8867,9 +9156,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // utility in reviewScreenScraper.ts so the same logic serves all adapters.
   private async scrapeReviewScreen(): Promise<LearnResult["reviewScreen"]> {
     if (!this.page) return { fields: [], bodyTextSnippet: "" };
-    const fields = await scrapeReviewScreenShared(this.page);
+    // Both halves go to the backend's review verifier (a model) — scrubbed of every secret this
+    // run knows, keeping a last-4 so the deterministic account/meter check (B8) still reads.
+    const fields = (await scrapeReviewScreenShared(this.page)).map((f) => ({ ...f, value: this.scrubSecrets(String(f.value ?? "")) }));
     const rawBody = await this.page.locator("body").innerText().catch(() => "");
-    const bodyTextSnippet = (redactStatusText(String(rawBody)) ?? "").slice(0, 2000);
+    const bodyTextSnippet = (redactStatusText(this.scrubSecrets(String(rawBody))) ?? "").slice(0, 2000);
     return { fields, bodyTextSnippet };
   }
 
