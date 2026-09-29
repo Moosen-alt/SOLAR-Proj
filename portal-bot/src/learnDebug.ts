@@ -14,7 +14,8 @@
 //   pNNN-before/after-*.png — full-page screenshots around each page's fills.
 //   trace.zip       — Playwright trace (DOM snapshots + actions + network),
 //                     viewable at https://trace.playwright.dev. Started AFTER
-//                     login so credentials are never captured in it.
+//                     login so credentials are never captured in it; NOT
+//                     saved when the run typed a secret (see stopTrace).
 //   verdict.json / llm-calls.json / result.json / review.png — written by the
 //                     backend after verification (trust-gate signals, LLM call
 //                     log, final outcome, review screenshot).
@@ -24,9 +25,11 @@
 //
 // PII note: JSON artifacts mask sensitive values, and every text artifact passes
 // the adapter's secret scrub (setScrubber: the project's own account/meter, which
-// a learn now types by name). PNGs MASK those secrets too. The PNGs otherwise,
-// and the Playwright trace entirely (its action log and DOM snapshots include a
-// typed secret), are RAW renders of the portal and can show customer data (the
+// a learn now types by name). PNGs MASK those secrets too. The trace cannot be
+// scrubbed (its action log and DOM snapshots carry a typed value), so a run that
+// TYPED a secret discards it (stopTrace discard → trace_discarded_secret_typed).
+// The PNGs otherwise, and any trace kept, are RAW renders of the portal and can
+// show customer data (the
 // same class of data as the review screenshot the dashboard already stores). The
 // bundle stays on local disk under data/ (gitignored) and is pruned to the most
 // recent AUTOLEARN_RUN_KEEP runs.
@@ -240,13 +243,23 @@ export class LearnRunDebug {
     } catch { /* never throws */ }
   }
 
-  /** Stop the trace and save trace.zip (viewable at trace.playwright.dev). */
-  async stopTrace(page: unknown): Promise<void> {
+  /** Stop the trace and save trace.zip (viewable at trace.playwright.dev).
+   *
+   *  `discard` (hard rule 2): the run TYPED a secret (the project's account/meter, by name), and
+   *  the trace records it raw — the fill action's value and every DOM snapshot after it. It cannot
+   *  be scrubbed, so it is stopped WITHOUT saving; the event names the boxes (labels only) and the
+   *  rest of the bundle stays. */
+  async stopTrace(page: unknown, opts?: { discard?: { event: string; labels: string[] } }): Promise<void> {
     if (!this.tracing) return;
     this.tracing = false;
     const p = page as Page | null;
     if (!p || typeof p.context !== "function") return;
     try {
+      if (opts?.discard) {
+        await p.context().tracing.stop();
+        this.event({ type: opts.discard.event, labels: opts.discard.labels.slice(0, 10) });
+        return;
+      }
       await p.context().tracing.stop({ path: path.join(this.dir, "trace.zip") });
       this.event({ type: "trace_saved" });
     } catch { /* never throws */ }

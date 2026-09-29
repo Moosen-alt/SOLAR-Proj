@@ -2025,6 +2025,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private readonly typedSecrets = new Set<string>();
   /** The controls this run typed a secret into — masked in every screenshot. */
   private readonly secretControls: RecipeSelector[] = [];
+  /** Their labels (never values) — named when the run's trace is discarded for holding a secret. */
+  private readonly typedSecretLabels: string[] = [];
   /** REQUIRED secret-looking boxes this run left blank (no value on file) — labels only. The
    *  required-field sweep excludes secret boxes (a project with no account on file must not block
    *  a recipe's promotion forever), so without this list the blank was silent. */
@@ -3375,7 +3377,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     } finally {
       await backstop?.dispose().catch(() => null);
       this.stopHeartbeat();
-      await this.debug?.stopTrace(this.page);
+      // A run that TYPED a secret has it in the trace raw (the fill's value, every DOM snapshot
+      // after it) — hard rule 2: that trace is discarded, not saved; the rest of the bundle stays.
+      await this.debug?.stopTrace(this.page, this.typedSecrets.size > 0
+        ? { discard: { event: "trace_discarded_secret_typed", labels: [...this.typedSecretLabels] } }
+        : undefined);
       this.debug?.finalize({
         outcome: result ? (result.pauseReason ? "paused" : result.ok ? "ok" : "failed") : "error",
         ok: result?.ok ?? false,
@@ -5723,7 +5729,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const visibleIdx = fields.map((_f, i) => i).filter((i) => !signatureFieldIdx.has(i));
       const plannerFields = visibleIdx.length === fields.length ? fields : visibleIdx.map((i) => fields[i]);
       try {
-        plan = await this.planner({ url, pageTitle, fields: this.plannerFieldsView(plannerFields), bodyText, alreadyFilledLabels: alreadyFilledLabels.map((l) => this.scrubSecrets(l)), isDashboard, recoveryHint: recoveryHint || undefined, screenshotBase64: planShot });
+        plan = await this.askPlanner({ url, pageTitle, fields: plannerFields, bodyText, alreadyFilledLabels, isDashboard, recoveryHint: recoveryHint || undefined, screenshotBase64: planShot });
       } catch (err) {
         this.debug?.event({ type: "planner_error", page: pageCount, message: err instanceof Error ? err.message : String(err) });
         return fail(steps, this.portalName, `Planner failed on page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`, null, pageCount, portalNotices);
@@ -5889,7 +5895,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // WHAT DID THE PORTAL SAY? Read it here, on every page, before deciding anything —
         // this is the only place that sees a page which advanced INTO an error.
         {
-          const notices = await collectPortalNoticesFrom(this.page);
+          // Scrubbed before they are kept: a portal repeats a typed account back ("Account number …
+          // could not be found"), and these leave the process (result.portalNotices, messages).
+          const notices = (await collectPortalNoticesFrom(this.page)).map((n) => this.scrubSecrets(n));
           const fresh = notices.filter((n) => !portalNotices.includes(n));
           if (fresh.length) {
             for (const n of fresh) portalNotices.push(n);
@@ -6617,12 +6625,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             // skip fields already handled this page.
             let postPlan: LearnPlanResponse = { fills: [], atReview: false };
             try {
-              postPlan = await this.planner({
+              postPlan = await this.askPlanner({
                 url,
                 pageTitle,
-                fields: this.plannerFieldsView(postFields),
+                fields: postFields,
                 bodyText: postBodyText,
-                alreadyFilledLabels: alreadyFilledLabels.map((l) => this.scrubSecrets(l)),
+                alreadyFilledLabels,
                 isDashboard: false,
                 // Re-capture after the reveal so the planner sees the newly-shown fields/sections.
                 // COST: rescan passes reuse the page the planner already SAW —
@@ -7105,8 +7113,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             const blockers = await this.collectValidationErrors();
             if (blockers.length > 0) {
               this.debug?.event({ type: "validation_blocked", page: pageCount, errors: blockers.slice(0, 10) });
+              // Raw here on purpose: its one reader is the recovery hint, which reaches the planner
+              // only through askPlanner (the scrub door). validationBlocks LEAVES the process
+              // (result → backend verification.issues + trust-gate blockers), so it is kept scrubbed
+              // — a portal repeats a typed account back in its error.
               lastValidationErrors = blockers;
-              for (const b of blockers) if (!validationBlocks.includes(b)) validationBlocks.push(b);
+              for (const raw of blockers) {
+                const b = this.scrubSecrets(raw);
+                if (!validationBlocks.includes(b)) validationBlocks.push(b);
+              }
               // Remove the advance step we just recorded — it didn't actually work.
               if (steps.length && steps[steps.length - 1].note?.startsWith("advance:")) steps.pop();
             }
@@ -8013,24 +8028,39 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   /** Text leaving the process (a planner prompt, the review verifier, the debug bundle) never
    *  carries a secret the run knows: the ONE scrub (shared redactSecretValues), keeping a last-4 the
    *  way redactStatusText already does for long digit runs — the review check (B8) reads a last-4. */
-  private scrubSecrets(text: string): string {
-    const secrets = this.knownSecrets();
+  private scrubSecrets(text: string, secrets: string[] = this.knownSecrets()): string {
     if (!secrets.length || !text) return text;
     return redactSecretValues(text, secrets, (hit) => maskId(hit.replace(/[^0-9A-Za-z]/g, "")));
   }
 
-  /** The planner's copy of a field list: labels, options, sections and hrefs scrubbed of every
-   *  secret the run knows (a portal can list "Service account 7734009155" as an option). Same
-   *  length and order, so the planner's indices still mean the caller's list. */
-  private plannerFieldsView(fields: ExtractedField[]): ExtractedField[] {
-    if (!this.knownSecrets().length) return fields;
-    return fields.map((f) => ({
-      ...f,
-      label: this.scrubSecrets(String(f.label ?? "")),
-      ...(f.options ? { options: f.options.map((o) => this.scrubSecrets(String(o))) } : {}),
-      ...(f.section ? { section: this.scrubSecrets(f.section) } : {}),
-      ...(f.href ? { href: this.scrubSecrets(f.href) } : {}),
-    }));
+  /** THE ONE PLANNER DOOR (hard rule 2). Every planner call in this adapter goes through here —
+   *  nothing else may call `this.planner` — and EVERY string of the request passes the run's secret
+   *  scrub first: url, page title, body text, the recovery hint (it quotes the portal's validation
+   *  errors, and a portal repeats a typed account back: "Account number … could not be found"),
+   *  filled labels, and each field's label / options / section / href / selector / fingerprint (a
+   *  portal can list "Service account 7734009155" as an option or a button name). A copy: same
+   *  length and order, so the planner's indices still mean the caller's list. The screenshot is
+   *  not text — it is masked where it is taken (capturePlanScreenshot). */
+  private askPlanner(req: LearnPlanRequest): Promise<LearnPlanResponse> {
+    return this.planner(this.scrubPlanRequest(req));
+  }
+
+  private scrubPlanRequest(req: LearnPlanRequest): LearnPlanRequest {
+    // Always a fresh copy (the caller's lists keep growing after the call); a no-op scrub when the
+    // run knows no secret.
+    const secrets = this.knownSecrets();
+    const walk = (v: unknown): unknown => {
+      if (typeof v === "string") return this.scrubSecrets(v, secrets);
+      if (Array.isArray(v)) return v.map(walk);
+      if (v && typeof v === "object") {
+        const out: Record<string, unknown> = {};
+        for (const [k, x] of Object.entries(v as Record<string, unknown>)) out[k] = walk(x);
+        return out;
+      }
+      return v;
+    };
+    const { screenshotBase64, ...text } = req;
+    return { ...(walk(text) as Omit<LearnPlanRequest, "screenshotBase64">), screenshotBase64 };
   }
 
   /** A screenshot that may leave the process (vision planner, review verifier, bundle PNG) with
@@ -8423,6 +8453,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // Held in memory only, so every later text/picture leaving the process is scrubbed of it.
         this.typedSecrets.add(value);
         this.secretControls.push(field.selector);
+        const typedLabel = String(field.label ?? "").slice(0, 80);
+        if (typedLabel && !this.typedSecretLabels.includes(typedLabel)) this.typedSecretLabels.push(typedLabel);
       }
       if (!value.trim() && field.required) {
         // A REQUIRED secret box this learn left blank — the project has no value on file, or the
@@ -8977,7 +9009,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const rawBody = await this.page.locator("body").innerText().catch(() => "");
       bodyText = (redactStatusText(String(rawBody)) ?? "").slice(0, 2000);
     } catch { bodyText = ""; }
-    const validationErrors = await this.collectValidationErrors().catch(() => [] as string[]);
+    // Scrubbed: the verdict's reason quotes the first error into an event and a console line.
+    const validationErrors = (await this.collectValidationErrors().catch(() => [] as string[])).map((v) => this.scrubSecrets(v));
     const verdict = classifyTerminalSubmitPage({ fields, bodyText, validationErrors });
     if (!verdict.terminal) {
       // A DISTINCT REASON, NAMED. "The walk stopped" and "the walk stopped because this page
