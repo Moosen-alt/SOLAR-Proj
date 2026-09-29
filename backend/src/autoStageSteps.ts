@@ -218,17 +218,32 @@ export async function processStageStep(db: AppDb, projectId: string, opts: Stage
   // chain now runs the same acquisition seam, so a new AHJ's first project pulls its forms on
   // the way to ready_to_stage instead of waiting for a human to wonder why nothing built.
   if (status() === "qc_passed") {
-    step("acquire_forms");
-    try {
-      const { getProjectDetail } = await import("./repository");
-      const { prepareOfficialDocuments } = await import("./prepareOfficialDocuments");
-      await prepareOfficialDocuments(db, getProjectDetail(db, projectId).project);
-      ran.push("acquire_forms");
-    } catch (err) {
-      // Acquisition failing must not stop the assembly attempt — stored templates may suffice.
-      logger.warn("stage-auto", "form acquisition failed; assembling from stored templates", {
-        project: projectId, err: err instanceof Error ? err.message : String(err),
-      });
+    // NOT FOR AN AHJ NAME THAT IS STILL A QUESTION. QC files a pending review item on the ahj field
+    // when the name is a near-miss of the address city (qc.ts / ahjNearMiss.ts — "City Of Smonroe"
+    // for Monroe, OR got a forms search and a permit-process lookup for a jurisdiction that does not
+    // exist). Read the RESULTING item (ahjNearMissPending — the one answer, shared with QC's own
+    // lookup skip), never re-derive it: the predicate keeps firing on a confirmed name. Skipping the
+    // whole acquisition pass matters: prepareOfficialDocuments claims the AHJ's 24h research cooldown
+    // before it searches, so a no-research pass would hold the confirmed name shut for a day.
+    // build_docs still runs — nothing new holds the chain. Once a person confirms or corrects the
+    // name, its forms are acquired on the chain that door enqueues (still qc_passed) or at Stage,
+    // whose seam this same function is.
+    const { ahjNearMissPending } = await import("./ahjNearMiss");
+    if (ahjNearMissPending(db, projectId)) {
+      logger.info("stage-auto", "AHJ name is a near-miss of the address city and awaits a person; its forms are not searched for until it is confirmed", { project: projectId });
+    } else {
+      step("acquire_forms");
+      try {
+        const { getProjectDetail } = await import("./repository");
+        const { prepareOfficialDocuments } = await import("./prepareOfficialDocuments");
+        await prepareOfficialDocuments(db, getProjectDetail(db, projectId).project);
+        ran.push("acquire_forms");
+      } catch (err) {
+        // Acquisition failing must not stop the assembly attempt — stored templates may suffice.
+        logger.warn("stage-auto", "form acquisition failed; assembling from stored templates", {
+          project: projectId, err: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
     step("build_docs");
     const { getApplicationDocumentPackage } = await import("./repository");

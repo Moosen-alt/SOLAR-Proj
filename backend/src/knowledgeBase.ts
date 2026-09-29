@@ -296,6 +296,30 @@ export function isVerifiedKnowledge(row: { verifiedAt?: unknown; verified_at?: u
 }
 
 /**
+ * IS THIS NAME A JURISDICTION THE SHARED KB KNOWS ON SOMEONE'S AUTHORITY — a human-verified row
+ * (isVerifiedKnowledge) or one an official / sanitized-reference source wrote. What the product
+ * LEARNED never counts: the birth learn (learnFromProject, run right after a project's first QC)
+ * writes `<state>|<ahj as typed>|<utility>` for a typo the moment it is saved, and AI research lands
+ * under the same key — either would silence the near-miss question on the very next QC run.
+ * EXACT key reads only, by state: the fuzzy resolver (knowledgeNameMatchScore) scores
+ * "City Of Smonroe" against "Monroe" at 82 by containment and would call the typo known. The
+ * utility segment is left open (`state|name|%`; a normalized key holds only [a-z0-9 |]) so a
+ * verified row filed under a utility still answers. Read-only.
+ */
+export function knownKnowledgeName(db: AppDb, state: string, name: string): boolean {
+  if (!clean(name)) return false;
+  const prefix = `${normalize(state)}|${normalize(name)}|`;
+  try {
+    for (const row of db.query<Row>("SELECT verified_at, sources_json FROM permit_utility_knowledge WHERE profile_key LIKE ?", [`${prefix}%`])) {
+      if (isVerifiedKnowledge(row)) return true;
+      const sources = parseJson<KnowledgeSource[]>(text(row.sources_json), []);
+      if (sources.some((s) => s && (s.sourceType === "official" || s.sourceType === "sanitized_reference"))) return true;
+    }
+  } catch { /* table not there yet: not known */ }
+  return false;
+}
+
+/**
  * THE ONE-TIME CLEANUP OF A KNOWN TENANT WRITTEN AS ANOTHER UTILITY'S PORTAL (migration v41, leak
  * sweep 2026-09-28). The bare /PACIFIC/ and /PGE/ regexes in portalFromProject wrote PacifiCorp's
  * PowerClerk as "Pacific Gas and Electric Company"'s own portal, Portland General's as a CA "PGE"'s,

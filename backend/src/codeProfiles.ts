@@ -1703,8 +1703,9 @@ export function nearestOtherCodeProfileRow(db: AppDb, state: string, ahj: string
 //                                City): a new row under the exact key;
 //   else                      -> a new row under the exact key.
 
-/** "City of Plano" -> {type:"city", core:"plano"}; "Elmore County, ID" -> {type:"county", core:"elmore"}. */
-function jurisdictionIdentity(name: string, state: string): { type: string; core: string } {
+/** "City of Plano" -> {type:"city", core:"plano"}; "Elmore County, ID" -> {type:"county", core:"elmore"}.
+ *  The ONE prefix/suffix stripper; the AHJ-vs-city near-miss predicate (ahjNearMiss.ts) builds on it. */
+export function jurisdictionIdentity(name: string, state: string): { type: string; core: string } {
   let s = String(name || "").toLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim();
   const st = String(state || "").trim().toLowerCase();
   if (st && s.endsWith(` ${st}`) && s.length > st.length + 1) s = s.slice(0, -(st.length + 1)).trim();
@@ -1713,8 +1714,11 @@ function jurisdictionIdentity(name: string, state: string): { type: string; core
   const pre = s.match(/^(city|town|village|township|borough|county|parish|municipality)\s+of\s+/);
   if (pre) { type = pre[1]; s = s.slice(pre[0].length).replace(/^the\s+/, ""); } // "City of The Dalles" = "The Dalles"
   else {
-    const suf = s.match(/\s+(county|parish|township|borough)$/);
-    if (suf && s.length > suf[0].length) { type = suf[1]; s = s.slice(0, -suf[0].length); }
+    // "Yamhill Co" / "Jackson Co." is a county too — the reference file's own spelling for twelve
+    // counties (Polk Co, Wasco Co, Yamhill Co, Clark Co, King Co…). Without it "Jackson Co." read as
+    // a bare municipality "jackson co", two edits from the city "Jackson" (fix round 2026-09-29).
+    const suf = s.match(/\s+(county|co|parish|township|borough)$/);
+    if (suf && s.length > suf[0].length) { type = suf[1] === "co" ? "county" : suf[1]; s = s.slice(0, -suf[0].length); }
   }
   return { type, core: s.trim() };
 }
@@ -1728,6 +1732,24 @@ export function sameJurisdictionName(a: string, b: string, state: string): boole
   if (!x.core || x.core !== y.core) return false;
   if (x.type === y.type) return true;
   return (!x.type || !y.type) && MUNICIPAL_TYPES.has(x.type) && MUNICIPAL_TYPES.has(y.type);
+}
+
+/**
+ * IS THIS NAME A JURISDICTION THIS TABLE KNOWS ON SOMEONE'S AUTHORITY — a human-verified row, or one
+ * the shipped reference file carries. EXACT key only (never fuzzyCodeRow: the containment scorer
+ * calls "City Of Smonroe" a match for "Monroe"). A seeded row proves nothing: code research, a
+ * correction's criterion (applyJurisdictionCriteriaProposal) and the design-criteria lookup all
+ * create seeded rows under whatever name the project carried — a typo included — so the product's
+ * own writes can never make a typo "known". Read-only.
+ */
+export function knownCodeProfileName(db: AppDb, state: string, name: string): boolean {
+  if (!String(name || "").trim() || !String(state || "").trim()) return false;
+  const key = codeProfileKey({ state, ahj: name });
+  try {
+    const row = db.get<{ confidence?: string }>("SELECT confidence FROM jurisdiction_code_profiles WHERE profile_key = ?", [key]);
+    if (row && text(row.confidence) === "verified") return true;
+  } catch { /* table not there yet: not known */ }
+  return (loadReference()?.profiles ?? []).some((p) => String(p.ahj || "").trim() && codeProfileKey(p) === key);
 }
 
 export type CriteriaWriteRow =

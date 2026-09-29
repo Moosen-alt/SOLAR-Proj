@@ -12,6 +12,7 @@ import type { ParserPayload, ProjectRecord, QcStatus, Severity, StageDetail } fr
 import { getCodeProfile, resolveEffectiveCodeContext } from "./codeProfiles";
 import { resolvePermitPath } from "./permitPath";
 import { findKnowledgeForLearn } from "./knowledgeBase";
+import { AHJ_NEAR_MISS_ISSUE_TYPE, ahjNearMissForProject, ahjNearMissMessage, ahjNearMissPending, type AhjNearMiss } from "./ahjNearMiss";
 import { ensureFeeSchedulesResearched } from "./feeSchedules";
 import { requiredTracks } from "./submittalTracks";
 import { qcMayMoveStatus } from "./projectStage";
@@ -45,6 +46,7 @@ interface ProjectRow {
   id: string;
   parser_json: string;
   ahj: string | null;
+  city: string | null;
   state: string | null;
   utility: string | null;
   client_id?: string | null;
@@ -102,10 +104,14 @@ interface QcContext {
   db: AppDb;
   projectId: string;
   ahj: string;
+  city: string;
   state: string;
   payload: ParserPayload;
   /** Memo: resolvePermitPath's standardReview for this job (see permitPathStandardReview). */
   standardReview?: boolean;
+  /** The AHJ name is a near-miss of the address city (ahjNearMiss.ts) — computed ONCE per run;
+   *  critical.ahj warns and asks instead of passing. Null on the ordinary project. */
+  ahjNearMiss: AhjNearMiss | null;
 }
 
 /**
@@ -138,6 +144,17 @@ function permitPathStandardReview(ctx: QcContext): boolean {
 // failure again: something read the document and could not find it.
 export const WAITING_ON_BILL_ISSUE_TYPE = "Waiting on the customer's utility bill";
 const BILL_FIELDS = new Set(["accountNumber", "meterNumber"]);
+
+// AN AHJ NAME ONE LETTER OFF THE ADDRESS CITY IS A QUESTION, NOT A PASS (intake test 2026-09-29:
+// "AHJ: CITY OF SMONROE" for an address in Monroe, OR reached ready_to_stage and a lookup was
+// queued for a jurisdiction that does not exist). The value stays exactly what the plan set says —
+// never auto-corrected — and critical.ahj files a pending review item on the ahj field asking a
+// person to confirm or correct it. It is the critical.ahj row ITSELF (not a separate check): the
+// pass branch below auto-resolves any pending 'ahj' item once the AHJ is non-blank, and a warning
+// never re-opens a resolved one, so a second item on the same field would be silently approved on
+// the next run. The item is critical by default (isCriticalReviewItem), so the existing submit
+// gate holds — no new gate. The predicate and the KB exclusion live in ahjNearMiss.ts.
+export { AHJ_NEAR_MISS_ISSUE_TYPE };
 
 /** A utility bill or a meter photo is on file for this project. */
 export function customerBillOnFile(db: AppDb, projectId: string): boolean {
@@ -213,6 +230,9 @@ function statusFor(check: Check, ctx: QcContext): QcStatus {
     return "pass";
   }
 
+  // The AHJ is present but reads like a typo of the address city: ask, do not pass (or fail).
+  if (check.fieldName === "ahj" && value && ctx.ahjNearMiss) return "warning";
+
   if (!value) return check.severity === "warning" ? "warning" : "fail";
   if (check.fieldName === "locates") {
     if (/not run|waiting/i.test(value)) return "warning";
@@ -237,16 +257,22 @@ export interface QcRunOptions {
 }
 
 export function runQcForProject(db: AppDb, projectId: string, options: QcRunOptions = {}): QcRunResult {
-  const project = db.get<ProjectRow>("SELECT id, parser_json, ahj, state, utility, system_size_dc_kw, client_id FROM projects WHERE id = ?", [projectId]);
+  const project = db.get<ProjectRow>("SELECT id, parser_json, ahj, city, state, utility, system_size_dc_kw, client_id FROM projects WHERE id = ?", [projectId]);
   if (!project) throw new Error("Project not found.");
 
   const payload = parseJson<ParserPayload>(project.parser_json, {});
+  const identity = {
+    ahj: project.ahj || clean(payload.ahj) || "",
+    city: project.city || clean(payload.city) || "",
+    state: project.state || clean(payload.state) || "",
+  };
   const ctx: QcContext = {
     db,
     projectId,
-    ahj: project.ahj || clean(payload.ahj) || "",
-    state: project.state || clean(payload.state) || "",
+    ...identity,
     payload,
+    // Read-only (exact KB key probes, only for an actual near-miss); before the transaction.
+    ahjNearMiss: ahjNearMissForProject(db, identity),
   };
   const createdAt = nowIso();
   let failCount = 0;
@@ -268,15 +294,19 @@ export function runQcForProject(db: AppDb, projectId: string, options: QcRunOpti
       if (qcStatus === "warning") warningCount += 1;
 
       const waitingOnBill = qcStatus === "warning" && check.severity === "blocker" && BILL_FIELDS.has(check.fieldName);
+      // critical.ahj warning = the near-miss question (statusFor returns "warning" for ahj on nothing else).
+      const ahjNearMiss = check.fieldName === "ahj" && qcStatus === "warning" ? ctx.ahjNearMiss : null;
       const message = qcStatus === "pass"
         ? (check.fieldName === "permitPath" && permitPathStandardReview(ctx)
           ? "Permit path: standard structural review — this jurisdiction files one building application, so there is no path choice to confirm."
           : `${check.ruleName} present.`)
-        : waitingOnBill ? waitingOnBillMessage(check) : check.message;
+        : waitingOnBill ? waitingOnBillMessage(check)
+          : ahjNearMiss ? ahjNearMissMessage(ctx.ahj, ctx.city, ctx.state, ahjNearMiss)
+            : check.message;
       db.run(
         `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id(), projectId, qcStatus, check.ruleId, check.ruleName, message, waitingOnBill ? "warning" : check.severity, createdAt],
+        [id(), projectId, qcStatus, check.ruleId, check.ruleName, message, waitingOnBill || ahjNearMiss ? "warning" : check.severity, createdAt],
       );
 
       if (BILL_FIELDS.has(check.fieldName) && qcStatus !== "pass") {
@@ -287,6 +317,34 @@ export function runQcForProject(db: AppDb, projectId: string, options: QcRunOpti
         db.run(
           "UPDATE human_review_items SET issue_type = ?, notes = ?, updated_at = ? WHERE project_id = ? AND field_name = ? AND status = 'pending'",
           [issueType, message, nowIso(), projectId, check.fieldName],
+        );
+      } else if (ahjNearMiss) {
+        // The question rides the ahj field's ONE item (ensureReviewItem dedupes per field against any
+        // status): filed pending with its own issue type; a pending row is refreshed so an edit to a
+        // second near-miss name shows the new value and message. Never re-opened once a PERSON
+        // answered — a Save Edit of the same value IS the confirmation, and a value a person typed
+        // into a resolved blank-AHJ item is theirs. But an item the SYSTEM closed (the blank-AHJ
+        // blocker auto-resolved the moment a value arrived — through PUT /api/projects/:id or the
+        // parser page — and that value is itself a near-miss) never had THIS question answered by
+        // anyone: it reopens as the near-miss (verify round 2, 2026-09-29).
+        const parserValue = parserField(payload, check.fieldName) || ctx.ahj;
+        const prior = db.get<{ id: string; status: string; issue_type: string; notes: string }>(
+          "SELECT id, status, issue_type, notes FROM human_review_items WHERE project_id = ? AND field_name = ? LIMIT 1",
+          [projectId, check.fieldName],
+        );
+        const systemClosedOtherQuestion = prior && prior.status !== "pending" && prior.issue_type !== AHJ_NEAR_MISS_ISSUE_TYPE
+          && /^Auto-resolved/.test(prior.notes || "");
+        if (systemClosedOtherQuestion) {
+          db.run(
+            "UPDATE human_review_items SET status = 'pending', issue_type = ?, parser_value = ?, notes = ?, updated_at = ? WHERE id = ?",
+            [AHJ_NEAR_MISS_ISSUE_TYPE, parserValue, message, nowIso(), prior!.id],
+          );
+        } else {
+          ensureReviewItem(db, projectId, check.fieldName, AHJ_NEAR_MISS_ISSUE_TYPE, parserValue, message, false);
+        }
+        db.run(
+          "UPDATE human_review_items SET issue_type = ?, notes = ?, parser_value = ?, updated_at = ? WHERE project_id = ? AND field_name = ? AND status = 'pending'",
+          [AHJ_NEAR_MISS_ISSUE_TYPE, message, parserValue, nowIso(), projectId, check.fieldName],
         );
       } else if (qcStatus !== "pass") {
         // Re-open a still-failing BLOCKER (qcStatus "fail") even if it was previously
@@ -609,11 +667,21 @@ export function runQcForProject(db: AppDb, projectId: string, options: QcRunOpti
     // When it is queued, fee research waits for it — the lookup job re-triggers fee research once it
     // knows WHICH agency charges (the fee researcher, asked about City of Jefferson, read Marion
     // County's $67.25, reported found:false and stored nothing).
+    // A NEAR-MISS AHJ NAME IS NOT LOOKED UP OR PRICED WHILE THE QUESTION IS PENDING (it may not
+    // exist — "City Of Smonroe" got a lookup and a not-found forms search). Only the NEM side, which
+    // the utility answers, is researched meanwhile. The skip reads the RESULTING pending item
+    // (ahjNearMissPending — the one answer, shared with the chain's acquire_forms step), never
+    // ctx.ahjNearMiss: the predicate keeps firing on a name a person CONFIRMED as-is (the value is
+    // unchanged), and keying off it withheld the lookup for the project's whole life (fix round
+    // 2026-09-29). The item this run filed is committed — this block is outside the transaction — so
+    // it is pending on the firing run and answered on the QC the confirm / edit triggers (humanVerify,
+    // updateProject), which is the run that queues the lookup.
+    const ahjInQuestion = ahjNearMissPending(db, projectId);
     void (async () => {
       const { ensurePermitProcessLookedUp } = await import("./permitProcessLookup");
-      const queued = await ensurePermitProcessLookedUp(db, projectLike as never);
+      const queued = ahjInQuestion ? false : await ensurePermitProcessLookedUp(db, projectLike as never);
       const tracks = requiredTracks(projectLike);
-      await ensureFeeSchedulesResearched(db, projectLike, queued ? tracks.filter((t) => t === "nem") : tracks);
+      await ensureFeeSchedulesResearched(db, projectLike, queued || ahjInQuestion ? tracks.filter((t) => t === "nem") : tracks);
     })().catch(() => null);
   } catch (err) {
     logger.warn("qc", "fee-research trigger failed", { projectId, err: err instanceof Error ? err.message : String(err) });
