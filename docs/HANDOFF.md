@@ -3,6 +3,39 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## RELEASE #11.1 LIVE; FOUR NEW-AHJ INTAKES; THREE BUILDS IN FLIGHT (2026-09-29)
+
+Live = `6feaf534` (pinned via `.probe/repin/repin.mjs`, `.probe/release.txt` moved; `.r11` keeps
+cdc5c179). On top of #11: the stepper opens Submit when a ready-to-stage job's gate says "can stage"
+(`stepperStageIndex`, display only — the stage map is unchanged because `qcMayMoveStatus` reads it);
+flat forms fill INSIDE their rows (`formRowGeometry.rowSnapPlacement`, `resolvePlacementLabel`,
+`captionSourceRule`; kill switch `FLAT_FORM_ROW_SNAP=0`); the still-blank card lists one line per
+blank; portal/status headers use the Keel PNG; intake extraction starts at 32000 output tokens for
+text reads too (a live WA set needed 16,470; the 16000 start wasted a 155 s call).
+Verified live after the deploy: Durwood's page shows 3 · Submit CURRENT; his Yamhill building
+application re-filled with every value in its row; the client portal header shows the PNG.
+
+Four intake tests on never-seen AHJs (Monroe OR — the plan set prints "AHJ: CITY OF SMONROE" and it
+sailed to ready_to_stage; Albuquerque NM; Lynden WA; Prosper TX) exposed, in order of cost:
+  1. an AHJ name one letter off the address city is copied faithfully and nothing asks (→ workflow
+     `ahj-near-miss-check`, worktree ahjnm, branch ahj-near-miss: a QC review item on the ahj field);
+  2. flat-form fills on underscore-text lines (Lynden) still struck/overlapped — the signature block
+     drew over "OWNER / AUTHORIZED AGENT" (→ `flat-form-fill-audit`, worktree ffa, branch form-audit);
+  3. research path: a fee answer truncated at max_tokens was stored as found:false (job done, never
+     re-run); an in-flight lookup read as "NOT FOUND YET" for ten minutes; PNM/PSE PowerClerk URLs
+     dropped because their host was not in the search results though the URL was quoted from a
+     fetched page; a seeded profile with no portal suppressed the per-job lookup (Prosper,
+     Albuquerque); a memorised 2014 URL was fetched before search results; Find official form spun
+     four minutes then failed silently (→ `new-ahj-research-love`, worktree lkp, branch lookups-love).
+Queued after those: the plan-review gate for new AHJs (threshold stamp notes like "engineer letter if
+dead load > 5 psf" are evaluated, not read as hedged — `permitPath.HEDGED` treats "if"/"required" as
+hedges; documents on file are mined into cited code facts on SEEDED rows; an AHJ's own document's
+edition outranks the state floor; a review-basis panel), then fees from .xlsx calculators with a
+per-component basis (Albuquerque: $4/module, $4/inverter, $4/kVA, $23.50 admin, 2% tech fee) and
+"filed in the portal" satisfying the application slot. Reviewer reports for the four are the evidence
+(Lynden's gate caught snow 15 psf vs 25 required; Albuquerque's 5 PSF note was on file and ignored).
+Operator ask before the next deploy: `/code-review ultra` on the branch (rule 5 is touched).
+
 ## THE STORAGE QUESTION IS ANSWERED, NOT REFUSED (2026-09-28, battery-question)
 
 Live PGE PowerClerk, two supervised learns on release #10, project hasBattery "No": the planner
