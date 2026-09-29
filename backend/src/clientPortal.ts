@@ -412,6 +412,10 @@ export function projectStatusHistory(db: AppDb, projectId: string, limit = 12): 
 
 export interface ClientPortalProject {
   id: string;
+  /** The homeowner's name as the company knows the job (operator 2026-09-28/29: "Customer name on
+   *  the portal would be nice too" — a card headed by an address alone made them look up who it
+   *  was). "" when none is on file; the page then heads the card with the address. */
+  homeownerName: string;
   address: string;
   ahj: string;
   utility: string;
@@ -589,6 +593,7 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
       const statusKey = String(p.status || "");
       return {
         id: String(p.id),
+        homeownerName: String(p.homeowner_name || "").trim(),
         address: formatProjectAddress({
           projectAddress: String(p.project_address || ""),
           city: String(p.city || ""),

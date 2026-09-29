@@ -114,6 +114,7 @@
     .card-body { padding: 2px 18px 4px; }
     h3 { font-size: 16px; font-weight: 600; letter-spacing: -.01em; line-height: 1.3; margin: 0 0 2px; }
     .muted { color: var(--muted); font-size: 13px; }
+    .card-head .addr { font-size: 14px; color: var(--ink); margin: 2px 0 2px; }
 
     /* Rows wrap rather than clip: a status label can be a whole sentence
        ("Waiting on us — reading the jurisdiction's latest update") and it has to
@@ -272,7 +273,8 @@
             <div class="card">
               <div class="card-head">
                 <div class="what">
-                  <h3>${esc(p.address)}</h3>
+                  <h3>${esc(p.homeownerName || p.address)}</h3>
+                  ${p.homeownerName ? `<div class="addr">${esc(p.address)}</div>` : ""}
                   <div class="muted">${esc(p.ahj || "")}${p.ahj && p.utility ? " · " : ""}${esc(p.utility || "")}</div>
                 </div>
                 <span class="badge ${cls(p.statusKey)}">${esc(p.status)}</span>
