@@ -147,9 +147,15 @@ export async function extractPageGeometry(pdfBytes: Uint8Array): Promise<PageGeo
           vRules.push({ page: pageIndex, x: (a[0] + b[0]) / 2, y0: Math.min(a[1], b[1]), y1: Math.max(a[1], b[1]) });
         }
       };
+      // An annotation's appearance stream (an AcroForm widget's border) is drawn in its OWN box space,
+      // not the page's — and a fill flattens widgets away. Its paths are never the page's rules.
+      let annotationDepth = 0;
       for (let i = 0; i < ol.fnArray.length; i++) {
         const fn = ol.fnArray[i];
         const args = ol.argsArray[i] as unknown[];
+        if (fn === OPS.beginAnnotation) { annotationDepth++; continue; }
+        if (fn === OPS.endAnnotation) { annotationDepth = Math.max(0, annotationDepth - 1); continue; }
+        if (annotationDepth > 0) continue;
         if (fn === OPS.save) { stack.push({ ...state }); continue; }
         if (fn === OPS.restore) { state = stack.pop() ?? state; continue; }
         if (fn === OPS.transform) { state = { ...state, m: mul(args as unknown as Mat, state.m) }; continue; }
