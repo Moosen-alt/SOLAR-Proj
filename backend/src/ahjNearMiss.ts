@@ -20,8 +20,16 @@
  * pending human_review_items row on the ahj field with AHJ_NEAR_MISS_ISSUE_TYPE — the existing
  * mechanism, which already holds the submit gate through isCriticalReviewItem. The operator
  * confirms (Save Edit as-is) or corrects the AHJ; a corrected name makes the check pass and QC's
- * own pass branch resolves the item. autoStageSteps reads the RESULTING pending item by issue type
- * to hold form acquisition for the phantom name; it never re-derives the answer.
+ * own pass branch resolves the item.
+ *
+ * "IS THE AHJ STILL IN QUESTION" is a SECOND question with its own one answer — ahjNearMissPending,
+ * the pending item itself. The predicate keeps firing on a confirmed name (the value is unchanged
+ * and still one letter off the city), so anything that keyed the lookup / forms skip off the
+ * predicate would withhold the per-job permit-process lookup and permit-side fee research for the
+ * project's whole life once a person said "yes, that is the jurisdiction" (fix round 2026-09-29:
+ * confirm-as-is queued nothing before Stage). Both skip sites — QC's fire-and-forget research block
+ * and the chain's acquire_forms step — read the RESULTING item, never re-derive it: pending on the
+ * firing run, absent the moment a person answers, so the confirm's own QC run queues the lookup.
  *
  * Kill switch: AHJ_NEAR_MISS_CHECK=off (read at call time; the test's in-file kill check uses it).
  */
@@ -113,6 +121,26 @@ export function knownJurisdictionName(db: AppDb, state: string, name: string): b
 export function ahjNearMissForProject(db: AppDb, project: { state: string; ahj: string; city: string }): AhjNearMiss | null {
   if (process.env.AHJ_NEAR_MISS_CHECK === "off") return null;
   return ahjCityNearMiss(project.ahj, project.city, project.state, (name) => knownJurisdictionName(db, project.state, name));
+}
+
+/**
+ * IS THE AHJ STILL IN QUESTION — a pending near-miss item on the ahj field (the one QC files). The
+ * ONE read for every site that waits on the answer (QC's lookup / fee-research skip, the chain's
+ * acquire_forms step). False once a person answered (edited / approved / rejected) even though the
+ * predicate still fires on the confirmed value — a person's answer is what lifts the skip, so the
+ * confirm's own QC run queues the lookup. Also false when the predicate fired but no item could be
+ * filed because a person had already answered an earlier ahj item (a value a person typed is theirs).
+ * Read-only.
+ */
+export function ahjNearMissPending(db: AppDb, projectId: string): boolean {
+  try {
+    return Boolean(db.get<{ one: number }>(
+      "SELECT 1 AS one FROM human_review_items WHERE project_id = ? AND field_name = 'ahj' AND issue_type = ? AND status = 'pending' LIMIT 1",
+      [projectId, AHJ_NEAR_MISS_ISSUE_TYPE],
+    ));
+  } catch {
+    return false;
+  }
 }
 
 /** The review item's message: names both values and asks — never a correction. */

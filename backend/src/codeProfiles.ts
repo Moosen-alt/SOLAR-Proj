@@ -1714,8 +1714,11 @@ export function jurisdictionIdentity(name: string, state: string): { type: strin
   const pre = s.match(/^(city|town|village|township|borough|county|parish|municipality)\s+of\s+/);
   if (pre) { type = pre[1]; s = s.slice(pre[0].length).replace(/^the\s+/, ""); } // "City of The Dalles" = "The Dalles"
   else {
-    const suf = s.match(/\s+(county|parish|township|borough)$/);
-    if (suf && s.length > suf[0].length) { type = suf[1]; s = s.slice(0, -suf[0].length); }
+    // "Yamhill Co" / "Jackson Co." is a county too — the reference file's own spelling for twelve
+    // counties (Polk Co, Wasco Co, Yamhill Co, Clark Co, King Co…). Without it "Jackson Co." read as
+    // a bare municipality "jackson co", two edits from the city "Jackson" (fix round 2026-09-29).
+    const suf = s.match(/\s+(county|co|parish|township|borough)$/);
+    if (suf && s.length > suf[0].length) { type = suf[1] === "co" ? "county" : suf[1]; s = s.slice(0, -suf[0].length); }
   }
   return { type, core: s.trim() };
 }

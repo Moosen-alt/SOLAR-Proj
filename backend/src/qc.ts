@@ -12,7 +12,7 @@ import type { ParserPayload, ProjectRecord, QcStatus, Severity, StageDetail } fr
 import { getCodeProfile, resolveEffectiveCodeContext } from "./codeProfiles";
 import { resolvePermitPath } from "./permitPath";
 import { findKnowledgeForLearn } from "./knowledgeBase";
-import { AHJ_NEAR_MISS_ISSUE_TYPE, ahjNearMissForProject, ahjNearMissMessage, type AhjNearMiss } from "./ahjNearMiss";
+import { AHJ_NEAR_MISS_ISSUE_TYPE, ahjNearMissForProject, ahjNearMissMessage, ahjNearMissPending, type AhjNearMiss } from "./ahjNearMiss";
 import { ensureFeeSchedulesResearched } from "./feeSchedules";
 import { requiredTracks } from "./submittalTracks";
 import { qcMayMoveStatus } from "./projectStage";
@@ -651,16 +651,21 @@ export function runQcForProject(db: AppDb, projectId: string, options: QcRunOpti
     // When it is queued, fee research waits for it — the lookup job re-triggers fee research once it
     // knows WHICH agency charges (the fee researcher, asked about City of Jefferson, read Marion
     // County's $67.25, reported found:false and stored nothing).
-    // A NEAR-MISS AHJ NAME IS NOT LOOKED UP OR PRICED (it may not exist — "City Of Smonroe" got a
-    // lookup and a not-found forms search). Only the NEM side, which the utility answers, is
-    // researched while the question is pending; this block runs again on the QC the confirm /
-    // edit triggers (humanVerify, updateProject) and queues the lookup then.
-    const nearMiss = Boolean(ctx.ahjNearMiss);
+    // A NEAR-MISS AHJ NAME IS NOT LOOKED UP OR PRICED WHILE THE QUESTION IS PENDING (it may not
+    // exist — "City Of Smonroe" got a lookup and a not-found forms search). Only the NEM side, which
+    // the utility answers, is researched meanwhile. The skip reads the RESULTING pending item
+    // (ahjNearMissPending — the one answer, shared with the chain's acquire_forms step), never
+    // ctx.ahjNearMiss: the predicate keeps firing on a name a person CONFIRMED as-is (the value is
+    // unchanged), and keying off it withheld the lookup for the project's whole life (fix round
+    // 2026-09-29). The item this run filed is committed — this block is outside the transaction — so
+    // it is pending on the firing run and answered on the QC the confirm / edit triggers (humanVerify,
+    // updateProject), which is the run that queues the lookup.
+    const ahjInQuestion = ahjNearMissPending(db, projectId);
     void (async () => {
       const { ensurePermitProcessLookedUp } = await import("./permitProcessLookup");
-      const queued = nearMiss ? false : await ensurePermitProcessLookedUp(db, projectLike as never);
+      const queued = ahjInQuestion ? false : await ensurePermitProcessLookedUp(db, projectLike as never);
       const tracks = requiredTracks(projectLike);
-      await ensureFeeSchedulesResearched(db, projectLike, queued || nearMiss ? tracks.filter((t) => t === "nem") : tracks);
+      await ensureFeeSchedulesResearched(db, projectLike, queued || ahjInQuestion ? tracks.filter((t) => t === "nem") : tracks);
     })().catch(() => null);
   } catch (err) {
     logger.warn("qc", "fee-research trigger failed", { projectId, err: err instanceof Error ? err.message : String(err) });

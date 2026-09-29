@@ -13,16 +13,21 @@
 //   A  MUST-PASS     Smonroe/Monroe through createProject + runQcForProject; the gate holds; the
 //                    birth-learned KB row does not quiet it; a corrected AHJ resolves the item on
 //                    re-run; a Save Edit as-is confirms it and a re-run does not reopen it.
-//   B  MUST-EXCLUDE  county AHJs, equal-modulo-prefix, blanks, a real different jurisdiction, KB-known
-//                    names (reference seed, verified KB row, verified code profile), case/punctuation/
-//                    whitespace, St./Saint, Ft/Fort, Mt/Mount, Borough of / Township, a short name.
-//   C  LOOKUP SKIP   no permit_process_lookup job for the near-miss name; queued once it is corrected;
-//                    the chain's acquire_forms step waits for the answer.
+//   B  MUST-EXCLUDE  county AHJs (spelled "County" AND "Co"/"Co."), equal-modulo-prefix, blanks, a real
+//                    different jurisdiction, KB-known names (reference seed, verified KB row, verified
+//                    code profile), case/punctuation/whitespace, St./Saint, Ft/Fort, Mt/Mount,
+//                    Borough of / Township, a short name.
+//   C  LOOKUP SKIP   no permit_process_lookup job for the near-miss name while the question is PENDING;
+//                    queued on the QC run of the answer — corrected, confirmed as-is (Save Edit with the
+//                    unchanged value) or approved; the chain's acquire_forms step waits for the answer.
 //   D  KILL          with the predicate disabled (AHJ_NEAR_MISS_CHECK=off) the must-pass case files
 //                    nothing — the fixture depends on the fix.
 //
 // KILLS (by hand): ahjCityNearMiss returning null -> A1 fails; learned rows counted as known ->
-// A2 fails; the near-miss placed outside the critical.ahj row -> A2's re-run auto-approves it.
+// A2 fails; the near-miss placed outside the critical.ahj row -> A2's re-run auto-approves it;
+// the lookup skip keyed off the predicate instead of the pending item (qc.ts) -> C1's confirm-as-is
+// and approve legs fail (fix round 2026-09-29); "co" dropped from jurisdictionIdentity's suffix ->
+// the Jackson Co. / Marion Co cases fail.
 //
 //   npx tsx backend/test/ahjNearMiss.test.ts
 import "./_isolate";
@@ -49,9 +54,9 @@ const { openDatabase } = await import("../src/db");
 const { createClient } = await import("../src/clients");
 const { createProject, getProjectDetail, getSubmitGateReport, isCriticalReviewItem, updateProject, humanVerify, rerunQc, prepareSubmission } = await import("../src/repository");
 const { runQcForProject, AHJ_NEAR_MISS_ISSUE_TYPE } = await import("../src/qc");
-const { ahjCityNearMiss, knownJurisdictionName, boundedEditDistance } = await import("../src/ahjNearMiss");
+const { ahjCityNearMiss, knownJurisdictionName, boundedEditDistance, ahjNearMissPending } = await import("../src/ahjNearMiss");
 const { saveVerifiedAhjProfile } = await import("../src/knowledgeBase");
-const { saveVerifiedCodeProfile, saveResearchedCodeProfile } = await import("../src/codeProfiles");
+const { saveVerifiedCodeProfile, saveResearchedCodeProfile, jurisdictionIdentity, sameJurisdictionName } = await import("../src/codeProfiles");
 const { processStageStep } = await import("../src/autoStageSteps");
 
 const db = await openDatabase();
@@ -172,9 +177,25 @@ await check("A5 the pure predicate: Prospr/Prosper, Albuqerque/Albuquerque, Lake
   assert.equal(boundedEditDistance("portland", "lakeoswego", 2), null);
 });
 
+await check("A6 the ONE stripper reads 'X Co' / 'X Co.' as a county (the reference file's own spelling for twelve counties), so a county sharing its city's name is never compared", () => {
+  assert.deepEqual(jurisdictionIdentity("Yamhill Co", "OR"), { type: "county", core: "yamhill" });
+  assert.deepEqual(jurisdictionIdentity("Jackson Co.", "MI"), { type: "county", core: "jackson" });
+  assert.deepEqual(jurisdictionIdentity("Jackson County", "MI"), { type: "county", core: "jackson" });
+  assert.equal(sameJurisdictionName("Yamhill Co", "Yamhill County", "OR"), true, "one county under two spellings");
+  assert.equal(sameJurisdictionName("Yamhill Co", "Yamhill", "OR"), false, "a county is not the city of the same name");
+  assert.deepEqual(jurisdictionIdentity("Waco", "TX"), { type: "", core: "waco" }, "only a separate trailing token is the abbreviation");
+  // Without the suffix these were bare "jackson co" / "marion co": folded, two edits from the city,
+  // clearing the length guard (4 < 9, 4 < 8) — the near-miss fired on a county with a city address.
+  assert.equal(ahjCityNearMiss("Jackson Co.", "Jackson", "MI"), null);
+  assert.equal(ahjCityNearMiss("Marion Co", "Marion", "OR"), null);
+  assert.equal(boundedEditDistance("jacksonco", "jackson", 2), 2, "the arithmetic the fixture relies on: it WOULD fire as a bare name");
+});
+
 console.log("\nB. MUST-EXCLUDE — no question on these");
 await noQuestion("a county AHJ with a city address (Yamhill County / Newberg)", { ahj: "Yamhill County", city: "Newberg", zip: "97132" });
 await noQuestion("a county AHJ with a city address (Marion County / Salem)", { ahj: "Marion County", city: "Salem", zip: "97301" });
+await noQuestion("a county abbreviated 'Co.' sharing the city's name (Jackson Co. / Jackson, MI)", { ahj: "Jackson Co.", city: "Jackson", state: "MI", zip: "49201", utility: "Consumers Energy" });
+await noQuestion("a county abbreviated 'Co' sharing the city's name (Marion Co / Marion, OR)", { ahj: "Marion Co", city: "Marion", zip: "97301" });
 await noQuestion("AHJ equal to the city modulo prefix (City of Monroe / Monroe)", { ahj: "City of Monroe" });
 await noQuestion("AHJ equal to the city modulo prefix (Town of Prosper / Prosper, TX)", { ahj: "Town of Prosper", city: "Prosper", state: "TX", zip: "75078", utility: "Oncor" });
 await noQuestion("AHJ equal to the city modulo prefix (City of Beaverton / Beaverton)", { ahj: "City of Beaverton", city: "Beaverton", zip: "97005" });
@@ -226,7 +247,7 @@ await noQuestion("X Township / X (PA)", { ahj: "Ridgemere Township", city: "Ridg
 await noQuestion("a short name two edits away is a different word, not a slip (Bend / Bern)", { ahj: "City of Bern", city: "Bend", zip: "97701" });
 
 console.log("\nC. LOOKUP SKIP — a near-miss name is not looked up while the question is pending");
-await check("C1 no permit_process_lookup job is queued for the near-miss name; correcting the AHJ queues one", async () => {
+await check("C1 no permit_process_lookup job is queued while the question is pending; the QC run of the answer queues one — corrected, confirmed as-is, or approved", async () => {
   const jq = await import("../src/jobQueue");
   clearInterval(jq.startJobWorker(db)); // the worker flag stays; no tick ever runs
   process.env.ANTHROPIC_API_KEY = "sk-ant-test-not-a-real-key";
@@ -244,8 +265,32 @@ await check("C1 no permit_process_lookup job is queued for the near-miss name; c
     updateProject(db, pid, { ahj: "City of Rowanmere" });
     assert.equal(pendingAhj(pid).length, 0);
     await tick();
-    assert.equal(jobs('"lookupKey":"or|city of rowanmere"').length, 1, `queued once the name is confirmed: ${JSON.stringify(jobs("rowanmere").map((j) => j.payload))}`);
+    assert.equal(jobs('"lookupKey":"or|city of rowanmere"').length, 1, `queued once the name is corrected: ${JSON.stringify(jobs("rowanmere").map((j) => j.payload))}`);
     assert.equal(jobs("srowanmere").length, 0);
+
+    // CONFIRMED AS-IS (Save Edit with the unchanged value): the predicate still fires on the value,
+    // but the item is answered, so the confirm's own QC run queues the lookup under the name the
+    // person stood behind. Keyed off the predicate this queued nothing, ever (fix round 2026-09-29).
+    const confirmed = mk({ ahj: "City Of Sthornwick", city: "Thornwick", zip: "97456" });
+    assert.equal(ahjNearMissPending(db, confirmed), true, "the one read: pending on the firing run");
+    await tick();
+    assert.equal(jobs("sthornwick").length, 0, "nothing queued while the question is pending");
+    humanVerify(db, confirmed, { reviewItemId: pendingAhj(confirmed)[0].id, action: "edit", fieldValue: "City Of Sthornwick" });
+    assert.equal(ahjItems(confirmed)[0].status, "edited");
+    assert.equal(ahjNearMissPending(db, confirmed), false, "the one read: absent once a person answered");
+    assert.ok(ahjCityNearMiss("City Of Sthornwick", "Thornwick", "OR"), "the predicate itself still fires on the confirmed value — the item, not the predicate, is what lifts the skip");
+    await tick();
+    assert.ok(jobs('"lookupKey":"or|city of sthornwick"').length >= 1, `queued on the confirm's QC run: ${JSON.stringify(jobs("thornwick").map((j) => j.payload))}`);
+
+    // APPROVED (the typo value kept as read): the same — the answer lifts the skip.
+    const approved = mk({ ahj: "City Of Sbrackenford", city: "Brackenford", zip: "97456" });
+    await tick();
+    assert.equal(jobs("sbrackenford").length, 0);
+    humanVerify(db, approved, { reviewItemId: pendingAhj(approved)[0].id, action: "approve" });
+    assert.equal(ahjItems(approved)[0].status, "approved");
+    assert.equal(getProjectDetail(db, approved).project.ahj, "City Of Sbrackenford", "approve keeps the value as read");
+    await tick();
+    assert.ok(jobs('"lookupKey":"or|city of sbrackenford"').length >= 1, `queued on the approve's QC run: ${JSON.stringify(jobs("brackenford").map((j) => j.payload))}`);
   } finally {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_BASE_URL;
