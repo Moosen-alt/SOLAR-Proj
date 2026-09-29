@@ -1703,8 +1703,9 @@ export function nearestOtherCodeProfileRow(db: AppDb, state: string, ahj: string
 //                                City): a new row under the exact key;
 //   else                      -> a new row under the exact key.
 
-/** "City of Plano" -> {type:"city", core:"plano"}; "Elmore County, ID" -> {type:"county", core:"elmore"}. */
-function jurisdictionIdentity(name: string, state: string): { type: string; core: string } {
+/** "City of Plano" -> {type:"city", core:"plano"}; "Elmore County, ID" -> {type:"county", core:"elmore"}.
+ *  The ONE prefix/suffix stripper; the AHJ-vs-city near-miss predicate (ahjNearMiss.ts) builds on it. */
+export function jurisdictionIdentity(name: string, state: string): { type: string; core: string } {
   let s = String(name || "").toLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim();
   const st = String(state || "").trim().toLowerCase();
   if (st && s.endsWith(` ${st}`) && s.length > st.length + 1) s = s.slice(0, -(st.length + 1)).trim();
@@ -1728,6 +1729,24 @@ export function sameJurisdictionName(a: string, b: string, state: string): boole
   if (!x.core || x.core !== y.core) return false;
   if (x.type === y.type) return true;
   return (!x.type || !y.type) && MUNICIPAL_TYPES.has(x.type) && MUNICIPAL_TYPES.has(y.type);
+}
+
+/**
+ * IS THIS NAME A JURISDICTION THIS TABLE KNOWS ON SOMEONE'S AUTHORITY — a human-verified row, or one
+ * the shipped reference file carries. EXACT key only (never fuzzyCodeRow: the containment scorer
+ * calls "City Of Smonroe" a match for "Monroe"). A seeded row proves nothing: code research, a
+ * correction's criterion (applyJurisdictionCriteriaProposal) and the design-criteria lookup all
+ * create seeded rows under whatever name the project carried — a typo included — so the product's
+ * own writes can never make a typo "known". Read-only.
+ */
+export function knownCodeProfileName(db: AppDb, state: string, name: string): boolean {
+  if (!String(name || "").trim() || !String(state || "").trim()) return false;
+  const key = codeProfileKey({ state, ahj: name });
+  try {
+    const row = db.get<{ confidence?: string }>("SELECT confidence FROM jurisdiction_code_profiles WHERE profile_key = ?", [key]);
+    if (row && text(row.confidence) === "verified") return true;
+  } catch { /* table not there yet: not known */ }
+  return (loadReference()?.profiles ?? []).some((p) => String(p.ahj || "").trim() && codeProfileKey(p) === key);
 }
 
 export type CriteriaWriteRow =
