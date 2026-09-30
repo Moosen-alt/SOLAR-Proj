@@ -1,5 +1,8 @@
-# GitHub Actions — build, test, deploy to Fly.io
-# Runs on every push to main.
+# GitHub Actions — test, then deploy to Fly.io.
+#
+# MANUAL ONLY (Actions → Deploy → Run workflow). It used to run on every push to main, which
+# meant merely CREATING a main branch — or any agent's merge — shipped to production. Per-PR
+# and per-merge testing lives in ci.yml; this file only runs when a person decides to deploy.
 #
 # Required repository secrets:
 #   FLY_API_TOKEN   — from `fly tokens create deploy`
@@ -8,8 +11,6 @@
 name: Deploy
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
