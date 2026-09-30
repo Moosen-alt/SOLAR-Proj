@@ -10,6 +10,8 @@ import { feeBracketCoverage, feeBracketCoverageMessage, decideFeeTier, FEE_TIER_
 /** The pause's reason when a recorded kVA tier step finds no tier box on its page (close MF2). */
 const FEE_TIER_NO_BOX_REASON = "the recorded kVA tier box was not found on this page and no kVA-labelled box could be read";
 import { collectPortalErrorBanner } from "../safeAction";
+import { SERVICE_FEEDER_200A_FIELD, SERVICE_FEEDER_400A_FIELD, isServiceFeeder200Label, isServiceFeeder400Label } from "../../../shared/src/serviceLineLabels";
+import { contactFieldKind, contactKeyFor, contactRoleOfStep, isContactOpener, type ContactFieldKind, type ContactRole, type ContactTrack } from "../../../shared/src/contactRoles";
 import { structureTypeMeaning } from "../../../backend/src/permitProcess";
 
 // A RECORDED ANSWER THAT DESCRIBES A PROJECT OR A PERSON BELONGS TO THAT PROJECT.
@@ -56,22 +58,38 @@ const BARE_NAME_LABEL = /\bnames?\b/i;
 const NAMES_A_THING_NOT_A_PERSON = /\b(permit|file|document|program|record|application|template|report|folder|attachment|field|column|tab|page)\s*names?\b/i;
 
 export function looksLikeProjectData(label: string, value: string): boolean {
-  const l = String(label ?? "");
+  // The label as written AND read as words: a control id ("ConStNum", "WCStrNum", "MailStName")
+  // names nothing until it is split (shared portalSafety.labelWords — the one splitter).
+  const l = `${String(label ?? "")} ${labelWords(String(label ?? ""))}`;
   const v = String(value ?? "").trim();
   if (!v) return false;
   // The portal's own vocabulary wins: a "Job Category" answer is the portal's word even
   // though "category" sits near words we treat as project data elsewhere.
-  if (TAXONOMY_LABEL.test(l) && !PROJECT_DATA_LABEL.test(l)) return false;
-  if (PROJECT_DATA_LABEL.test(l)) return true;
+  // A COMPANY'S OWN FACTS are somebody's data too (leak sweep 2026-09-28): insurer, policy, bond,
+  // workers' comp, HIC/CSL/CCB/UBI registrations, website, title, supervising/master electrician,
+  // the contractor's street number/name — one predicate (shared companyFacts). A LICENCE SLOT is
+  // one whatever the portal calls it — "CSL #", "HIC Reg #", "CCB #", "EC Lic" name no licence word
+  // PROJECT_DATA_LABEL knows, and a licence recorded on company A's job must never replay on
+  // company B's: isCompanyIdentityLabel asks the one slot predicate (kindForSlot) too, and a
+  // company fact always wins over the taxonomy words.
+  const companyFact = isCompanyIdentityLabel(l);
+  if (TAXONOMY_LABEL.test(l) && !PROJECT_DATA_LABEL.test(l) && !companyFact) return false;
+  if (PROJECT_DATA_LABEL.test(l) || companyFact) return true;
   // A bare "Name" is a person's until the label says it is a thing's — see the comment above.
   if (BARE_NAME_LABEL.test(l) && !NAMES_A_THING_NOT_A_PERSON.test(l)) return true;
   return UNAMBIGUOUS_PII_VALUE.test(v) || PHONE_VALUE.test(v);
 }
 import { rankAddressVersions } from "../addressVersion";
+import { isCompanyIdentityLabel } from "../../../shared/src/companyFacts";
+import { licenceKeyForLabel } from "../../../shared/src/licenceKinds";
+import { labelWords } from "../../../shared/src/portalSafety";
+import { batteryControlKind, batteryControlOfStep, batteryDeclarationAnswer, parseHasBattery } from "../../../shared/src/batteryControls";
 import { imageToPdfBytes, shouldConvertToPdf } from "../imageToPdf";
 import { removeUploadStaging, uploadPayloadFor, type PreparedUpload } from "./uploadPayload";
+import { attachmentTypeFor, isDocumentTypeList } from "./attachmentTypes";
+import { cleanRecordLink } from "./submissionLedger";
 import { exactUploadDocType, fileTypeAllowed, UPLOAD_LABEL_PATTERNS, uploadForbidsSubstitute } from "./autoLearnAdapter";
-import { reviewComparison, scrapeReviewScreen as scrapeReviewScreenShared, type ReviewMismatch } from "../reviewScreenScraper";
+import { reviewComparison, scrapeReviewScreen as scrapeReviewScreenShared, utilityIdentifiersEnteredBySteps, type ReviewMismatch } from "../reviewScreenScraper";
 import { sweepEmptyRequiredControls, type EmptyRequired } from "../requiredControlSweep";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
@@ -82,7 +100,7 @@ import {
 } from "../../../shared/src/portalSafety";
 import { commitField, installSettleProbe, waitForSettled } from "../settle";
 import { siteOfUrl } from "../siteOf";
-import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, type FilingBackstop } from "../filingBackstop";
+import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, drainOwnWrites, unsavedAtReviewWarning, portalOwnCallsBlockedAtReview, reviewBlockedCallsLine, type FilingBackstop } from "../filingBackstop";
 
 // How long the drift precheck waits for an async-rendered form to paint before concluding
 // the replay is on the wrong page. PowerClerk's Ameren form reports zero inputs for several
@@ -92,7 +110,8 @@ import { redactCaptureText, readbackMatches, detectChallengeFrame, frameSelector
 import { performLogin, portalErrorPage } from "./loginFlow";
 import { chooseCorrectionForm, correctionFormSelector, isRefusal, scanProjectForms, type ProjectFormRow } from "./correctionForm";
 import { type ExtractedField, EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays, equipmentMakeCandidates, pageFingerprintOf, collectValidationErrorsFrom, acaApplyEntryFrom, advanceSignatureOf } from "./autoLearnAdapter";
-import { tagUploadControls } from "./autoLearnAdapter";
+import { tagUploadControls, visibleBodyText } from "./autoLearnAdapter";
+import { portalSaysNotServed } from "../../../shared/src/portalNotServed";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
 // Works for ANY AHJ or utility portal an admin has taught by recording. It substitutes
@@ -420,6 +439,10 @@ export class RecipeAdapter extends BasePortalAdapter {
   /** The tier box this run ticked, per page identity (a second recorded tier step on the same page
    *  re-decides to the same box and types nothing twice). */
   private feeTierFilled = new Map<string, string>();
+  /** Pages whose service-line boxes were already read (fillUnrecordedServiceBoxes). */
+  private serviceBoxesRead = new Set<string>();
+  /** The contact section whose dialog is open (trackContactBlock), or null. */
+  private contactBlock: { role: ContactRole | null } | null = null;
   /** Wall-clock marks of the phases before the first recorded step (open, goto, login) — the part
    *  of a run the trace never covered (live run 99baa5d0 spent ~3 min there with no evidence). */
   private phaseTimings: Array<{ phase: string; ms: number; note?: string }> = [];
@@ -455,9 +478,23 @@ export class RecipeAdapter extends BasePortalAdapter {
   private landedSelectFields = new Set<string>();
   /** Recorded uploads this run PERFORMED: the slot's recorded label and the file name the portal
    *  was handed. The read-back for an upload (see uploadSlotsHeld). */
-  private uploadsPerformed: Array<{ label: string; fileName: string }> = [];
+  private uploadsPerformed: Array<{ label: string; fileName: string; docType?: string }> = [];
+  /** Doc types whose Save was followed by a list check that never showed the file (not confirmed). */
+  private unconfirmedDocTypes = new Set<string>();
   /** runs-finish item 4: how many of uploadsPerformed a commit click has confirmed (or an advance left behind). */
   private uploadsSettledUpTo = 0;
+  /** D7: the name the portal's reviewer sees for an owed document's upload (by docType). */
+  private uploadNames = new Map<string, string>();
+  /** D7: owed documents already tried this run (one row per document, never twice). */
+  private owedAttempted = new Set<string>();
+  /** Doc types this run actually handed to a file control (recorded uploads and owed ones). */
+  private uploadedDocTypes = new Set<string>();
+  /** Recorded attachment commits (the stamped Save step) whose row carried NO recorded Type step but
+   *  whose page demanded one — the run chose it by the document (typeUntypedAttachmentRow). The owed
+   *  documents that go through the same row get their Type the same way. */
+  private rowsTypedByDocument = new Set<RecipeStep>();
+  /** D4 — WHAT WENT UP: every owed document's outcome this run, in the portal's own list's terms. */
+  private attachmentLedger: Array<{ docType: string; label: string; status: "attached" | "already listed" | "not attached"; detail: string }> = [];
   /** runs-finish item 3: the run ended on a page NOT verified as the review page — where, in the
    *  page's own words. stopAtReview then says so instead of "staged to the review screen". */
   private stoppedBeforeReview = "";
@@ -524,6 +561,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       /** Live progress for a dashboard: every wait longer than ~10 s says what it is waiting on
        *  (F3 — the operator watched a frozen login screen for three minutes). Non-PII. */
       onProgress?: (p: RecipeProgress) => void;
+      /** THE DOCUMENTS THIS FILING OWES beyond what the recording uploads (docs plan D7): the AHJ's
+       *  required list for THIS track, on file, in docsByType (the backend's owedAttachmentsFor).
+       *  Attached through the page's own recorded attachment row, one row per document. */
+      owedAttachments?: Array<{ docType: string; label: string }>;
     } = {},
   ) {
     super();
@@ -667,6 +708,8 @@ export class RecipeAdapter extends BasePortalAdapter {
       // Hand-off: the route comes off FIRST, then every abort up to that moment is counted (an
       // abort between the last check and the hand-off is not lost).
       await this.backstop?.dispose().catch(() => null);
+      // The portal's own calls the lockdown held back on the review page, for the hand-off (B14).
+      this.noteReviewBlockedCalls();
       // AFTER THE APPROVED CLICK "Nothing was sent" is false: the filing went (or the click's own
       // request was the one aborted). Every abort is still reported, and the result says which.
       if (this.finalSubmitClicked) return this.withApprovedClickBackstopNotes(r);
@@ -706,9 +749,15 @@ export class RecipeAdapter extends BasePortalAdapter {
     // fetch / XHR to a filing-shaped endpoint). A request that merely took the approved window (a
     // same-origin analytics fetch, a subframe navigation) is named, never reported as the filing;
     // the backend then records "NO filing request reached the portal" (repository submitted_by).
-    const sent = bs.approvedAdmissions.some((a) => a.filing) || bs.approvedNavigations.length > 0;
+    // ...and a fetch the window admitted is not the filing when the clicked page's OWN form submission
+    // (a state-changing document request, not a payment) was then aborted as a filing (autosubmit-close-2
+    // skeptic s4ValidateSubmit: fetch('/api/validate-submit') took the window, the form's POST was aborted).
+    const formPostAborted = bs.aborts.some((x) => x.rule === "filing-url" && /^document$/i.test(String(x.resourceType || ""))
+      && !/^(GET|HEAD)$/i.test(String(x.method || "")) && !/fee-payment/i.test(String(x.why || "")));
+    const isFiling = (a: { filing: boolean; navigation: boolean }): boolean => a.filing && (a.navigation || !formPostAborted);
+    const sent = bs.approvedAdmissions.some(isFiling) || bs.approvedNavigations.length > 0;
     for (const a of bs.approvedAdmissions) {
-      if (a.filing) notes.push(a.navigation ? `the approved click's request (the clicked page's form submission) went to ${a.where}` : `a state-changing request in the approved window went to ${a.where}`);
+      if (isFiling(a)) notes.push(a.navigation ? `the approved click's request (the clicked page's form submission) went to ${a.where}` : `a state-changing request in the approved window went to ${a.where}`);
       else {
         const kind = a.navigation ? (a.mainFrame ? "navigation" : "subframe navigation") : /^(fetch|xhr)$/i.test(a.resourceType) ? "fetch/XHR" : (a.resourceType || "state-changing");
         notes.push(`the approved click's request did not reach the portal (a ${kind} request to ${a.where} took the window)`);
@@ -737,6 +786,34 @@ export class RecipeAdapter extends BasePortalAdapter {
 
   private backstop: FilingBackstop | null = null;
   private backstopReported = 0;
+  /** What the person taking the review page must know before submitting (B3 / B14) — carried into
+   *  stopAtReview's hand-off message and data. */
+  private reviewHandoffNotes: string[] = [];
+  /** The review page's OWN background calls the lockdown held back (origin + path) — B14. */
+  private reviewPageBlockedCalls: string[] = [];
+  /** THE PORTAL'S OWN CALLS HELD BACK AT REVIEW (dryrun-0928 B14), read after dispose() so every
+   *  abort up to the hand-off counts: one line for the person — a section may render incomplete,
+   *  and how to get it back without re-sending a form. A third-party tracker is not named (it
+   *  stays in the drift warnings); the abort itself is unchanged (hard rule 1). */
+  private noteReviewBlockedCalls(): void {
+    const bs = this.backstop;
+    if (!bs || this.finalSubmitClicked) return;
+    const here = typeof this.page?.url === "function" ? String(this.page.url() ?? "") : "";
+    const calls = portalOwnCallsBlockedAtReview(bs.aborts, here);
+    if (!calls.length) return;
+    this.reviewPageBlockedCalls = calls;
+    const line = reviewBlockedCallsLine(calls, this.lastDocumentMethod);
+    if (line && !this.reviewHandoffNotes.includes(line)) this.reviewHandoffNotes.push(line);
+  }
+  /** Drain the run's own pending save on the review page before the sticky lock (B3). */
+  private async drainBeforeReviewLock(): Promise<void> {
+    const d = await drainOwnWrites(this.page, { why: `replay answers on the review page (${this.recipe.id})` });
+    if (d.drained && d.stillSaving) {
+      const w = unsavedAtReviewWarning("the review page");
+      if (!this.reviewHandoffNotes.includes(w)) this.reviewHandoffNotes.push(w);
+      if (!this.driftWarnings.includes(w)) this.driftWarnings.push(w);
+    }
+  }
   /** Record every backstop abort not yet reported; the run-stopping reason when any of them was a
    *  filing/payment request (the filing-URL rule), else "". A window abort (a dismisser click or
    *  a terminal-page Enter fired a state-changing request — often a consent XHR) is reported and
@@ -808,16 +885,21 @@ export class RecipeAdapter extends BasePortalAdapter {
         { finalSubmitClicked: true, finalSubmitOutcome: outcome },
       );
     }
+    // WHAT THE PERSON MUST KNOW BEFORE SUBMITTING (dryrun-0928 B3 / B14): answers the portal may
+    // not have saved, and the portal's own background calls the lockdown held back on this page.
+    const notes = this.reviewHandoffNotes;
+    const handoff = notes.length ? ` ${notes.join(" ")}` : "";
+    const handoffData = notes.length ? { reviewHandoffNotes: [...notes], reviewPageBlockedCalls: [...this.reviewPageBlockedCalls] } : {};
     // Never "staged to the review screen" for a run that did not verifiably reach it (runs-finish 3).
     if (this.stoppedBeforeReview) {
       return ok(
-        `${HUMAN_REVIEW_MESSAGE} The recipe did NOT stage ${this.portalName} at its review screen — it ${this.stoppedBeforeReview} AUTOMATION HAS STOPPED.`,
-        { finalSubmitClicked: false, stoppedBeforeReview: true },
+        `${HUMAN_REVIEW_MESSAGE} The recipe did NOT stage ${this.portalName} at its review screen — it ${this.stoppedBeforeReview}${handoff} AUTOMATION HAS STOPPED.`,
+        { finalSubmitClicked: false, stoppedBeforeReview: true, ...handoffData },
       );
     }
     return ok(
-      `${HUMAN_REVIEW_MESSAGE} The recipe staged ${this.portalName} to the review screen. Verify every field and uploaded file, handle any MFA/fee, then click submit manually. AUTOMATION HAS STOPPED.`,
-      { finalSubmitClicked: false },
+      `${HUMAN_REVIEW_MESSAGE} The recipe staged ${this.portalName} to the review screen. Verify every field and uploaded file, handle any MFA/fee, then click submit manually.${handoff} AUTOMATION HAS STOPPED.`,
+      { finalSubmitClicked: false, ...handoffData },
     );
   }
   // After a final submit, scrape the COMPLETION page for the issued permit/record number
@@ -858,18 +940,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       // (capId/agency/auth tickets) that would persist session material in the stored run
       // result and won't work when clicked later anyway.
       const rawUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
-      let recordLink = rawUrl;
-      try {
-        const u = new URL(rawUrl);
-        // ProjectId/ProgramId identify the record, not the session — dropping them made the
-        // stored link useless (a bare /MvcProjects/EditProject reaches nothing). Same rule
-        // as cleanRecordLink: keep identifiers, drop everything else.
-        const KEEP = /^(projectid|programid|formid|capid1|capid2|capid3|module|tabname|agencycode|id|recordid)$/i;
-        const kept = new URLSearchParams();
-        u.searchParams.forEach((v, k) => { if (KEEP.test(k)) kept.append(k, v); });
-        const q = kept.toString();
-        recordLink = u.origin + u.pathname + (q ? `?${q}` : "");
-      } catch { /* keep raw */ }
+      // ProjectId/ProgramId identify the record, not the session — dropping them made the stored
+      // link useless (a bare /MvcProjects/EditProject reaches nothing). ONE list: cleanRecordLink
+      // (these two lists disagreed until dryrun-0928 B11).
+      const recordLink = cleanRecordLink(rawUrl);
       const submitted = pageConfirmsSubmission(bodyText);
       if (permitNumber || submitted) {
         return ok(`Captured submission confirmation${permitNumber ? `: ${permitNumber}` : ""}.`, {
@@ -1105,7 +1179,9 @@ export class RecipeAdapter extends BasePortalAdapter {
           await this.page.screenshot({ path: path.join(dir, `review-unreadable-${stamp}.png`), fullPage: true }).catch(() => {});
         } catch { /* diagnostics must never change the outcome */ }
       }
-      const cmp = reviewComparison(fields, project, body);
+      // A utility identifier is checked only when THIS recipe typed it (B8) — never a meter on a
+      // permit application that has no meter field.
+      const cmp = reviewComparison(fields, project, utilityIdentifiersEnteredBySteps(this.recipe.steps), body);
       const mismatches = cmp.mismatches;
       if (!mismatches.length) {
         // SAY WHAT WAS CONFIRMED, NOT JUST THAT NOTHING COMPLAINED. Zero mismatches on a page
@@ -1210,6 +1286,17 @@ export class RecipeAdapter extends BasePortalAdapter {
         const bsStop = this.backstopStop();
         if (bsStop) return fail(bsStop, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, guardRefusals: this.guardRefusals, failedStepIndex: Math.max(0, stepIdx - 1), trace });
       }
+      // THE PORTAL SAYS THIS ADDRESS IS NOT SERVED HERE (portal-truth D5): after every step that
+      // moved the page (a click, a goto), ask the one predicate of the page's visible text. A replay
+      // that lands on "No Building services were returned for this address" stops here, named, with
+      // the portal's own words in data.notServed — the backend refuses the recipe for this entity.
+      if (stepIdx > 0 && ["click", "goto"].includes(String(this.recipe.steps[stepIdx - 1]?.action))) {
+        const said = portalSaysNotServed(await visibleBodyText(this.page));
+        if (said) {
+          return fail(`Stopped: the portal says this address is not served there — "${said}". This is not where this job's permit is filed; nothing was filed.`,
+            { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, guardRefusals: this.guardRefusals, failedStepIndex: stepIdx - 1, trace, notServed: said });
+        }
+      }
       const recordedStep = this.recipe.steps[stepIdx];
       this.currentStepIdx = stepIdx;
       const inArrayBlock = this.arrayBlockStart >= 0
@@ -1300,7 +1387,9 @@ export class RecipeAdapter extends BasePortalAdapter {
           break;
         }
         // Past review only toward an APPROVED final submit: every state-changing request is now
-        // aborted except inside THE approved click's window (filingBackstop.ts).
+        // aborted except inside THE approved click's window (filingBackstop.ts). The run's own
+        // pending save on this page drains first (B3) — the lock would abort it too.
+        await this.drainBeforeReviewLock();
         this.backstop?.lockReview(`replay stopForReview before the approved final submit (${this.recipe.id})`);
         pastReview = true;
         continue;
@@ -1458,6 +1547,14 @@ export class RecipeAdapter extends BasePortalAdapter {
         // PHOTOGRAPH THE FINISHED PAGE. Same moment as the sweep above: everything the
         // recipe will put on this page is on it, and the next click leaves it for good.
         await this.timed("page-shot", async () => this.capturePageShot(await currentPageLabel()));
+      }
+
+      // A RECORDED ATTACHMENT ROW THAT CARRIES NO TYPE STEP (the learn's Type was picked by a person —
+      // Corvallis 2026-09-28): the Type is chosen by the document before the row's Save, so the Save is
+      // not refused on an empty Type. Never past the review marker.
+      if (!pastReview && step.action === "click" && /^attachment:\s*save\b/i.test(String(step.note ?? "").trim())) {
+        const untyped = this.recordedAttachmentRow(stepIdx);
+        if (untyped && !untyped.type) await this.timed("attachment-type", () => this.typeUntypedAttachmentRow(String(untyped.upload.docType ?? ""), step));
       }
 
       let lastErr: unknown;
@@ -1743,7 +1840,17 @@ export class RecipeAdapter extends BasePortalAdapter {
       if (performed && step.action === "click" && this.uploadsPerformed.length > this.uploadsSettledUpTo) {
         const said = `${String(step.note ?? "")} ${String(step.selector?.name ?? step.selector?.text ?? "")}`;
         if (/^advance\b/i.test(String(step.note ?? ""))) this.uploadsSettledUpTo = this.uploadsPerformed.length;
-        else if (/\b(save|upload|attach|commit)/i.test(said)) await this.timed("upload-commit", () => this.confirmUploadsListed(`"${String(step.note ?? "the save").slice(0, 50)}"`));
+        else if (/\b(save|upload|attach|commit)/i.test(said)) {
+          // Only a LEARNER-STAMPED attachment Save is a place the committed list is known to show the
+          // file; any other save-worded click (a form's "Save and continue", a portal with no list
+          // grid) gets a warning, never the final-submit refusal (skeptic eb36a8f N1).
+          const stampedRow = this.recordedAttachmentRow(stepIdx);
+          await this.timed("upload-commit", () => this.confirmUploadsListed(`"${String(step.note ?? "the save").slice(0, 50)}"`, !!stampedRow));
+          // THE DOCUMENTS THE FILING OWES (docs plan D7): the same recorded row takes each owed
+          // document the recording never uploaded — one row per document, then this same commit.
+          const row = !pastReview ? stampedRow : null;
+          if (row) await this.timed("owed-attachments", () => this.attachOwedDocuments(row, step));
+        }
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
@@ -1929,10 +2036,15 @@ export class RecipeAdapter extends BasePortalAdapter {
     // it in. An earlier draft of this call sat above that loop and would have withdrawn the
     // warning on exactly the page the warning was about.
     this.dischargeCoveredWarning();
+    // D4: every owed document has an outcome — an owed one no attachment row carried is named.
+    this.settleOwedLedger();
     // THE REVIEW-PAGE LOCKDOWN (filingBackstop.ts): the run's last write to the page (the final
     // re-assert and gap-fill above, which a portal autosaves on blur) is done. From here until
     // fillApplication hands the page to a person (dispose), every state-changing request is
-    // aborted and stops the run, named.
+    // aborted and stops the run, named. ...BUT NOT BEFORE THE PORTAL HAS SAVED WHAT THE RUN WROTE
+    // (dryrun-0928 B3): PowerClerk batches a page's answers into one save seconds after the first
+    // change; the final-submit refusal and stopForReview exits both arrive here with it pending.
+    await this.drainBeforeReviewLock();
     this.backstop?.lockReview(`replay stopped at review (${this.recipe.id})`);
     const review = await this.verifyReviewScreen(project);
     const data = {
@@ -1941,6 +2053,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, stoppedAtPayment: this.stoppedAtPayment, pageShotDir: this.pageShotDir,
       outcomeShotPath: this.outcomeShotPath,
       reviewFieldsSeen: review.fieldsSeen, reviewFieldsConfirmed: review.confirmed, reviewMismatches: review.mismatches,
+      attachmentLedger: this.attachmentLedger,
     };
     // HONEST STATUS (runs-finish item 3). Live run 191e45c8 said "stopped at review" on Accela's
     // attachments page with 0 of 5 project values found, and was recorded ready-to-submit. A run
@@ -2018,7 +2131,7 @@ export class RecipeAdapter extends BasePortalAdapter {
     if (!/\bcapacity\b|kwh/i.test(label)) return "";
     // Stated where the value is produced, not only in skipForNoBattery: a project declared
     // WITHOUT storage must never have a capacity filed for it, whatever else is in scope.
-    if (/^(no|false|none|n)$/i.test(String(this.fieldValues.hasBattery ?? "").trim())) return "";
+    if (this.projectHasBattery() === false) return "";
     // essKwh is the canonical key normalize.ts derives; batteryCapacityKwh is what the
     // parser itself emits. Both reach fieldValues through resolveRecipeFieldValues' snapshot
     // passthrough, and the raw key is the fallback for a snapshot that never went through
@@ -2035,8 +2148,21 @@ export class RecipeAdapter extends BasePortalAdapter {
     // once told the utility a Powerwall's capacity as fact about a job with no storage.
     // Leaving it blank is not the alternative either — the portal marks it required, and it
     // was this run's only blank on PGE.
-    if (this.isBatteryDeclaration(step) && /^(no|false|none|n)$/i.test(String(this.fieldValues.hasBattery ?? "").trim())) {
-      return "No";
+    //
+    // AND THE MIRROR IMAGE: a recipe learned on a job WITHOUT a battery records "No" on that
+    // same question, and replaying that literal onto a job WITH one files a storage system as
+    // absent — the utility then never sees the specs it needs. So the declaration takes THIS
+    // project's answer in the control's own vocabulary (shared batteryDeclarationAnswer: the
+    // recorded option list's Yes/No when it carries one, the literal otherwise; a recorded
+    // answer that already agrees is kept, so a portal's "None" stays "None"). Unknown replays
+    // as recorded.
+    {
+      const hasBattery = this.projectHasBattery();
+      if (hasBattery !== undefined && this.isBatteryDeclaration(step)) {
+        const recorded = step.field ? String(this.fieldValues[step.field] ?? "") : String(step.value ?? "");
+        const answer = batteryDeclarationAnswer(hasBattery, (step as { options?: unknown[] }).options, recorded);
+        if (answer !== null) return answer;
+      }
     }
     // THE SIGNER IS THE CLIENT'S AUTHORIZED SIGNER, whatever key an older recipe bound the box
     // to (a planner-chosen installerContactName would sign as the contact). Empty = runAll
@@ -2053,6 +2179,12 @@ export class RecipeAdapter extends BasePortalAdapter {
       return String(this.fieldValues[step.field] ?? "").replace(/[-\s]/g, "");
     }
     if (step.field) {
+      // A LICENCE STEP READS THE KIND ITS LABEL NAMES (licences skeptic L2 — shared licenceKeyForLabel,
+      // the question recipeReplayBinding R9 asks of the same label): "CSL Number" bound to the generic
+      // ccbLicenseNumber types THIS company's construction supervisor licence, or nothing — never the
+      // electrical contractor's number the generic key held on this track.
+      const lic = licenceKeyForLabel(step.field, String(step.selector?.label || step.selector?.name || step.selector?.text || step.note || ""));
+      if (lic) return lic.key ? String(this.fieldValues[lic.key] ?? "") : "";
       // PREFER THE PORTAL'S OWN STRING for equipment models. The backend resolves
       // "<field>Certified" from the CEC list — the same list the portal builds its dropdown
       // from — so "DS3-L" arrives as "DS3-L {240V}" and "Q.TRON BLK M-G2.C1+/AC" as the
@@ -2847,27 +2979,46 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  a rating; a declaration is a bare storage noun, and a checkbox is always a declaration
    *  because there is nothing else a checkbox could be. */
   private isBatteryDeclaration(step: RecipeStep): boolean {
-    const label = `${step.note ?? ""} ${step.field ?? ""}`;
-    if (!/\bbatter(y|ies)\b|\benergy storage\b|\bess\b|\bstorage\b/i.test(label)) return false;
-    if (step.action === "check" || step.action === "uncheck") return true;
-    const SPEC = /capacity|kwh|kw\b|\bah\b|manufacturer|model|make|quantity|\bqty\b|\bsize\b|rating|voltage|efficiency|round-?trip|state of charge|serial|nameplate|inverter/i;
-    return !SPEC.test(label);
+    return this.batteryKindOf(step) === "declaration";
+  }
+
+  /** THE ONE PREDICATE (shared batteryControls — the learner's fill guard asks the same
+   *  function): the recorded label, read as the control the action implies. An UPLOAD is never
+   *  the yes/no battery question — "upload battery_spec: Battery Specification Sheet" is a
+   *  battery's document (skeptic eb36a8f MF1: it read as a declaration, so the no-battery skip
+   *  never fired and a datasheet went up on a no-battery filing) — the predicate calls a file a
+   *  spec. */
+  private batteryKindOf(step: RecipeStep): ReturnType<typeof batteryControlKind> {
+    const label = `${step.selector?.label ?? ""} ${step.note ?? ""} ${step.field ?? ""}`;
+    return batteryControlKind(label, { control: batteryControlOfStep(step), options: (step as { options?: unknown[] }).options });
+  }
+
+  /** The project's hasBattery, read the one way (shared parseHasBattery): false = no battery,
+   *  true = battery, undefined = silence, which replays as recorded. */
+  private projectHasBattery(): boolean | undefined {
+    return parseHasBattery(this.fieldValues.hasBattery);
   }
 
   private skipForNoBattery(step: RecipeStep): boolean {
-    const raw = String(this.fieldValues.hasBattery ?? "").trim();
-    if (!/^(no|false|none|n)$/i.test(raw)) return false; // unknown or yes → replay as recorded
-    const label = `${step.note ?? ""} ${step.field ?? ""}`;
+    if (this.projectHasBattery() !== false) return false; // unknown or yes → replay as recorded
+    const kind = this.batteryKindOf(step);
     // "Wattsmart Battery Program?" is a PROGRAM question answered No, not a spec — answering
-    // it is correct and skipping it would leave a required question blank.
-    if (/program\b/i.test(label)) return false;
+    // it is correct and skipping it would leave a required question blank. A MENTION (an
+    // acknowledgment citing the battery requirements) replays as recorded too.
+    if (kind === null || kind === "program" || kind === "mention") return false;
     // NEITHER IS THE QUESTION "IS THERE A BATTERY". Live on PGE: the recipe's "Energy Storage"
     // step was skipped for a job with no battery, and the portal then reported "Energy
     // Storage" as a REQUIRED FIELD LEFT BLANK — the run's only blank. Not having a battery is
-    // the answer to that question, not a reason to leave it unanswered. A declaration gets
-    // answered; only the SPECS of a battery that does not exist are skipped.
-    if (this.isBatteryDeclaration(step)) return false;
-    return /\bbatter(y|ies)\b|\benergy storage\b|\bess\b|round-?trip|state of charge/i.test(label);
+    // the answer to that question, not a reason to leave it unanswered. A select/fill
+    // declaration is executed and resolveValue answers it No.
+    //
+    // A DECLARING CHECKBOX is the one declaration whose No answer is "leave it alone": a
+    // recorded `check` on "This system includes battery storage" executed on a no-battery job
+    // is the Ivy incident (the tick that revealed the Powerwall fields) reintroduced by replay —
+    // which it was, between the declaration commit and this one: isBatteryDeclaration said
+    // "declaration" for every check step and skipForNoBattery then executed it.
+    if (kind === "declaration") return step.action === "check";
+    return true; // a spec of a battery that does not exist
   }
 
   // A SLOT THAT ONLY EXISTS AT REPLAY CAN ONLY BE FILLED AT REPLAY.
@@ -3117,9 +3268,7 @@ export class RecipeAdapter extends BasePortalAdapter {
     //
     // `recipe.discipline` is the field the learn stored for exactly this: "structural" on one
     // and "electrical" on the other.
-    const wantsElectrical = /elec/i.test(String(this.fieldValues.permitType ?? ""))
-      || /elec/i.test(String(step.note ?? "").replace(/\s+—\s+issuing agency:.*$/i, ""))
-      || /elec/i.test(String(this.recipe.discipline ?? ""));
+    const wantsElectrical = this.filingIsElectrical(String(step.note ?? ""));
     // THE LOOKED-UP ISSUING AGENCY DECIDES THE ROW when it is known (production 2026-09-27: City
     // of Jefferson's permits are issued by Marion County; the discipline convention above would
     // take the city's row for a structural filing). bindRecipeForReplay writes it into the field
@@ -3212,6 +3361,9 @@ export class RecipeAdapter extends BasePortalAdapter {
   private static readonly WRITE_ACTIONS: ReadonlySet<string> = new Set(["fill", "select", "check", "uncheck", "upload"]);
 
   private async executeStepInner(step: RecipeStep, pastReview: boolean): Promise<boolean> {
+    // ONE CONTACT, ONE IDENTITY at replay (see trackContactBlock) — before the step runs, so a
+    // dialog Continue is preceded by the dialog made the section identity.
+    await this.trackContactBlock(step).catch(() => null);
     // AN ADDRESS-ROW STEP HAS NO SELECTOR WORTH TRYING, so do not spend 30 seconds proving
     // it. The generic pass records a marker that exists only during the learn click - by
     // design, so the matcher gets its turn - and Playwright treats a selector that resolves
@@ -3268,7 +3420,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       );
     }
     if (this.skipForNoBattery(step)) {
-      this.agingNotes.push(`skipped "${String(step.note ?? step.field ?? "battery step").slice(0, 48)}" — this project has no battery`);
+      const what = String(step.note ?? step.field ?? "battery step").slice(0, 48);
+      this.agingNotes.push(step.action === "check"
+        ? `left "${what}" unchecked — this project has no battery, and unchecked is that answer`
+        : `skipped "${what}" — this project has no battery`);
       return true; // not a failure: the section does not apply to this filing
     }
     // F1 — A kVA TIER BOX IS DECIDED FROM THE PAGE'S OWN LABELS, not from the recorded selector:
@@ -3882,6 +4037,11 @@ export class RecipeAdapter extends BasePortalAdapter {
         }
         // Same settle for checkbox changes that may trigger form re-renders.
         await this.settle(3000);
+        // AND THE PORTAL'S COMMIT, as select and fill already wait (dryrun-0928 B3): a tick is a
+        // write the portal autosaves too — the recorded certification tick at the end of the
+        // PacifiCorp recipe was the answer the review lockdown then aborted. Inside this step's
+        // own-write window, so the save it waits for is let through.
+        await this.waitForAutosaveCommitted();
         return true;
       }
       case "uncheck":
@@ -3920,7 +4080,7 @@ export class RecipeAdapter extends BasePortalAdapter {
           ? await imageToPdfBytes(filePath).catch(() => null)
           : null;
         // The SAME payload builder the unrecorded-upload sweep uses (uploadPayload.ts).
-        const file = this.stageUpload(uploadPayloadFor(filePath, pdfBuf));
+        const file = this.stageUpload(uploadPayloadFor(filePath, pdfBuf, step.docType ? this.uploadNames.get(step.docType) : undefined));
         // Custom Browse/Upload widgets tag their controls with data-al-upl at record time;
         // that attribute is gone on a fresh page, so re-tag before resolving the selector.
         //
@@ -3986,7 +4146,7 @@ export class RecipeAdapter extends BasePortalAdapter {
           await chooser.setFiles(file);
           await this.markRecordedUpload(scoped, chooser);
           await this.waitForUploadAccepted();
-          this.noteUploadPerformed(recordedLabel, file);
+          this.noteUploadPerformed(recordedLabel, file, step.docType); if (step.docType) this.uploadedDocTypes.add(step.docType);
           return true;
         }
         this.options.beforeUpload?.(step.docType!, filePath);
@@ -3995,7 +4155,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         await scoped!.setInputFiles(file, { timeout: 8000 });
         await this.markRecordedUpload(scoped, null);
         await this.waitForUploadAccepted();
-        this.noteUploadPerformed(recordedLabel, file);
+        this.noteUploadPerformed(recordedLabel, file, step.docType); if (step.docType) this.uploadedDocTypes.add(step.docType);
         return true;
       }
       default:
@@ -4021,6 +4181,337 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  second level such as co.uk), the whole host for an IP or a single-label host. */
   private static siteOf(url: string): string {
     return siteOfUrl(url);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // docs plan D7 / D4: every owed document through the page's own attachment row, and the ledger.
+  // ---------------------------------------------------------------------------------------------
+
+  /** The recorded ATTACHMENT ROW whose commit is step `commitIdx` — ONLY a row the learner itself
+   *  recorded as an attachment row (accelaAttachmentSavePass: phase "upload", notes "attachment: …"):
+   *  the upload before it on the same page, and that row's "attachment: description" / "attachment:
+   *  document type" steps. Any other Description / Type / Save is an ordinary form field and never
+   *  carries a document (skeptic 21d2502 MF1: a "Description of Work" + "Work Type" + Save page had
+   *  its description overwritten, a field retyped and its Plan Set slot given the E-01). */
+  private recordedAttachmentRow(commitIdx: number): { upload: RecipeStep; desc: RecipeStep | null; type: RecipeStep | null } | null {
+    const steps = this.recipe.steps;
+    const commit = steps[commitIdx];
+    const stamped = (s: RecipeStep | undefined, re: RegExp): boolean => !!s && re.test(String(s.note ?? "").trim());
+    if (!stamped(commit, /^attachment:\s*save\b/i)) return null;
+    let desc: RecipeStep | null = null;
+    let type: RecipeStep | null = null;
+    for (let i = commitIdx - 1; i >= 0 && i >= commitIdx - 8; i--) {
+      const s = steps[i];
+      if (!s) break;
+      if (s.action === "goto" || (s.action === "click" && /^advance\b/i.test(String(s.note ?? "")))) return null;
+      if (s.action === "upload") return s.docType ? { upload: s, desc, type } : null;
+      if (s.action === "fill" && !desc && stamped(s, /^attachment:\s*description\b/i)) desc = s;
+      else if (s.action === "select" && !type && stamped(s, /^attachment:\s*document\s*type\b/i)) type = s;
+    }
+    return null;
+  }
+
+  /** The page's DOCUMENT-TYPE selects, in DOM order (main document): `i` is the select's index among ALL
+   *  selects (page.locator("select").nth(i)), its option texts, the chosen option's text ("" = none /
+   *  a placeholder) and whether it is shown. "Document-type" is attachmentTypes.isDocumentTypeList — the
+   *  learner's test too (accelaAttachmentSavePass), one predicate at every door: never "Other" alone (a
+   *  Category of Construction offers it — skeptic 13985c6 S5), never the row's "also attach to" select
+   *  (only "--Select--" — skeptic MF3), and a numbered list ("01 Plans", Corvallis) reads as what it is. */
+  private async documentTypeSelects(): Promise<Array<{ i: number; texts: string[]; chosenText: string; visible: boolean }>> {
+    if (!this.page || typeof this.page.evaluate !== "function") return [];
+    const all = await this.page.evaluate(() => Array.from(document.querySelectorAll("select")).map((el, i) => {
+      const sel = el as HTMLSelectElement;
+      const texts = Array.from(sel.options).map((o) => String(o.textContent || o.label || "").replace(/\s+/g, " ").trim());
+      const at = sel.selectedIndex >= 0 ? String(texts[sel.selectedIndex] ?? "") : "";
+      const chosenText = String(sel.value || "").trim() && !/^\s*-*\s*(select|choose|please\s+select)/i.test(at) ? at : "";
+      const r = sel.getBoundingClientRect();
+      const cs = getComputedStyle(sel);
+      const visible = r.width > 0 && r.height > 0 && cs.display !== "none" && cs.visibility !== "hidden";
+      return { i, texts, chosenText, visible };
+    })).catch(() => []) as Array<{ i: number; texts: string[]; chosenText: string; visible: boolean }>;
+    return Array.isArray(all) ? all.filter((s) => Array.isArray(s?.texts) && isDocumentTypeList(s.texts)) : [];
+  }
+
+  /** The live options of the row's DOCUMENT-TYPE select (documentTypeSelects), the newest one. Never
+   *  simply the last select: a real Accela row carries a second one after it ("also attach to").
+   *  [] = no such select on the page yet. */
+  private async typeOptionsOf(_typeStep: RecipeStep | null): Promise<string[]> {
+    const lists = await this.documentTypeSelects();
+    return lists.length ? lists[lists.length - 1].texts : [];
+  }
+
+  /** A PENDING attachment row is on the page: a document-type select (documentTypeSelects) that holds a
+   *  chosen Type. Accela removes the row on Save; a static-row widget resets it; a refused Save leaves it
+   *  holding its Type. */
+  private async pendingAttachmentRow(): Promise<boolean> {
+    return (await this.documentTypeSelects()).some((s) => !!s.chosenText);
+  }
+
+  /** Is this filing ELECTRICAL? The project's permit type, the step's own words (an address-version
+   *  note), or the discipline the learn stored on the recipe ("structural" / "electrical"). */
+  private filingIsElectrical(stepNote = ""): boolean {
+    return /elec/i.test(String(this.fieldValues.permitType ?? ""))
+      || /elec/i.test(String(stepNote ?? "").replace(/\s+—\s+issuing agency:.*$/i, ""))
+      || /elec/i.test(String(this.recipe.discipline ?? ""));
+  }
+
+  /** CHOOSE A TYPE ON THE NEWEST EMPTY DOCUMENT-TYPE ROW: `want` is the option text (attachmentTypeFor's
+   *  answer), selected by its index on the shown select — the row the predicate identified, never a
+   *  selector's guess between the Type and "also attach to". An own-write window covers it (Accela's Type
+   *  change is a postback), then the portal's loading mask is waited out and the choice read back.
+   *  "no-row" = no shown, empty document-type select within `waitMs`. */
+  private async chooseTypeOnEmptyRow(want: string | ((texts: string[]) => string | null), waitMs: number, why: string): Promise<{ status: "chosen"; pick: string } | { status: "no-row" } | { status: "no-fit"; offered: string[] } | { status: "not-taken"; pick: string }> {
+    const t0 = Date.now();
+    let target: { i: number; texts: string[] } | undefined;
+    for (;;) {
+      const empties = (await this.documentTypeSelects()).filter((s) => s.visible && !s.chosenText);
+      target = empties[empties.length - 1];
+      if (target || Date.now() - t0 >= waitMs) break;
+      await sleep(300);
+    }
+    if (!target) return { status: "no-row" };
+    const texts = target.texts;
+    const pick = typeof want === "function" ? want(texts) : want;
+    const index = pick ? texts.findIndex((t) => t === pick) : -1;
+    if (!pick || index < 0) return { status: "no-fit", offered: texts.filter((t) => t && !/^\s*-*\s*(select|choose|please\s+select)/i.test(t)) };
+    const loc = this.page.locator("select").nth(target.i);
+    const took = await withOwnWriteWindow(this.page, `attachment row Type "${pick.slice(0, 40)}" (${why.slice(0, 60)})`,
+      () => loc.selectOption({ index }, { timeout: 5000 }).then(() => true).catch(() => false));
+    await this.waitForLoadingMaskClear(`the attachment row's Type "${pick.slice(0, 40)}"`);
+    const held = took && (await this.documentTypeSelects()).some((s) => s.chosenText === pick);
+    return held ? { status: "chosen", pick } : { status: "not-taken", pick };
+  }
+
+  /** A RECORDED ATTACHMENT ROW WITH NO TYPE STEP (City of Corvallis, 2026-09-28: the learner did not
+   *  recognise "01 Plans", so a person picked the Type by hand and the recording has none). Before that
+   *  row's Save, the Type is chosen by the DOCUMENT the row carries (attachmentTypeFor — the learner's own
+   *  mapping), so the Save is never refused on an empty Type. Only for a document this run handed to the
+   *  file control; a page with no document-type select (a portal whose rows have no Type) is left as is. */
+  private async typeUntypedAttachmentRow(docType: string, commitStep: RecipeStep): Promise<void> {
+    if (!docType || !this.uploadedDocTypes.has(docType)) return;
+    const discipline = this.filingIsElectrical() ? "electrical" : "structural";
+    const r = await this.chooseTypeOnEmptyRow((texts) => attachmentTypeFor(docType, texts, { discipline }), RecipeAdapter.UNTYPED_ROW_WAIT_MS, `no recorded Type for ${docType}`);
+    const doc = docType.replace(/_/g, " ");
+    if (r.status === "no-row") {
+      // A shown document-type row that already HOLDS a Type still demands one on every owed row.
+      if ((await this.documentTypeSelects()).some((s) => s.visible && !!s.chosenText)) this.rowsTypedByDocument.add(commitStep);
+      return;
+    }
+    this.rowsTypedByDocument.add(commitStep);
+    if (r.status === "chosen") {
+      this.agingNotes.push(`the recorded attachment row for the ${doc} has no Type step — chose "${r.pick}" by the document from the portal's own list`);
+    } else if (r.status === "no-fit") {
+      this.driftWarnings.push(`the attachment row for the ${doc} has no recorded Type and no Type on the portal's list fits it (${r.offered.slice(0, 10).join(", ")}) — its Save may be refused; choose the Type by hand and Save before submitting`);
+    } else {
+      this.driftWarnings.push(`the attachment row for the ${doc} has no recorded Type; "${r.pick}" was chosen but the row does not hold it — its Save may be refused; check the Type by hand before submitting`);
+    }
+  }
+
+  /** How long a recorded row with no Type step may take to show its Type control before its Save. */
+  static UNTYPED_ROW_WAIT_MS = 6_000;
+
+  /** Is this file in the portal's COMMITTED attachment list? Only the list counts (skeptic 13985c6
+   *  S1/S3/S7b): Accela's pending row prints "File: <name>" in the main page before Save, and a name in
+   *  an instructions paragraph is not an attachment. Listed = a whole-name match in the attachment-list
+   *  frame (FileUpload/AttachmentsList.aspx), or inside a TABLE ROW of >= 3 cells that holds no form
+   *  control (a list row, never the pending row). Each frame's read is bounded (3 s); a frame that
+   *  never navigated (no URL) is skipped. */
+  private async pageListsFile(fileName: string): Promise<boolean> {
+    if (!fileName) return false;
+    type FrameLike = { evaluate: (fn: unknown, arg: unknown) => Promise<unknown>; url?: () => string };
+    const frames: FrameLike[] =
+      typeof (this.page as { frames?: () => unknown[] }).frames === "function" ? ((this.page as { frames: () => unknown[] }).frames() as never) : [this.page as never];
+    for (const [i, f] of frames.entries()) {
+      const url = typeof f.url === "function" ? String(f.url() ?? "") : "";
+      if (i > 0 && !url) continue;
+      const listFrame = /attachments?list|documentlist/i.test(url);
+      const read = f.evaluate(({ n, whole }: { n: string; whole: boolean }) => {
+        const want = n.toLowerCase();
+        const texts: string[] = [];
+        if (whole) texts.push(String(document.body?.innerText || "").toLowerCase());
+        else {
+          for (const tr of Array.from(document.querySelectorAll("tr"))) {
+            if (tr.querySelectorAll(":scope > td").length < 3) continue;
+            if (tr.querySelector("select, textarea, input[type=file]")) continue;
+            texts.push(String((tr as HTMLElement).innerText || "").toLowerCase());
+          }
+        }
+        for (const t of texts) {
+          let at = t.indexOf(want);
+          while (at >= 0) {
+            const before = at === 0 ? "" : t[at - 1];
+            const after = t[at + want.length] ?? "";
+            if (!/[a-z0-9._-]/.test(before) && !/[a-z0-9_-]/.test(after)) return true;
+            at = t.indexOf(want, at + 1);
+          }
+        }
+        return false;
+      }, { n: fileName, whole: listFrame }).catch(() => false);
+      const hit = await Promise.race([read, sleep(3000).then(() => false)]);
+      if (hit) return true;
+    }
+    return false;
+  }
+
+  /** ATTACH EVERY OWED DOCUMENT THROUGH THE RECORDED ROW (docs plan D7). For each document the
+   *  backend says this filing owes (the AHJ's required list for THIS track, on file) that the
+   *  recording never uploads: its Type is chosen by the DOCUMENT against the row's live options
+   *  (attachmentTypes.ts; never the owner-builder "Homeowner Acknowledgement") BEFORE anything is
+   *  uploaded — no fitting Type, nothing attached, named; then the recorded upload → Description →
+   *  Type → the same commit click, and the page's list must show it. Never on the review page. Each
+   *  outcome goes to the ledger (D4), which the approved final submit refuses on while anything owed
+   *  is not attached. */
+  private async attachOwedDocuments(row: { upload: RecipeStep; desc: RecipeStep | null; type: RecipeStep | null }, commitStep: RecipeStep): Promise<void> {
+    if (!this.page || typeof this.page.evaluate !== "function") return;
+    const recorded = new Set(this.recipe.steps.filter((s) => s.action === "upload" && s.docType).map((s) => String(s.docType)));
+    const owed = (this.options.owedAttachments ?? []).filter((o) => o && o.docType && o.docType !== "__unreadable__" && !recorded.has(o.docType) && !this.owedAttempted.has(o.docType));
+    if (!owed.length) return;
+    const at = await this.pageSafetyContext();
+    if (at.reviewPage === true) return; // the review page is never written to (acfcd99 rule 4b)
+    // NEVER ON TOP OF AN UNSAVED ROW (skeptic 13985c6 S2): when the recorded row's own Save was not
+    // confirmed by the list, or a document-type row still holds a Type, an owed upload would add a
+    // second row and its Description / Type would be written onto the first (the plan set's). Nothing
+    // is attached; every owed document is named.
+    const rowDoc = String(row.upload.docType ?? "");
+    if ((rowDoc && this.unconfirmedDocTypes.has(rowDoc)) || await this.pendingAttachmentRow()) {
+      const why = rowDoc && this.unconfirmedDocTypes.has(rowDoc)
+        ? `the recorded ${rowDoc.replace(/_/g, " ")} upload on that page was not confirmed on the portal's list`
+        : "an attachment row on that page still holds an unsaved Type";
+      for (const o of owed) {
+        this.owedAttempted.add(o.docType);
+        const l = String(o.label || o.docType).replace(/\s+/g, " ").trim();
+        this.attachmentLedger.push({ docType: o.docType, label: l, status: "not attached", detail: `not tried: ${why}` });
+        this.driftWarnings.push(`NOT ATTACHED: ${l} — not tried, because ${why}. Check the attachment step and attach it by hand before submitting.`);
+      }
+      return;
+    }
+    const slotLabel = String(row.upload.note ?? "").split(":").slice(1).join(":").trim();
+    // Every owed row is TYPED when the recorded row is: by the recorded Type step, or — a recording with
+    // no Type step whose page demanded one (rowsTypedByDocument, Corvallis) — on the new row directly,
+    // chosen by the same mapping. Without this the owed rows of such a recipe saved untyped and every
+    // Save was refused.
+    const typedByDoc = !row.type && this.rowsTypedByDocument.has(commitStep);
+    const needsType = !!row.type || typedByDoc;
+    const discipline = this.filingIsElectrical() ? "electrical" : "structural";
+    for (const o of owed) {
+      this.owedAttempted.add(o.docType);
+      const label = String(o.label || o.docType).replace(/\s+/g, " ").trim();
+      const filePath = this.docsByType[o.docType];
+      const fail = (detail: string): void => {
+        this.attachmentLedger.push({ docType: o.docType, label, status: "not attached", detail });
+        this.driftWarnings.push(`NOT ATTACHED: ${label} — ${detail}. Attach it by hand on the portal's attachment step before submitting.`);
+      };
+      if (!filePath) { fail("no file of it is on hand for this filing"); continue; }
+      // The Type is read from the row's LIVE options. Where the row already shows its Type control, the
+      // choice is made before anything is uploaded. Accela builds the row — and its Type select — only
+      // AFTER a file is added (live run 090fa574, Oregon ePermitting: "no options read", the E-01 never
+      // went up), so there the choice is made on the new row right after the upload, and a row no Type
+      // fits is never saved (below).
+      let pick = "";
+      if (needsType) {
+        const early = await this.typeOptionsOf(row.type);
+        if (early.length) {
+          pick = attachmentTypeFor(o.docType, early, { discipline }) ?? "";
+          if (!pick) { fail(`no Type on the portal's list fits it (${early.filter(Boolean).slice(0, 10).join(", ")})`); continue; }
+        }
+      }
+      this.uploadNames.set(o.docType, label);
+      const fileName = (() => { const p = uploadPayloadFor(filePath, null, label); removeUploadStaging(p.tempDir); return typeof p.file === "string" ? path.basename(p.file) : p.file.name; })();
+      if (await this.pageListsFile(fileName)) {
+        this.attachmentLedger.push({ docType: o.docType, label, status: "already listed", detail: `"${fileName}" is already on the portal's list` });
+        this.agingNotes.push(`owed document already listed on the portal: ${label} ("${fileName}") — not attached twice`);
+        continue;
+      }
+      await this.waitForLoadingMaskClear(`attaching ${label.slice(0, 40)}`);
+      const uploaded = await this.executeStep({ ...row.upload, docType: o.docType, note: `upload ${o.docType}: ${slotLabel}` }, false).catch(() => false);
+      if (!uploaded) { fail("the page's file control did not take it"); continue; }
+      // THE ROW IS NOW ON THE PAGE, UNSAVED. Anything that stops here leaves it pending, and the NEXT
+      // document's Save would commit it under that document's Description and Type — so a failure from
+      // here on stops the whole pass, and every owed document still to go is named.
+      const abandon = (detail: string): void => {
+        // "Not confirmed", never "unsaved": the Save may have gone through while the list did not show it
+        // in time (skeptic 13985c6 S5) — telling a person to attach it again would duplicate it.
+        fail(`${detail} — NOT CONFIRMED: look at the portal's attachment list first; attach it only if it is not listed (and remove any half-finished row)`);
+        for (const rest of owed.slice(owed.indexOf(o) + 1)) {
+          if (this.owedAttempted.has(rest.docType)) continue;
+          this.owedAttempted.add(rest.docType);
+          const l2 = String(rest.label || rest.docType).replace(/\s+/g, " ").trim();
+          this.attachmentLedger.push({ docType: rest.docType, label: l2, status: "not attached", detail: `not tried: the row for ${label.slice(0, 60)} was left unsaved on that page` });
+          this.driftWarnings.push(`NOT ATTACHED: ${l2} — not tried, because the row for ${label.slice(0, 60)} was left unsaved on that page. Attach it by hand before submitting.`);
+        }
+      };
+      if (needsType && !pick) {
+        const late = await this.waitTypeOptions(row.type, RecipeAdapter.ATTACH_ROW_WAIT_MS);
+        pick = attachmentTypeFor(o.docType, late, { discipline }) ?? "";
+        if (!pick) { abandon(`no Type on the portal's list fits it (${late.filter(Boolean).slice(0, 10).join(", ") || "no Type control appeared on its row"})`); return; }
+      }
+      if (row.desc) await this.executeStep({ ...row.desc, value: label.slice(0, 200) }, false).catch(() => false);
+      if (row.type && !(await this.executeStep({ ...row.type, value: pick }, false).catch(() => false))) {
+        abandon(`its Type "${pick}" could not be chosen on the row`);
+        return;
+      }
+      if (typedByDoc && (await this.chooseTypeOnEmptyRow(pick, 2000, `owed ${o.docType}`)).status !== "chosen") {
+        abandon(`its Type "${pick}" could not be chosen on the row`);
+        return;
+      }
+      await this.waitForLoadingMaskClear(`saving ${label.slice(0, 40)}`);
+      const committed = await this.executeStep(commitStep, false).catch(() => false);
+      const saved = committed ? await this.attachmentCommitted(fileName, row.type ?? (typedByDoc ? commitStep : null), pick, RecipeAdapter.ATTACH_LIST_WAIT_MS) : false;
+      if (saved) {
+        this.uploadsSettledUpTo = this.uploadsPerformed.length;
+        this.attachmentLedger.push({ docType: o.docType, label, status: "attached", detail: `"${fileName}"${pick ? ` as "${pick}"` : ""}` });
+        this.agingNotes.push(`attached the owed ${label} ("${fileName}"${pick ? `, Type "${pick}"` : ""}) — the portal lists it and its row is saved`);
+      } else {
+        abandon(committed ? `after the save the portal's attachment list does not show "${fileName}" as saved` : "the save did not go through");
+        return;
+      }
+    }
+  }
+
+  /** How long an owed document's new row may take to show its Type control after the upload. */
+  static ATTACH_ROW_WAIT_MS = 15_000;
+  /** How long the portal's list may take to show a saved attachment (Accela redraws it seconds after
+   *  its "successfully uploaded" banner — live 090fa574's list outlasted a 20 s wait). */
+  static ATTACH_LIST_WAIT_MS = 45_000;
+
+  /** The Type control's options once the new row shows it (bounded poll). [] = it never appeared. */
+  private async waitTypeOptions(typeStep: RecipeStep | null, timeoutMs: number): Promise<string[]> {
+    const t0 = Date.now();
+    for (;;) {
+      const got = await this.typeOptionsOf(typeStep);
+      if (got.length || Date.now() - t0 >= timeoutMs) return got;
+      await sleep(300);
+    }
+  }
+
+  /** SAVED, NOT MERELY PENDING. Before Save, Accela shows the chosen file's name on the pending row
+   *  itself ("File: <name>"), so "the name is on the page" proves nothing. Saved = the name is on the
+   *  page AND no row still holds the Type this run picked (Accela removes the row on Save; a static-row
+   *  widget resets it; a refused Save leaves the pick in place). Bounded poll. */
+  private async attachmentCommitted(fileName: string, typeStep: RecipeStep | null, pick: string, timeoutMs: number): Promise<boolean> {
+    const t0 = Date.now();
+    for (;;) {
+      await this.waitForLoadingMaskClear(`reading the attachment list for "${fileName.slice(0, 40)}"`, Math.max(0, timeoutMs - (Date.now() - t0)));
+      // Listed in the COMMITTED list (pageListsFile) and no document-type row still holding a Type
+      // (pendingAttachmentRow — the same document-type test, so a Category "Other" never counts: S5).
+      const listed = await this.pageListsFile(fileName);
+      const pending = typeStep && pick ? await this.pendingAttachmentRow() : false;
+      if (listed && !pending) return true;
+      if (Date.now() - t0 >= timeoutMs) return false;
+      await sleep(500);
+    }
+  }
+
+  /** Owed documents with no outcome yet at the end of the run: the recording has no attachment row
+   *  the run passed through, so nothing could carry them. Named, never silent. */
+  private settleOwedLedger(): void {
+    const recorded = new Set(this.recipe.steps.filter((s) => s.action === "upload" && s.docType).map((s) => String(s.docType)));
+    for (const o of this.options.owedAttachments ?? []) {
+      if (!o?.docType || o.docType === "__unreadable__" || recorded.has(o.docType) || this.attachmentLedger.some((e) => e.docType === o.docType)) continue;
+      const label = String(o.label || o.docType).replace(/\s+/g, " ").trim();
+      this.attachmentLedger.push({ docType: o.docType, label, status: "not attached", detail: "the run passed no attachment row that could carry it" });
+      this.driftWarnings.push(`NOT ATTACHED: ${label} — the run passed no attachment row that could carry it. Attach it by hand on the portal's attachment step before submitting.`);
+    }
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -4109,7 +4600,7 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  attachment Save) that follows this page's uploads, wait (bounded) for the page to list every
    *  file the run handed it — the attachment table, not the widget. A file the page never lists is
    *  named: the portal did not take it, and a person attaches it before submitting. */
-  private async confirmUploadsListed(after: string, timeoutMs = 20_000): Promise<void> {
+  private async confirmUploadsListed(after: string, stampedRow: boolean, timeoutMs = RecipeAdapter.ATTACH_LIST_WAIT_MS): Promise<void> {
     const pending = this.uploadsPerformed.slice(this.uploadsSettledUpTo);
     this.uploadsSettledUpTo = this.uploadsPerformed.length;
     if (!pending.length || !this.page || typeof this.page.evaluate !== "function") return;
@@ -4119,18 +4610,28 @@ export class RecipeAdapter extends BasePortalAdapter {
     let missing = names;
     for (;;) {
       await this.waitForLoadingMaskClear(`reading the attachment list after ${after}`, Math.max(0, timeoutMs - (Date.now() - t0)));
-      const listed = await this.page.evaluate((want: string[]) => {
-        // Listed = the name appears outside the upload widget's own file box: in the page text,
-        // not only as a file input's chosen value (which innerText never shows anyway).
-        const body = String(document.body?.innerText || "").toLowerCase();
-        return want.filter((n) => body.includes(String(n).toLowerCase()));
-      }, names).catch(() => null) as string[] | null;
+      // Listed = the name appears in the page OR any frame (Accela's committed grid is a child iframe,
+      // FileUpload/AttachmentsList.aspx — the main body never shows it: live 090fa574's false alarm).
+      const listed: string[] = [];
+      for (const n of names) if (await this.pageListsFile(n)) listed.push(n);
       if (Array.isArray(listed)) missing = names.filter((n) => !listed.includes(n));
       if (!missing.length || Date.now() - t0 >= timeoutMs) break;
       await sleep(400);
     }
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
-    if (missing.length) {
+    // WHAT THE LIST CONFIRMED, BY DOCUMENT (skeptic 13985c6 S1): an upload handed to the control is not a
+    // committed one — the approved final submit refuses while a recorded upload is unconfirmed, and the
+    // owed pass never starts on a row whose own Save was not confirmed.
+    // Only a learner-stamped attachment Save marks a document unconfirmed (N1); a list that does show
+    // it clears the mark either way.
+    for (const u of pending) {
+      if (!u.docType) continue;
+      if (!missing.includes(u.fileName)) this.unconfirmedDocTypes.delete(u.docType);
+      else if (stampedRow) this.unconfirmedDocTypes.add(u.docType);
+    }
+    if (missing.length && !stampedRow) {
+      this.driftWarnings.push(`after ${after} the upload of ${missing.map((n) => `"${n}"`).join(", ")} was NOT CONFIRMED on a committed attachment list (waited ${secs}s; this save is not a recorded attachment row, so the list may simply look different) — look at the portal's attachments before submitting`);
+    } else if (missing.length) {
       this.driftWarnings.push(`after ${after} the portal's attachment list does not show ${missing.map((n) => `"${n}"`).join(", ")} (waited ${secs}s) — the upload may not have committed; attach it and click Save by hand before submitting`);
     } else if (Date.now() - t0 >= 1000) {
       this.agingNotes.push(`the portal listed ${names.map((n) => `"${n}"`).join(", ")} ${secs}s after ${after} — the upload committed`);
@@ -4394,6 +4895,28 @@ export class RecipeAdapter extends BasePortalAdapter {
     const out = may ? [] : finalSubmitRefusals(ctx);
     if (!may && !out.length) out.push("the final-submit gate refused this click");
     if (this.finalSubmitAttempted) out.push("the final submit was already attempted in this run");
+    // D4: NEVER FILE WITH AN OWED DOCUMENT MISSING. Every document the filing owes that the recording
+    // does not upload must be ATTACHED or ALREADY LISTED on the portal before the approved click.
+    {
+      const recorded = new Set(steps.filter((s) => s.action === "upload" && s.docType).map((s) => String(s.docType)));
+      const missing = (this.options.owedAttachments ?? []).filter((o) => o?.docType && o.docType !== "__unreadable__" && !recorded.has(o.docType)
+        && !this.attachmentLedger.some((e) => e.docType === o.docType && e.status !== "not attached"));
+      if (missing.length) out.push(`${missing.length} owed document(s) not attached on the portal (${missing.map((o) => String(o.label || o.docType).slice(0, 60)).join("; ")})`);
+      // ...and a document the RECORDING uploads counts only if this run actually uploaded it (skeptic
+      // 21d2502 g: a skipped recorded upload — the plan set — was covered by no gate at all).
+      // A recorded upload a RULE skips is not missing (skeptic 13985c6 S4: a battery spec on a
+      // no-battery job — skipForNoBattery, which now fires for uploads). One whose file is simply not
+      // on hand IS missing (skeptic eb36a8f MF1: a required SLD with no file let the approved submit
+      // through): it is refused, never exempted.
+      const skipped = Array.from(new Set(steps.filter((s) => s.action === "upload" && s.docType
+        && !this.skipForNoBattery(s) && !this.uploadedDocTypes.has(String(s.docType))).map((s) => String(s.docType))));
+      // ...and a required-document list the backend could not read refuses (skeptic eb36a8f MF2).
+      if ((this.options.owedAttachments ?? []).some((o) => o?.docType === "__unreadable__")) out.push("the required-document list for this filing could not be read");
+      if (skipped.length) out.push(`the recording's upload of ${skipped.join(", ")} did not happen this run`);
+      // ...and one whose Save was followed by a list check that never showed it is not confirmed (S1).
+      const unconfirmed = Array.from(this.unconfirmedDocTypes);
+      if (unconfirmed.length) out.push(`the portal's attachment list never showed ${unconfirmed.join(", ")} after its Save`);
+    }
     const burned = approvedRunBurn(ctx.runId);
     if (burned && !this.finalSubmitAttempted) out.push(`this run's approval (runId ${ctx.runId.slice(0, 40)}) was already used in this process — ${burnWords(burned)}; one approval covers one filing attempt, a new run needs a new approval`);
     return out;
@@ -4760,7 +5283,15 @@ export class RecipeAdapter extends BasePortalAdapter {
       const text = (document.body?.innerText || "").replace(/\s+/g, " ");
       let h = 0;
       for (let i = 0; i < text.length; i++) { h = ((h << 5) - h + text.charCodeAt(i)) | 0; }
-      return `${shown}|${options}|${rows}|${text.length}:${h}|${vals.slice(0, 4000)}`;
+      // AND THE DIALOGS: a contact section's "Select from Account" / "Add New" opens its form in an
+      // iframe, and a dialog's Continue closes it — neither touches the main page's inputs, rows or
+      // text, so both read as "changed nothing" (live Corvallis electrical recipe, 2026-09-28).
+      // Which frames are showing, and what they show (the path, no query), is the effect.
+      const dialogs = (Array.from(document.querySelectorAll("iframe")) as HTMLIFrameElement[])
+        .filter((f) => { const fr = f.getBoundingClientRect(); return fr.width > 0 && fr.height > 0; })
+        .map((f) => `${f.getAttribute("name") || f.id || ""}@${String(f.getAttribute("src") || "").split("?")[0]}`)
+        .join(",");
+      return `${shown}|${options}|${rows}|${text.length}:${h}|${dialogs}|${vals.slice(0, 4000)}`;
     }).catch(() => "") as Promise<string>;
   }
 
@@ -4818,7 +5349,16 @@ export class RecipeAdapter extends BasePortalAdapter {
     // the live portal: PacifiCorp refuses silently, so six advances "left the page
     // unchanged" and were all waved through as in-page actions. Requiring EVERY click to
     // move the page is too strong and broke the Accela replay smoke outright.
-    const isAdvance = /^advance\b/i.test(String(step.note ?? "").trim());
+    // A CONTACT DIALOG IS NOT A PAGE. The learner records a planner's click on a section's opener
+    // ("Select from Account", "Add New", "Edit") and a dialog's own "Continue" as "advance: …"
+    // (live City of Corvallis electrical, 2026-09-28) — but opening, paging and saving a dialog in
+    // its iframe never changes the MAIN page's identity, so every replay of that recipe stopped at
+    // "the portal did not advance". A step that targets a dialog frame, or that opens a contact
+    // section's dialog, is an in-page action; the main page's own advance ("Continue Application")
+    // is still held to moving.
+    const words = `${step.selector?.name ?? ""} ${step.selector?.text ?? ""} ${step.selector?.label ?? ""} ${step.note ?? ""}`;
+    const dialogStep = !!step.selector?.frame || isContactOpener(words);
+    const isAdvance = /^advance\b/i.test(String(step.note ?? "").trim()) && !dialogStep;
     if (!blockers.length && !isAdvance) {
       // ASK THE SECOND QUESTION BEFORE GIVING UP ON THE ANSWER. The page did not move; did
       // anything happen at all? A total that filled, a row that appeared, an option list that
@@ -5630,6 +6170,8 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  step for an already-ticked page); "normal" = this page prints no kVA box at all — the recorded
    *  step takes its ordinary resolve path, UNDER A PROVISIONAL STOP (see below). */
   private async fillFeeTierFromPage(step: RecipeStep): Promise<boolean | "normal"> {
+    // The service-line rows print on the same fee-items page as the kVA tier (F1b).
+    await this.fillUnrecordedServiceBoxes().catch(() => null);
     const boxes = await this.readTierBoxes();
     if (!boxes.length) {
       // A RECORDED TIER STEP THAT FINDS NO kVA-LABELLED BOX (close MF2). The recipe KNOWS this page
@@ -5712,6 +6254,175 @@ export class RecipeAdapter extends BasePortalAdapter {
       }
     }
     return true;
+  }
+
+  /** ONE CONTACT, ONE IDENTITY — AT REPLAY. The replay twin of the learner's dialog guard
+   *  (autoLearnAdapter.enforceContactDialogIdentity). R10 (recipeReplayBinding) can only rebind
+   *  steps that EXIST; the Corvallis electrical recipe saved on 2026-09-28 opens the Applicant
+   *  dialog through Select from Account, whose account contact PREFILLS the homeowner's name,
+   *  address and e-mail, and records only the phone — so the replay would save the same mix.
+   *
+   *  So: a main-page click on a contact section's opener (Add New / Select from Account / Edit)
+   *  opens a block whose identity is the section's (the step's role mark, its ACA control id, its
+   *  recorded heading — shared contactRoles.contactRoleOfStep); any other main-page step closes it.
+   *  Before the block's dialog Continue/Save is clicked, every name / business / address / e-mail /
+   *  phone box in that dialog is set to THIS project's value for the section's identity, and a box
+   *  still holding the other identity's value for a part this identity lacks is cleared. A block
+   *  whose section says nothing is left exactly as recorded. */
+  private async trackContactBlock(step: RecipeStep): Promise<void> {
+    const frame = step.selector?.frame;
+    const words = `${step.selector?.name ?? ""} ${step.selector?.text ?? ""} ${step.selector?.label ?? ""} ${step.note ?? ""}`;
+    const track: ContactTrack = this.recipe.scopeType === "utility" ? "nem" : "permit";
+    if (!frame) {
+      if (step.action === "click" && isContactOpener(words)) {
+        this.contactBlock = { role: contactRoleOfStep(step, { track }) };
+      } else if (step.action !== "waitFor") {
+        this.contactBlock = null;
+      }
+      return;
+    }
+    if (step.action === "click" && this.contactBlock?.role && /\b(?:continue|save|submit|ok)\b/i.test(words)) {
+      await this.enforceReplayContactDialog(frame, this.contactBlock.role).catch(() => 0);
+    }
+  }
+
+  private async enforceReplayContactDialog(frameName: string, role: ContactRole): Promise<number> {
+    const page = this.page;
+    if (!page || typeof page.frame !== "function") return 0;
+    const frame = page.frame({ name: frameName });
+    if (!frame || typeof frame.evaluate !== "function") return 0;
+    const boxes = await frame.evaluate(() => {
+      // NO named functions in here (keepNames → __name).
+      const out: Array<{ id: string; label: string; tag: string; value: string; text: string }> = [];
+      const els = Array.from(document.querySelectorAll("input:not([type]), input[type='text'], input[type='email'], input[type='tel'], select")) as Array<HTMLInputElement | HTMLSelectElement>;
+      for (const el of els) {
+        if (el.disabled || (el as HTMLInputElement).readOnly) continue;
+        const r = el.getBoundingClientRect();
+        const st = window.getComputedStyle(el);
+        if (!(r.width > 0 && r.height > 0) || st.display === "none" || st.visibility === "hidden") continue;
+        const id = el.id || "";
+        if (!id) continue;
+        let label = "";
+        const lab = document.querySelector(`label[for="${(window as unknown as { CSS: { escape: (s: string) => string } }).CSS.escape(id)}"]`) as HTMLElement | null;
+        if (lab) label = lab.innerText || lab.textContent || "";
+        if (!label.trim()) label = el.getAttribute("aria-label") || el.getAttribute("title") || "";
+        label = label.replace(/\s+/g, " ").trim();
+        if (!label) continue;
+        const isSelect = el.tagName === "SELECT";
+        const text = isSelect ? String(((el as HTMLSelectElement).options[(el as HTMLSelectElement).selectedIndex] || { textContent: "" }).textContent || "").trim() : "";
+        out.push({ id, label, tag: isSelect ? "select" : "input", value: String(el.value || ""), text });
+      }
+      return out;
+    }).catch(() => [] as Array<{ id: string; label: string; tag: string; value: string; text: string }>);
+    const kinds = (Array.isArray(boxes) ? boxes : [])
+      .map((b) => ({ ...b, kind: contactFieldKind(b.label) }))
+      .filter((b): b is typeof b & { kind: ContactFieldKind } => b.kind !== null);
+    if (new Set(kinds.map((b) => b.kind)).size < 2) return 0;
+    const other: ContactRole = role === "company" ? "owner" : "company";
+    const norm = (kind: ContactFieldKind, s: string) => kind === "phone" ? s.replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "")
+      : kind === "zip" ? s.replace(/\D/g, "").slice(0, 5)
+      : s.toLowerCase().replace(/[^a-z0-9@.]/g, "");
+    const holds = (kind: ContactFieldKind, b: { value: string; text: string }, v: string) =>
+      [b.value, b.text].some((x) => x.trim() && norm(kind, x) === norm(kind, v));
+    let fixed = 0;
+    for (const b of kinds) {
+      const key = contactKeyFor(role, b.kind);
+      const want = key ? String(this.fieldValues[key] ?? "").trim() : "";
+      const otherKey = contactKeyFor(other, b.kind);
+      const otherVal = otherKey ? String(this.fieldValues[otherKey] ?? "").trim() : "";
+      const loc = frame.locator(`[id="${b.id}"]`).first();
+      if (!want) {
+        if (b.tag !== "select" && otherVal && holds(b.kind, b, otherVal)) {
+          if (await loc.fill("", { timeout: FILL_TIMEOUT_MS }).then(() => true).catch(() => false)) fixed++;
+        }
+        continue;
+      }
+      if (holds(b.kind, b, want)) continue;
+      let ok = false;
+      if (b.tag === "select") {
+        ok = await loc.selectOption(want).then(() => true).catch(async () => loc.selectOption({ label: want }).then(() => true).catch(() => false));
+      } else if (b.kind === "phone" || b.kind === "zip") {
+        // Masked boxes validate KEYSTROKES (the learner's typeMasked).
+        const typed = b.kind === "zip" ? want.replace(/\D/g, "").slice(0, 5) || want : want;
+        await loc.fill("", { timeout: FILL_TIMEOUT_MS }).catch(() => null);
+        ok = await loc.pressSequentially(typed, { delay: 25 }).then(() => true).catch(() => false);
+      } else {
+        ok = await loc.fill(want, { timeout: FILL_TIMEOUT_MS }).then(() => true).catch(() => false);
+      }
+      if (ok) { fixed++; await loc.blur?.().catch(() => null); }
+    }
+    if (fixed) {
+      const who = role === "company" ? "the filing company" : "the property owner";
+      this.agingNotes.push(`contact dialog made ONE identity (${who}) before its Continue: ${fixed} box(es) set to this project's ${who} (the recorded fills or the portal's prefill held another identity's values)`);
+    }
+    return fixed;
+  }
+
+  /** F1b — A SERVICE-LINE QUANTITY BOX THE RECIPE NEVER RECORDED is read off the page.
+   *
+   *  Live City of Corvallis electrical learn, 2026-09-28: the fee-items page prints "Service 0-200
+   *  amps (qty)" beside the kVA row, the planner filled the kVA row and left the service box at the
+   *  page's own 0 — so the recipe saved from that run has NO step for it, and every replay would
+   *  leave it 0 on a job whose plan set upgrades the service. The kVA tier is already decided from
+   *  the page's own labels (F1); the service rows sit on the same page, and the label grammar is the
+   *  ONE the backend binds recorded boxes with (shared serviceLineLabels). So, once per page that
+   *  carries a recorded kVA tier step: every visible text box whose own label names a services
+   *  tier this recipe has NO bound step for is typed with THIS project's count
+   *  (fieldValues — batteryServiceFeeder.serviceLineQuantities). A count nobody knows ("") types
+   *  nothing and says so; a recorded, bound step answers for its own box. */
+  private async fillUnrecordedServiceBoxes(): Promise<void> {
+    if (!this.page || typeof this.page.evaluate !== "function") return;
+    const pageKey = (await this.pageIdentity().catch(() => "")) || "page";
+    if (this.serviceBoxesRead.has(pageKey)) return;
+    this.serviceBoxesRead.add(pageKey);
+    const recorded = new Set(this.recipe.steps.map((s) => String(s.field ?? "")).filter(Boolean));
+    const boxes = await this.page.evaluate(() => {
+      const out: Array<{ id: string; label: string }> = [];
+      const inputs = Array.from(document.querySelectorAll("input:not([type]), input[type='text'], input[type='number'], input[type='tel']")) as HTMLInputElement[];
+      for (const el of inputs) {
+        if (el.disabled || el.readOnly) continue;
+        const r = el.getBoundingClientRect();
+        const st = window.getComputedStyle(el);
+        if (!(r.width > 0 && r.height > 0) || st.display === "none" || st.visibility === "hidden") continue;
+        const id = el.id || "";
+        if (!id) continue;
+        let label = "";
+        const lab = document.querySelector(`label[for="${(window as unknown as { CSS: { escape: (s: string) => string } }).CSS.escape(id)}"]`) as HTMLElement | null;
+        if (lab) label = lab.innerText || lab.textContent || "";
+        if (!label.trim()) label = el.getAttribute("aria-label") || el.getAttribute("fieldname") || "";
+        if (!label.trim()) { const wrap = el.closest("label") as HTMLElement | null; if (wrap) label = wrap.innerText || ""; }
+        label = label.replace(/\s+/g, " ").trim();
+        if (!label || label.length > 160 || !/servic/i.test(label)) continue;
+        out.push({ id, label });
+      }
+      return out;
+    }).catch(() => [] as Array<{ id: string; label: string }>) as Array<{ id: string; label: string }>;
+    for (const box of Array.isArray(boxes) ? boxes : []) {
+      const key = isServiceFeeder200Label(box.label) ? SERVICE_FEEDER_200A_FIELD : isServiceFeeder400Label(box.label) ? SERVICE_FEEDER_400A_FIELD : "";
+      if (!key || recorded.has(key)) continue;
+      const label = box.label.replace(/:\s*$/, "").slice(0, 70);
+      if (!Object.prototype.hasOwnProperty.call(this.fieldValues, key)) continue; // an older backend: no count at all
+      const value = String(this.fieldValues[key] ?? "").trim();
+      if (!value) {
+        this.driftWarnings.push(`"${label}": this project's service-line count is not known (no parsed service scope or battery answer) — left as the page shows it; confirm before submitting`);
+        continue;
+      }
+      const loc = this.page.locator(`[id="${box.id}"]`).first();
+      const current = String((await loc.inputValue().catch(() => "")) ?? "").trim();
+      if (current === value) {
+        if (!this.fieldsVerified.includes(label)) this.fieldsVerified.push(label);
+        continue;
+      }
+      const typed = await loc.fill(value, { timeout: FILL_TIMEOUT_MS }).then(() => true).catch(() => false);
+      if (typed) await this.commitAndSettle(loc);
+      const held = String((await loc.inputValue().catch(() => "")) ?? "").trim();
+      if (held === value) {
+        if (!this.fieldsVerified.includes(label)) this.fieldsVerified.push(label);
+        this.agingNotes.push(`service line read from the page: "${label}" = ${value} (the recipe recorded no step for this box; the count is this project's)`);
+      } else {
+        this.driftWarnings.push(`"${label}": typed this project's service-line count ${value} and the box did not keep it (it reads "${held}") — set it by hand before submitting`);
+      }
+    }
   }
 
   /** F2 — THE PORTAL'S OWN WORDS: the generic validation reader plus the WebForms/Accela banner
@@ -6144,10 +6855,10 @@ export class RecipeAdapter extends BasePortalAdapter {
     return found;
   }
 
-  private noteUploadPerformed(label: string, file: unknown): void {
+  private noteUploadPerformed(label: string, file: unknown, docType?: string): void {
     const fileName = typeof file === "string" ? path.basename(file)
       : String((file as { name?: unknown } | null)?.name ?? "");
-    if (label && fileName) this.uploadsPerformed.push({ label, fileName });
+    if (label && fileName) this.uploadsPerformed.push({ label, fileName, ...(docType ? { docType } : {}) });
   }
 
   /** AN EMPTY FILE BOX IS NOT A MISSING DOCUMENT. A browser never restores a file input's

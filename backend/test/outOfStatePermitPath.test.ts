@@ -158,10 +158,16 @@ for (const j of JURISDICTIONS) {
   check(`…and the resolver the gate uses agrees (standard review)`, resolvePermitPathForProject(db, project).standardReview === true);
 }
 
-// The jurisdiction's own rule still speaks at the gate: CA over 10 kW DC owes the sealed letter.
+// The jurisdiction's stamp note still speaks — as what it IS. CA's "> 10 kW" is the seeded STATE-level
+// reference note ("structural PE stamp commonly required over ~10 kW"), not a confirmed rule of the
+// AHJ: leak-sweep ruling 2026-09-28 (unknown-as-fact-seeded-state-stamp-threshold) makes it a named,
+// waivable advisory — listed with "confirm", never a staging refusal worded "<AHJ> requires".
 const caBig = mk(JURISDICTIONS[3], { dcKw: "12.4", acKw: "10" });
-const caBigOwed = documentInventory(db, getProjectDetail(db, caBig).project).missingBlocking.map((d) => d.docType);
-check("MUST-PASS gate: a 12.4 kW CA project still owes the PE-sealed letter (CA's own > 10 kW rule)", caBigOwed.includes("structural_letter"), JSON.stringify(caBigOwed));
+const caBigInv = documentInventory(db, getProjectDetail(db, caBig).project);
+const caBigOwed = caBigInv.missingBlocking.map((d) => d.docType);
+const caBigNote = caBigInv.missingAdvisory.find((d) => d.docType === "structural_letter");
+check("MUST-PASS gate: a 12.4 kW CA project is still TOLD about the PE-sealed letter (CA's seeded > 10 kW note), as an advisory to confirm",
+  Boolean(caBigNote) && /[Cc]onfirm/.test(caBigNote!.why) && !caBigOwed.includes("structural_letter"), JSON.stringify({ caBigOwed, why: caBigNote?.why }));
 
 // MUST-EXCLUDE: an Oregon project with no structural inputs still has to confirm its path.
 const orUnknown = mk({ state: "OR", city: "Portland", ahj: "Portland", utility: "PGE" }, {

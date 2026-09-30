@@ -267,9 +267,44 @@ export interface ClientRecord {
 export interface ClientStateLicense {
   /** Two-letter issuing state. */
   state: string;
-  /** What the licence is, e.g. "electrical_contractor", "contractor", "solar_contractor". */
+  /** What the licence is: a canonical LicenceKind (shared/src/licenceKinds.ts — parseStateLicenses
+   *  normalises "EC", "CSL", "HIC", "general contractor"… to one). "" = a stored free-text kind no
+   *  canonical kind matched; such a licence is never offered to a slot (it is named instead). */
   kind: string;
   number: string;
+  /** YYYY-MM-DD when the licence expires ("" / absent = not on file). */
+  expires?: string;
+  /** The PERSON a person licence belongs to (master / supervising electrician, construction
+   *  supervisor) — the name a "licence holder" slot takes. Absent = not on file. */
+  holder?: string;
+}
+
+/** What a licence IS — the one vocabulary the fill, the portal overlay and the submit gate use to
+ *  answer "which number goes in this slot". The list with labels is LICENCE_KINDS
+ *  (shared/src/licenceKinds.ts). business_registration is NEVER offered as a contractor licence. */
+export type LicenceKind =
+  | "contractor"
+  | "electrical_contractor"
+  | "construction_supervisor"
+  | "home_improvement_contractor"
+  | "solar_contractor"
+  | "master_electrician"
+  | "business_registration";
+
+/** The answer to "which licence goes in this slot" (clients.licenceFor). number "" = none on file of
+ *  the kind the slot needs, or the choice is ambiguous — never another kind's, state's or company's. */
+export interface LicenceAnswer {
+  number: string;
+  kind: LicenceKind | "";
+  state: string;
+  /** How a person reads it: "CCB", "MA construction supervisor licence"… */
+  label: string;
+  expires: string;
+  holder: string;
+  /** Why the number is "" (for the operator item / gate evidence); "" when a number was found. */
+  reason: string;
+  /** When ambiguous: the licences it could have been, labelled ("MA construction supervisor licence CS-…"). */
+  candidates: string[];
 }
 
 export interface ClientPartnerContact {
@@ -768,6 +803,38 @@ export interface ProjectRecord {
    *  vanished from a client's list. "" while live. Shown, not just stored: a
    *  notice that cannot say "superseded by the certified run" is just a scold. */
   archivedReason?: string;
+  /** THE OPERATOR'S PER-TRACK ISSUER (split issuer, operator fact 2026-09-28: "Electrical permit
+   *  issued through Yamhill; Building permit issued through Newberg"). An Oregon city can run its
+   *  own building program while the county (or the state) issues the electrical permit, so ONE
+   *  project AHJ cannot say who issues every track. Stored like the other operator-entered facts —
+   *  flat parser-snapshot keys written by PUT /api/projects/:id (trackIssuerBuilding /
+   *  trackIssuerElectrical / trackIssuerCombo / trackIssuerMpu, normalize.TRACK_ISSUER_SNAPSHOT_KEYS)
+   *  — and mapped here by mapProject / normalizeProject. Absent when none is set. Read ONLY through
+   *  permitProcess.trackIssuer; MPU follows electrical unless its own is set. */
+  trackIssuers?: TrackIssuerOverrides;
+  /** Set ONLY by permitProcess.projectForTrack on the TRACK-SCOPED VIEW it returns (ahj replaced by
+   *  the track's issuer) — never persisted, never mapped from a row. It names the project's own AHJ
+   *  so the per-job lookup's cited answer about this permit still reaches the view, and makes the
+   *  view idempotent (a view of a view is itself). */
+  trackView?: { track: string; projectAhj: string; source: "operator" | "lookup" };
+}
+
+/** The permit tracks an issuing agency can be named for. NEM is never one: a utility files it. */
+export type IssuerTrackKey = "building" | "electrical" | "combo" | "mpu";
+export type TrackIssuerOverrides = Partial<Record<IssuerTrackKey, string>>;
+/** THE ONE ANSWER to "which agency issues THIS track's permit" (permitProcess.trackIssuer):
+ *  the operator's per-track issuer, else the per-job lookup's cited per-permit agency when it names
+ *  another agency than the project AHJ, else the project AHJ. */
+export interface TrackIssuerAnswer {
+  name: string;
+  source: "operator" | "lookup" | "project";
+  /** The lookup's source page and words (source "lookup"). */
+  sourceUrl?: string;
+  quote?: string;
+  /** The operator's value on file for this track ("" when none) — what the card's input shows. */
+  override: string;
+  /** An operator value that was NOT honoured, and why (it names an agency in another state). */
+  refused?: string;
 }
 
 export interface ProjectListItem extends Omit<ProjectRecord, "parserSnapshot"> {
@@ -1051,6 +1118,15 @@ export interface SubmittalTrack {
   recipeId?: string;
   /** The scope type used to look up the recipe — "ahj" or "utility". */
   recipeScopeType?: "ahj" | "utility";
+  /** How this track is filed, as a kind (submittalTracks.channelKindOf). in_person / email / mail =
+   *  a person delivers the packet outside this tool — shown as a bold banner, never grey text. */
+  channelKind?: "portal" | "in_person" | "email" | "mail" | "unknown";
+  /** No recipe of its own: the recipe this project's LAST run of this track borrowed (another entity's,
+   *  same portal — portalRecipes.findBorrowableRecipe), read from that run's result. null = none used. */
+  borrowedRecipe?: { recipeId: string; recipeVersion: number | null; learnedFor: string; recordType: string; portalHost: string; lastUsedAt: string } | null;
+  /** PERMIT tracks only: the agency that issues this track's permit and where that answer came from
+   *  (permitProcess.trackIssuer) — every portal/recipe answer on this card is that agency's. */
+  issuer?: TrackIssuerAnswer;
 }
 
 export interface PermitStatusCheck {
@@ -1062,6 +1138,9 @@ export interface PermitStatusCheck {
   targetType?: string;
   source: PermitCheckSource;
   rawStatusText: string;
+  /** The portal record's own status field, verbatim ("Ready to Issue"); "" when none is stated or the
+   *  reading came from an email. Shown beside statusLabel so the AHJ's words are always visible. */
+  portalStatedStatus?: string;
   statusLabel: string;
   outcome: PermitCheckOutcome;
   confidence: number;
@@ -1160,6 +1239,13 @@ export interface ApplicationDocumentPackage {
    * that array to carry a sentinel would change what every existing reader means.
    */
   missingDocumentsStatus?: "resolved" | "unavailable";
+  /**
+   * Set (alongside "resolved") when the AHJ's APPLICATION set is empty because NOTHING is known about
+   * it — structure unknown, no flags, no cited documents (requiredDocuments.documentInventory). The
+   * packet renders it as an advisory "which application(s) <AHJ> requires is not known" row and
+   * NEVER the pass-green all-clear: an unasked question is not an answered one.
+   */
+  applicationSetUnknown?: string;
   /** Why the inventory could not be computed, for the operator. Set only alongside
    *  missingDocumentsStatus === "unavailable". */
   missingDocumentsError?: string;
@@ -1175,6 +1261,22 @@ export interface ApplicationDocumentPackage {
     label: string;
     lane: "permit" | "nem";
     why: string;
+  }>;
+  /**
+   * Required forms Stage DOWNLOADS (or researches) and fills itself before it counts
+   * (owedMissingDocuments' `acquiredAtStaging`, gates-proper C1) — held out of missingDocuments
+   * and named here with how Stage gets each one. Set alongside missingDocumentsStatus === "resolved".
+   */
+  acquiredAtStagingDocuments?: Array<{
+    docType: string;
+    label: string;
+    lane: "permit" | "nem";
+    why: string;
+    via: "curated" | "cited" | "research";
+    sourceUrl: string;
+    /** The form research pass for this AHJ/path is running RIGHT NOW (started at `since`): the
+     *  App Docs panel says so and holds its "Find missing official forms" button until it ends. */
+    inFlight?: { since: string };
   }>;
   html: string;
   /** When the knowledge base has a learned profile for this AHJ, its real
@@ -2328,6 +2430,19 @@ export interface SubmitGateCheck {
   evidence: string[];
   nextAction: string;
   source: string;
+  /** A BLOCKER's items and the filings each one holds (backend/src/gateScope.ts — the one answer
+   *  the gate, Stage, Approve and prepareSubmission read). Absent = the blocker holds every filing
+   *  (an unknown never clears). */
+  holds?: SubmitGateHold[];
+}
+
+/** One blocking item of a gate check and the tracks whose filing it holds. */
+export interface SubmitGateHold {
+  label: string;
+  tracks: SubmittalTrackType[];
+  /** What to do about it, when it differs from the check's nextAction (the document check's
+   *  "Find official form or upload the blank" vs "attach"). */
+  action?: string;
 }
 
 export interface SubmitGateReport {
@@ -2900,7 +3015,11 @@ export interface LLMProvider {
     ahj: string;
     state: string;
     formName: string;
-    fields: { name: string; type: string }[];
+    /** Each field with where it is and the printed caption(s) around it — the blank's own text,
+     *  never a field value or project data (hard rule 2). */
+    fields: AcroFieldForMapping[];
+    /** Which side of its boxes this form prints captions on, when the widget names agree on one. */
+    captionSide?: "below" | "above" | "left" | "right" | null;
     availableSources: string[];
   }): Promise<AhjFieldMapResult>;
 
@@ -2966,6 +3085,20 @@ export interface AhjOverlayMapResult {
   /** Detected signature lines where the operator's stored signature can be stamped. */
   signatures: AhjSignaturePlacementNorm[];
   notes: string;
+  /** Printed blanks no source can fill (the model's "operator:<caption>" entries), by label. */
+  operatorItems?: Array<{ field?: string; label: string }>;
+}
+
+/** One AcroForm field as the mapper sees it. */
+export interface AcroFieldForMapping {
+  name: string;
+  type: string;
+  /** 0-based page. */
+  page?: number;
+  /** THE printed caption of the box (the form's calibrated caption side), when it could be told. */
+  caption?: string;
+  /** The nearest printed text on each side of the box. */
+  captions?: { left?: string; right?: string; below?: string; above?: string };
 }
 
 export interface AhjSignaturePlacementNorm {
@@ -3030,6 +3163,10 @@ export interface AhjFormUrlResult {
   lookupFailed?: boolean;
   /** Why it could not be made, when it could not. */
   lookupError?: string;
+  /** The raw web-search results the call received (URL + the result's title), kept so the
+   *  acquisition can take a document link the model saw but did not list (a CivicPlus
+   *  /DocumentCenter/View/<id>/<name> link has no ".pdf"). Data, never an instruction. */
+  searchResults?: Array<{ url: string; title: string }>;
 }
 
 export interface AhjFieldMapResult {
@@ -3039,6 +3176,9 @@ export interface AhjFieldMapResult {
   /** AcroForm checkbox field name -> check rule. */
   checkboxes: Record<string, { source: string; equals?: string }>;
   notes: string;
+  /** Blanks the applicant must fill that no source answers (the model's "operator:<caption>"
+   *  entries), by printed label — listed for the operator on every fill, never silently blank. */
+  operatorItems?: Array<{ field?: string; label: string }>;
 }
 
 // ---- Autonomous portal learning ----
@@ -3311,6 +3451,14 @@ export interface RecipeStep {
    *  signing statement): the step types that part of the client's authorized signer
    *  (splitSignerName), never the whole name, never a contact's. Only on signature steps. */
   signerNamePart?: "first" | "last";
+  /** Set when this step's recorded answer was withheld from the shared recipe and the step replays
+   *  BLANK for a person to answer — why, in words (e.g. a company-identity literal the save guard
+   *  refused to persist). Metadata only: never part of the step's label or matching. */
+  operatorItem?: string;
+  /** companyFacts.companyFactStamp of the client whose job recorded this company ATTESTATION (a
+   *  check/select answering a fact about the installer company). Replayed only for that client's
+   *  jobs; on any other job (or when absent) the step is left for a person. Opaque, never the id. */
+  companyFactOf?: string;
   /** See StepFingerprint — heal tie-break metadata captured at record time. */
   fingerprint?: StepFingerprint;
 }
@@ -3464,6 +3612,13 @@ export interface CitedFact<T> {
   origin: PermitProcessOrigin;
   /** When value is null: what was searched and why no answer was accepted. */
   notFound?: string;
+  /** A PORTAL a source NAMED but the lookup's door did not keep (value null): the URL as claimed.
+   *  "Named, not kept" is still evidence of where the AHJ files — the statewide fallback is never
+   *  taken over it (permitProcess.statewidePortalFor). Older rows carry it only in notFound's words. */
+  claimed?: string;
+  /** A named portal that REDIRECTS to its official host (lookup D3): kept as the final URL, with the
+   *  URL the source named and the hops our one polite read saw. */
+  redirect?: { from: string; finalUrl: string; chain: string[]; status: number };
 }
 export type PermitProcessDiscipline = "structural" | "electrical" | "combo" | "other";
 export interface PermitFeeAnswer {

@@ -42,11 +42,42 @@
 //      box that matches none of this project's tiers types BLANK (its recorded quantity was the
 //      donor project's size), never the donor's "1"; the step and its key are kept so the coverage
 //      check still reports a tier with no recorded box.
+//   R7 VALUATION (leak sweep 2026-09-28) — a Job Value / Valuation / Estimated Cost box bound to the
+//      contract price (jobValue / contractAmount) or frozen as a figure binds to THIS project's
+//      declaredValuation (the operator formula the PDF application files). A contract-price box keeps
+//      the contract.
+//   R8 COMPANY ATTESTATIONS (leak sweep 2026-09-28) — a check/select answering a fact about the
+//      installer company replays only on the job of the company that recorded it (step.companyFactOf);
+//      elsewhere a check is not replayed and a select replays blank, named for a person.
+//   R9 LICENCE KIND (licences skeptic L2) — a step bound to a licence number / expiry key whose LABEL
+//      names a different licence kind (licenceKinds.kindForSlot, the one predicate) reads the label
+//      kind's key for THIS job ("CSL Number" bound to the generic ccbLicenseNumber takes this client's
+//      construction supervisor licence) — or replays BLANK, named for a person, when the kind has no
+//      key or this client holds none. Never another kind's number.
+//   R10 PER-JOB QUESTIONS (dryrun-0928 B2) — an unbound fill/select whose label asks a person-answered
+//      per-job question (ownership, system configuration, disconnect distance — the one predicate,
+//      shared/src/perJobQuestions) in that key's vocabulary binds to the key: the job's own answer, or
+//      a blank the stage gate asks about first. Never the learn job's frozen answer.
+//   R11 ONE CONTACT, ONE IDENTITY (live Corvallis electrical, 2026-09-28) — a fill/select inside a
+//      contact dialog belongs to the section that opened it (the Add New / Select from Account /
+//      Edit click before it); a step bound to the OTHER identity's key is rebound to this one's
+//      matching key (an Applicant dialog's homeownerName → installerContactName; an Owner dialog's
+//      installerEmail → homeownerEmail), a contact literal binds to this identity's key, and a part
+//      the identity lacks (an Owner's business name) replays blank. Unknown section: untouched.
 import type { CitedFact, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { stateRulesFor } from "./permitProcess";
 import { feeBracketFieldKey, parseFeeBracketFieldKey, sameFeeTier, tierBoundsFromLabel } from "../../portal-bot/src/feeBracketQuantity";
 import { issuingAgencyRow } from "../../portal-bot/src/addressVersion";
+import { DECLARED_VALUATION_FIELD, rebindsToValuation } from "./valuation";
+import { companyFactStamp, isCompanyAttestationStep } from "../../shared/src/companyFacts";
+import { mountKindForProject } from "./codeReviewRules";
+import { licenceKeyForLabel, licenceKindWords } from "../../shared/src/licenceKinds";
+import { isPerJobAnswerKey, perJobAnswerKeyFor, perJobQuestionText, perJobStepEvidence } from "../../shared/src/perJobQuestions";
+import {
+  contactFieldKind, contactKeyFor, contactKeyForRole, contactRoleOfStep, isContactOpener, type ContactRole, type ContactTrack,
+} from "../../shared/src/contactRoles";
 export { sameFeeTier };
+
 
 export interface ReplayBindingChange {
   index: number;
@@ -124,7 +155,7 @@ const POSITIONAL_SERVICE_LIST = /cbListServices_\d+|rptAgency_ctl\d+/i;
 export function bindRecipeForReplay(input: {
   steps: RecipeStep[];
   portalUrl?: string;
-  project: Pick<ProjectRecord, "state" | "ahj"> & { city?: string; parserSnapshot?: Record<string, unknown> };
+  project: Pick<ProjectRecord, "state" | "ahj"> & { city?: string; parserSnapshot?: Record<string, unknown>; clientId?: string | null };
   fieldValues: Record<string, string>;
   track: string | null | undefined;
   /** Set when the recipe was learned for ANOTHER entity (findBorrowableRecipe). */
@@ -141,7 +172,11 @@ export function bindRecipeForReplay(input: {
   const targetCode = agencyCodeFor(agencyName);
   const snapshot = input.project.parserSnapshot ?? {};
   const guidance = stateRulesFor(input.project.state).applicationInfoGuidance?.value ?? null;
-  const groundMount = /ground/i.test(String(snapshot.mountType ?? ""));
+  // A NEW STRUCTURE (ground / pole / carport) is not an alteration of an existing building. The one
+  // mount predicate (codeReviewRules.mountKindForProject: `mounting`, then `mountType`, then the
+  // design text) — this read only the dead mountType key, so it was never true.
+  const mount = mountKindForProject({ ...input.project, parserSnapshot: snapshot } as ProjectRecord);
+  const groundMount = mount === "ground" || mount === "carport";
   const newConstruction = /new construction|new (home|dwelling|building)/i.test(String(snapshot.constructionType ?? snapshot.workType ?? ""));
   // The recipe's OWN vocabulary for a structure type (a CoC select whose answer is not "Other").
   const structureVocab = input.steps.find((s) => s.action === "select" && /category of construction/i.test(labelOf(s))
@@ -149,6 +184,9 @@ export function bindRecipeForReplay(input: {
   const residentialSingle = /single|one|1\b|two|duplex|family|dwelling|sfd|residential/i.test(String(snapshot.structureDescription ?? snapshot.occupancy ?? snapshot.structureType ?? "residential"));
   let refusal: string | null = null;
   let sawAgencyRow = false;
+  // R11's open contact block (see there). A utility interconnection reads "applicant" as the customer.
+  let contactBlock: { role: ContactRole | null; label: string } | null = null;
+  const contactTrack: ContactTrack = String(input.track ?? "").toLowerCase() === "nem" ? "nem" : "permit";
   // The agency as the address-version row reads it — the one parse (portal-bot addressVersion)
   // the replay's live ranking asks too, so "will the replay rank by it" has one answer.
   const agencyRow = issuingAgencyRow(agencyName, { city: input.project.city });
@@ -166,6 +204,24 @@ export function bindRecipeForReplay(input: {
       if (m) {
         record("stripped", `clicks the specific filed record ${m[0]} — replaying it would open a previous customer's record`);
         return;
+      }
+    }
+
+    // R8 — a COMPANY ATTESTATION (workers'-comp exemption, "no employees", insurance type, "I'm a
+    // contractor", one company's licence option) is answered only for the company whose job recorded
+    // it (step.companyFactOf, stamped at learn). On any other company's job — or an unstamped legacy
+    // step — it is left for a person: a check is not replayed, a select replays blank. Never the
+    // learn company's sworn answer on someone else's application.
+    if (isCompanyAttestationStep(step)) {
+      const own = Boolean(step.companyFactOf) && step.companyFactOf === companyFactStamp(input.project.clientId);
+      if (!own) {
+        const why = `a company attestation ("${label.slice(0, 50)}") recorded on ${step.companyFactOf ? "another company's" : "a"} job — left for a person, never another company's answer`;
+        if (step.action === "check") {
+          record("stripped", why);
+          return;
+        }
+        step = { ...step, value: "", field: REPLAY_BLANK_FIELD, operatorItem: why };
+        record("blanked", why);
       }
     }
 
@@ -267,6 +323,102 @@ export function bindRecipeForReplay(input: {
       }
     }
 
+    // R7 — a Job Value / Valuation / Estimated Cost box takes THIS project's declared valuation
+    // (valuation.ts: the operator formula, the figure the PDF files), never the contract price the
+    // learn run bound (jobValue / contractAmount — both complete Coos Bay recipes' "Job Value($):")
+    // and never a frozen figure. A box labelled contract price keeps the contract.
+    if (step.action === "fill" && step.field !== REPLAY_BLANK_FIELD && hasKey(input.fieldValues, DECLARED_VALUATION_FIELD)
+        && rebindsToValuation(`${label} ${note}`, step.field)) {
+      const was = step.field ? `the contract price (${step.field})` : "a recorded figure";
+      step = { ...step, field: DECLARED_VALUATION_FIELD };
+      delete step.value;
+      record("rebound", `valuation box bound to this project's declared valuation, not ${was}`);
+    }
+
+    // R9 — a licence step reads the kind its LABEL names (licenceKeyForLabel — the replay adapter asks
+    // the same question of the same label, so the two cannot disagree).
+    if ((step.action === "fill" || step.action === "select") && step.field && step.field !== REPLAY_BLANK_FIELD) {
+      const lic = licenceKeyForLabel(step.field, label);
+      if (lic) {
+        const was = step.field;
+        const value = lic.key ? String(input.fieldValues[lic.key] ?? "").trim() : "";
+        if (!lic.key || !value) {
+          const why = `"${label.slice(0, 50)}" asks for the ${licenceKindWords(lic.labelKind)}${lic.key ? ", and none is on file for this job's company" : ", which has no key of its own"} — left blank for a person, never the ${was} number`;
+          step = { ...step, value: "", field: REPLAY_BLANK_FIELD, operatorItem: why };
+          record("blanked", why);
+        } else {
+          const same = value === String(input.fieldValues[was] ?? "").trim();
+          step = { ...step, field: lic.key };
+          if (!same) record("rebound", `"${label.slice(0, 50)}" asks for the ${licenceKindWords(lic.labelKind)} — bound to ${lic.key}, not ${was}`);
+        }
+      }
+    }
+
+    // R10 — a PER-JOB question (ownership / system configuration / disconnect distance) frozen as a
+    // literal in an EXISTING recipe answers from THIS job's key, never the learn job's answer
+    // (dryrun-0928 B2: the live PacifiCorp recipe replays "Customer-Owned" at its ownership select
+    // on every job). The one predicate (shared/src/perJobQuestions), in its key's vocabulary only;
+    // the operator's standing "policy default:" answers stay as recorded. An unanswered key replays
+    // blank — and the stage gate (repository.prepareSubmission) asks the question before that.
+    if ((step.action === "fill" || step.action === "select") && !step.field && !step.sensitive
+        && !/^\s*policy default\s*:/i.test(note)) {
+      const perJobKey = perJobAnswerKeyFor(perJobQuestionText(step), perJobStepEvidence(step));
+      if (perJobKey) {
+        const was = String(step.value ?? "").trim();
+        step = { ...step, field: perJobKey };
+        delete step.value;
+        record("rebound", `a per-job question ("${label.slice(0, 50)}") answered from this job's ${perJobKey}${was ? `, not the recorded "${was.slice(0, 30)}" (the learn job's answer)` : ""}`);
+      }
+    }
+
+    // R11 — ONE CONTACT, ONE IDENTITY. A main-page click that opens a contact section (Add New,
+    // Select from Account, Edit) opens a block; every dialog (framed) fill/select until the next
+    // main-page step belongs to it. Its identity is the section's: the step's own role mark, the
+    // section control id, or the recorded section heading (shared contactRoles — the learner's
+    // pass and dialog guard ask the same predicates). A box bound to the OTHER identity's key
+    // replays this identity's matching key; a literal under a contact label binds to it; a part
+    // this identity does not have (an Owner block's business name) replays blank. A block whose
+    // section says nothing is left exactly as recorded — never guessed.
+    {
+      const inFrame = Boolean(original.selector?.frame);
+      const words = `${original.selector?.name ?? ""} ${original.selector?.text ?? ""} ${original.selector?.label ?? ""} ${note}`;
+      const opener = original.action === "click" && !inFrame && isContactOpener(words);
+      if (opener) {
+        contactBlock = { role: contactRoleOfStep(original, { track: contactTrack }), label: label.slice(0, 40) };
+      } else if (!inFrame) {
+        contactBlock = null;
+      } else if (contactBlock && (step.action === "fill" || step.action === "select") && step.field !== REPLAY_BLANK_FIELD && !step.sensitive) {
+        const role = contactBlock.role ?? contactRoleOfStep(original, { track: contactTrack });
+        if (role) {
+          const who = role === "company" ? "the filing company" : "the property owner";
+          if (step.field) {
+            const want = contactKeyForRole(step.field, role);
+            if (want === null) {
+              const why = `"${label.slice(0, 40)}" in ${who}'s contact block was bound to ${step.field}, a part ${who} does not have — replayed blank`;
+              step = { ...step, value: "", field: REPLAY_BLANK_FIELD };
+              record("blanked", why);
+            } else if (want && want !== step.field) {
+              const was = step.field;
+              step = { ...step, field: want };
+              delete step.value;
+              record("rebound", `"${label.slice(0, 40)}" in ${who}'s contact block (${contactBlock.label}) bound to ${want}, not ${was} — one contact, one identity`);
+            }
+          } else if (step.action === "fill" && String(step.value ?? "").trim()) {
+            const kind = contactFieldKind(label);
+            const key = kind ? contactKeyFor(role, kind) : undefined;
+            if (key && hasKey(input.fieldValues, key)) {
+              step = { ...step, field: key };
+              delete step.value;
+              record("rebound", `"${label.slice(0, 40)}" in ${who}'s contact block bound to ${key} (the recorded answer was the learn project's)`);
+            } else if (kind && key === null) {
+              step = { ...step, value: "", field: REPLAY_BLANK_FIELD };
+              record("blanked", `"${label.slice(0, 40)}" in ${who}'s contact block is a part ${who} does not have — replayed blank`);
+            }
+          }
+        }
+      }
+    }
+
     // R2 — project-specific free text.
     if (step.action === "fill" && step.field !== REPLAY_BLANK_FIELD) {
       const known = step.field && Object.prototype.hasOwnProperty.call(input.fieldValues, step.field);
@@ -294,6 +446,27 @@ export function bindRecipeForReplay(input: {
     refusal = refusal ?? `the issuing agency for ${input.project.ahj}'s ${input.track ?? "permit"} permits is not known (the per-job lookup found none), and the ${input.borrowed.learnedFor} recipe has no agency row to bind — the agency it files with cannot be checked against this project`;
   }
   return { steps, originalIndex, fieldValues, changes, refusal };
+}
+
+/**
+ * THE STAGE GATE'S QUESTION (dryrun-0928 B2): the person-answered per-job questions this replay
+ * would reach with no answer for THIS job — every fill/select bound (after bindRecipeForReplay) to
+ * an ownership / configuration / disconnect key whose value is empty. Staging asks them BEFORE a
+ * browser opens; the replay never files a blank there silently, and never another job's answer.
+ * One entry per key. An optional step does not hold the stage.
+ */
+export function openPerJobQuestions(steps: RecipeStep[], fieldValues: Record<string, string>): Array<{ key: string; label: string }> {
+  const out: Array<{ key: string; label: string }> = [];
+  const seen = new Set<string>();
+  for (const s of steps) {
+    if (s.action !== "fill" && s.action !== "select") continue;
+    if (s.optional || !isPerJobAnswerKey(s.field)) continue;
+    const key = String(s.field);
+    if (String(fieldValues[key] ?? "").trim() || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ key, label: String(s.selector?.label || s.note || key).replace(/\s+/g, " ").trim().slice(0, 140) });
+  }
+  return out;
 }
 
 /** One operator-readable line for the run message. */

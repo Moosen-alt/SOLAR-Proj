@@ -1,19 +1,22 @@
 import type { AppDb } from "./db";
-import { cecTableCount, isCecListed } from "./cecEquipment";
+import { cecListing, cecTableCount } from "./cecEquipment";
 import { evaluateBaselineRules } from "./baselineRules";
 import { id } from "./ids";
 import { parseJson } from "./json";
 import { fieldAliases, parserField } from "./normalize";
 import { logger } from "./logger";
 import { documentInventory, owedMissingDocuments, requiredListCheck } from "./requiredDocuments";
+import { startedAtLabel } from "./formAcquisitionPlan";
 import { nowIso } from "./time";
 import type { ParserPayload, ProjectRecord, QcStatus, Severity, StageDetail } from "../../shared/src/types";
 import { getCodeProfile, resolveEffectiveCodeContext } from "./codeProfiles";
 import { resolvePermitPath } from "./permitPath";
 import { findKnowledgeForLearn } from "./knowledgeBase";
+import { AHJ_NEAR_MISS_ISSUE_TYPE, ahjNearMissForProject, ahjNearMissMessage, ahjNearMissPending, type AhjNearMiss } from "./ahjNearMiss";
 import { ensureFeeSchedulesResearched } from "./feeSchedules";
 import { requiredTracks } from "./submittalTracks";
 import { qcMayMoveStatus } from "./projectStage";
+import { looksLikePlaceholderIdentifier } from "../../shared/src/companyFacts";
 
 // Look up whether the AHJ for this project uses a portal platform that requires
 // individual sheets to be split and uploaded separately (e.g. ProjectDox, EnerGov).
@@ -43,8 +46,10 @@ interface ProjectRow {
   id: string;
   parser_json: string;
   ahj: string | null;
+  city: string | null;
   state: string | null;
   utility: string | null;
+  client_id?: string | null;
 }
 
 interface Check {
@@ -99,10 +104,14 @@ interface QcContext {
   db: AppDb;
   projectId: string;
   ahj: string;
+  city: string;
   state: string;
   payload: ParserPayload;
   /** Memo: resolvePermitPath's standardReview for this job (see permitPathStandardReview). */
   standardReview?: boolean;
+  /** The AHJ name is a near-miss of the address city (ahjNearMiss.ts) — computed ONCE per run;
+   *  critical.ahj warns and asks instead of passing. Null on the ordinary project. */
+  ahjNearMiss: AhjNearMiss | null;
 }
 
 /**
@@ -135,6 +144,17 @@ function permitPathStandardReview(ctx: QcContext): boolean {
 // failure again: something read the document and could not find it.
 export const WAITING_ON_BILL_ISSUE_TYPE = "Waiting on the customer's utility bill";
 const BILL_FIELDS = new Set(["accountNumber", "meterNumber"]);
+
+// AN AHJ NAME ONE LETTER OFF THE ADDRESS CITY IS A QUESTION, NOT A PASS (intake test 2026-09-29:
+// "AHJ: CITY OF SMONROE" for an address in Monroe, OR reached ready_to_stage and a lookup was
+// queued for a jurisdiction that does not exist). The value stays exactly what the plan set says —
+// never auto-corrected — and critical.ahj files a pending review item on the ahj field asking a
+// person to confirm or correct it. It is the critical.ahj row ITSELF (not a separate check): the
+// pass branch below auto-resolves any pending 'ahj' item once the AHJ is non-blank, and a warning
+// never re-opens a resolved one, so a second item on the same field would be silently approved on
+// the next run. The item is critical by default (isCriticalReviewItem), so the existing submit
+// gate holds — no new gate. The predicate and the KB exclusion live in ahjNearMiss.ts.
+export { AHJ_NEAR_MISS_ISSUE_TYPE };
 
 /** A utility bill or a meter photo is on file for this project. */
 export function customerBillOnFile(db: AppDb, projectId: string): boolean {
@@ -210,6 +230,9 @@ function statusFor(check: Check, ctx: QcContext): QcStatus {
     return "pass";
   }
 
+  // The AHJ is present but reads like a typo of the address city: ask, do not pass (or fail).
+  if (check.fieldName === "ahj" && value && ctx.ahjNearMiss) return "warning";
+
   if (!value) return check.severity === "warning" ? "warning" : "fail";
   if (check.fieldName === "locates") {
     if (/not run|waiting/i.test(value)) return "warning";
@@ -219,41 +242,71 @@ function statusFor(check: Check, ctx: QcContext): QcStatus {
   return "pass";
 }
 
-export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
-  const project = db.get<ProjectRow>("SELECT id, parser_json, ahj, state, utility, system_size_dc_kw FROM projects WHERE id = ?", [projectId]);
+export interface QcRunOptions {
+  /**
+   * THE DOCUMENT-TRIGGERED RE-JUDGE (autoStageSteps STEP 1, B7 — a project already past QC whose
+   * documents changed). It refreshes every row (a stale "Staging will refuse without it" row is
+   * cleared) but does NOT demote the project when the only NEW failures are the account / meter
+   * number (BILL_FIELDS). Why (converge 2026-09-28, conservative — the operator has not ruled): a
+   * bill uploaded after intake flips those rows from "waiting on the bill" to FAIL, and the bill
+   * reader (billVision) reads images only, so a PDF bill is never read — the re-judge would drop
+   * ready_to_stage -> qc_failed on a document nobody could have read. A new failure of any OTHER
+   * check still demotes (real news). The rows themselves are written either way.
+   */
+  holdStatusOnNewBillOnlyFails?: boolean;
+}
+
+export function runQcForProject(db: AppDb, projectId: string, options: QcRunOptions = {}): QcRunResult {
+  const project = db.get<ProjectRow>("SELECT id, parser_json, ahj, city, state, utility, system_size_dc_kw, client_id FROM projects WHERE id = ?", [projectId]);
   if (!project) throw new Error("Project not found.");
 
   const payload = parseJson<ParserPayload>(project.parser_json, {});
+  const identity = {
+    ahj: project.ahj || clean(payload.ahj) || "",
+    city: project.city || clean(payload.city) || "",
+    state: project.state || clean(payload.state) || "",
+  };
   const ctx: QcContext = {
     db,
     projectId,
-    ahj: project.ahj || clean(payload.ahj) || "",
-    state: project.state || clean(payload.state) || "",
+    ...identity,
     payload,
+    // Read-only (exact KB key probes, only for an actual near-miss); before the transaction.
+    ahjNearMiss: ahjNearMissForProject(db, identity),
   };
   const createdAt = nowIso();
   let failCount = 0;
   let warningCount = 0;
   let statusWritten = false;
+  // Failures that were NOT failing on the last run, outside the account / meter pair — read before
+  // the DELETE below (QcRunOptions.holdStatusOnNewBillOnlyFails).
+  let newFailsOutsideBill = 0;
 
   db.transaction(() => {
+    const priorFails = new Set(db.query<{ rule_id: string }>(
+      "SELECT rule_id FROM qc_results WHERE project_id = ? AND qc_status = 'fail'", [projectId]).map((r) => String(r.rule_id)));
     db.run("DELETE FROM qc_results WHERE project_id = ?", [projectId]);
 
     for (const check of criticalChecks) {
       const qcStatus = statusFor(check, ctx);
       if (qcStatus === "fail") failCount += 1;
+      if (qcStatus === "fail" && !BILL_FIELDS.has(check.fieldName) && !priorFails.has(check.ruleId)) newFailsOutsideBill += 1;
       if (qcStatus === "warning") warningCount += 1;
 
       const waitingOnBill = qcStatus === "warning" && check.severity === "blocker" && BILL_FIELDS.has(check.fieldName);
+      // critical.ahj warning = the near-miss question (statusFor returns "warning" for ahj on nothing else).
+      const ahjNearMiss = check.fieldName === "ahj" && qcStatus === "warning" ? ctx.ahjNearMiss : null;
       const message = qcStatus === "pass"
         ? (check.fieldName === "permitPath" && permitPathStandardReview(ctx)
           ? "Permit path: standard structural review — this jurisdiction files one building application, so there is no path choice to confirm."
           : `${check.ruleName} present.`)
-        : waitingOnBill ? waitingOnBillMessage(check) : check.message;
+        : waitingOnBill ? waitingOnBillMessage(check)
+          : ahjNearMiss ? ahjNearMissMessage(ctx.ahj, ctx.city, ctx.state, ahjNearMiss)
+            : check.message;
       db.run(
         `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id(), projectId, qcStatus, check.ruleId, check.ruleName, message, waitingOnBill ? "warning" : check.severity, createdAt],
+        [id(), projectId, qcStatus, check.ruleId, check.ruleName, message, waitingOnBill || ahjNearMiss ? "warning" : check.severity, createdAt],
       );
 
       if (BILL_FIELDS.has(check.fieldName) && qcStatus !== "pass") {
@@ -264,6 +317,34 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
         db.run(
           "UPDATE human_review_items SET issue_type = ?, notes = ?, updated_at = ? WHERE project_id = ? AND field_name = ? AND status = 'pending'",
           [issueType, message, nowIso(), projectId, check.fieldName],
+        );
+      } else if (ahjNearMiss) {
+        // The question rides the ahj field's ONE item (ensureReviewItem dedupes per field against any
+        // status): filed pending with its own issue type; a pending row is refreshed so an edit to a
+        // second near-miss name shows the new value and message. Never re-opened once a PERSON
+        // answered — a Save Edit of the same value IS the confirmation, and a value a person typed
+        // into a resolved blank-AHJ item is theirs. But an item the SYSTEM closed (the blank-AHJ
+        // blocker auto-resolved the moment a value arrived — through PUT /api/projects/:id or the
+        // parser page — and that value is itself a near-miss) never had THIS question answered by
+        // anyone: it reopens as the near-miss (verify round 2, 2026-09-29).
+        const parserValue = parserField(payload, check.fieldName) || ctx.ahj;
+        const prior = db.get<{ id: string; status: string; issue_type: string; notes: string }>(
+          "SELECT id, status, issue_type, notes FROM human_review_items WHERE project_id = ? AND field_name = ? LIMIT 1",
+          [projectId, check.fieldName],
+        );
+        const systemClosedOtherQuestion = prior && prior.status !== "pending" && prior.issue_type !== AHJ_NEAR_MISS_ISSUE_TYPE
+          && /^Auto-resolved/.test(prior.notes || "");
+        if (systemClosedOtherQuestion) {
+          db.run(
+            "UPDATE human_review_items SET status = 'pending', issue_type = ?, parser_value = ?, notes = ?, updated_at = ? WHERE id = ?",
+            [AHJ_NEAR_MISS_ISSUE_TYPE, parserValue, message, nowIso(), prior!.id],
+          );
+        } else {
+          ensureReviewItem(db, projectId, check.fieldName, AHJ_NEAR_MISS_ISSUE_TYPE, parserValue, message, false);
+        }
+        db.run(
+          "UPDATE human_review_items SET issue_type = ?, notes = ?, parser_value = ?, updated_at = ? WHERE project_id = ? AND field_name = ? AND status = 'pending'",
+          [AHJ_NEAR_MISS_ISSUE_TYPE, message, parserValue, nowIso(), projectId, check.fieldName],
         );
       } else if (qcStatus !== "pass") {
         // Re-open a still-failing BLOCKER (qcStatus "fail") even if it was previously
@@ -330,6 +411,15 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
           [id(), projectId, `docs.${d.docType}`, `${d.label}: filled at staging${where} — the form's template is on file; staging fills it and offers it to any upload slot that asks for it (check the portal's attachment list before submitting).`, createdAt],
         );
       }
+      // Stage downloads (or researches) and fills it before it counts (gates-proper C1) — said as a
+      // pass row, never "not attached — staging will refuse without it".
+      for (const d of gateDocs.acquiredAtStaging) {
+        db.run(
+          `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
+           VALUES (?, ?, 'pass', ?, 'Required document', ?, 'info', ?)`,
+          [id(), projectId, `docs.${d.docType}`, `${d.label}: Stage downloads and fills it${where} (${gateDocs.acquiredVia.get(d)?.inFlight ? `the form research is running now, ${startedAtLabel(gateDocs.acquiredVia.get(d)!.inFlight!.since)}` : gateDocs.acquiredVia.get(d)?.via === "research" ? "form research on the open cooldown" : `from ${gateDocs.acquiredVia.get(d)?.sourceUrl || "its published source"}`}) — if the download fails, Stage stops and names it.`, createdAt],
+        );
+      }
       for (const d of inv.missingAdvisory) {
         warningCount += 1;
         say("warning", "warning", d.docType, d.label, String(d.why || ""));
@@ -390,8 +480,51 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
     // Jurisdiction-adopted code context: any state/county with recorded prescriptive
     // limits gets the baseline screens (data-driven); Oregon behavior unchanged.
     const codeCtx = resolveEffectiveCodeContext(db, clean(payload.state), clean(payload.ahj));
-    for (const baseline of evaluateBaselineRules(payload, codeCtx)) {
+    // THE PROJECT'S OWN CLIENT'S STANDARD DISCONNECT PART, so the plan-set cross-check can fire
+    // (leak sweep 2026-09-28: nothing ever put it in this payload, so the check was dead code while
+    // the portal filing used the part). Read from the project's own client row — never another's.
+    // The project's utility and state stand in only where the parser left them blank, so the one
+    // utility identity (utilityIdentity) can answer for a project the parser did not fully read.
+    const clientId = clean(project.client_id);
+    const std = clientId
+      ? db.get<{ standard_disconnect_make?: string | null; standard_disconnect_model?: string | null }>(
+        "SELECT standard_disconnect_make, standard_disconnect_model FROM clients WHERE id = ?", [clientId])
+      : undefined;
+    // A PLACEHOLDER ON THE CLIENT RECORD IS NAMED HERE, the day the job is parsed (leak sweep
+    // 2026-09-28): the portal filing leaves a placeholder licence / docket / registration blank
+    // (portalRecipes, clients.clientStagingOverlay — companyFacts.looksLikePlaceholderIdentifier),
+    // and this row is where the operator learns why. The ICC docket only matters on an Illinois job.
+    // Never prints the value — only which field on the client record to correct.
+    if (clientId) {
+      const ids = db.get<Record<string, unknown>>(
+        "SELECT ccb_license_number, electrical_license_number, electrician_license_number, metro_city_license_number, docket_number FROM clients WHERE id = ?", [clientId]);
+      const isIl = clean(project.state || payload.state).toUpperCase() === "IL";
+      const fields: Array<[string, string]> = [
+        ["ccb_license_number", "contractor licence number"], ["electrical_license_number", "electrical licence number"],
+        ["electrician_license_number", "supervising electrician licence number"], ["metro_city_license_number", "metro / city licence number"],
+        ...(isIl ? [["docket_number", "ICC docket number"] as [string, string]] : []),
+      ];
+      for (const [col, what] of fields) {
+        if (!looksLikePlaceholderIdentifier(ids?.[col])) continue;
+        warningCount += 1;
+        db.run(
+          `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
+           VALUES (?, ?, 'warning', ?, 'Client record placeholder', ?, 'warning', ?)`,
+          [id(), projectId, `client.placeholder-identifier.${col}`,
+            `The client record's ${what} looks like a test / placeholder value, not a real identifier. Correct it on the client record — the portal filing leaves it blank until then.`,
+            createdAt],
+        );
+      }
+    }
+    const baselinePayload: ParserPayload = {
+      ...payload,
+      ...(clean(payload.state) ? {} : project.state ? { state: project.state } : {}),
+      ...(clean(payload.utility) ? {} : project.utility ? { utility: project.utility } : {}),
+      ...(clean(std?.standard_disconnect_model) ? { standardDisconnectModel: clean(std?.standard_disconnect_model), standardDisconnectMake: clean(std?.standard_disconnect_make) } : {}),
+    };
+    for (const baseline of evaluateBaselineRules(baselinePayload, codeCtx)) {
       if (baseline.qcStatus === "fail") failCount += 1;
+      if (baseline.qcStatus === "fail" && !priorFails.has(baseline.ruleId)) newFailsOutsideBill += 1;
       if (baseline.qcStatus === "warning") warningCount += 1;
       db.run(
         `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
@@ -425,12 +558,35 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
     // changes qc_failed/qc_passed). Silent when the table has never been synced.
     try {
       if (cecTableCount(db) > 0) {
-        const checks: Array<["module" | "inverter", string, string]> = [
-          ["module", "cec.module_listed", clean(payload.moduleModel)],
-          ["inverter", "cec.inverter_listed", clean(payload.invModel) || clean(payload.pvMicroModel)],
+        // ONE PREDICATE WITH THE PORTAL FILL (cecEquipment.cecListing asks certifiedModelFor first,
+        // with the make and wattage the fill passes): a model the fill will file under its listed
+        // name is never reported "not found" (dry-run 2026-09-28 B15).
+        const firstArray = (Array.isArray(payload.pvArrays) ? payload.pvArrays[0] : null) as Record<string, unknown> | null;
+        const moduleMake = clean(payload.moduleMake) || clean(payload.moduleManufacturer) || clean(firstArray?.moduleManufacturer ?? firstArray?.moduleMake ?? firstArray?.manufacturer);
+        const moduleWatts = clean(payload.moduleWattage) || clean(firstArray?.moduleWattage ?? firstArray?.wattage ?? firstArray?.watts);
+        const micro = !clean(payload.invModel) && Boolean(clean(payload.pvMicroModel));
+        const checks: Array<["module" | "inverter", string, string, string, string]> = [
+          ["module", "cec.module_listed", clean(payload.moduleModel), moduleMake, moduleWatts],
+          ["inverter", "cec.inverter_listed", clean(payload.invModel) || clean(payload.pvMicroModel), micro ? clean(payload.pvMicroMake) : clean(payload.invMake) || clean(payload.inverterManufacturer), ""],
         ];
-        for (const [kind, ruleId, model] of checks) {
-          if (!model || isCecListed(db, kind, model)) continue;
+        for (const [kind, ruleId, model, make, watts] of checks) {
+          if (!model) continue;
+          const listing = cecListing(db, kind, model, make, watts);
+          if (listing.listed) {
+            // Listed under ANOTHER spelling: said, as information — the portal files the listed name.
+            // A bracketed listing suffix ("IQ8PLUS-72-2-US [240V]") is not another spelling.
+            const spelling = (s: string) => s.toLowerCase().replace(/\s*[[({][^\])}]*[\])}]\s*/g, "").replace(/[^a-z0-9]/g, "");
+            if (listing.certifiedName && spelling(listing.certifiedName) !== spelling(model)) {
+              db.run(
+                `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
+                 VALUES (?, ?, 'pass', ?, ?, ?, 'info', ?)`,
+                [id(), projectId, ruleId, `CEC listing: ${kind}`,
+                 `${kind === "module" ? "Module" : "Inverter"} model is on the CEC solar equipment list as "${listing.certifiedName}" (the plan set prints "${model}"). The portal fill uses the listed name.`,
+                 createdAt],
+              );
+            }
+            continue;
+          }
           warningCount += 1;
           db.run(
             `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
@@ -466,6 +622,10 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
     const verdict: "qc_failed" | "qc_passed" = failCount > 0 ? "qc_failed" : "qc_passed";
     if (verdict === currentStatus) return;
     if (verdict === "qc_passed" && currentStatus !== "parsed" && currentStatus !== "qc_failed") return;
+    // The document-triggered re-judge: the rows above are refreshed, but a verdict whose only NEW
+    // failures are the account / meter number leaves a project past QC where it is.
+    if (options.holdStatusOnNewBillOnlyFails && verdict === "qc_failed"
+      && currentStatus !== "parsed" && currentStatus !== "qc_failed" && newFailsOutsideBill === 0) return;
     statusWritten = true;
     const nextStatus = verdict;
     const currentStage = failCount > 0 ? "QC failed: human review required" : "QC passed: ready to stage";
@@ -507,11 +667,21 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
     // When it is queued, fee research waits for it — the lookup job re-triggers fee research once it
     // knows WHICH agency charges (the fee researcher, asked about City of Jefferson, read Marion
     // County's $67.25, reported found:false and stored nothing).
+    // A NEAR-MISS AHJ NAME IS NOT LOOKED UP OR PRICED WHILE THE QUESTION IS PENDING (it may not
+    // exist — "City Of Smonroe" got a lookup and a not-found forms search). Only the NEM side, which
+    // the utility answers, is researched meanwhile. The skip reads the RESULTING pending item
+    // (ahjNearMissPending — the one answer, shared with the chain's acquire_forms step), never
+    // ctx.ahjNearMiss: the predicate keeps firing on a name a person CONFIRMED as-is (the value is
+    // unchanged), and keying off it withheld the lookup for the project's whole life (fix round
+    // 2026-09-29). The item this run filed is committed — this block is outside the transaction — so
+    // it is pending on the firing run and answered on the QC the confirm / edit triggers (humanVerify,
+    // updateProject), which is the run that queues the lookup.
+    const ahjInQuestion = ahjNearMissPending(db, projectId);
     void (async () => {
       const { ensurePermitProcessLookedUp } = await import("./permitProcessLookup");
-      const queued = await ensurePermitProcessLookedUp(db, projectLike as never);
+      const queued = ahjInQuestion ? false : await ensurePermitProcessLookedUp(db, projectLike as never);
       const tracks = requiredTracks(projectLike);
-      await ensureFeeSchedulesResearched(db, projectLike, queued ? tracks.filter((t) => t === "nem") : tracks);
+      await ensureFeeSchedulesResearched(db, projectLike, queued || ahjInQuestion ? tracks.filter((t) => t === "nem") : tracks);
     })().catch(() => null);
   } catch (err) {
     logger.warn("qc", "fee-research trigger failed", { projectId, err: err instanceof Error ? err.message : String(err) });

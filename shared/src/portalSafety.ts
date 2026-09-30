@@ -181,9 +181,10 @@ export function portalSafetyFactory() {
   const PAYMENT_WORDS =
     /\bcvv\b|\bcvc\b|\bccv\b|card\s*(number|no\b|#|type)|cardholder|card\s*holder|name on card|credit\s*card|debit\s*card|(card|\bcc\b|credit|debit)[a-z ]{0,12}exp|exp(iration|iry|\.)?\s*(month|year)\b|billing\s*zip/i;
 
-  // A camelCase / snake_case attribute reads as words: accountNumber -> "account Number".
+  // A camelCase / snake_case attribute reads as words: accountNumber -> "account Number", and an
+  // acronym run ends where a capitalised word starts: "WCStrNum" -> "WC Str Num", "MFACode" -> "MFA Code".
   const words = (s: unknown): string =>
-    String(s ?? "").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_\-.[\]]+/g, " ").trim();
+    String(s ?? "").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").replace(/[_\-.[\]]+/g, " ").trim();
 
   const parts = (f: FieldIdentity | null | undefined): string[] => {
     if (!f) return [];
@@ -261,13 +262,47 @@ export function portalSafetyFactory() {
   // words: a pays-now phrase anywhere else in the text still wins (autosubmit-2 MF-S2 — "You do not
   // need to pay now - $150 will be debited on submit." read fee_deferred and was filed).
   const NEGATED_PAY = /\b(no\s+need\s+to|(do|does|will|need)\s+not\s+(need\s+to\s+|have\s+to\s+)?|don'?t\s+(need|have)\s+to|not\s+(be\s+)?required\s+to|nothing\s+to)\s*pay\b/gi;
+  // FAIL CLOSED ON MONEY, CLAUSE BY CLAUSE (autosubmit-close-2 skeptic: ~20 shapes FILED — "$150 is due
+  // now.", "Total due: $150.00.", "Your balance will be reduced by $150 when you submit.", "Pagar $150 y
+  // enviar?", and a deferral or a negation anywhere winning over a pays-now clause elsewhere). A clause
+  // that mentions MONEY — an amount, or any word for paying, owing or moving money — is accepted only when
+  // IT defers the money (FEE_DEFERRED_DIALOG) and nothing in it takes money now, at the click, or from an
+  // account (MONEY_TAKEN). Every money clause must pass; the first that does not is pays_now, whatever the
+  // other clauses say. A negated pay ("you do not need to pay now", "no payment is required") is removed
+  // from its clause first, and what remains of that clause is judged on its own.
+  const CLAUSE_BREAK = /[.?!;](?=\s|$)|\n+|\s[-–—]\s/;
+  const MONEY_MENTION = new RegExp([
+    "[$€£]\\s?\\d", "\\b\\d[\\d,]*(\\.\\d{1,2})?\\s*(usd|dollars?)\\b", "\\busd\\b",
+    "\\b(pay\\w*|pag(ar|o|ue)|fees?|charges?|charged|charging|bill(s|ed|ing)?|invoic\\w*|debit\\w*|deduct\\w*|funds?|refund\\w*|card|bank|ach|e-?check|remit\\w*|checkout|transaction|wallet|escrow|balance|costs?|price|purchas\\w*|deposit\\w*|money|amount)\\b",
+    "\\bdue\\s+(now|today|immediately)\\b", "\\btaken\\s+from\\b", "\\b(from|to|on)\\s+(your|the|my)\\s+(\\w+\\s+)?(account|card|bank)\\b",
+  ].join("|"), "i");
+  const MONEY_TAKEN = new RegExp([
+    "\\b(now|today|immediately|instantly|right\\s+away|at\\s+this\\s+time)\\b",
+    "\\b(on|upon|at|with|by)\\s+(submi\\w*|filing|clicking|checkout|continuing|proceeding)\\b",
+    "\\b(when|once|as)\\s+(you\\s+)?(submit|file|click|continue|proceed)\\w*\\b",
+    "\\b(before|to)\\s+(you\\s+)?(submit|file|continue|proceed)\\w*\\b",
+    "\\b(card|bank|ach|e-?check|wallet|escrow|account)\\b",
+    "\\b(debit\\w*|deduct\\w*|withdraw\\w*|charged|charging|remit\\w*|draw(n|s)?|reduc\\w*|purchas\\w*|authoriz\\w*|hold|taken\\s+from)\\b",
+    "\\bcomplet\\w*\\s+(your\\s+|the\\s+)?(purchase|payment|order|transaction)\\b",
+  ].join("|"), "i");
+  // "Submit now" is the click's own timing, not the money's ("Submit now and pay later?").
+  const SUBMIT_NOW = /\b(submit|file|send|continue|proceed|apply)\w*\s+(it\s+|this(\s+application)?\s+|the\s+application\s+|your\s+application\s+)?(now|today)\b/gi;
+  const NEGATED_PAY_NOW = new RegExp(`(${NEGATED_PAY.source})(\\s+(anything|any\\s+fees?))?(\\s+(now|today|at\\s+this\\s+time|yet|here))?`, "gi");
+  const NEGATED_MONEY = /\b(no\s+(charge|fee|fees|cost|payment|payments)(\s+(is|are|will\s+be))?(\s+(required|due|needed|necessary|owed|collected|charged))?(\s+(now|today|at\s+this\s+time|yet|here))?|free\s+of\s+charge|at\s+no\s+(cost|charge))/gi;
   const paymentDialogVerdict = (text: string | null | undefined): "no_payment" | "fee_deferred" | "pays_now" => {
     const raw = String(text ?? "");
-    const negated = raw.replace(NEGATED_PAY, " ") !== raw;
-    const t = raw.replace(NEGATED_PAY, " ");
+    // A negation removes only its own words ("no payment is required now"); the rest is still judged.
+    const t = raw.replace(NEGATED_PAY, " ").replace(NEGATED_MONEY, " ");
     if (PAY_NOW_DIALOG.test(t)) return "pays_now";
-    if (!negated && !isPaymentWordedText(raw) && !/\b(bill(ed|ing)?|invoic(e|ed|es|ing))\b/i.test(raw)) return "no_payment";
-    return negated || FEE_DEFERRED_DIALOG.test(t) ? "fee_deferred" : "pays_now";
+    let spoke = t !== raw;
+    for (const clause of raw.split(CLAUSE_BREAK)) {
+      const rest = clause.replace(NEGATED_PAY_NOW, " ").replace(NEGATED_MONEY, " ");
+      if (rest !== clause) spoke = true;
+      if (!MONEY_MENTION.test(rest)) continue;
+      if (!FEE_DEFERRED_DIALOG.test(rest) || MONEY_TAKEN.test(rest.replace(SUBMIT_NOW, " "))) return "pays_now";
+      spoke = true;
+    }
+    return spoke ? "fee_deferred" : "no_payment";
   };
   /** Does this dialog pay NOW (or speak of payment with no deferral)? The boolean every door asks. */
   const isPayNowDialogText = (text: string | null | undefined): boolean => paymentDialogVerdict(text) === "pays_now";
@@ -701,15 +736,28 @@ export function portalSafetyFactory() {
     /by\s+(typing|entering|providing|printing)\s+(your|my)\s+(full\s+|first\s+and\s+last\s+|legal\s+)?name\b|\b(you|i)\s+(are|am)\s+(electronically\s+)?signing\b|constitutes?\s+(your|an?|my|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\bserves?\s+as\s+(your|my|an?|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\b(type|enter|print)\s+(your|my)\s+(full\s+|legal\s+|first\s+and\s+last\s+)?name\s+((below|here|above)\s+)?(to|as)\s+(sign|your\s+signature|an?\s+(electronic\s+)?signature)/i;
   const THIRD_PARTY_SIGNS =
     /\b(home\s*-?owners?|(property\s+)?owners?|customers?|utility|utilities|landlords?|tenants?|lenders?|spouses?|co-?applicants?|account\s*holders?|other\s+part(y|ies))('s|s')?\s+((must|will|shall|should|may|can|would|needs?\s+to|has\s+to|have\s+to|(is|are)\s+(required|asked|expected)\s+to|also|then|later)\s+)*(consent\s+to\s+)?(electronically\s+|e-?)?sign(s|ed|ing)?\b/i;
+  // THE SIGNING ITSELF is later or offline — never a later DELIVERY (autosubmit-close-2 skeptic: "Please
+  // sign below and the permit will be emailed to you after approval." and "I consent to sign this
+  // application electronically, and I understand the utility will email the agreement after approval."
+  // are the applicant signing NOW; demoting them handed the signature box to the planner's contact).
   const LATER_OR_OFFLINE = new RegExp([
     "\\b(will|shall|would)\\s+((later|then|also)\\s+)?(be\\s+)?(e-?)?sign(ed)?\\b", "\\bto\\s+be\\s+(e-?)?signed\\b",
-    "\\bonce\\s+(the\\s+)?(\\w+\\s+){0,2}(approves?|approved|issued|issues)\\b",
-    "\\b(after|upon|following)\\s+(the\\s+)?(\\w+\\s+)?(approval|approves|approved|issuance|issued)\\b", "\\blater\\b",
-    "\\bwill\\s+(e-?mail|send|mail|forward)\\b(?!\\s+(you\\s+)?(a\\s+)?(copy|confirmation|receipt))",
+    "\\bsign(ed|ing)?\\s+(it\\s+|this\\s+|them\\s+)?(later|afterwards?|at\\s+(a\\s+)?later)\\b",
     "\\bprint(ed)?\\s+(and|&)\\s+sign\\b", "\\bprinted\\s+(\\w+\\s+){0,2}(form|copy|document|agreement)\\b", "\\bdownload", "\\bwet[\\s-]+(ink\\s+)?signature\\b", "\\bin\\s+person\\b", "\\bnotari[sz]", "\\bdocu-?sign\\b",
   ].join("|"), "i");
+  // WHOSE ACT (autosubmit-close-2 skeptic, MF-S1's spec): the subject blacklist above needs noun + modal +
+  // "sign" back to back, and "The homeowner, not the installer, must sign below.", "Property owner: sign
+  // here.", "Homeowner to sign below…", "The person named on the utility account must sign below.", "Sign
+  // below (homeowner)." got past it — our signer typed into the homeowner's boxes. A sentence that names
+  // a THIRD PARTY and has no first person (you / I) and no agent capacity ("the owner or the owner's
+  // authorized agent", "the applicant") is that party's act, not ours.
+  const THIRD_PARTY_NOUN = /\b(home\s*-?owners?|(property\s+)?owners?|customers?|utility|utilities|landlords?|lessors?|lessees?|tenants?|lenders?|spouses?|co-?applicants?|account\s*holders?|property\s+managers?|trustees?|other\s+part(y|ies)|person\s+named)\b/i;
+  const FIRST_PERSON = /\b(you|your|i|my|me)\b/i;
+  const AGENT_CAPACITY = /\b(agent|authori[sz]ed|representative|applicant|permittee)\b/i;
   const signingActIn = (text: string | null | undefined, act: RegExp): boolean =>
-    String(text ?? "").split(/[.!?;\n]+/).some((s) => act.test(s) && !THIRD_PARTY_SIGNS.test(s) && (STRONG_SIGNING_ACT.test(s) || !LATER_OR_OFFLINE.test(s)));
+    String(text ?? "").split(/[.!?;\n]+/).some((s) => act.test(s) && !THIRD_PARTY_SIGNS.test(s)
+      && !(THIRD_PARTY_NOUN.test(s) && !FIRST_PERSON.test(s) && !AGENT_CAPACITY.test(s))
+      && (STRONG_SIGNING_ACT.test(s) || !LATER_OR_OFFLINE.test(s)));
   const ABOUT_THE_FILING ="\\b(application|permit|this\\s+(form|request|submission|document)|sign(s|ing|ed|ature)?)\\b";
   // The certify / perjury half. The signing half (SIGNING_TEXT) is read through signingActIn (MF-S1).
   const ATTESTATION_TEXT = new RegExp([
@@ -1624,6 +1672,7 @@ export function portalSafetyFactory() {
     isPaymentElementInPage,
     controlRoleInPage,
     controlLabelInPage,
+    labelWords: words,
   };
 }
 
@@ -1632,6 +1681,8 @@ export type PortalSafety = ReturnType<typeof portalSafetyFactory>;
 const impl: PortalSafety = portalSafetyFactory();
 
 export const isSubmitIntent = impl.isSubmitIntent;
+/** A camelCase / snake_case control id read as words ("ConStNum" -> "Con St Num") — THE splitter. */
+export const labelWords = impl.labelWords;
 export const isPayFee = impl.isPayFee;
 export const isPaymentWordedText = impl.isPaymentWordedText;
 export const paymentDialogVerdict = impl.paymentDialogVerdict;
@@ -1681,6 +1732,30 @@ export function recordingHasFormData(steps: ReadonlyArray<FormDataStep>): boolea
 export function capturedFieldIsSecret(p: { sensitive?: boolean; identity?: FieldIdentity | null; label?: string | null } | null | undefined): boolean {
   if (!p) return false;
   return !!p.sensitive || isSecretField(p.identity) || isSecretField({ label: p.label ?? "" });
+}
+
+/** SAFETY RULE 2 — a secret EMBEDDED in free text. ONE scrub for every text that leaves the process
+ *  for a model: the backend's planner digest (autoLearn.ts, City of Jefferson 2026-09-25: a site-plan
+ *  line "...tied to exterior utility meter #77 902 323..." carried the meter number to the model on
+ *  every planner call) and the learner's page text, once it has typed the project's own account or
+ *  meter number into the portal (a review page echoes it back as text).
+ *  Identifier-shaped secrets (5+ digits) are matched digit-for-digit with separators ignored
+ *  (spaces, dashes, dots, '#', '/'), never inside a longer digit run; other secrets only when
+ *  they carry a digit and are 6+ chars (a meter-keyed word like "exterior" is not an identifier
+ *  and must not erase that word from the notes). `replace` decides what a hit becomes — default
+ *  "[redacted]"; a caller whose downstream check reads a last-4 may keep one (maskId). */
+export function redactSecretValues(text: string, secrets: Iterable<string>, replace: (hit: string) => string = () => "[redacted]"): string {
+  let out = text;
+  for (const secret of secrets) {
+    const digits = String(secret ?? "").replace(/\D/g, "");
+    if (digits.length >= 5) {
+      const pattern = digits.split("").join("[\\s\\-\\u2013.#/]*");
+      out = out.replace(new RegExp(`(?<!\\d)${pattern}(?!\\d)`, "g"), (m) => replace(m));
+    } else if (String(secret ?? "").length >= 6 && /\d/.test(String(secret))) {
+      out = out.replace(new RegExp(String(secret).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), (m) => replace(m));
+    }
+  }
+  return out;
 }
 
 /** The name every in-page consumer reads the predicates from. */
@@ -1863,3 +1938,16 @@ export function finalSubmitRefusals(ctx: FinalSubmitContext | null | undefined):
 export function mayClickFinalSubmit(ctx: FinalSubmitContext | null | undefined): boolean {
   return finalSubmitRefusals(ctx).length === 0;
 }
+
+/**
+ * THE ONE SENTENCE that describes the final-submit gate above, for every learn / stage message a
+ * person reads (dryrun-0928 B10). A learn's success message used to end "Final submit stays manual
+ * unless you opt this portal into trusted auto-submit" — a per-portal opt-in the operator rulings
+ * of 2026-09-24 / 2026-09-26 removed (PUT /api/portal-recipes/:id/auto-submit refuses to arm, 409),
+ * so the text contradicted hard rule 1 and sent an operator into a refusal. The same words as the
+ * dashboard's recipe row (frontend/dashboard.js data-recipe-submit-gate) and the 409 itself.
+ */
+export const FINAL_SUBMIT_GATE_SENTENCE =
+  "Final submit happens only in a run a named person approves (Approve & auto-submit on the filing), "
+  + "with PORTAL_ALLOW_FINAL_SUBMIT=1 on the server; otherwise a person clicks it. Fees are never paid, "
+  + "and CAPTCHA/MFA always stops for a person.";

@@ -3318,8 +3318,10 @@ function buildProjectDescriptionScopeLines(plan){
   if (flags.mpu) {
     let mpu = 'main service panel upgrade';
     const ratings = [];
-    if (bus) ratings.push(`${bus}A bus`);
-    if (main) ratings.push(`${main}A main breaker`);
+    // The parsed rating often carries its unit already ("225A") — never print "225AA".
+    const amps = (v) => String(v).replace(/\s*(?:a|amps?|amperes?)\.?\s*$/i, '');
+    if (bus) ratings.push(`${amps(bus)}A bus`);
+    if (main) ratings.push(`${amps(main)}A main breaker`);
     if (ratings.length) mpu += ` (${ratings.join(' / ')})`;
     add(mpu);
   }
@@ -3329,7 +3331,20 @@ function buildProjectDescriptionScopeLines(plan){
   if (flags.psu) add('panel-side upgrade');
   if (flags.meterCollar) add('meter collar / MMD / ConnectDER');
 
-  if (flags.lineSideTap) {
+  // THE INTERCONNECTION CLAUSE SAYS WHAT THE INTERCONNECTION METHOD SAYS (a real Newberg job,
+  // 2026-09-28: "Interconnection method: Supply-side breaker." on one line and "load breaker
+  // interconnection" on the next — the page-text flags saw a "load" breaker somewhere and outranked
+  // the field the plan set's own note decided; operator: "have it be what it says on the plan set").
+  // The method field wins; the text flags speak only when it names nothing.
+  const method = clean(getVal('interco') || plan.interco || '').toLowerCase();
+  const sideOrTap = /supply[\s-]*side|line[\s-]*side|\btap\b/.test(method);
+  if (sideOrTap && /\btap\b/.test(method)) {
+    add(/line[\s-]*side/.test(method) ? 'line side tap interconnection' : 'supply-side tap interconnection');
+  } else if (sideOrTap) {
+    add('supply-side breaker interconnection');
+  } else if (/load/.test(method)) {
+    add('load breaker interconnection');
+  } else if (flags.lineSideTap) {
     const tap = clean(flags.tapType || 'tap interconnection').toLowerCase();
     add(tap.includes('interconnection') ? tap : `${tap} interconnection`);
   } else if (flags.loadBreaker) {
@@ -3971,6 +3986,13 @@ function applyExtraction(result, applied, opts = {}){
       state.suggestedClient[fieldId] = entry.value;
       return;
     }
+    // The plan-set read's answer to "which building carries the array" is EVIDENCE for the structure
+    // derivation at save time (ParserReview.structureBasis), never the project's structureDescription
+    // itself — that key is a person's answer (see buildSystemPayload).
+    if (fieldId === 'structureDescription'){
+      if (!state.llmStructureReading) state.llmStructureReading = { value: entry.value, excerpt: (entry.evidence && entry.evidence.excerpt) || '' };
+      return;
+    }
 
     // 1) Record into the snapshot we merge at save time (canonical keys).
     if (LLM_SNAPSHOT_KEYS.has(fieldId)){
@@ -4364,6 +4386,7 @@ async function runParse(){
   state.llmAssist = null;
   state.llmSnapshot = {};
   state.llmEvidence = [];
+  state.llmStructureReading = null;
   state.passes = [];
   state.reviewItems = null;
   state.passNotes = null;
@@ -5585,6 +5608,11 @@ function buildSystemPayload() {
     homeownerEmail: getVal('homeownerEmail'),
     homeownerPhone: getVal('homeownerPhone'),
     jobValue: getVal('jobValue'),
+    // WHO HOLDS THE ACCOUNT, as the bill prints it — every listed holder of a joint account (the
+    // backend's nemApplicantName picks the plan-set owner when listed, else the primary holder;
+    // operator ruling 2026-09-28). The OCR path fills the box; the vision path's bill reading of the
+    // customer name block is the fallback, so a photo bill no longer loses the holder.
+    ubAccountHolder: getVal('ubAccountHolder') || ParserReview.billHolderBlock((state.llmEvidence || []).find((e) => e.field === 'owner' && e.source === 'utility_bill')),
     account: getVal('account') || getVal('ubAccountNumber'),
     meter: getVal('meter') || getVal('planMeterNumber') || getVal('ubMeterNumber'),
     meterNumber: getVal('meter') || getVal('planMeterNumber') || getVal('ubMeterNumber'),
@@ -5660,6 +5688,37 @@ function buildSystemPayload() {
   // Drop empties that came in from the snapshot itself.
   for (const k of Object.keys(payload)) {
     if (payload[k] === '' || payload[k] === null || (typeof payload[k] === 'number' && Number.isNaN(payload[k]))) delete payload[k];
+  }
+  // THE BUILDING THE ARRAY IS ON, FROM THE PLAN SET (operator ruling 2026-09-28: "Single family most
+  // of the time, but can be an ADU/Accessory/garage you can see it on the plan-set how its laid out").
+  // ONE derivation (ParserReview.structureBasis — the server runs the same file for projects already
+  // on file) over the plan text, the plan-set read's own layout answer and the unit count. Saved as
+  // the INTAKE's answer with its evidence (structureFromPlan / structureFromPlanBasis), NEVER as
+  // structureDescription: that key is a person's answer (the structure question, Manual entry), a
+  // re-save merges over the stored project, and writing it here would overwrite an answer given
+  // since. The server reads a person's answer first. Sent even when empty, so a re-parse replaces
+  // an earlier derivation instead of leaving it behind; not sent at all when nothing was parsed, or
+  // when only the server's manufactured-home reading can settle it (defer).
+  {
+    const planText = (state.planDoc && state.planDoc.text) || '';
+    const reading = state.llmStructureReading || null;
+    if (planText || reading) {
+      const sb = ParserReview.structureBasis(planText, { reading, dwellingUnits: payload.dwellingUnits });
+      if (!sb.defer) {
+        payload.structureFromPlan = sb.option;
+        payload.structureFromPlanBasis = sb.basis;
+      }
+    }
+  }
+  // THE PLAN SET'S TITLE-BLOCK LICENCE, KEPT AS A REFERENCE (never a fill value). An OBJECT on
+  // purpose: the recipe value map skips objects, so a plan set's printed number — possibly another
+  // company's — can never be bound into a portal field or a form. The backend reads it to name the
+  // number beside a blank licence slot and to warn when it is another client's
+  // (clientMatch.planSetLicenceWarning).
+  const sc = state.suggestedClient || {};
+  const printedLicences = ['contractorCcb', 'contractorElectricalLicense'].map((k) => clean(sc[k])).filter(Boolean);
+  if (printedLicences.length || clean(sc.contractorCompany)) {
+    payload.planSetInstaller = { companyName: clean(sc.contractorCompany), licences: printedLicences };
   }
   return payload;
 }

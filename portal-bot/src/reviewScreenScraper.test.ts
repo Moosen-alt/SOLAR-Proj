@@ -15,6 +15,9 @@ const project = {
   meterNumber: "88812345",
 } as unknown as ProjectRecord;
 
+/** A NEM filing types the account and the meter (B8: the comparison is told what was entered). */
+const NEM = { accountNumber: true, meterNumber: true };
+
 function structuredReview(): ReviewField[] {
   return [
     { label: "Applicant Name", value: "Testy McTestface" },
@@ -28,7 +31,7 @@ function structuredReview(): ReviewField[] {
 function run() {
   // 1) A fully-populated structured review matches the project → no mismatches.
   {
-    const m = compareReviewFields(structuredReview(), project);
+    const m = compareReviewFields(structuredReview(), project, NEM);
     assert.equal(m.length, 0, `clean structured review should have no mismatches, got ${JSON.stringify(m)}`);
     console.log("  ✅ populated structured review → no mismatches");
   }
@@ -46,7 +49,7 @@ function run() {
       "Meter: ******2345",
       "Please review all information before submitting.",
     ].join("\n");
-    const m = compareReviewFields([], project, bodyText);
+    const m = compareReviewFields([], project, NEM, bodyText);
     assert.equal(m.length, 0, `read-only review with body text should have no mismatches, got ${JSON.stringify(m)}`);
     console.log("  ✅ empty scrape + body text → values found, no phantom mismatches");
   }
@@ -54,7 +57,7 @@ function run() {
   // 3) Truly unreadable review (no fields, no text) → ONE honest "could not read" signal,
   //    NOT a phantom mismatch per field.
   {
-    const m = compareReviewFields([], project, "");
+    const m = compareReviewFields([], project, NEM, "");
     assert.equal(m.length, 1, `unreadable review should yield one signal, got ${JSON.stringify(m)}`);
     assert.equal(m[0].field, "reviewScreen", "unreadable signal uses the reviewScreen field name");
     console.log("  ✅ empty scrape + no body → single 'unreadable' signal, not N phantom mismatches");
@@ -70,7 +73,7 @@ function run() {
       "Account: ******1111",
       "Meter: ******2345",
     ].join("\n");
-    const m = compareReviewFields([], project, bodyText);
+    const m = compareReviewFields([], project, NEM, bodyText);
     const fields = m.map((x) => x.field);
     assert.ok(fields.includes("homeownerName"), `missing homeowner name should be flagged, got ${JSON.stringify(fields)}`);
     assert.ok(!fields.includes("projectAddress"), "address present in body should NOT be flagged");
@@ -86,7 +89,7 @@ function run() {
       { label: "Service Address", value: "1420 Marigold Street" },
       { label: "System Size (DC kW)", value: "3.21" }, // wrong
     ];
-    const m = compareReviewFields(fields, project, "Applicant Testy McTestface Address 1420 Marigold Street Size 3.21 kW");
+    const m = compareReviewFields(fields, project, NEM, "Applicant Testy McTestface Address 1420 Marigold Street Size 3.21 kW");
     assert.ok(m.some((x) => x.field === "systemSizeDcKw"), `wrong system size should be flagged, got ${JSON.stringify(m)}`);
     console.log("  ✅ wrong value flagged (fallback does not mask it)");
   }
@@ -100,7 +103,7 @@ function run() {
       { label: "Level 2 Application?", value: "false" },
       { label: "Does The Generation System Size Exceed The Limit?", value: "false" },
     ];
-    const c = reviewComparison(fields, sparse, "Level 2 Application? false");
+    const c = reviewComparison(fields, sparse, NEM, "Level 2 Application? false");
     assert.equal(c.mismatches.length, 0, "nothing to compare should not manufacture mismatches");
     assert.equal(c.confirmed, 0, `nothing was confirmed, but it reported ${c.confirmed}`);
     console.log("  ✅ a page nothing could be checked against confirms 0");
@@ -116,7 +119,7 @@ function run() {
       homeownerName: "", projectAddress: "", systemSizeDcKw: null,
       accountNumber: "00000000 000 0", meterNumber: "ZZ00000000",
     } as unknown as ProjectRecord;
-    const c = reviewComparison([{ label: "Fee", value: "$0.00" }], zeros, "Fee $0.00 filed 2026-10-01");
+    const c = reviewComparison([{ label: "Fee", value: "$0.00" }], zeros, NEM, "Fee $0.00 filed 2026-10-01");
     assert.equal(c.confirmed, 0, `an all-zero needle confirmed ${c.confirmed} field(s) against a page showing neither`);
     assert.equal(c.compared, 0, "an un-evidentiary needle must not even count as compared");
     console.log("  ✅ an all-one-digit needle confirms nothing");
@@ -128,7 +131,7 @@ function run() {
       homeownerName: "", projectAddress: "", systemSizeDcKw: null,
       accountNumber: "84739218 306 4", meterNumber: "",
     } as unknown as ProjectRecord;
-    const c = reviewComparison([{ label: "Account Number", value: "…3064" }], real, "Account Number …3064");
+    const c = reviewComparison([{ label: "Account Number", value: "…3064" }], real, NEM, "Account Number …3064");
     assert.equal(c.confirmed, 1, `a distinctive account should confirm; got ${JSON.stringify(c)}`);
     console.log("  ✅ a distinctive account number still confirms");
   }
@@ -151,7 +154,7 @@ function run() {
       { label: "Will the output of this generation system serve more than one customer?", value: "No", editable: true },
       { label: "I certify I am the property owner", value: "checked", editable: true },
     ];
-    const c = reviewComparison(aggregationPage, project, "Meter Aggregation No Aggregation Will the output serve more than one customer? No I certify checked");
+    const c = reviewComparison(aggregationPage, project, NEM, "Meter Aggregation No Aggregation Will the output serve more than one customer? No I certify checked");
     assert.equal(c.mismatches.length, 0,
       `a page holding none of the project's values reported ${c.mismatches.length} mismatch(es): ${JSON.stringify(c.mismatches)}`);
     assert.equal(c.confirmed, 0, "and it must not claim to have confirmed anything either");
@@ -166,7 +169,7 @@ function run() {
       { label: "Customer Name", value: "Someone Else Entirely", editable: false },
       { label: "Service Address", value: "77 Wrong Avenue", editable: false },
     ];
-    const c = reviewComparison(wrongEverything, project, "Customer Name Someone Else Entirely Service Address 77 Wrong Avenue");
+    const c = reviewComparison(wrongEverything, project, NEM, "Customer Name Someone Else Entirely Service Address 77 Wrong Avenue");
     assert.equal(c.confirmed, 0, "nothing should have confirmed here");
     assert.ok(c.mismatches.length > 0,
       "a review screen where EVERY field is wrong reported nothing — the suppression fails open");
@@ -181,7 +184,7 @@ function run() {
       { label: "Service Address", value: "77 Wrong Avenue", editable: false },
       { label: "System Size (kW)", value: "9.89", editable: false },
     ];
-    const c = reviewComparison(realReview, project, "Customer Name Testy McTestface Service Address 77 Wrong Avenue System Size 9.89");
+    const c = reviewComparison(realReview, project, NEM, "Customer Name Testy McTestface Service Address 77 Wrong Avenue System Size 9.89");
     assert.ok(c.confirmed >= 1, `a real review screen confirmed nothing: ${JSON.stringify(c)}`);
     assert.ok(c.mismatches.some((m) => m.field === "projectAddress"),
       `the wrong address was not reported: ${JSON.stringify(c.mismatches)}`);
@@ -202,7 +205,7 @@ function run() {
       { label: "Acknowledgement", value: "checked" },
     ];
     const project = { homeownerName: "ZZTest CrossProject Bravo", projectAddress: "2419 SE Belmont St" } as never;
-    const cmp = reviewComparison(fields, project, "No checked");
+    const cmp = reviewComparison(fields, project, NEM, "No checked");
     const owner = cmp.mismatches.find((m) => m.field === "homeownerName");
     if (owner) {
       assert.ok(/could not confirm|no field with this label/i.test(owner.found),
@@ -213,6 +216,52 @@ function run() {
     } else {
       console.log("  ok  an unlabelled review page raised no phantom mismatch at all");
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // B8 (dryrun-0928): A UTILITY IDENTIFIER IS CHECKED ONLY WHEN THIS FILING ENTERED IT.
+  //
+  // Both Accela permit runs said "VERIFY BEFORE SUBMITTING — meterNumber" (a permit application
+  // has no meter field), and the account's last four were counted CONFIRMED from digits the
+  // page printed for its own reasons. KILL: make reviewComparison ignore `entered` (always check)
+  // -> the permit case reports the meterNumber mismatch and counts the account confirmed.
+  // ---------------------------------------------------------------------------
+  {
+    // An Accela-style confirm page: homeowner, address and kW, plus a licence, a parcel and a
+    // phone whose digits happen to END in the project's account last-4 ("1111") — no account or
+    // meter field anywhere, because a permit never typed one.
+    const permitPage: ReviewField[] = [
+      { label: "Applicant Name", value: "Testy McTestface" },
+      { label: "Work Location", value: "1420 Marigold Street, Portland OR 97201" },
+      { label: "System Size (kW DC)", value: "9.89" },
+      { label: "CCB License #", value: "241111" },
+      { label: "Parcel Number", value: "10-10-10-10-101" },
+      { label: "Contact Phone", value: "(503) 555-1111" },
+    ];
+    const body = "Step 4: Review Applicant Name Testy McTestface Work Location 1420 Marigold Street Portland OR 97201 System Size 9.89 CCB 241111 Parcel 10-10-10-10-101 Phone (503) 555-1111";
+    const permit = reviewComparison(permitPage, project, { accountNumber: false, meterNumber: false }, body);
+    assert.equal(permit.mismatches.length, 0, `a permit page reported utility-identifier mismatches: ${JSON.stringify(permit.mismatches)}`);
+    assert.equal(permit.confirmed, 3, `a permit page must confirm exactly homeowner + address + size, got ${permit.confirmed}`);
+    assert.equal(permit.compared, 3, `no account / meter check may even run on a permit page, compared ${permit.compared}`);
+    console.log("  ✅ B8 MUST-EXCLUDE: a permit review page is never checked for an account or meter it did not type");
+
+    // The same page, told the filing typed both (the pre-fix behaviour): the meter is "missing"
+    // and the account is falsely confirmed from the phone/licence digits — the defect, pinned.
+    const asIfTyped = reviewComparison(permitPage, project, NEM, body);
+    assert.ok(asIfTyped.mismatches.some((m) => m.field === "meterNumber"), "with the flags on, the permit page's missing meter shows (the old false alarm)");
+    console.log("  ✅ B8 (the defect, reproduced with the flags on): the meter is 'missing' on a permit page");
+
+    // MIRROR — the NEM check still bites: a NEM review page with the meter MISSING, meterNumber
+    // entered, still reports it.
+    const nemMissingMeter: ReviewField[] = [
+      { label: "Customer Name", value: "Testy McTestface" },
+      { label: "Service Address", value: "1420 Marigold Street" },
+      { label: "Account Number", value: "******1111" },
+      { label: "Meter Number", value: "" },
+    ];
+    const nem = reviewComparison(nemMissingMeter, project, { accountNumber: true, meterNumber: true }, "Customer Name Testy McTestface Service Address 1420 Marigold Street Account ******1111 Meter");
+    assert.ok(nem.mismatches.some((m) => m.field === "meterNumber"), `a NEM page missing its meter was not flagged: ${JSON.stringify(nem.mismatches)}`);
+    console.log("  ✅ B8 MUST-PASS: a NEM review page that lost the meter it typed is still flagged");
   }
 
   console.log("\n✅ ALL PASS: review-screen comparison tests");

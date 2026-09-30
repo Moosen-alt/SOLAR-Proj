@@ -409,8 +409,35 @@ export function certifiedModelFor(
   }
 }
 
-/** Is a model on the CEC list? Used by the ADVISORY QC check. */
-export function isCecListed(db: AppDb, kind: CecKind, model: string): boolean {
+/**
+ * IS THIS MODEL ON THE CEC LIST, AND UNDER WHAT NAME — the one answer for the advisory QC check and
+ * the portal fill (dry-run 2026-09-28 B15: QC wrote "module … was not found … portals may reject it"
+ * for a plan-set "ZXM7-UHLD108-440/N" while the NEM fill in the same session resolved and filed it as
+ * the listed "ZXM7-UHLDD108-440/N" — two matchers answering one question). certifiedModelFor (the
+ * fill's own lookup, make-scoped, wattage-checked one-letter repair) is asked FIRST; its certified
+ * name is returned so the caller can say which name the portal will see. Only when it gives no single
+ * answer ("" — nothing matched, OR several listings fit) does the older containment test decide
+ * `listed`, with no certified name (never "probably this one").
+ */
+export function cecListing(
+  db: AppDb,
+  kind: CecKind,
+  model: string,
+  make = "",
+  watts?: string | number | null,
+): { listed: boolean; certifiedName: string } {
+  const certifiedName = certifiedModelFor(db, kind, make, model, watts);
+  if (certifiedName) return { listed: true, certifiedName };
+  return { listed: listedByContainment(db, kind, model), certifiedName: "" };
+}
+
+/** Is a model on the CEC list? (cecListing — the one answer; make and wattage sharpen it.) */
+export function isCecListed(db: AppDb, kind: CecKind, model: string, make = "", watts?: string | number | null): boolean {
+  return cecListing(db, kind, model, make, watts).listed;
+}
+
+/** The older test: one compacted model string contains the other. Only cecListing's fallback. */
+function listedByContainment(db: AppDb, kind: CecKind, model: string): boolean {
   const want = compact(model);
   if (want.length < 3) return false;
   try {

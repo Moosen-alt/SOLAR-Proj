@@ -27,11 +27,17 @@
 // (Marion County area) would inherit "Jefferson County (Madras)" answers — a different place.
 import type {
   CitedFact,
+  IssuerTrackKey,
   PermitProcessLookup,
   PermitProcessPermitAnswer,
   ProjectRecord,
+  TrackIssuerAnswer,
 } from "../../shared/src/types";
 import type { AppDb } from "./db";
+import { sameAgencyName } from "./agencyName";
+import { trackIssuersFromSnapshot } from "./normalize";
+import { namedKnownUtility, UTILITY_IDENTITY_LABEL } from "./utilityIdentity";
+import { hostAliasesOf } from "./portalCredentials";
 
 // ── Keys ────────────────────────────────────────────────────────────────────────────────
 /** "City of Jefferson, OR" / "city of  jefferson" → "city of jefferson". A trailing state code
@@ -42,6 +48,12 @@ export function normalizeAhjName(ahj: string): string {
     .replace(/,\s*[a-z]{2}\.?\s*$/, "")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+/** The DISTINCTIVE core of a jurisdiction's name, run together ("City of Corvallis" -> "corvallis",
+ *  "Marion County" -> "marion"): what a shared instance's tenant ("aca-prod.accela.com/CORVALLIS")
+ *  or a landing page's title carries when it is that jurisdiction's own. */
+export function ahjNameCore(ahj: string): string {
+  return normalizeAhjName(ahj).replace(/\b(?:city|town|village|county|borough|township|parish|of|the|unincorporated)\b/g, " ").replace(/\s+/g, "").trim();
 }
 export function permitProcessKey(state: string, ahj: string): string {
   return `${String(state ?? "").trim().toLowerCase()}|${normalizeAhjName(ahj)}`;
@@ -152,6 +164,11 @@ export interface StatePermitRules {
   permitStructure?: CitedFact<"separate" | "combo">;
   /** The shared statewide permit portal many jurisdictions subscribe to. */
   statewidePortal?: CitedFact<string>;
+  /** Its name, as a label reads it ("Oregon ePermitting"). */
+  statewidePortalName?: string;
+  /** Its channel label with the platform ("Oregon ePermitting (Accela)") — given ONLY to a resolved
+   *  URL on the statewide host (permitChannelLabel). */
+  statewidePortalLabel?: string;
   /** How a prescriptive-path PV structural permit is priced. */
   prescriptiveFeeBasis?: CitedFact<string>;
   /** The electrical renewable-energy fee tiers (kVA). */
@@ -187,6 +204,8 @@ export const STATE_PERMIT_RULES: Record<string, StatePermitRules> = {
       quote: "Oregon ePermitting — one Accela Citizen Access instance for every subscribing Oregon jurisdiction (the jurisdiction is chosen from the work-location address).",
       origin: "state_rule",
     },
+    statewidePortalName: "Oregon ePermitting",
+    statewidePortalLabel: "Oregon ePermitting (Accela)",
     prescriptiveFeeBasis: {
       value: "flat",
       sourceUrl: OAR_918_050_0180,
@@ -295,22 +314,232 @@ export function statePermitStructure(project: Pick<ProjectRecord, "state">): Cit
   return answered(rule) ? rule : null;
 }
 
-/** Which of the lookup's permits a submittal track files. */
-export function permitAnswerForTrack(project: Pick<ProjectRecord, "state" | "ahj">, track: string | null | undefined): PermitProcessPermitAnswer | null {
-  const lk = permitProcessFor(project);
-  if (!lk?.permits?.length) return null;
+/** A project, or the track-scoped view of one (projectForTrack), as the issuer questions read it. */
+export type IssuerProject = Pick<ProjectRecord, "state" | "ahj"> & Partial<Pick<ProjectRecord, "trackIssuers" | "parserSnapshot" | "trackView">>;
+
+/** Which of the lookup's permits a submittal track files.
+ *
+ *  ON A TRACK VIEW (projectForTrack — ahj is the track's issuer) the project's OWN lookup still
+ *  answers about this permit when its cited agency IS that issuer: City of Jefferson's lookup cites
+ *  "Marion County" for both permits, with the record type and portal it found, and there is no
+ *  lookup keyed on Marion County itself — without this the view would lose every cited answer the
+ *  per-job lookup found for this job. Otherwise the issuer's own lookup answers. */
+export function permitAnswerForTrack(project: Pick<ProjectRecord, "state" | "ahj"> & Partial<Pick<ProjectRecord, "trackView">>, track: string | null | undefined): PermitProcessPermitAnswer | null {
   const want = track === "building" ? "structural" : track === "electrical" || track === "mpu" ? "electrical" : track === "combo" || track === "permit" ? "combo" : "";
   if (!want) return null;
+  const view = project.trackView;
+  if (view && String(view.projectAhj ?? "").trim()) {
+    const base = permitProcessFor({ state: project.state, ahj: view.projectAhj });
+    const fromBase = base?.permits?.find((p) => p.discipline === want) ?? null;
+    if (fromBase && answered(fromBase.issuingAgency) && sameAgencyName(fromBase.issuingAgency.value, project.ahj)) return fromBase;
+  }
+  const lk = permitProcessFor(project);
+  if (!lk?.permits?.length) return null;
   return lk.permits.find((p) => p.discipline === want) ?? null;
 }
 
-/** The agency that issues this track's permit: the permit's own answer, else the AHJ-wide one. */
-export function issuingAgencyFor(project: Pick<ProjectRecord, "state" | "ahj">, track: string | null | undefined): CitedFact<string> | null {
+/** The agency that issues this track's permit: the OPERATOR's per-track issuer (trackIssuer's first
+ *  layer — the same value, the same refusals), else the permit's own looked-up answer, else the
+ *  AHJ-wide one. Forms (applicationDocsAgency.formAuthorityFor) and the replay's agency binding read
+ *  this, so they follow the issuer staging files with. */
+export function issuingAgencyFor(project: IssuerProject, track: string | null | undefined): CitedFact<string> | null {
+  const op = operatorIssuerFact(project, track);
+  if (op) return op;
+  return lookedUpIssuingAgency(project, track);
+}
+
+/** issuingAgencyFor without the operator layer: the per-job lookup's answer only. */
+function lookedUpIssuingAgency(project: IssuerProject, track: string | null | undefined): CitedFact<string> | null {
   const p = permitAnswerForTrack(project, track);
   if (p && answered(p.issuingAgency)) return p.issuingAgency;
   const lk = permitProcessFor(project);
   if (lk && answered(lk.issuingAgency)) return lk.issuingAgency;
+  // ON A TRACK VIEW the project's own lookup's AHJ-wide agency still answers when it IS this issuer
+  // ("Marion County issues permits for the City of Jefferson" — no lookup is keyed on the county).
+  const view = project.trackView;
+  if (view && String(view.projectAhj ?? "").trim()) {
+    const base = permitProcessFor({ state: project.state, ahj: view.projectAhj });
+    if (base && answered(base.issuingAgency) && sameAgencyName(base.issuingAgency.value, project.ahj)) return base.issuingAgency;
+  }
   return null;
+}
+
+// ── WHO ISSUES THIS TRACK'S PERMIT (split issuer, operator fact 2026-09-28) ─────────────────
+// "Electrical permit issued through Yamhill; Building permit issued through Newberg": an Oregon city
+// can run its own building program on its own portal (OpenGov) while the county issues the
+// electrical permit on Oregon ePermitting. Every permit-track door used to key on project.ahj, so
+// whichever agency the project named, one of the two permits staged on the other agency's portal
+// (and the right one was refused as a foreign entity). ONE answer per track, then ONE track-scoped
+// view of the project that every door reads (projectForTrack). A GENERAL capability — many Oregon
+// cities run a building program while the county or the state issues electrical — never a patch
+// for one city.
+
+/** The issuer key a track reads. building/structural → building; electrical; combo/permit → combo;
+ *  mpu. null for the NEM track, a trackless (legacy combined) stage and anything else: a utility
+ *  files NEM, and a trackless stage keeps the project AHJ. */
+export function issuerTrackKey(track: string | null | undefined): IssuerTrackKey | null {
+  const t = String(track ?? "").trim().toLowerCase();
+  if (t === "building" || t === "structural") return "building";
+  if (t === "electrical") return "electrical";
+  if (t === "combo" || t === "permit") return "combo";
+  if (t === "mpu") return "mpu";
+  return null;
+}
+
+const STATE_NAME_CODES: Record<string, string> = {
+  alabama: "AL", alaska: "AK", arizona: "AZ", arkansas: "AR", california: "CA", colorado: "CO", connecticut: "CT", delaware: "DE",
+  florida: "FL", georgia: "GA", hawaii: "HI", idaho: "ID", illinois: "IL", indiana: "IN", iowa: "IA", kansas: "KS", kentucky: "KY",
+  louisiana: "LA", maine: "ME", maryland: "MD", massachusetts: "MA", michigan: "MI", minnesota: "MN", mississippi: "MS",
+  missouri: "MO", montana: "MT", nebraska: "NE", nevada: "NV", "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM",
+  "new york": "NY", "north carolina": "NC", "north dakota": "ND", ohio: "OH", oklahoma: "OK", oregon: "OR", pennsylvania: "PA",
+  "rhode island": "RI", "south carolina": "SC", "south dakota": "SD", tennessee: "TN", texas: "TX", utah: "UT", vermont: "VT",
+  virginia: "VA", washington: "WA", "west virginia": "WV", wisconsin: "WI", wyoming: "WY", "district of columbia": "DC",
+};
+const STATE_CODES = new Set(Object.values(STATE_NAME_CODES));
+
+/** The state an agency name SAYS it is in — only in a comma or parenthesis form ("Clark County, WA",
+ *  "City of Vancouver, Washington", "Clark County (WA)"). A bare trailing word is never read: "Yamhill
+ *  Co" is a county, not Colorado, and "Washington County" is an Oregon county. null = says none. */
+export function agencyNameState(name: string | null | undefined): string | null {
+  const s = String(name ?? "").trim();
+  const m = /,\s*([A-Za-z][A-Za-z .]*?)\.?\s*$/.exec(s) ?? /\(\s*([A-Za-z][A-Za-z .]*?)\.?\s*\)\s*$/.exec(s);
+  if (!m) return null;
+  const token = m[1].replace(/\./g, "").replace(/\s+/g, " ").trim();
+  if (/^[A-Za-z]{2}$/.test(token) && STATE_CODES.has(token.toUpperCase())) return token.toUpperCase();
+  return STATE_NAME_CODES[token.toLowerCase()] ?? null;
+}
+
+/** Why an operator's issuer value cannot be honoured on a project in `projectState`, or null when it
+ *  can. The one refusal the write path (updateProject → 400) and the read path (trackIssuer →
+ *  `refused`) share: a permit is never issued across a state line, so a value naming another state
+ *  would only ever resolve that state's portal; and a UTILITY never issues a permit — its name
+ *  fuzzy-resolves some city's portal ("Portland General Electric" → City of Portland's DevHub), so a
+ *  known utility's name (utilityIdentity.namedKnownUtility, the shared identity) is refused too. */
+export function refuseTrackIssuerValue(value: string | null | undefined, projectState: string | null | undefined): string | null {
+  const v = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!v) return null;
+  if (v.length > 120) return "it is longer than an agency name (120 characters at most)";
+  if (/https?:\/\/|\bwww\./i.test(v)) return "it is a web address — name the agency (e.g. \"City of Newberg\"), not its portal";
+  const utility = namedKnownUtility(projectState, v);
+  if (utility) return `it names a utility (${UTILITY_IDENTITY_LABEL[utility]}) — a utility takes the interconnection application and never issues a permit; name the city or county that issues this permit (e.g. "Yamhill County")`;
+  const named = agencyNameState(v);
+  const own = String(projectState ?? "").trim().toUpperCase();
+  if (named && own && named !== own) return `it names an agency in ${named}, and this project is in ${own} — a permit is never issued across a state line`;
+  return null;
+}
+
+/** The operator's value on file for this track ("" when none). MPU follows electrical unless its own
+ *  is set. Reads the mapped record field, else the raw snapshot keys (a Pick<> caller's record). */
+export function operatorTrackIssuerValue(project: IssuerProject, track: string | null | undefined): string {
+  const key = issuerTrackKey(track);
+  if (!key) return "";
+  const issuers = project.trackIssuers ?? trackIssuersFromSnapshot(project.parserSnapshot) ?? {};
+  const own = String(issuers[key] ?? "").trim();
+  if (own) return own;
+  return key === "mpu" ? String(issuers.electrical ?? "").trim() : "";
+}
+
+/** The operator's per-track issuer as a CitedFact (origin "operator"), when it may be honoured. */
+function operatorIssuerFact(project: IssuerProject, track: string | null | undefined): CitedFact<string> | null {
+  const value = operatorTrackIssuerValue(project, track);
+  if (!value || refuseTrackIssuerValue(value, project.state)) return null;
+  return {
+    value,
+    sourceUrl: "",
+    quote: `Set by an operator on this project for the ${issuerTrackKey(track)} permit`,
+    origin: "operator",
+  };
+}
+
+/** THE CITED BAR a LOOKED-UP issuing agency must clear before anything follows it (forms —
+ *  applicationDocsAgency.formAuthorityFor — and staging — trackIssuer): a person verified the lookup,
+ *  or the answer carries the http page it was read from. An uncited lookup value is a guess and
+ *  changes nothing. (The operator's own issuer is a person's statement, read first by both callers.) */
+export function citedAgencyAnswer(f: CitedFact<string> | null | undefined, lookupVerified: boolean): f is CitedFact<string> {
+  if (!f || typeof f.value !== "string" || !f.value.trim()) return false;
+  return lookupVerified || /^https?:\/\//i.test(String(f.sourceUrl ?? ""));
+}
+
+/** A project with its view marker removed (the project AHJ put back). */
+function baseOfView<T extends IssuerProject>(project: T): T {
+  const view = project.trackView;
+  if (!view) return project;
+  const { trackView: _view, ...rest } = project;
+  const ahj = String(view.projectAhj ?? "");
+  const snap = rest.parserSnapshot && typeof rest.parserSnapshot === "object" && "ahj" in rest.parserSnapshot
+    ? { ...rest.parserSnapshot, ahj }
+    : rest.parserSnapshot;
+  return { ...rest, ahj, ...(snap !== undefined ? { parserSnapshot: snap } : {}) } as T;
+}
+
+/**
+ * THE ONE ANSWER to "which agency issues THIS track's permit", strongest first:
+ *   a. the OPERATOR's per-track issuer on the project (ProjectRecord.trackIssuers; MPU follows
+ *      electrical) — unless it names another state (refused, and said so);
+ *   b. the per-job lookup's issuing agency for this permit (issuingAgencyFor's lookup chain: the
+ *      permit's own answer, else the AHJ-wide one) when it clears the cited bar AND names another
+ *      agency than the project AHJ (sameAgencyName — "City of Salem Permit Center" is Salem, a
+ *      department suffix never re-keys a project) AND is not a known utility's name;
+ *   c. the project AHJ.
+ * NEM, a trackless stage and an unknown track are always (c): the NEM track never reads it.
+ */
+export function trackIssuer(project: IssuerProject, track: string | null | undefined): TrackIssuerAnswer {
+  const key = issuerTrackKey(track);
+  const view = project.trackView;
+  // A view already names its issuer (for its own track).
+  if (view && key && issuerTrackKey(view.track) === key) {
+    return { name: String(project.ahj ?? "").trim(), source: view.source, override: operatorTrackIssuerValue(project, track) };
+  }
+  const base = baseOfView(project);
+  const ahj = String(base.ahj ?? "").trim();
+  if (!key) return { name: ahj, source: "project", override: "" };
+  const override = operatorTrackIssuerValue(base, key);
+  let refused: string | undefined;
+  if (override) {
+    const why = refuseTrackIssuerValue(override, base.state);
+    if (!why) return { name: override, source: "operator", override };
+    refused = `"${override}" was not used: ${why}`;
+  }
+  const looked = lookedUpIssuingAgency(base, key);
+  const verified = permitProcessFor(base)?.confidence === "verified";
+  // A looked-up "issuer" that is a known UTILITY is a misread, never an issuer: it would re-key the
+  // track on the utility's name, which fuzzy-resolves some city's portal (the same refusal the
+  // operator's value gets — namedKnownUtility, the one identity).
+  if (ahj && looked && citedAgencyAnswer(looked, verified) && !sameAgencyName(looked.value, ahj) && !namedKnownUtility(base.state, looked.value)) {
+    return {
+      name: String(looked.value).trim(), source: "lookup", sourceUrl: looked.sourceUrl, quote: looked.quote,
+      override, ...(refused ? { refused } : {}),
+    };
+  }
+  return { name: ahj, source: "project", override, ...(refused ? { refused } : {}) };
+}
+
+/**
+ * THE TRACK-SCOPED VIEW every permit-track door reads: the project itself — the SAME object — when
+ * this track's issuer is the project AHJ (the overwhelming case: nothing changes), else a copy whose
+ * `ahj` (and snapshot `ahj`) is the issuer, marked with `trackView` so the lookup's cited answer
+ * still reaches it and a view of a view is itself. Recipe keys, KB rows, the learned profile, the
+ * entity the host predicate judges (portalChannel.hostFitsTrackAndEntity — still the one door; the
+ * entity it judges is the track's issuer), the borrow, the field values, the learn's recipe key and
+ * the tracking target all read this. NEVER persisted. NEM / trackless → the project.
+ */
+export function projectForTrack<T extends IssuerProject>(project: T, track: string | null | undefined): T {
+  const key = issuerTrackKey(track);
+  if (!key) return project;
+  if (project.trackView && issuerTrackKey(project.trackView.track) === key) return project;
+  const base = baseOfView(project);
+  const issuer = trackIssuer(base, key);
+  const ahj = String(base.ahj ?? "");
+  if (issuer.source === "project" || !issuer.name || sameAgencyName(issuer.name, ahj) || normalizeAhjName(issuer.name) === normalizeAhjName(ahj)) return base;
+  const snap = base.parserSnapshot && typeof base.parserSnapshot === "object" && "ahj" in base.parserSnapshot
+    ? { ...base.parserSnapshot, ahj: issuer.name }
+    : base.parserSnapshot;
+  return {
+    ...base,
+    ahj: issuer.name,
+    ...(snap !== undefined ? { parserSnapshot: snap } : {}),
+    trackView: { track: key, projectAhj: ahj, source: issuer.source },
+  } as T;
 }
 
 /** The record type the lookup found for this track's permit. */
@@ -327,34 +556,206 @@ export function sameRecordType(a: string, b: string): boolean {
   return Boolean(x) && x === y;
 }
 
+// ── THE STATEWIDE PORTAL — ONLY WHERE THE EVIDENCE SAYS THIS AHJ FILES THERE (portal-truth D1) ──
+// A real filing (City of Corvallis OR, 2026-09-28) went to Oregon ePermitting although the per-job
+// lookup had NAMED the city's own portal ("Apply online at www.corvallispermits.com", which lands on
+// the city's own Accela tenant) and dropped it for want of attestation. With no portal kept, the
+// fallback answered "the cited state rule" — i.e. an UNKNOWN read as "files on the statewide
+// portal" — and the statewide instance then said "No Building services were returned for this
+// address". The rule is now the evidence's, both ways:
+//   - ANY source saying the AHJ files ELSEWHERE — a portal the lookup named for this permit (kept
+//     OR NOT), a knowledge-base row / recipe / stored login naming another portal or the AHJ's own
+//     tenant, a seeded / hand-written process naming another system, the statewide portal itself
+//     having said the address is not served there — withholds the fallback;
+//   - otherwise it is taken ONLY when a source says the AHJ (or the agency issuing this permit)
+//     files ON the statewide portal (Jefferson / Marion County: a seeded "OR E-permitting", a
+//     knowledge-base row or recipe on the statewide host, a lookup portal there);
+//   - NOTHING either way is "unknown, a person confirms" — never the statewide portal.
+// Pure: the database-derived sources arrive as `evidence` (statewideEvidence.statewideEvidenceFor).
+
+/** Is this URL the state's statewide portal instance — its own host or a known alias of it
+ *  (portalCredentials.hostAliasesOf: aca.oregon.gov and epermitting.oregon.gov ARE
+ *  aca-oregon.accela.com)? A city's own Accela tenant (aca-prod.accela.com/CORVALLIS) is not. */
+export function isStatewidePortalUrl(state: string | null | undefined, url: string | null | undefined): boolean {
+  const rule = stateRulesFor(state).statewidePortal;
+  const ruleHost = hostOf(String(rule?.value ?? ""));
+  const h = hostOf(String(url ?? ""));
+  if (!ruleHost || !h) return false;
+  return h === ruleHost || hostAliasesOf(ruleHost).map((x) => x.replace(/^www\./, "")).includes(h);
+}
+/** The statewide portal's name ("Oregon ePermitting"), "" when the state has none. */
+export function statewidePortalName(state: string | null | undefined): string {
+  return stateRulesFor(state).statewidePortalName ?? "";
+}
+
 /**
- * THE STATEWIDE PORTAL, when it applies to this AHJ's permit track — and on what basis:
- *   - the lookup found this AHJ's permits filed on it → "lookup";
- *   - the lookup found a DIFFERENT portal for this AHJ → null (the AHJ's own evidence wins);
- *   - no portal answer at all → the cited state rule ("state_rule"), the acceptable degraded path.
- * The caller still judges the URL through hostFitsTrackAndEntity (a person's verified portal for
- * the AHJ outranks both).
+ * THE CHANNEL LABEL OF A RESOLVED PORTAL URL — ONE predicate (portal-truth D4). Corvallis's track
+ * card read "Oregon ePermitting (Accela)" because an Oregon profile's words mentioned Accela /
+ * e-permitting; the city files on its OWN Accela tenant. The statewide label is given ONLY when the
+ * URL's host IS the statewide instance (isStatewidePortalUrl — its host or a known alias); an
+ * Accela Citizen Access tenant of the AHJ's own (aca-prod.accela.com/<TENANT>, a custom-domain
+ * …/CitizenAccess/) is "Accela Citizen Access (<AHJ>'s own portal)". null = no platform label (the
+ * caller keeps its own words). Never read from free text.
+ */
+export function permitChannelLabel(state: string | null | undefined, ahj: string | null | undefined, url: string | null | undefined): string | null {
+  const u = String(url ?? "").trim();
+  const host = hostOf(u);
+  if (!host) return null;
+  if (isStatewidePortalUrl(state, u)) return stateRulesFor(state).statewidePortalLabel || statewidePortalName(state) || null;
+  let path = "";
+  try { path = new URL(u).pathname; } catch { path = ""; }
+  const acaTenant = (/(?:^|\.)accela\.com$/.test(host) && /^aca/.test(host) && /^\/[^/.]+/.test(path)) || /\/citizenaccess(?:\/|$)/i.test(path);
+  if (acaTenant) return `Accela Citizen Access (${String(ahj ?? "").trim() || "the AHJ"}'s own portal)`;
+  return null;
+}
+
+/** One piece of evidence about WHERE an AHJ files, read by statewidePortalFor. */
+export interface StatewideEvidence {
+  kind: "statewide" | "elsewhere";
+  /** Where it came from, in an operator's words ("seeded process profile", "recipe 1a2b…"). */
+  source: string;
+  /** What it says. */
+  detail: string;
+  url?: string;
+  /** The cited fact itself, when the evidence is one (a lookup's portal answer). */
+  fact?: CitedFact<string>;
+  /** A PERSON said it (a human-verified knowledge-base row — isVerifiedKnowledge). Verified
+   *  evidence decides outright (hard rule 3, the precedence fitUrl gives a verified row). */
+  verified?: boolean;
+}
+export type StatewideDecision =
+  | { url: string; basis: CitedFact<string>; withheld?: undefined; because?: undefined; evidence: StatewideEvidence[] }
+  /** `because`: "elsewhere" = something on file says this AHJ files ELSEWHERE; "unknown" = nothing on
+   *  file either way. Only "elsewhere" refuses a stored / researched statewide URL
+   *  (statewideEvidence.statewideUrlRefusal) — an unknown AHJ recovers through research. */
+  | { url: null; withheld: string; because: "elsewhere" | "unknown"; basis?: undefined; evidence: StatewideEvidence[] };
+
+/** The portal a refused lookup answer NAMED: the structured `claimed`, else (rows saved before it
+ *  existed) the URL in the door's own "the portal <url> was never returned by the search…" words.
+ *  Only an ATTESTATION refusal names a claim: a help page or a utility portal the model named is
+ *  not the AHJ's portal (those notFound texts carry no "the portal <url>" phrase). */
+export function claimedPortalOf(fact: Pick<CitedFact<string>, "value" | "notFound" | "claimed"> | null | undefined): string {
+  if (!fact || fact.value) return "";
+  if (typeof fact.claimed === "string" && /^https?:\/\//i.test(fact.claimed.trim())) return fact.claimed.trim();
+  const m = /\bthe portal (https?:\/\/[^\s,;)]+) was never returned by the search/i.exec(String(fact.notFound ?? ""));
+  return m ? m[1].replace(/[.,]+$/, "") : "";
+}
+
+const URL_IN_TEXT = /https?:\/\/[^\s,;)"'<>]+/gi;
+/** "OR E-permitting", "Oregon ePermitting (Accela)", "e-permitting portal" — the state's own
+ *  e-permitting system, in a state that has one. The phrase (with a trailing platform / "portal"
+ *  word) is read as ONE token so its "portal" is not read as another system's. */
+const STATE_EPERMITTING = /\b(?:(?:or|oregon|state(?:wide)?)\s*)?e[\s-]?permitting(?:\s*\(?\s*(?:accela|aca)\s*\)?)?(?:\s+(?:portal|website|web\s*site|system|site))?/gi;
+const OTHER_SYSTEM = /\bportal\b|projectdox|\bavolve\b|energov|\btyler\b|opengov|viewpoint|iworq|citizenserve|\bmygov\b|trakit|govoutreach|smartgov|devhub|development direct|\be-?mail\b|\bin[\s-]?person\b|over[\s-]the[\s-]counter|\bwalk[\s-]?in\b|\busps\b|\bmail(?:ed)?\b|\bpaper\b|\bcounter\b/i;
+
+/**
+ * WHAT A SEEDED / HAND-WRITTEN CHANNEL'S WORDS SAY about the statewide portal. A URL is judged by
+ * its host; the state's e-permitting words say "statewide"; another system's words say
+ * "elsewhere"; a bare platform word ("Accela") says NOTHING — Albany, Brownsville and Corvallis
+ * run their own Accela tenants. Two channels in one line ("Tualatin Portal / OR E-Permitting",
+ * "Clackamas (EP) / OR E-Permitting (BP)") are not a statewide answer: a person confirms which
+ * one this permit takes.
+ */
+export function classifyChannelWords(state: string | null | undefined, text: string | null | undefined, ownNames: string[] = []): "statewide" | "elsewhere" | "neutral" {
+  let raw = String(text ?? "").trim();
+  if (!raw || !stateRulesFor(state).statewidePortal) return "neutral";
+  // The AHJ's OWN name is not another office ("Oregon City / ePermitting" is one channel).
+  for (const n of ownNames.map((x) => String(x ?? "").trim()).filter((x) => x.length >= 3).sort((a, b) => b.length - a.length)) {
+    raw = raw.replace(new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"), " ");
+  }
+  const urls = raw.match(URL_IN_TEXT) ?? [];
+  const words = raw.replace(URL_IN_TEXT, " URL ");
+  const clauses = words.split(/\s*[/;|]\s*/).map((c) => c.trim()).filter(Boolean);
+  const verdicts = clauses.map((c): "statewide" | "elsewhere" | "neutral" | "other" => {
+    if (/\bURL\b/.test(c)) return "neutral"; // judged by host below
+    const sw = new RegExp(STATE_EPERMITTING.source, "i").test(c);
+    const rest = c.replace(new RegExp(STATE_EPERMITTING.source, "gi"), " ");
+    if (OTHER_SYSTEM.test(rest)) return "elsewhere";
+    if (sw) return "statewide";
+    // A clause naming only a platform ("Accela", "ACA") says nothing; anything else names another
+    // office or channel ("Clackamas (EP)", "Josephine County") — it counts only beside another clause.
+    return /^\W*(?:accela|aca|online)?\W*$/i.test(rest.replace(/\((?:[a-z]{1,3})\)/gi, " ")) ? "neutral" : "other";
+  });
+  const byUrl = urls.map((u) => (isStatewidePortalUrl(state, u) ? "statewide" : "elsewhere"));
+  const all = [...verdicts, ...byUrl];
+  if (all.includes("elsewhere")) return "elsewhere";
+  const named = all.filter((v) => v !== "neutral");
+  if (named.includes("statewide") && named.some((v) => v !== "statewide")) return "elsewhere";
+  return named.includes("statewide") ? "statewide" : "neutral";
+}
+
+/**
+ * THE STATEWIDE PORTAL for this AHJ's permit track, from the evidence (see the section header).
+ * null = the state has no statewide portal at all. Otherwise a URL with the fact it rests on, or
+ * `withheld` with the reason a person reads. The caller still judges a returned URL through
+ * hostFitsTrackAndEntity (a person's verified portal for the AHJ outranks it).
  */
 export function statewidePortalFor(
   project: Pick<ProjectRecord, "state" | "ahj">,
   track: string | null | undefined,
-  opts: { processProfileMethod?: string | null } = {},
-): { url: string; basis: CitedFact<string> } | null {
+  opts: { processProfileMethod?: string | null; evidence?: StatewideEvidence[] } = {},
+): StatewideDecision | null {
   const rule = stateRulesFor(project.state).statewidePortal;
   if (!answered(rule)) return null;
-  const ruleHost = hostOf(rule.value);
-  const permit = permitAnswerForTrack(project, track);
-  const lk = permitProcessFor(project);
-  const found = [permit?.portalUrl, ...(lk?.permits ?? []).map((p) => p.portalUrl)].find((f) => answered(f));
-  if (found) {
-    return hostOf(found.value!) === ruleHost ? { url: rule.value, basis: found } : null;
+  const name = statewidePortalName(project.state) || "the statewide portal";
+  const ahj = String(project.ahj ?? "").trim() || "this AHJ";
+  const items: StatewideEvidence[] = [];
+  // 1. THE PER-JOB LOOKUP: this track's own permit, else (a combo / unknown filing) every permit.
+  const own = permitAnswerForTrack(project, track);
+  const pool = own ? [own] : (permitProcessFor(project)?.permits ?? []);
+  for (const p of pool) {
+    const f = p.portalUrl;
+    if (answered(f)) {
+      const onState = isStatewidePortalUrl(project.state, f.value);
+      items.push({
+        kind: onState ? "statewide" : "elsewhere", source: `per-job lookup (${p.discipline})`, url: f.value!, fact: f,
+        detail: onState ? `the per-job lookup found ${ahj}'s ${p.discipline} permit filed on ${f.value}` : `the per-job lookup found ${ahj}'s own portal ${f.value}`,
+      });
+      continue;
+    }
+    const claimed = claimedPortalOf(f);
+    if (!claimed || !hostOf(claimed)) continue;
+    const onState = isStatewidePortalUrl(project.state, claimed);
+    items.push({
+      kind: onState ? "statewide" : "elsewhere", source: `per-job lookup (${p.discipline}), named but not kept`, url: claimed,
+      detail: onState
+        ? `the per-job lookup's source named ${claimed} for ${ahj}'s ${p.discipline} permit`
+        : `the per-job lookup's source named ${claimed} as where ${ahj} applies (${f.sourceUrl || "cited page"}: "${String(f.quote ?? "").slice(0, 120)}") — not kept by the lookup's door, but it is not ${name}`,
+      fact: { value: onState ? claimed : null, sourceUrl: f.sourceUrl, quote: f.quote, origin: f.origin },
+    });
   }
-  // A seeded process profile that names a different submission method is the AHJ's own evidence.
-  const method = String(opts.processProfileMethod ?? "").toLowerCase();
-  if (method && !/e.?permitting|accela/.test(method) && /portal|projectdox|energov|opengov|email|in.?person|mygov|citizenserve|iworq/.test(method)) {
-    return null;
+  // 2. THE SEEDED PROCESS PROFILE's own words.
+  const method = String(opts.processProfileMethod ?? "").trim();
+  if (method) {
+    const verdict = classifyChannelWords(project.state, method);
+    if (verdict !== "neutral") items.push({ kind: verdict, source: "seeded process profile", detail: `the seeded process profile says "${method.slice(0, 120)}"` });
   }
-  return { url: rule.value, basis: rule };
+  // 3. Everything the database knows (knowledge-base rows, recipes, stored logins, the hand-written
+  //    profile, the agency that issues this permit) — gathered by the caller.
+  items.push(...(opts.evidence ?? []));
+  // A PERSON'S ANSWER DECIDES OUTRIGHT (hard rule 3 — the precedence fitUrl gives a verified row):
+  // when any evidence is human-verified, only the verified evidence decides. Salem's verified row
+  // says "OR E-permitting"; a hand-written profile's "PAC Portal" words never outrank it.
+  const verifiedItems = items.filter((e) => e.verified);
+  const deciding = verifiedItems.length ? verifiedItems : items;
+  const elsewhere = deciding.filter((e) => e.kind === "elsewhere");
+  if (elsewhere.length) {
+    return {
+      url: null, evidence: items, because: "elsewhere",
+      withheld: `${name} is not assumed for ${ahj}: ${elsewhere.slice(0, 2).map((e) => e.detail).join("; ")}. A person confirms ${ahj}'s portal (save it on the AHJ's knowledge-base profile) and re-stages.`,
+    };
+  }
+  const onState = deciding.find((e) => e.kind === "statewide");
+  if (onState) {
+    const basis: CitedFact<string> = onState.fact && answered(onState.fact)
+      ? { ...onState.fact, value: rule.value }
+      : { value: rule.value, sourceUrl: rule.sourceUrl, quote: `${onState.source}: ${onState.detail}`.slice(0, 300), origin: "kb" };
+    return { url: rule.value, basis, evidence: items };
+  }
+  return {
+    url: null, evidence: items, because: "unknown",
+    withheld: `Unknown: nothing on file says ${ahj} files on ${name} (no per-job lookup portal, seeded or hand-written process, knowledge-base row, recipe or issuing agency names it). A person confirms ${ahj}'s portal (save it on the AHJ's knowledge-base profile) and re-stages.`,
+  };
 }
 
 function hostOf(url: string): string {

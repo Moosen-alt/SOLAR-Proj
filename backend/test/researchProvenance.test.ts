@@ -152,8 +152,10 @@ const hasUrl = (s: string) => /https?:\/\/|www\.|\.gov\b|\.com\b/i.test(s);
 // ---------------------------------------------------------------------------
 // LLM layer
 // ---------------------------------------------------------------------------
-await run("budget: research siblings get findAhjFormUrl's env-overridable budget (180s default)", () => {
-  assert.equal(webResearchBudgetMs(), 180000);
+await run("budget: research siblings get findAhjFormUrl's env-overridable budget (240s default — the fee researcher's FEE_RESEARCH_CLIENT_TIMEOUT_MS)", async () => {
+  const { FEE_RESEARCH_CLIENT_TIMEOUT_MS } = await import("../src/feeSchedules");
+  assert.equal(webResearchBudgetMs(), 240000);
+  assert.equal(webResearchBudgetMs(), FEE_RESEARCH_CLIENT_TIMEOUT_MS, "the form search's budget matches the fee researcher's, as its comment claims");
   process.env.WEB_RESEARCH_TIMEOUT_MS = "200000";
   assert.equal(webResearchBudgetMs(), 200000);
   delete process.env.WEB_RESEARCH_TIMEOUT_MS;

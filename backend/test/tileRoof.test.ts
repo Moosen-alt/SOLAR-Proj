@@ -103,7 +103,8 @@ await check("(b2) MUST-EXCLUDE: comp (1-2 layers) and metal still Yes; 3-layer c
   const q = facts.formFactQuestions(make({ roofMaterial: "Concrete Tile", roofLayers: "" }), { checklistApplies: true }).map((x) => x.key);
   assert.ok(!q.includes("roofLayers"), `tile must not be asked a comp layer count: ${q}`);
   const q2 = facts.formFactQuestions(make({ roofLayers: "" }), { checklistApplies: true }).map((x) => x.key);
-  assert.ok(q2.includes("roofLayers"), "comp still asks the layer count");
+  assert.ok(!q2.includes("roofLayers"), "comp's unstated layer count is assumed 1-2 layers (operator ruling 2026-09-28), not asked");
+  assert.equal(facts.bcdChecklistAnswers(make({ roofLayers: "" })).roofing, "Yes");
 });
 
 // ── (p) the permit path ──────────────────────────────────────────────────────────────────

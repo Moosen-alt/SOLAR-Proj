@@ -126,6 +126,9 @@ check("the link is built from PUBLIC_BASE_URL, like every other client-facing li
 check("each project carries what a tracker needs, and the plain-English status", () => {
   const p = clientPortalPayload(db, token)!.projects.find((x) => x.id === p1.id)!;
   assert.ok(p.address.includes("1 First St"));
+  // The homeowner's name heads the card (operator 2026-09-29: "I dont see the HO names on the
+  // page"). Our own names are shown; the other company's stays excluded (asserted above).
+  assert.equal(p.homeownerName, "Owner One");
   assert.equal(p.ahj, "City of Coos Bay");
   assert.equal(p.utility, "Pacific Power");
   assert.ok(typeof p.status === "string" && p.status.length > 0);

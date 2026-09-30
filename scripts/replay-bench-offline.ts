@@ -259,7 +259,7 @@ async function learnCell(flavor: Flavor, mutation: Mutation): Promise<LearnOutco
       docsByType: docsA,
       uploadMode: scopeType === "ahj" ? "combined" : "split",
       policyProfile: scopeType === "utility" ? "residential_nem" : "none",
-      bindableFields: Array.from(new Set([...Object.keys(resolveRecipeFieldValues(db, projA, portalType)), ...Object.keys(RECIPE_FIELD_DESCRIPTIONS)])),
+      bindableFields: Array.from(new Set([...Object.keys(resolveRecipeFieldValues(db, projA, portalType, scopeType === "utility" ? "nem" : "electrical")), ...Object.keys(RECIPE_FIELD_DESCRIPTIONS)])),
       siteContactIdentity: { firstName: pf.homeownerFirstName || "", lastName: pf.homeownerLastName || "", email: pf.homeownerEmail || "", phone: pf.homeownerPhone || "", street: pf.street || "", city: pf.city || "", state: pf.state || "", zip: pf.zip || "" },
       contactIdentity: { firstName: pf.installerFirstName || "", lastName: pf.installerLastName || pf.installerCompanyName || "", email: pf.installerEmail || "", phone: pf.installerPhone || "", street: pf.installerStreet || "", city: pf.installerCity || "", state: pf.installerState || "", zip: pf.installerZip || "" },
       equipment: {
@@ -275,7 +275,7 @@ async function learnCell(flavor: Flavor, mutation: Mutation): Promise<LearnOutco
     out.message = String(learn.message ?? "").slice(0, 300);
     const bound = convertLiteralsToBoundFields(learn.steps ?? [], projectFields);
     out.ambiguousLiterals = bound.ambiguous.length;
-    out.deadBindings = deadFieldBindings(bound.steps, resolveRecipeFieldValues(db, projA, portalType));
+    out.deadBindings = deadFieldBindings(bound.steps, resolveRecipeFieldValues(db, projA, portalType, scopeType === "utility" ? "nem" : "electrical"));
     savePortalRecipeSteps(db, recipe.id, bound.steps, { status: learn.reachedReview ? "complete" : "recording", notes: `offline bench learn (${STAND_IN_PLANNER_ID})` });
     out.recipeId = recipe.id;
     out.learnBase = replica.base;
@@ -402,7 +402,7 @@ async function replayCell(flavor: Flavor, mutation: Mutation, learned: LearnOutc
     }
     row.recorded = recipe.steps.length;
     const portalType = portalTypeOf(flavor);
-    const fieldValues = resolveRecipeFieldValues(db, projB, portalType);
+    const fieldValues = resolveRecipeFieldValues(db, projB, portalType, scopeOf(flavor) === "utility" ? "nem" : "electrical");
     const result = await withTimeout(stageWithRecipe(recipe, projB, fieldValues, docsB, [], {
       headless: true,
       credential: flavor === "powerclerk" ? { username: PROJECT_B.portalUsername, password: PROJECT_B.portalPassword } : undefined,

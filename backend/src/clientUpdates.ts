@@ -41,6 +41,7 @@ export const BRAND = (process.env.BRAND_NAME || "Keelix").trim() || "Keelix";
 import { id } from "./ids";
 import { nowIso } from "./time";
 import { isNemApprovalOutcome, outcomeTrack, trackKind } from "./permitMonitor";
+import { permitStructureAnswer, permitStructureIsCitedOrVerified } from "./applicationDocs";
 
 export interface ClientUpdateContext {
   /** "permit" | "nem" — which track moved. */
@@ -87,6 +88,21 @@ function otherTrackOutcome(db: AppDb, projectId: string, thisType: string): stri
 const DONE_OUTCOMES = new Set(["issued", "approved"]);
 const isDoneOutcome = (outcome: string): boolean => DONE_OUTCOMES.has(outcome) || isNemApprovalOutcome(outcome);
 
+/** The project's OTHER permit filings not yet issued, named ("the building permit"). A target of
+ *  this filing's own discipline is this filing; with the discipline unknown, every permit filing
+ *  not done counts (the issued one already reads issued). */
+function openSiblingPermits(db: AppDb, projectId: string, permitType: string, structure: { combo: boolean }): string[] {
+  const mine = text(permitType).toLowerCase();
+  const rows = db.query<{ latest_outcome?: string; target_type?: string; permit_type?: string }>(
+    "SELECT latest_outcome, target_type, permit_type FROM permit_check_targets WHERE project_id = ? AND active = 1",
+    [projectId],
+  );
+  return Array.from(new Set(rows
+    .filter((r) => trackKind(text(r.target_type), text(r.permit_type)) === "permit" && !DONE_OUTCOMES.has(text(r.latest_outcome))
+      && (!mine || text(r.permit_type).toLowerCase() !== mine))
+    .map((r) => permitPhrase(clientFacingPermitType(text(r.permit_type), structure)))));
+}
+
 /**
  * "the electrical permit" when we know, plain "the permit" when we do not. Never a guess: naming
  * the wrong trade tells a client to schedule the wrong crew.
@@ -128,12 +144,51 @@ export function isClientFacingOutcome(outcome: string): boolean {
 }
 
 /**
+ * WHAT THE PERMIT STRUCTURE LETS US SAY TO A CLIENT (leak sweep unknown-as-fact-client-email-combo-
+ * default, 2026-09-28). A job whose structure is NOT confirmed gets ONE 'combo' track by default
+ * (submittalTracks.requiredTracks) — a template default, not a fact — and its target's permit_type
+ * 'combo' told the client "the combination building & electrical permit" was issued and "the
+ * building and electrical side is cleared, so the installation can be scheduled" while Waltham's
+ * separate wire permit had never been filed. ONE answer (applicationDocs.permitStructureAnswer +
+ * permitStructureIsCitedOrVerified); a partial record we cannot ask about is NOT confirmed.
+ */
+export function clientPermitStructure(project: Partial<ProjectRecord>): { confirmed: boolean; combo: boolean } {
+  if (typeof project.state !== "string" || typeof project.ahj !== "string" || !project.parserSnapshot) return { confirmed: false, combo: false };
+  try {
+    const answer = permitStructureAnswer(project as ProjectRecord);
+    const confirmed = answer.structure !== "unknown" && permitStructureIsCitedOrVerified(answer);
+    return { confirmed, combo: confirmed && answer.structure === "combo" };
+  } catch {
+    return { confirmed: false, combo: false };
+  }
+}
+
+/** The permit_type a client-facing sentence may name: 'combo' only for a CONFIRMED combination permit. */
+export function clientFacingPermitType(permitType: string, structure: { combo: boolean }): string {
+  return text(permitType).trim().toLowerCase() === "combo" && !structure.combo ? "" : text(permitType);
+}
+
+/** Both trades are tracked on this job and the OTHER one is already issued — so "the building and
+ *  electrical side is cleared" is backed by the targets themselves, whatever the structure answer. */
+function otherTradeIssued(db: AppDb, projectId: string, permitType: string): boolean {
+  const mine = text(permitType).toLowerCase();
+  const trade = (t: string) => (t === "electrical" ? "electrical" : t === "building" || t === "structural" ? "building" : "");
+  if (!trade(mine)) return false;
+  return db.query<{ latest_outcome?: string; target_type?: string; permit_type?: string }>(
+    "SELECT latest_outcome, target_type, permit_type FROM permit_check_targets WHERE project_id = ? AND active = 1",
+    [projectId],
+  ).some((r) => trackKind(text(r.target_type), text(r.permit_type)) === "permit"
+    && DONE_OUTCOMES.has(text(r.latest_outcome)) && trade(text(r.permit_type).toLowerCase()) !== ""
+    && trade(text(r.permit_type).toLowerCase()) !== trade(mine));
+}
+
+/**
  * The client-facing wording for one status change, or null when this outcome is not something a
  * client is told about. The null is the gate — it keeps internal states internal.
  */
 export function clientUpdateFor(
   db: AppDb,
-  project: Pick<ProjectRecord, "id" | "ahj" | "utility">,
+  project: Pick<ProjectRecord, "id" | "ahj" | "utility"> & Partial<ProjectRecord>,
   outcome: string,
   ctx: ClientUpdateContext,
 ): ClientUpdate | null {
@@ -148,15 +203,30 @@ export function clientUpdateFor(
   const ahj = text(project.ahj) || "the jurisdiction";
   const utility = text(project.utility) || "the utility";
   const ref = text(ctx.permitNumber) || text(ctx.applicationNumber);
-  const which = permitPhrase(text(ctx.permitType));
-  const whichApplication = applicationPhrase(text(ctx.permitType));
+  const structure = clientPermitStructure(project);
+  const permitType = clientFacingPermitType(text(ctx.permitType), structure);
+  const which = permitPhrase(permitType);
+  const whichApplication = applicationPhrase(permitType);
   const refPhrase = ref ? `, reference ${ref}` : "";
   const other = otherTrackOutcome(db, project.id, ctx.targetType);
   const otherDone = isDoneOutcome(other);
   const hasOther = Boolean(other);
 
   switch (outcome) {
-    case "issued":
+    case "issued": {
+      // ANOTHER PERMIT OF THIS JOB STILL IN REVIEW (live 2026-09-28: the electrical permit issued
+      // while the building permit sat in review) — "that clears the permit side" would be false.
+      const siblings = openSiblingPermits(db, project.id, text(ctx.permitType), structure);
+      if (siblings.length) {
+        const list = siblings.join(" and ");
+        return {
+          subject: "Permit issued",
+          headline: `${ahj} has issued ${which}${refPhrase}.`,
+          meaning: `${list.charAt(0).toUpperCase()}${list.slice(1)} ${siblings.length > 1 ? "are" : "is"} still in review, so the installation cannot be scheduled yet.`,
+          action: `Nothing needed from you. We are watching ${list}${hasOther && !otherDone ? ` and the ${utility} interconnection` : ""} and will tell you the day it moves.`,
+        };
+      }
+    }
       return {
         subject: "Permit issued",
         headline: `${ahj} has issued ${which}${refPhrase}.`,
@@ -165,9 +235,15 @@ export function clientUpdateFor(
         // be scheduled — the two contradicted each other in the same paragraph. A permit is not
         // permission to energise, so with the interconnection still open this states what was
         // actually cleared and nothing more.
+        // …and "the building and electrical side is cleared" is a claim about EVERY permit of the job:
+        // made only when the permit structure is confirmed (cited / verified / state rule / curated)
+        // or both trades are tracked here and the other one is already issued. Otherwise the true
+        // sentence is narrower, and says what we are still confirming.
         meaning: hasOther && !otherDone
           ? "That clears the permit side."
-          : "The building and electrical side is cleared, so the installation can be scheduled.",
+          : structure.confirmed || otherTradeIssued(db, project.id, text(ctx.permitType))
+            ? "The building and electrical side is cleared, so the installation can be scheduled."
+            : `That clears this permit. We are confirming whether ${ahj} also requires a separate electrical permit before the installation is scheduled.`,
         action: hasOther && !otherDone
           ? `Nothing needed from you. The ${utility} interconnection is still in review — we are watching it and will tell you the day it moves.`
           : "Nothing needed from you.",

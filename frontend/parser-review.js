@@ -174,6 +174,54 @@
     existingBuildingArea: /AREA|SQ/i,
   };
   const FORMULA = /[=×]|\bMAX\.?\b|\bALLOW|\d\s*%|\bx\s*\d/i;
+  // A CALCULATED LIMIT — the ONLY reading withoutCalculations may set aside. FORMULA above only stops
+  // a number counting as STATED (the safe direction: the value stays unsure). Dropping a reading is
+  // the unsafe direction: a plan set's own worked sizing that disagrees with another sheet ("DC
+  // SYSTEM SIZE: 20 x 440W = 8.80 KW DC" vs "SYSTEM SIZE: 8.4 KW DC", "1.25 x 29A = 36.25A, USE 40A
+  // PV BREAKER" vs "(N) 30A PV BREAKER") IS a conflict the reviewer must see. So a reading is a
+  // calculated limit only when ALL of these hold:
+  //   1. its excerpt carries an arithmetic expression (ARITHMETIC, within one clause) ending in
+  //      "= <result>" — a labelled value ("WIND SPEED = 110 MPH"), a lumber size ("2 X 6 RAFTERS")
+  //      and a bare limit ("6\" MAX") are readings;
+  //   2. the calculation labels that RESULT as a limit: MAX / MAXIMUM / ALLOW / ALLOWABLE / ALLOWED /
+  //      LIMIT right after the result ("= 40A max PV OCPD") or opening/closing the label that heads
+  //      the calculation ("MAX PV OCPD (200A x 120%) - 200A = 40A");
+  //   3. the reading's value IS that result (numerically: "40A", "40" and 40 are one value), and the
+  //      number appears nowhere else in the excerpt (a line that also states "(N) 40A PV BREAKER"
+  //      states it);
+  //   4. the field itself is not a limit (a field named max/limit/allow is read FROM such a line).
+  const ARITHMETIC = /×|\d\s*%|\bx\s*\(?\d|\*\s*\(?\d|\d\s*\)?\s*[/+]\s*\(?\d|\)\s*[-+]\s*\(?\d/i;
+  const LIMIT_WORD = /^(?:MAX(?:IMUM)?|ALLOW(?:ABLE|ED)?|LIMITS?)$/;
+  const RESULT_UNIT = /^(?:A|AMPS?|AMPERES?|KW|KWDC|KWAC|W|WATTS?|V|VOLTS?|VDC|VAC|KVA|PSF|MPH|IN|INCH(?:ES)?|FT|%|"|')$/;
+  const numbersIn = (s) => (String(s).match(/\d+(?:\.\d+)?/g) || []).map(Number);
+  /** The results in an excerpt that a calculation labels as a limit (rules 1 and 2), as numbers. */
+  function limitResults(excerpt) {
+    const t = clean(excerpt).toUpperCase();
+    const out = [];
+    for (const m of t.matchAll(/=\s*\$?(\d+(?:\.\d+)?)/g)) {
+      const head = t.slice(0, m.index);
+      let start = 0;
+      for (const b of head.matchAll(/;|[.,](?=\s)/g)) start = b.index + b[0].length;
+      const left = head.slice(start);
+      if (!ARITHMETIC.test(left)) continue;
+      const tail = t.slice(m.index + m[0].length).split(/[;,]|\.(?=\s|$)/)[0];
+      const w = tail.split(/[\s()[\]]+/).filter(Boolean);
+      const after = LIMIT_WORD.test(w[0] || '') || (RESULT_UNIT.test(w[0] || '') && LIMIT_WORD.test(w[1] || ''));
+      const opAt = left.search(/[\d(]/);
+      const label = (opAt < 0 ? left : left.slice(0, opAt)).replace(/[^A-Z]+/g, ' ').trim().split(' ').filter(Boolean);
+      const before = label.length > 0 && (LIMIT_WORD.test(label[0]) || LIMIT_WORD.test(label[label.length - 1]));
+      if (after || before) out.push(Number(m[1]));
+    }
+    return out;
+  }
+  /** Rules 1-4: this reading is a limit a calculation worked out, not a reading of the field. */
+  function isCalculatedLimit(r) {
+    if (!r || !r.excerpt || /MAX|LIMIT|ALLOW/i.test(String(r.field || ''))) return false;
+    const n = numbersIn(r.value)[0];
+    if (n === undefined) return false;
+    if (numbersIn(clean(r.excerpt)).filter((x) => x === n).length !== 1) return false;
+    return limitResults(r.excerpt).includes(n);
+  }
   const NOT_THIS_AREA = /ROOF\s+AREA|ARRAY\s+AREA|LOT\s+(?:AREA|SIZE)/i;
 
   // Who supplies a field nothing in the packet states.
@@ -264,6 +312,17 @@
     const pa = namePersons(a); const pb = namePersons(b);
     return pa.some((x) => pb.some((y) => personsMatch(x, y)));
   }
+  /** The bill's customer name block as printed — every holder of a joint account ("ROBIN L SAMPLE /
+   *  DURWOOD W SAMPLE") — when the reading's quoted excerpt is a name list that includes its value;
+   *  else the reading's value. The excerpt is used only when it is nothing but names (letters,
+   *  spaces, . ' - and the & / + separators), so a quoted sentence never becomes a holder. */
+  function billHolderBlock(reading) {
+    if (!reading) return '';
+    const value = clean(reading.value);
+    const ex = clean(String(reading.excerpt || '').replace(/^["'\s]+|["'\s]+$/g, ''));
+    if (ex && /^[A-Za-z .'&\/+-]+$/.test(ex) && namePersons(ex).length > namePersons(value).length && namesMatch(ex, value)) return ex;
+    return value;
+  }
   /** How a non-matching document name relates to the bill holder, for the conflict wording:
    *  'surname-only-doc' — the document prints a surname and no given name ("SAMPLE RESIDENCE",
    *  "DE LA CRUZ RESIDENCE"), so it cannot confirm or deny the person; 'surname-only-bill' —
@@ -304,28 +363,133 @@
   // ~119 ft trench back to the house while its text never said "ARRAY ON GARAGE" — so any of
   // these makes "one building" an inference. "UTILITY SERVICE: UNDERGROUND" is the service
   // drop, not trench scope: UNDERGROUND counts only beside a conduit/run/feeder.
-  const OTHER_STRUCTURE = /\b(?:DETACHED\s+(?:GARAGE|STRUCTURE|BUILDING|SHOP|CARPORT)|GARAGE|SHEDS?|BARNS?|CARPORTS?|WORKSHOP|POOL\s*HOUSE|OUTBUILDINGS?|ACCESSORY\s+(?:STRUCTURE|BUILDING)|PERGOLA|PATIO\s+COVER|ADU)\b/gi;
-  const TRENCH_SCOPE = /\bTRENCH(?:ES|ING)?\b|\bDIRECT[-\s]BUR(?:IAL|IED)\b|\bUNDERGROUND\s+(?:PV\s+)?(?:CONDUIT|RUN|FEEDER|CIRCUIT|WIRING)\b/gi;
+  //
+  // THE OTHER-BUILDING WORDS — ONE family, read by BOTH the structure derivation (any word present
+  // and the structure is ASKED — round-3 convergence rule 2026-09-28) and numberOfBuildings'
+  // otherStructureEvidence, so the two never disagree about whether another building is named. A
+  // word counts wherever it sits (merely drawn on a site plan or not), and a roof shape ("SHED
+  // ROOF") or a submittal ("SHOP DRAWINGS") counts too: a false hit here only means "ask". The one
+  // exception is a garage called ATTACHED (the house) — never "NON-ATTACHED" / "NOT ATTACHED".
+  // [the words a basis names, the pattern]; a ground mount is no building but puts the array off
+  // the house all the same.
+  // (Each pattern starts with its own word, so the order is only the order a basis lists them in.)
+  const OTHER_BUILDING_FAMILY = [
+    ['garage', String.raw`GARAGES?`],
+    ['shop', String.raw`SHOPS?`],
+    ['shed', String.raw`SHEDS?`],
+    ['barn', String.raw`(?:POLE\s+)?BARNS?`],
+    ['carport', String.raw`CARPORTS?`],
+    ['workshop', String.raw`WORKSHOPS?`],
+    ['pool house', String.raw`POOL\s*HOUSES?`],
+    ['outbuilding', String.raw`OUTBUILDINGS?`],
+    ['pergola', String.raw`PERGOLAS?`],
+    ['patio cover', String.raw`PATIO\s+COVERS?`],
+    ['ADU', String.raw`ADUS?`],
+    ['accessory building', String.raw`ACCESSORY(?:\s+(?:STRUCTURE|BUILDING|DWELLING(?:\s+UNIT)?))?`],
+    ['detached building', String.raw`DETACHED(?:\s+(?:GARAGE|STRUCTURE|BUILDING|SHOP|CARPORT))?`],
+  ];
+  const GROUND_MOUNT_WORDS = String.raw`GROUND[-\s]?MOUNT(?:ED|S)?`;
+  const OTHER_STRUCTURE_WORDS = [...OTHER_BUILDING_FAMILY.map(([, re]) => re), GROUND_MOUNT_WORDS].join('|');
+  // What a basis may say was checked — generated from the same list, so it never claims a word the
+  // pattern does not read.
+  const OTHER_BUILDING_NAMES = (() => {
+    const n = OTHER_BUILDING_FAMILY.map(([name]) => name);
+    return `${n.slice(0, -1).join(', ')} or ${n[n.length - 1]}`;
+  })();
+  const TRENCH_WORDS = String.raw`TRENCH(?:ES|ING)?|DIRECT[-\s]BUR(?:IAL|IED)|UNDERGROUND\s+(?:PV\s+)?(?:CONDUIT|RUN|FEEDER|CIRCUIT|WIRING)`;
+  const OTHER_STRUCTURE = new RegExp(String.raw`\b(?:${OTHER_STRUCTURE_WORDS})\b`, 'gi');
+  const TRENCH_SCOPE = new RegExp(String.raw`\b(?:${TRENCH_WORDS})\b`, 'gi');
+  // ANOTHER BUILDING NAMED BESIDE THE WORK — the same words, tight adjacency only. A real OR plan set
+  // read "GARAGE ROOF #2 (07) <module>", "GARAGE SYSTEM- / MAIN HOUSE SYSTEM-" and a 22-ft trench
+  // and never "ARRAY ON GARAGE": the array's building is then a question, not "single-family".
+  // Site-plan labels ("DRIVEWAY GARAGE MAIN HOUSE", "(E) SHED", "SHED DECK") are not the work:
+  //   - the word directly followed by a roof label WITH its "#" ("GARAGE ROOF #2"; "SHED ROOF 3/12"
+  //     is a roof pitch) or a system/array label ("GARAGE SYSTEM", "SHED PV ARRAY") — no filler, so
+  //     "DETACHED GARAGE (N) PV ARRAY ON (E) ROOF" (a garage drawn, the array on the house) stays out;
+  //   - the word, then only (E)/(N)/EXISTING/NEW/"-"/":", then a module count ("(07)", "16 MODULES");
+  //     a roof label then "-"/"(" then the word ("ROOF #2 - GARAGE");
+  //   - trench scope within TRENCH_REACH characters of the word, either side ("DETACHED GARAGE (N)
+  //     TRENCH", "TRENCH FROM MAIN HOUSE TO DETACHED GARAGE") — quoted as the two words only, never
+  //     the text between them (it can carry a street address).
+  // An ATTACHED GARAGE is the house and is skipped. Since round 3 this phrase ANSWERS nothing (the
+  // structure is asked on any other-building word): it is quoted as the evidence beside the words.
+  const OUTB = String.raw`(?:${OTHER_STRUCTURE_WORDS})\b`;
+  const SHORT_FILL = String.raw`(?:\s*(?:[-–:,]|\((?:E|N)\)|\b(?:EXISTING|NEW)\b))*\s*`;
+  const OUTBUILDING_LABELED = new RegExp([
+    String.raw`\b${OUTB}\s*[-:]?\s*(?:ROOF\s*#\s*\d{1,2}\b|(?:(?:PV|SOLAR)\s+)?(?:SYSTEM|ARRAY)\b)`,
+    String.raw`\b${OUTB}${SHORT_FILL}(?:\(\d{1,3}\)|\b\d{1,3}\s+(?:(?:PV|SOLAR)\s+)?MODULES?\b|\b\d{1,3}\s+(?:PV|SOLAR)\s+PANELS?\b)`,
+    String.raw`\bROOF\s*#\s*\d{1,2}\s*[-–:(]\s*${OUTB}`,
+  ].join('|'), 'gi');
+  const TRENCH_REACH = 60;
+  // "ATTACHED GARAGE" is the house; "NON-ATTACHED" / "NOT ATTACHED" / "UN-ATTACHED" GARAGE is not
+  // (a word boundary sits after the hyphen, so the negation is read on its own).
+  const attachedGarageAt = (t, m) => {
+    if (!/^GARAGES?\b/i.test(m[0])) return false;
+    const before = t.slice(Math.max(0, m.index - 20), m.index);
+    return /\bATTACHED\s*$/i.test(before) && !/\b(?:NON|NOT|UN)[-\s]*ATTACHED\s*$/i.test(before);
+  };
+  const upper = (s) => s.toUpperCase().replace(/\s+/g, ' ').trim();
+  /** Every other-building match in the (clean) text, the attached-garage exception skipped. */
+  const otherBuildingMatches = (t) => [...t.matchAll(OTHER_STRUCTURE)].filter((m) => !attachedGarageAt(t, m));
+  /** The other-building WORDS the text names (upper case, each once, in order) — what the structure
+   *  derivation abstains on and what numberOfBuildings' evidence names first. */
+  function otherBuildingWords(planText) {
+    return [...new Set(otherBuildingMatches(clean(planText)).map((m) => upper(m[0])))];
+  }
+  /** The first other-building-beside-the-work phrase (upper case), or ''. */
+  function outbuildingBesideWork(planText) {
+    const t = clean(planText);
+    if (!t) return '';
+    for (const m of t.matchAll(OUTBUILDING_LABELED)) {
+      if (!attachedGarageAt(t, m)) return upper(m[0]);
+    }
+    const trenches = [...t.matchAll(TRENCH_SCOPE)];
+    if (!trenches.length) return '';
+    for (const m of t.matchAll(OTHER_STRUCTURE)) {
+      if (attachedGarageAt(t, m)) continue;
+      const end = m.index + m[0].length;
+      const near = trenches.find((x) => (x.index >= end && x.index - end <= TRENCH_REACH) || (x.index + x[0].length <= m.index && m.index - (x.index + x[0].length) <= TRENCH_REACH));
+      if (near) return near.index > m.index ? `${upper(m[0])} … ${upper(near[0])}` : `${upper(near[0])} … ${upper(m[0])}`;
+    }
+    return '';
+  }
+  /** How many other-building words a basis names (the structure's and numberOfBuildings' alike). */
+  const STRUCTURE_WORD_CAP = 3;
   /** '' when the plan text names no other structure and no trench scope; otherwise the words
    *  found, each quoted once with its surrounding text, for the UNSURE reason. */
   function otherStructureEvidence(planText) {
     const t = clean(planText);
     if (!t) return '';
     const seen = new Map();
-    const take = (re, kind, cap) => {
+    const takeFrom = (matches, kind, cap) => {
       let n = 0;
-      for (const m of t.matchAll(re)) {
-        const w = m[0].toUpperCase().replace(/\s+/g, ' ');
-        if (seen.has(w) || n >= cap) continue;
+      for (const m of matches) {
+        const w = upper(m[0]);
+        // A building word already quoted inside a longer phrase ("GARAGE" in "GARAGE ROOF #2") is not
+        // repeated; trench scope is always named as its own item.
+        if (n >= cap || seen.has(w) || (kind === 'structure' && [...seen.keys()].some((k) => k.includes(w)))) continue;
         seen.set(w, { kind, ctx: t.slice(Math.max(0, m.index - 30), m.index + m[0].length + 30).trim() });
         n++;
       }
     };
+    const take = (re, kind, cap) => takeFrom(t.matchAll(re), kind, cap);
     take(new RegExp(WORK_ON_OUTBUILDING.source, 'gi'), 'structure', 1);
-    take(OTHER_STRUCTURE, 'structure', 3);
+    // The phrase beside the work the structure derivation quotes is quoted first, so both name it.
+    const beside = outbuildingBesideWork(t);
+    if (beside && !seen.has(beside)) {
+      // A trench pair ("SHED … TRENCH") is two words apart: it is quoted as the pair alone.
+      const i = t.toUpperCase().indexOf(beside);
+      seen.set(beside, { kind: 'structure', ctx: i >= 0 ? t.slice(Math.max(0, i - 30), i + beside.length + 30).trim() : '' });
+    }
+    // Then the SAME words, in the same order and under the same cap, that the structure derivation
+    // abstains on (STRUCTURE_WORD_CAP) — so every building its basis names is named here; then an
+    // ATTACHED GARAGE, which the derivation reads as the house but a count of buildings stays a
+    // question over (as it always was).
+    takeFrom(otherBuildingMatches(t), 'structure', STRUCTURE_WORD_CAP);
+    take(OTHER_STRUCTURE, 'structure', STRUCTURE_WORD_CAP);
     take(TRENCH_SCOPE, 'trench', 1);
     if (!seen.size) return '';
-    return [...seen].map(([w, e]) => `${e.kind === 'trench' ? 'trench scope ' : ''}${w} ("…${e.ctx}…")`).join(', ');
+    return [...seen].map(([w, e]) => `${e.kind === 'trench' ? 'trench scope ' : ''}${w}${e.ctx ? ` ("…${e.ctx}…")` : ''}`).join(', ');
   }
 
   function singleFamilyBasis(planText) {
@@ -335,6 +499,183 @@
     const m = t.match(SINGLE_FAMILY);
     return m ? m[0] : null;
   }
+
+  // -------------------------------------------------------------------------
+  // WHICH BUILDING CARRIES THE ARRAY — the structure description, derived from the plan set
+  // (operator ruling 2026-09-28: "Single family most of the time, but can be an ADU/Accessory/garage
+  // you can see it on the plan-set how its laid out"). THE ONE DERIVATION: the parser page calls it
+  // when it saves (structureFromPlan / structureFromPlanBasis on the project) and the backend loads
+  // THIS FILE to derive the same answer at read time for projects already on file
+  // (backend/src/applicationDocsAgency.ts structureDescriptionOf) — one regex family, two callers.
+  //
+  // THE CONSERVATIVE RULE (round-3 convergence, 2026-09-28 — every shape-fitted "beside the work"
+  // heuristic answered some near-variant wrongly, so none of them answers any more):
+  //   1. Single-family dwelling ONLY when the plan text names NO other building at all (no word of
+  //      OTHER_BUILDING_FAMILY anywhere, drawn or not — the one exception an ATTACHED GARAGE) and
+  //      the single-family evidence is there ("RESIDENCE" / "SINGLE-FAMILY" / SFR / SFD /
+  //      "DWELLING", the plan-set read, or 1 dwelling unit);
+  //   2. Accessory building ONLY from an explicit array-on phrase naming the detached building
+  //      (ARRAY_ON_ACCESSORY with its negation / SHED ROOF / SHOP DRAWING guards) and no array on
+  //      the house;
+  //   3. Two-family dwelling (duplex) ONLY from "DUPLEX" or 2 dwelling units — no other building
+  //      named, as for 1;
+  //   4. EVERYTHING ELSE is asked: a garage / shed merely drawn, a townhouse, a manufactured home, a
+  //      plan-set read naming an accessory building or a duplex on its own.
+  // An answer is one of the five options of the BCD 5952 structure question, or '' (still asked).
+  // The basis quotes only the matched words, never the text around them (a title block's
+  // "<NAME> RESIDENCE" would carry the homeowner's name), and says only what was checked.
+  const STRUCTURE_OPTIONS = ['Single-family dwelling', 'Two-family dwelling (duplex)', 'Townhouse', 'Manufactured home', 'Accessory building (garage/shed)'];
+  // The subject is the ARRAY — never a bare "PANEL", which on a plan set is as often the electrical
+  // panel ("SUBPANEL AT DETACHED GARAGE" is not an array on the garage).
+  // Scope-of-work wording names the subject many ways ("7.2 KW PV SYSTEM ON A DETACHED GARAGE",
+  // "SOLAR MODULES ON THE ROOF OF AN EXISTING DETACHED GARAGE", "PHOTOVOLTAIC SYSTEM ON ...",
+  // "ROOFTOP SOLAR ON ...") — each must reach the accessory answer, never fall through to "RESIDENCE".
+  const ARRAY_ON = String.raw`(?:ARRAY|MODULES?|\bPV\b|PHOTOVOLTAIC(?:\s+(?:SYSTEM|ARRAY|MODULES?|PANELS?))?|(?:PV|SOLAR)\s+(?:PANELS?|SYSTEM|ARRAY)|\bSOLAR)\s+(?:(?:TO\s+BE|IS|ARE|WILL\s+BE)\s+)?(?:(?:MOUNTED|INSTALLED|LOCATED|PLACED)\s+)?(?:ON\s+TOP\s+OF|ON|AT|OVER|ATOP)\s+(?:(?:THE|AN?)\s+)?(?:ROOF\s+OF\s+(?:(?:THE|AN?)\s+)?)?(?:\(?[NE]\)?\s+)?(?:NEW\s+|EXISTING\s+)?`;
+  // "SHED ROOF" / "SHED DORMER" is a roof shape on the house, and "SHOP DRAWINGS" a submittal — not
+  // a building.
+  const ARRAY_ON_ACCESSORY = new RegExp(`${ARRAY_ON}(?:DETACHED\\s+(?:GARAGE|STRUCTURE|BUILDING|SHOP|CARPORT)|SHEDS?\\b(?!\\s+(?:ROOF|DORMER)S?\\b)|(?:POLE\\s+)?BARNS?|CARPORTS?|ADU|ACCESSORY\\s+(?:DWELLING(?:\\s+UNIT)?|BUILDING|STRUCTURE)|WORKSHOP|OUTBUILDING|SHOP\\b(?!\\s+DRAWINGS?\\b))\\b`, 'gi');
+  // "NO MODULES ON SHOP", "NOT ... ", "WITHOUT PV ON ..." says the array is NOT there.
+  const NEGATED_BEFORE = /\b(?:NO|NOT|NEVER|WITHOUT|NONE)\s+(?:(?:\([NE]\)|PV|SOLAR|NEW)\s+){0,2}$/i;
+  /** The first match of a global regex that is not negated just before it, or null. */
+  function firstUnnegated(re, t) {
+    for (const m of t.matchAll(re)) {
+      if (!NEGATED_BEFORE.test(t.slice(Math.max(0, m.index - 24), m.index))) return m;
+    }
+    return null;
+  }
+  const ARRAY_ON_HOUSE = new RegExp(`${ARRAY_ON}(?:MAIN\\s+)?(?:HOUSE|RESIDENCE|DWELLING|HOME)\\b|\\bMAIN\\s+HOUSE\\s*[-:]?\\s*(?:(?:PV|SOLAR)\\s+)?(?:SYSTEM|ARRAY)\\b`, 'gi');
+  // WHETHER THE HOUSE IS A MANUFACTURED HOME is NOT read here: the server has the one predicate for
+  // it (codeReviewRules.structureType — code titles, disclaimers and unchecked boxes are not an
+  // answer), and the caller passes its verdict as opts.manufactured ('yes' / 'no'). With no verdict
+  // (the parser page), text that so much as MENTIONS one makes this abstain (defer) rather than read
+  // a single-family dwelling over it.
+  const MANUFACTURED_MENTION = /\b(?:MANUFACTURED|MOBILE)\s+(?:HOMES?|DWELLINGS?|HOUSING)\b/i;
+  const MULTI_UNIT_G = new RegExp(MULTI_UNIT.source, 'gi');
+  // THE SINGLE-FAMILY WORD the structure takes: SINGLE_FAMILY without "MAIN HOUSE" — a MAIN house
+  // implies another building, so it is never the word that answers "single-family" here (it still
+  // resolves numberOfBuildings' one-building read, which also weighs otherStructureEvidence).
+  const SINGLE_FAMILY_WORD = /\bRESIDENCE\b|\bSINGLE[-\s]FAMILY\b|\bSFR\b|\bSFD\b|\bDWELLING\b/i;
+  /** What a single-family / duplex basis says was checked in the text (generated from the family) —
+   *  with the one exception named when the text has it, so the sentence never reads "no garage" over
+   *  an attached one. */
+  const noOtherBuilding = (t) => `names no other building (${OTHER_BUILDING_NAMES}) and no ground mount${[...t.matchAll(OTHER_STRUCTURE)].some((m) => attachedGarageAt(t, m)) ? ' — its only garage is called ATTACHED (the house)' : ''}`;
+  /** { option, basis, ambiguous, defer, checked } from the plan text alone. ambiguous: the text names
+   *  something that makes the building uncertain (another building, a multi-unit word, arrays on two
+   *  buildings, a manufactured home) — no weaker evidence (the plan-set read, a dwelling-unit count)
+   *  may answer over it. defer: only the manufactured-home predicate can settle it (no verdict was
+   *  given). checked: non-empty text that passed every gate of rule 1 without a single-family word of
+   *  its own — the clause a read / unit-count answer adds to say what the text was checked for. */
+  function structureFromText(planText, manufactured, manufacturedBasis) {
+    const t = clean(planText);
+    const out = (option, basis, ambiguous) => ({ option, basis, ambiguous: Boolean(ambiguous), defer: false, checked: '' });
+    const mfgAsked = () => out('', `${manufacturedBasis || 'the structure type reads manufactured home'} — a manufactured home is not derived from the plan set; confirm the structure`, true);
+    if (!t) return manufactured === 'yes' ? mfgAsked() : out('', '');
+    // (2) ACCESSORY: the array's own building, named in an array-on phrase.
+    const acc = firstUnnegated(ARRAY_ON_ACCESSORY, t);
+    if (acc) {
+      // An array on the house AS WELL ("... ON DETACHED GARAGE" and "... ON MAIN HOUSE") is two
+      // buildings — which one the form means is a person's call.
+      const house = firstUnnegated(ARRAY_ON_HOUSE, t);
+      if (house) return out('', `the plan set reads "${upper(acc[0])}" and "${upper(house[0])}" — arrays on two buildings`, true);
+      // ROUND 3 CONSERVATIVE CLOSE (skeptic MF1): an accessory building is NEVER derived. Plan sets put
+      // arrays on the garage AND the house, describe an existing array "to remain", or say "not in
+      // scope" in wordings no phrase list closes, and a wrong "Accessory" fills a legal form. The
+      // phrase is quoted as evidence and the structure is asked (operator ruling 2026-09-28: single
+      // family most of the time — derived only when the plan set names no other building).
+      return out('', `the plan set reads "${upper(acc[0])}" — the array may be on an accessory building, so the structure is asked`, true);
+    }
+    // (1)/(3) ANY OTHER BUILDING NAMED, anywhere — asked. The phrase beside the work (a roof label /
+    // module count / trench beside the word) is QUOTED as evidence only; it decides nothing.
+    const others = otherBuildingWords(t).slice(0, STRUCTURE_WORD_CAP);
+    if (others.length) {
+      const beside = outbuildingBesideWork(t);
+      return out('', `the plan set names ${others.map((w) => `"${w}"`).join(', ')}${beside && !others.includes(beside) ? ` ("${beside}")` : ''} — the array may not be on the house, so the structure is asked`, true);
+    }
+    const multiHits = [...t.matchAll(MULTI_UNIT_G)];
+    if (multiHits.length) {
+      // MULTI_UNIT was written as an EXCLUSION filter (a false hit only means "ask"), so a positive
+      // answer takes only the word that names the building: "DUPLEX" (not an electrical "DUPLEX
+      // RECEPTACLE"). Code titles ("ONE- AND TWO-FAMILY DWELLINGS", "R302.2 TOWNHOUSES"), "BATTERY
+      // UNITS: 2", "QTY 2 UNITS", R-2, an ADU, a townhouse — all stay a question. Two-unit words
+      // beside "DUPLEX" agree with it.
+      const kind = (m) => {
+        const w = upper(m[0]);
+        if (/^DUPLEX$/.test(w)) {
+          const after = t.slice(m.index + m[0].length, m.index + m[0].length + 24);
+          const before = t.slice(Math.max(0, m.index - 8), m.index);
+          return /^\s*(?:(?:GFCI|GFI|WP|WEATHERPROOF)\s+)?(?:RECEPT|OUTLET|CONVENIENCE|BREAKER|CONNECTOR|PLUG|DEVICE)/i.test(after) || /\bGF(?:C)?I\s*$/i.test(before) ? 'more' : 'duplex';
+        }
+        return /\b(?:2|TWO)[-\s]?(?:UNIT|FAMILY)|\bUNITS?\s*:\s*2\b|\b2\s+UNITS\b/.test(w) ? 'twoish' : 'more';
+      };
+      const kinds = new Set(multiHits.map(kind));
+      const words = [...new Set(multiHits.map((m) => upper(m[0])))].slice(0, 3).map((w) => `"${w}"`).join(', ');
+      if (kinds.has('duplex') && [...kinds].every((k) => k === 'duplex' || k === 'twoish')) return out(STRUCTURE_OPTIONS[1], `the plan set reads ${words} and ${noOtherBuilding(t)}`);
+      return out('', `the plan set reads ${words}`, true);
+    }
+    if (manufactured === 'yes') return mfgAsked();
+    if (manufactured !== 'no' && MANUFACTURED_MENTION.test(t)) return { option: '', basis: '', ambiguous: true, defer: true, checked: '' };
+    const sf = t.match(SINGLE_FAMILY_WORD);
+    if (sf) return out(STRUCTURE_OPTIONS[0], `the plan set reads "${upper(sf[0])}" and ${noOtherBuilding(t)}`);
+    return { ...out('', ''), checked: `the plan text ${noOtherBuilding(t)}` };
+  }
+
+  /** One of the five options for a value written in their vocabulary ("single-family dwelling",
+   *  "Accessory building"), else ''. Exact option words only — interpreting free text is the
+   *  backend's structureTypeMeaning, not a second family here. */
+  function structureOption(value) {
+    const v = clean(value).toLowerCase();
+    if (!v) return '';
+    return STRUCTURE_OPTIONS.find((o) => o.toLowerCase() === v || o.toLowerCase().split(' (')[0] === v) || '';
+  }
+
+  /**
+   * THE STRUCTURE DERIVATION. planText: the plan-set text; opts.reading: the plan-set read's own
+   * answer ({ value, excerpt } — the model looked at the site / roof plan layout); opts.dwellingUnits:
+   * the parsed unit count; opts.manufactured / opts.manufacturedBasis: the server's manufactured-home
+   * verdict ('yes' / 'no'; absent on the page). Returns { option, basis, defer } — option '' means
+   * "ask"; defer means "leave it to the server" (the text mentions a manufactured home and no verdict
+   * was given — the caller stores nothing).
+   *   - the text answers (rules 1-3 in structureFromText) and the read AGREES or is silent: that
+   *     answer, with its words;
+   *   - they DISAGREE: '' (a person decides — neither reading outranks the other);
+   *   - the text is AMBIGUOUS (another building named anywhere, a multi-unit word, arrays on two
+   *     buildings, a manufactured home): '' whatever the read or the unit count says;
+   *   - the text answers nothing and names nothing that doubts it: the READ may answer only
+   *     "Single-family dwelling" (rule 1 — its evidence), and a duplex only beside 2 dwelling units
+   *     (rule 3); a read of an accessory building, a townhouse or a manufactured home is asked (rules
+   *     2 and 4 — only the text's own array-on phrase derives an accessory building). With no read,
+   *     1 dwelling unit is a single-family dwelling, 2 a duplex; 3 or more is asked;
+   *   - a parsed unit count that disagrees with a single-family (not 1) or duplex (not 2) answer: ''.
+   */
+  function structureBasis(planText, opts) {
+    opts = opts || {};
+    const text = structureFromText(planText, opts.manufactured, opts.manufacturedBasis);
+    if (text.defer) return { option: '', basis: '', defer: true };
+    const reading = opts.reading && typeof opts.reading === 'object' ? opts.reading : { value: opts.reading };
+    const read = structureOption(reading.value);
+    const readBasis = read ? `the plan-set read answers "${read}"${reading.excerpt ? ` ("${clean(reading.excerpt).slice(0, 80)}")` : ''}` : '';
+    const units = Number(String(opts.dwellingUnits ?? '').trim().match(/^\d+/)?.[0] ?? NaN);
+    const withUnits = (r) => {
+      if (!r.option || !(units > 0)) return r;
+      if ((r.option === STRUCTURE_OPTIONS[0] && units !== 1) || (r.option === STRUCTURE_OPTIONS[1] && units !== 2)) {
+        return { option: '', basis: `${r.basis}, but the plan set states ${units} dwelling unit${units === 1 ? '' : 's'} — confirm the structure` };
+      }
+      return r;
+    };
+    if (text.option && read && text.option !== read) return { option: '', basis: `${text.basis}, but ${readBasis} — confirm which building carries the array` };
+    if (text.option && read) return withUnits({ option: text.option, basis: `${text.basis}; ${readBasis}` });
+    if (text.ambiguous && read) return { option: '', basis: `${text.basis}, and ${readBasis} — confirm which building carries the array` };
+    if (text.option || text.ambiguous) return withUnits({ option: text.option, basis: text.basis });
+    // What the text was checked for, said beside a read / unit-count answer ('' when there was no text).
+    const checked = text.checked ? `; ${text.checked}` : '';
+    if (read === STRUCTURE_OPTIONS[0]) return withUnits({ option: read, basis: `${readBasis}${checked}` });
+    if (read === STRUCTURE_OPTIONS[1] && units === 2) return { option: read, basis: `${readBasis}; the plan set states 2 dwelling units${checked}` };
+    if (read) return { option: '', basis: `${readBasis}, but the plan text does not say so itself${read === STRUCTURE_OPTIONS[4] ? ' (no array-on phrase names the building)' : ''} — confirm the structure` };
+    if (units === 1) return { option: STRUCTURE_OPTIONS[0], basis: `the plan set states 1 dwelling unit${checked}` };
+    if (units === 2) return { option: STRUCTURE_OPTIONS[1], basis: `the plan set states 2 dwelling units${checked}` };
+    return { option: '', basis: '' };
+  }
+  const structureFromPlan = (planText, opts) => structureBasis(planText, opts).option;
 
   function readingsFor(passes) {
     const readings = [];
@@ -353,6 +694,22 @@
   const where = (r) => `${docLabel(r.source)}${r.sheet ? ' ' + r.sheet : ''}`;
   const quote = (r) => (r.excerpt ? `: "${clean(r.excerpt).slice(0, 120)}"` : '');
   const fmtReading = (r) => `${r.value} (${where(r)}${quote(r)})`;
+
+  // A CALCULATED LIMIT IS NOT A READING OF THE FIELD (dry-run 2026-09-28 B15). Every plan set that
+  // prints the 705.12 check — "(200A x 120%) - 200A = 40A max PV OCPD; 30A breaker installed" — raised
+  // a fake "PV breaker 30 A vs 40 A" conflict: 40 A is the maximum worked out in a formula, the SLD
+  // states 30 A. Only a reading that isCalculatedLimit (the limit-labelled RESULT of a calculation,
+  // and the reading's value is that result) is set aside — any other calculation line is a reading,
+  // and its disagreement stays a CONFLICT. It is set aside only while at least one other reading
+  // quotes a plain line; if every reading is a calculated limit, nothing is dropped. A reading with no
+  // excerpt is never dropped (an uncited reading is still a reading).
+  function withoutCalculations(rs) {
+    const plain = rs.filter((r) => r.excerpt && !isCalculatedLimit(r));
+    if (!plain.length) return { kept: rs, dropped: [] };
+    return { kept: rs.filter((r) => !isCalculatedLimit(r)), dropped: rs.filter(isCalculatedLimit) };
+  }
+  const allAgree = (rs) => rs.length > 0 && new Set(rs.map((r) => String(r.value).toUpperCase())).size === 1;
+  const calculationNote = (dropped) => dropped.map((d) => `${d.value} is a calculated limit, not a reading (${where(d)}${quote(d)})`).join('; ');
 
   /**
    * passes:   [{ kind:'vision'|'text', label, docsGiven:[docKind...], response:{fields, lowConfidenceFields, notes, conflicts?, uncertainties?, resolutions?} }]
@@ -392,8 +749,16 @@
 
     // (a) conflicts the model reported — resolve by rule where a rule exists.
     for (const [field, c] of conflictByField) {
-      const rs = c.readings.map((r) => ({ field, value: r.value, source: r.source || 'plan_set', sheet: r.sheet || '', excerpt: r.excerpt || '' }));
+      const all = c.readings.map((r) => ({ field, value: r.value, source: r.source || 'plan_set', sheet: r.sheet || '', excerpt: r.excerpt || '' }));
       if (field === 'owner') continue; // handled by the account-holder rule below
+      // A calculated limit is not a conflict peer: the plain readings decide (withoutCalculations).
+      const calc = withoutCalculations(all);
+      if (calc.dropped.length && allAgree(calc.kept)) {
+        resolved.push({ field, value: calc.kept[0].value, how: `stated on the ${where(calc.kept[0])}${quote(calc.kept[0])}; ${calculationNote(calc.dropped)}`, evidence: calc.kept[0] });
+        done.add(field);
+        continue;
+      }
+      const rs = calc.kept;
       if (STRUCTURAL_FIELDS.has(field)) {
         const letter = rs.filter((r) => r.source === 'structural_letter');
         const letterValues = [...new Set(letter.map((r) => String(r.value)))];
@@ -406,7 +771,7 @@
           continue;
         }
       }
-      pushConflict(field, rs, c.note ? clean(c.note) : '');
+      pushConflict(field, rs, [c.note ? clean(c.note) : '', calculationNote(calc.dropped)].filter(Boolean).join(' — '));
     }
 
     // (b) owner — the utility bill's account holder is the account of record for NEM.
@@ -418,7 +783,22 @@
       if (c) for (const r of c.readings) if (r.source !== 'utility_bill' && !others.some((o) => namesMatch(o.value, r.value))) others.push({ field: 'owner', value: r.value, source: r.source || 'plan_set', sheet: r.sheet || '', excerpt: r.excerpt || '' });
       const candidates = [];
       for (const o of others) if (!candidates.some((k) => namesMatch(k.value, o.value))) candidates.push(o);
-      if (bill && (candidates.length || flagged.includes('owner') || c)) {
+      // A JOINT ACCOUNT (operator ruling 2026-09-28: "Durwood is good seeing as they're listed. If
+      // they're not listed then primary name on the bill will apply for the NEM"). The bill's name
+      // block lists every holder, while the reading's value is often only the first; a plan-set owner
+      // who is one of the listed holders IS on the account — no spouse/relative conflict. The owner
+      // stays the plan set's; the NEM customer block reads the bill (accountHolders.nemApplicantName).
+      const block = bill ? billHolderBlock(bill) : '';
+      if (bill && namePersons(block).length > 1) {
+        // Only where the VALUE alone misses the owner: a value that already lists the holders resolves
+        // through the rule below exactly as before (to the bill's printed block).
+        const listed = candidates.find((k) => namesMatch(block, k.value) && !namesMatch(bill.value, k.value));
+        if (listed) {
+          resolved.push({ field: 'owner', value: listed.value, how: `listed on the utility bill as an account holder ("${block}", ${where(bill)}) — a joint account; the NEM application names the listed owner`, evidence: bill });
+          done.add('owner');
+        }
+      }
+      if (!done.has('owner') && bill && (candidates.length || flagged.includes('owner') || c)) {
         const matches = candidates.filter((k) => namesMatch(bill.value, k.value));
         const nonMatch = candidates.filter((k) => !namesMatch(bill.value, k.value));
         if (candidates.length === 0 || matches.length === 1 || (matches.length >= 1 && nonMatch.length === 0)) {
@@ -487,20 +867,31 @@
         if (!stated && sf) {
           // The basis quotes only what the text shows: singleFamilyBasis matches anywhere in the
           // plan text (a site-plan "MAIN HOUSE" label is not the title block).
-          resolved.push({ field, value: 1, how: field === 'dwellingUnits' ? `single-family residence: the plan set reads "${sf}" and carries no multi-unit language` : `one building carries the work: the plan set reads "${sf}" and its text names no other structure (garage, shed, barn, carport, detached or accessory building) and no trench run`, evidence: rs[0] || null });
+          resolved.push({ field, value: 1, how: field === 'dwellingUnits' ? `single-family residence: the plan set reads "${sf}" and carries no multi-unit language` : `one building carries the work: the plan set reads "${sf}" and its text names no other structure (${OTHER_BUILDING_NAMES}), no ground mount and no trench run`, evidence: rs[0] || null });
           done.add(field);
           continue;
         }
       }
       if (rs.length >= 2 && new Set(rs.map((r) => String(r.value).toUpperCase())).size > 1) {
-        if (STRUCTURAL_FIELDS.has(field)) {
-          const letter = rs.filter((r) => r.source === 'structural_letter');
-          const lv = [...new Set(letter.map((r) => String(r.value)))];
-          const mismatch = lv.length === 1 ? sealedSourceMismatch(letter, rs.filter((r) => r.source !== 'structural_letter')) : '';
-          if (mismatch) { pushConflict(field, rs, [mismatch, reason].filter(Boolean).join(' — ')); continue; }
-          if (lv.length === 1) { resolved.push({ field, value: letter[0].value, how: `sealed structural letter governs the plan set (sealed-source rule): letter ${fmtReading(letter[0])} over ${rs.filter((r) => r.source !== 'structural_letter').map(fmtReading).join(', ')}`, evidence: letter[0] }); done.add(field); continue; }
+        // A calculated limit is not a conflict peer (withoutCalculations) — unless the read itself
+        // doubts the plain reading (guessed / unreadable), which stays the reviewer's question.
+        const calc = kind === 'guessed' || kind === 'unreadable' ? { kept: rs, dropped: [] } : withoutCalculations(rs);
+        if (calc.dropped.length && allAgree(calc.kept)) {
+          const best = calc.kept.reduce((a, b) => (b.confidence > a.confidence ? b : a));
+          resolved.push({ field, value: best.value, how: `stated on the ${where(best)}${quote(best)}; ${calculationNote(calc.dropped)}`, evidence: best });
+          done.add(field);
+          continue;
         }
-        pushConflict(field, rs, reason);
+        const peers = calc.kept;
+        const why = [reason, calculationNote(calc.dropped)].filter(Boolean).join(' — ');
+        if (STRUCTURAL_FIELDS.has(field)) {
+          const letter = peers.filter((r) => r.source === 'structural_letter');
+          const lv = [...new Set(letter.map((r) => String(r.value)))];
+          const mismatch = lv.length === 1 ? sealedSourceMismatch(letter, peers.filter((r) => r.source !== 'structural_letter')) : '';
+          if (mismatch) { pushConflict(field, peers, [mismatch, why].filter(Boolean).join(' — ')); continue; }
+          if (lv.length === 1) { resolved.push({ field, value: letter[0].value, how: `sealed structural letter governs the plan set (sealed-source rule): letter ${fmtReading(letter[0])} over ${peers.filter((r) => r.source !== 'structural_letter').map(fmtReading).join(', ')}`, evidence: letter[0] }); done.add(field); continue; }
+        }
+        pushConflict(field, peers, why);
         continue;
       }
       const r = rs[0];
@@ -755,7 +1146,9 @@
   return {
     compareMeters, meterTargets, meterInText,
     mergeNotes, assertsMissingAttached,
-    resolveReviewItems, rsdConflict, singleFamilyBasis, namesMatch,
+    resolveReviewItems, rsdConflict, singleFamilyBasis, namesMatch, billHolderBlock,
+    structureBasis, structureFromPlan, structureOption, STRUCTURE_OPTIONS,
+    otherStructureEvidence, outbuildingBesideWork, otherBuildingWords,
     licenseLabel, installerLine, identifyUtility,
     locatesDecision, EXCAVATION_TYPES,
     filterTapEvidence, isNoteMention,

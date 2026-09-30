@@ -26,6 +26,7 @@ import type { AppDb } from "./db";
 import type { CitedFact, LLMProvider, ProjectRecord, WebLookupResult } from "../../shared/src/types";
 import { hostFitsTrackAndEntity, isInformationalPageUrl, portalHostOf } from "./portalChannel";
 import { logger } from "./logger";
+import { knownPowerClerkUtility } from "./utilityIdentity";
 
 export type UtilityProgramKind = "net_metering" | "net_billing" | "interconnection_only";
 export interface UtilityFilingLocation {
@@ -299,10 +300,12 @@ export function ensureUtilityFilingLookedUp(
 /** Utilities whose program and portal this codebase already knew as fact before this module
  *  (Oregon net metering, ORS 757.300; their PowerClerk tenants are the recorded channels). */
 function knownOregonNemUtility(project: Pick<ProjectRecord, "state" | "utility">): { channel: string; url: string } | null {
-  const u = str(project.utility).toLowerCase();
+  // Oregon net metering only (the PROGRAM fact is Oregon's); WHICH utility is the one state-gated
+  // identity (utilityIdentity) every other door asks.
   if (str(project.state).toUpperCase() !== "OR") return null;
-  if (/pge|portland general(?!\s*electric\s*pac)/.test(u)) return { channel: "PowerClerk (PGE NEM portal)", url: "" };
-  if (/pacificorp|pacific power/.test(u)) return { channel: "Pacific Power NEM portal (PowerClerk: pacificorpnetmetering.powerclerk.com)", url: "https://pacificorpnetmetering.powerclerk.com/" };
+  const known = knownPowerClerkUtility(project);
+  if (known === "portland_general") return { channel: "PowerClerk (PGE NEM portal)", url: "" };
+  if (known === "pacificorp") return { channel: "Pacific Power NEM portal (PowerClerk: pacificorpnetmetering.powerclerk.com)", url: "https://pacificorpnetmetering.powerclerk.com/" };
   return null;
 }
 

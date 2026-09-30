@@ -51,7 +51,10 @@ check("THE BUG: each discipline gets its own name", () => {
   assert.equal(trackLabel("permit", "electrical"), "Electrical permit");
   assert.equal(trackLabel("permit", "building"), "Building permit");
   assert.equal(trackLabel("permit", "structural"), "Building permit", "the fee layer says 'structural' for the same thing");
-  assert.equal(trackLabel("permit", "combo"), "Combination building & electrical permit");
+  // A COMBINATION permit only when the job's structure confirms it (leak sweep 2026-09-28): the
+  // default 'combo' track of an UNCONFIRMED structure is just "Permit" on a client's page.
+  assert.equal(trackLabel("permit", "combo", { combo: true }), "Combination building & electrical permit");
+  assert.equal(trackLabel("permit", "combo"), "Permit", "an unconfirmed structure's default combo track must not claim a combination permit");
   assert.equal(trackLabel("nem", "nem"), "Utility interconnection");
   assert.equal(trackLabel("nem", ""), "Utility interconnection", "target_type alone settles NEM");
 });

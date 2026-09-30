@@ -10,10 +10,20 @@ export const BCD_5952_TEXT_FIELDS = [
   "PART IV  PV MODULES", "Model number", "Listing agency",
 ] as const;
 
+/** The sha256 of the one BCD 440-5952 revision this map was written against (5/24/COM). */
+export const BCD_5952_SHA256 = "2490f9a571c1048e0338688fb0536c69b0dcd7aed34f623bb5b735b059e032cd";
+
 /** Exact official revision only. A revised PDF must be inspected before these
  * widget names/coordinates are reused. Contains sources, never customer data. */
 export function bcd5952Template(bytes: Uint8Array, sourceUrl: string) {
-  if (createHash("sha256").update(bytes).digest("hex") !== "2490f9a571c1048e0338688fb0536c69b0dcd7aed34f623bb5b735b059e032cd") return null;
+  return bcd5952TemplateForHash(createHash("sha256").update(bytes).digest("hex"), sourceUrl);
+}
+
+/** The same map, keyed by the blank's sha256 (a stored row's field_map.sourceHash, stamped from
+ *  its bytes at store) — so a stored row reads the CURRENT map without re-hashing its blob
+ *  (ahjForms.codeTemplateMapFor). null for any other hash. */
+export function bcd5952TemplateForHash(sha256: string, sourceUrl: string) {
+  if (sha256 !== BCD_5952_SHA256) return null;
   return {
     formName: "Oregon BCD 5952 Prescriptive Solar Installation Checklist",
     sourceUrl, fillMode: "acroform" as const,

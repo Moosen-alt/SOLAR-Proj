@@ -128,7 +128,7 @@ console.log(`size      ${after.project.systemSizeDcKw ?? "?"} kW dc`);
 console.log(`synth     ${synthesized.join(", ") || "(none — plan set supplied everything)"}`);
 console.log(`qc        ${after.qcResults.filter((q) => q.qcStatus === "fail").length} fail / ${after.qcResults.filter((q) => q.qcStatus === "warning").length} warn`);
 
-const fv = resolveRecipeFieldValues(db, after.project, "powerclerk");
+const fv = resolveRecipeFieldValues(db, after.project, "powerclerk", "nem");
 const interesting = ["homeownerFirstName", "homeownerLastName", "street", "city", "zip", "moduleMake", "moduleModel", "inverterMake", "inverterModel", "inverterQty", "moduleQuantity", "array1Tilt", "array1Azimuth", "mainServiceRating"];
 console.log("\nfield values a replay would send (these must differ from the recorded recipe's project):");
 for (const k of interesting) console.log(`   ${k.padEnd(22)} ${JSON.stringify(fv[k] ?? "")}`);

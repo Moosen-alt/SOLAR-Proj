@@ -69,32 +69,39 @@ import path from "node:path";
 import os from "node:os";
 import { checkStatusWithAdapter, runCorrectionReopen, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
 import { portalAutomationDisabled, resolveHeadless } from "../../portal-bot/src/browser";
-import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, demoteOnReplayFailure, collectHealedSteps, persistHealedSteps, getPortalRecipe, portalEntityEvidence, recipeHostFit, findBorrowableRecipe, replayFailureBlamesRecipe, recipeStepsSignature, type BorrowedRecipeChoice } from "./portalRecipes";
+import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, demoteOnReplayFailure, collectHealedSteps, persistHealedSteps, getPortalRecipe, portalEntityEvidence, recipeHostFit, findBorrowableRecipe, replayFailureBlamesRecipe, recipeStepsSignature, isNotServedRecipe, recordPortalNotServed, type BorrowedRecipeChoice } from "./portalRecipes";
+import { notServedInResult } from "../../shared/src/portalNotServed";
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 // detectPlatform moved with the target INSERT into submittalTracks.ts's ensureCheckTarget.
 import { publicPermitStatusCheck } from "./publicPermitStatus";
 import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES } from "./projectDocuments";
 import type { DesignTextSource } from "./designCriteria";
-import { findAhjProcessProfile } from "./processProfiles";
-import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor } from "./permitProcess";
-import { bindRecipeForReplay, describeReplayBinding } from "./recipeReplayBinding";
-import { documentInventory, owedMissingDocuments, type DocumentInventory, type DocPresence } from "./requiredDocuments";
+import { describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor, isStatewidePortalUrl, projectForTrack, refuseTrackIssuerValue, trackIssuer } from "./permitProcess";
+import { statewideDecisionFor, statewideUrlRefusal } from "./statewideEvidence";
+import { researchWithFittedUrl } from "./researchedPortalUrl";
+import { bindRecipeForReplay, describeReplayBinding, openPerJobQuestions } from "./recipeReplayBinding";
+import { agencyListStatusResolver, documentInventory, missingFilledAtStaging, owedDocumentAction, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
+import { startedAtLabel, type StageAcquiredForm } from "./formAcquisitionPlan";
+import { agencyListReplacesLine, issuingAgencyDocumentList } from "./applicationDocsAgency";
 import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 // Static cycle (nextStep imports repository), used at CALL time only on both sides — the same
 // shape as correctionAgent. getProjectList needs the rule table synchronously.
 import { compactNextStep, decideNextStep, loadNextStepFacts } from "./nextStep";
+import { correctionHoldScope, criticalFieldHoldScope, findingHoldScope, GATE_TRACKS, scopeHoldsTrack, tracksHeld, type GateHoldScope } from "./gateScope";
 import { addAuditLog } from "./audit";
-import { clientStagingOverlay, getClient, parseStateLicenses } from "./clients";
+import { clientLicenceRow, clientStagingOverlay, contractorLicenceForState, getClient } from "./clients";
+import { planSetLicenceWarning } from "./clientMatch";
 import { assertSubmissionPaid } from "./submissionFees";
 import { readAndRecordPortalFees } from "./portalFeeReadings";
-import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, lockedOutCredential } from "./portalCredentials";
+import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, listPortalCredentials, lockedOutCredential } from "./portalCredentials";
+import { annotateDraft, buildDraftTouch, recordDraftTouch } from "./draftLedger";
 import { logger } from "./logger";
 import { selectAdapterActor, selectStagingActor, learnEntryUrl, resolvePortalChannel, seedOutcomeToStageResult, isAutoSeedDisabled, recipeDisciplineFromSteps, disciplineConflictsWithTrack, recipeDisciplineForTrack, hostFitsTrackAndEntity, scopeForTrack, trackSafeUrl, portalHostOf, type HostFit, type PortalUrlSource } from "./portalChannel";
 import { isPortalPaused } from "./portalPause";
 // The ONE creator of permit_check_targets rows (extracted from markTrackSubmitted).
 // Direction matters: submittalTracks must never import repository — jobQueue statically
 // imports repository, and the circular-import guard in CLAUDE.md is about that edge.
-import { ensureCheckTarget, refuseUtilityUrlOnPermitTarget, getSubmittalTracks, isTrackDone, requiredTracks, SUBMITTAL_TRACK_TYPES, trackPermitTypes, unfinishedTracks, unfinishedUnattributedTargets } from "./submittalTracks";
+import { ensureCheckTarget, refuseUtilityUrlOnPermitTarget, getSubmittalTracks, isTrackDone, requiredTracks, SUBMITTAL_TRACK_TYPES, trackHasFiling, trackPermitTypes, unfinishedTracks, unfinishedUnattributedTargets } from "./submittalTracks";
 import { recordTimelineSample, trackForTarget } from "./timelineSamples";
 import { buildApplicationDocumentPackage, findApplicationProfile } from "./applicationDocs";
 import { buildUtilityPackage } from "./docSplitter";
@@ -127,18 +134,19 @@ import {
   isVerifiedKnowledge,
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
-import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens } from "./normalize";
+import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens, TRACK_ISSUER_SNAPSHOT_KEYS, withTrackIssuers } from "./normalize";
 import {
-  classificationDrift, classifyPermitStatusText, isAuthWallText, isNemApprovalOutcome, nextCheckIso, outcomeTrack,
+  classificationDrift, classifyPermitStatusText, effectiveCheckDays, isAuthWallText, isNemApprovalOutcome, nextCheckIso, outcomeTrack, portalStatedStatus,
   readingMayFinishTrack, shouldRecordStatusCheck, trackKind, UNCONFIRMED_READING_LABEL,
   type PermitStatusClassification, type ReadingProvenance, type TrackKind,
 } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
-import { customerBillOnFile, runQcForProject, WAITING_ON_BILL_ISSUE_TYPE } from "./qc";
+import { customerBillOnFile, runQcForProject, WAITING_ON_BILL_ISSUE_TYPE, type QcRunOptions } from "./qc";
 import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
 import { disciplineFor } from "./docDiscipline";
-import { resolvePermitPath } from "./permitPath";
+import { resolvePermitPath, usStateCode } from "./permitPath";
+import { bcd5952FailedRows } from "./bcdChecklistFacts";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
 import type { PvWorksheetGateInput } from "./pvWorksheetGate";
 import { resolveEffectiveCodeContext, ensureCodeProfilesResearched, resolvePermitPathForProject, recordApprovedDesignObservation, isStructuralPermitTrack } from "./codeProfiles";
@@ -329,6 +337,9 @@ function mapProject(row: ProjectRow): ProjectRecord {
     // surfaces keep showing archived work — it only makes the fact sayable.
     archivedAt: text((row as Record<string, unknown>).archived_at),
     archivedReason: text((row as Record<string, unknown>).archived_reason),
+    // THE OPERATOR'S PER-TRACK ISSUER (split issuer): flat snapshot keys, mapped here so every
+    // ProjectRecord carries it; no key at all when none is set. Read only via permitProcess.trackIssuer.
+    ...withTrackIssuers(parserSnapshot),
     assignedUserId: row.assigned_user_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -416,7 +427,8 @@ function mapPermitTarget(row: Row): PermitCheckTarget {
     portalUrl: text(row.portal_url),
     applicationNumber: text(row.application_number),
     permitNumber: text(row.permit_number),
-    checkFrequencyDays: Number(row.check_frequency_days ?? 7),
+    // The cadence the monitor really uses (an open filing is read daily — effectiveCheckDays).
+    checkFrequencyDays: effectiveCheckDays(row.check_frequency_days, row.latest_outcome == null ? null : text(row.latest_outcome)),
     active: bool(row.active),
     lastCheckedAt: row.last_checked_at == null ? null : text(row.last_checked_at),
     nextCheckAt: row.next_check_at == null ? null : text(row.next_check_at),
@@ -447,6 +459,8 @@ function mapPermitStatusCheck(row: Row): PermitStatusCheck {
     targetType: row.target_type == null && row.permit_type == null ? "" : trackKind(text(row.target_type), text(row.permit_type)),
     source: text(row.source) as PermitCheckSource,
     rawStatusText: text(row.raw_status_text),
+    // The portal record's own status words, verbatim (a reading of the portal, not of an email).
+    portalStatedStatus: ["portal", "public_url", "manual"].includes(text(row.source)) ? portalStatedStatus(text(row.raw_status_text)) : "",
     statusLabel: text(row.status_label),
     outcome: text(row.outcome) as PermitCheckOutcome,
     confidence: Number(row.confidence ?? 0),
@@ -737,28 +751,11 @@ export async function researchAndSaveUtility(
 }
 
 /**
- * A RESEARCHED URL IS SAVED TO THE KB ONLY WHEN IT FITS (hostFitsTrackAndEntity). Research that
- * disagrees with the track, with a portal a person verified, or lands on another entity's portal
- * was already refused for THIS stage — but saving it as the entity's seeded row made it the
- * entity's own claim, and the NEXT stage launched it unconfirmed. The rest of the research
- * (documents, steps, notes) is still saved; the URL is left out with a note saying why. The
- * returned research is untouched, so the caller still sees (and reports) what was found.
+ * A RESEARCHED URL IS SAVED TO THE KB ONLY WHEN IT FITS — the one write door, shared with the form
+ * search (researchedPortalUrl.ts: hostFitsTrackAndEntity, and for a permit the statewide portal
+ * refused for an AHJ whose evidence says it files elsewhere — statewideUrlRefusal).
  */
-export function researchWithFittedUrl<T extends { portalUrl: string; notes: string }>(
-  db: AppDb,
-  track: "permit" | "nem",
-  entity: { state?: string; name?: string },
-  research: T,
-): T {
-  const url = String(research.portalUrl || "").trim();
-  if (!url) return research;
-  const fit = hostFitsTrackAndEntity(track, portalEntityEvidence(db, { scope: scopeForTrack(track), state: entity.state, name: entity.name }), url, "research");
-  if (fit.fits) return research;
-  addAuditLog(db, null, "system", "kb research", "knowledge.researched_url_not_saved", {
-    track, state: entity.state ?? "", entity: entity.name ?? "", url, code: fit.code, reason: fit.reason,
-  });
-  return { ...research, portalUrl: "", notes: `${research.notes || ""} [researched portal not saved: ${url} — ${fit.reason}]`.trim() };
-}
+export { researchWithFittedUrl };
 
 // Update an existing project from a (re-)parsed payload. Merges the new fields
 // over the existing parser snapshot — so a re-parse of a corrected plan set
@@ -795,6 +792,23 @@ export function updateProject(db: AppDb, projectId: string, payload: ParserPaylo
   if (!identityGiven("state")) mergedSnapshot.state = existing.state;
   if (!identityGiven("ahj")) mergedSnapshot.ahj = existing.ahj;
   if (!identityGiven("utility")) mergedSnapshot.utility = existing.utility;
+  // THE OPERATOR'S PER-TRACK ISSUER (split issuer) — which agency issues one permit track, e.g. the
+  // city's building permit on a county-AHJ project. It decides WHICH PORTAL that track files on, so a
+  // value that can never be honoured is refused HERE, before anything is written (the reader,
+  // permitProcess.trackIssuer, refuses it too): a name in another state (a permit is never issued
+  // across a state line), a web address, an over-long value. "" clears the track's issuer.
+  const issuerChanges: Array<{ key: string; from: string; to: string }> = [];
+  for (const key of Object.values(TRACK_ISSUER_SNAPSHOT_KEYS)) {
+    if (!Object.prototype.hasOwnProperty.call(payload, key)) continue;
+    const raw = (payload as Record<string, unknown>)[key];
+    if (raw != null && typeof raw !== "string") throw new HttpError(400, `${key} must be an agency name (text), or "" to clear it.`, { field: key });
+    const value = String(raw ?? "").replace(/\s+/g, " ").trim();
+    const why = refuseTrackIssuerValue(value, String(mergedSnapshot.state ?? existing.state ?? ""));
+    if (why) throw new HttpError(400, `Not saved — the issuing agency "${value}": ${why}.`, { field: key, trackIssuerRefused: true });
+    (mergedSnapshot as Record<string, unknown>)[key] = value;
+    const from = String((existingSnapshot as Record<string, unknown>)[key] ?? "").trim();
+    if (from !== value) issuerChanges.push({ key, from, to: value });
+  }
   const project = normalizeProject(projectId, mergedSnapshot, existing.status, existing.createdAt);
   // Preserve the client link unless the payload explicitly changes it.
   const clientId = (payload.clientId ?? payload.client_id ?? existing.clientId) as string | null;
@@ -830,6 +844,10 @@ export function updateProject(db: AppDb, projectId: string, payload: ParserPaylo
     );
     insertExtractedFields(db, projectId, mergedSnapshot, true);
     addAuditLog(db, projectId, "system", "front-end parser", "project.updated_from_parser_snapshot", { fields: Object.keys(payload).length });
+    // Who issues a permit track decides which portal it files on: its own row in the history.
+    for (const change of issuerChanges) {
+      addAuditLog(db, projectId, "human", "operator", "project.track_issuer_set", change);
+    }
   });
   runQcForProject(db, projectId);
   learnFromProject(db, getProjectDetail(db, projectId).project, "project.updated");
@@ -3390,26 +3408,22 @@ export function documentPresenceLine(label: string, via: string): string {
 // away left the document check a WARNING whose advisory document was named nowhere (e6b3afde —
 // the count line and 4 present lines filled the cap first). Those lines are never capped; the
 // rest share the cap. Order is kept, so the count line stays first.
-const GATE_EVIDENCE_NAMES_A_DOCUMENT = /^(Filled at staging:|MISSING \(required\):|Missing \(advisory\):)/;
+const GATE_EVIDENCE_NAMES_A_DOCUMENT = /^(Filled at staging:|Stage downloads and fills it:|MISSING \(required\):|Missing \(advisory\):|NOT KNOWN:)/;
+
+/** How Stage gets a form it acquires itself, in words (the gate's evidence line). */
+function acquisitionSentence(a: StageAcquiredForm | undefined): string {
+  if (!a) return "Stage acquires it before it counts";
+  // The search is running NOW (formAcquisitionPlan's in-flight registry): said as such — never "find
+  // the official form or upload the blank" over a search that is finding it.
+  if (a.inFlight) return `Stage is searching for it now (${startedAtLabel(a.inFlight.since)}) — the form research for ${a.authority} is in flight; when it finishes this row says what it found`;
+  if (a.via === "research") return `no free copy is on file; Stage's form research runs for ${a.authority} (the 24h cooldown is open) — if it finds nothing, Stage stops and says so`;
+  return `${a.authority}'s ${a.via === "curated" ? "published form (a checked, hash-locked copy)" : "application PDF the per-job lookup cites"} is downloaded from ${a.sourceUrl} and filled before Stage counts — if the download fails, Stage stops and says so`;
+}
 const GATE_EVIDENCE_CAP = 6;
 
-/** The contractor licence on file for the project's state: Oregon's CCB for an Oregon job; else a
- *  stateLicenses entry for the state, else the named licence columns when the client's licence
- *  state is this state. The number is "" when none is on file — an unknown, never a CCB demand. */
-export function contractorLicenceForState(clientRow: Row, projectState: string): { oregon: boolean; state: string; label: string; number: string } {
-  const st = String(projectState || "").trim().toUpperCase();
-  const oregon = st === "OR" || !st;
-  if (oregon) return { oregon, state: st, label: "CCB", number: String(clientRow.ccb_license_number || "").trim() };
-  const listed = parseStateLicenses(clientRow.state_licenses_json).find((l) => l.state === st);
-  if (listed) return { oregon, state: st, label: `${st} licence${listed.kind ? ` (${listed.kind.replace(/_/g, " ")})` : ""}`, number: listed.number };
-  if (String(clientRow.license_state || "").trim().toUpperCase() === st) {
-    const ec = String(clientRow.electrical_license_number || "").trim();
-    if (ec) return { oregon, state: st, label: `${st} electrical licence`, number: ec };
-    const other = String(clientRow.ccb_license_number || "").trim();
-    if (other) return { oregon, state: st, label: `${st} contractor licence`, number: other };
-  }
-  return { oregon, state: st, label: `${st} licence`, number: "" };
-}
+/** The contractor licence on file for the project's state — moved to clients.ts, the one predicate
+ *  the form fill reads too; re-exported so existing callers keep working. */
+export { contractorLicenceForState } from "./clients";
 
 function submitGateCheck(input: SubmitGateCheck): SubmitGateCheck {
   const lines = input.evidence.filter(Boolean).map((line) => shorten(text(line), 190));
@@ -3500,10 +3514,20 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   const waitingOnBill: string[] = customerBillOnFile(db, projectId) ? [] : missingCriticalAll.filter((label) => label === "Account" || label === "Meter");
   const missingCritical = missingCriticalAll.filter((label) => !waitingOnBill.includes(label));
   // Safe client lookup (no throw) for the submitting-client gate.
-  const submittingClientRow = project.clientId
-    ? db.get<Row>("SELECT company_name, legal_business_name, ccb_license_number, electrical_license_number, license_state, state_licenses_json FROM clients WHERE id = ?", [project.clientId])
-    : null;
+  const submittingClientRow = project.clientId ? clientLicenceRow(db, project.clientId) : null;
   const licence = submittingClientRow ? contractorLicenceForState(submittingClientRow, project.state) : null;
+  // OUTSIDE OREGON THE LICENCE IS THE PERMIT'S: each permit track asks licenceFor (the answer the
+  // fill and the portal overlay read) for the licence it takes — a client holding three MA licences
+  // is not "no licence on file" because the question was asked without a track.
+  const licenceByTrack = submittingClientRow && licence && !licence.oregon
+    ? (() => { try { return requiredTracks(project).filter((t) => t !== "nem"); } catch { return [] as string[]; } })()
+      .map((t) => ({ track: t, answer: contractorLicenceForState(submittingClientRow, project.state, t) }))
+    : [];
+  const licenceMissingTracks = licenceByTrack.filter((t) => !t.answer.number);
+  // THE PLAN SET'S LICENCE BELONGS TO ANOTHER COMPANY (clientMatch.planSetLicenceWarning): a warning,
+  // never a switch — the assignment is the operator's.
+  let planSetLicenceDoubt = "";
+  try { planSetLicenceDoubt = planSetLicenceWarning(db, project) ?? ""; } catch { planSetLicenceDoubt = ""; }
   const permitLane = processMap.lanes.find((lane) => lane.key === "permit");
   const nemLane = processMap.lanes.find((lane) => lane.key === "nem");
   const blockedPermitSteps = (permitLane?.steps || []).filter((step) => step.status === "blocked");
@@ -3526,12 +3550,19 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   // template must NOT block the submit.
   const gatePathResolution = resolvePermitPathForProject(db, project);
   const gatePermitPath = gatePathResolution.path;
+  // The rows of this job's BCD 5952 that answer No (bcdChecklistFacts — the list the fill note
+  // reads). Oregon's checklist only; read for the permit-path check below.
+  const prescriptiveChecklistNo = usStateCode(project.state) === "OR" ? bcd5952FailedRows(project).map((f) => f.clause) : [];
   // Read the STORED kind, exactly as buildFilledFormsForProject's fill gate does. With the
   // name alone, a stamped-structural blank whose filename claims neither kind counted as
   // "allowed" on a PRESCRIPTIVE project — so its unverified mapping blocked the submit
   // gate over a form this project will never file.
+  // A form filled from the BUILT-IN map written in code for its exact blank (by sha256 —
+  // ahjForms.effectiveStoredFieldMap) was never derived automatically: it is not asked for a
+  // "Mark verified" (dry-run 2026-09-28 B6 — the gate asked a person to verify the BCD 5952 and the
+  // Coos County electrical maps, and verifying would have locked in their outdated stored copies).
   const unverifiedForms = loadStoredTemplates(db, project.ahj, project.state)
-    .filter((t) => !t.verified && formAllowedForPath(t.def.formName, gatePermitPath, t.applicationKind));
+    .filter((t) => !t.verified && !t.builtInMap && formAllowedForPath(t.def.formName, gatePermitPath, t.applicationKind));
   const stagedRun = detail.portalRuns.find((run) => run.status === "awaiting_human_submit");
   // "SUBMITTED" MEANS EVERY REQUIRED FILING, NOT ANY ONE (S7). This was "any submission is
   // submitted, or the status says so" — so a project whose NEM application was filed while its
@@ -3573,6 +3604,10 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
           ? `Waiting on the customer's utility bill for the ${waitingOnBill.join(" and ").toLowerCase()} number — upload it or send an intake request. The permit side can proceed.`
           : "Use this record as the source for every form, portal, and tracker.",
       source: "project.fields",
+      // Each missing field holds only the filings that ask for it — the scope prepareSubmission's
+      // own field gate uses (gateScope.criticalFieldHoldScope): an account number never holds the
+      // AHJ permit, the AHJ never holds the utility's application.
+      ...(missingCritical.length ? { holds: missingCritical.map((label) => ({ label: `Missing: ${label}`, tracks: tracksHeld(criticalFieldHoldScope(label)) })) } : {}),
     }),
     submitGateCheck({
       id: "submitting-client",
@@ -3581,7 +3616,9 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       // for a CCB number (new-AHJ e2e, 2026-09-26), and an unknown requirement stays a warning.
       title: licence?.oregon ? "Submitting client & CCB" : "Submitting client & contractor licence",
       lane: "intake",
-      status: !submittingClientRow ? "blocker" : licence!.number ? "pass" : licence!.oregon ? "blocker" : "warning",
+      status: !submittingClientRow ? "blocker"
+        : licence!.oregon ? (licence!.number ? (planSetLicenceDoubt ? "warning" : "pass") : "blocker")
+        : licenceByTrack.length && !licenceMissingTracks.length && !planSetLicenceDoubt ? "pass" : "warning",
       ownerRole: "Intake Coordinator",
       requirement: licence?.oregon || !submittingClientRow
         ? "A submitting client with a CCB/contractor license must be assigned, so the filing uses the correct contractor — never default or another client's info."
@@ -3590,15 +3627,26 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
         ? ["No submitting client assigned to this project."]
         : [
             `Client: ${String(submittingClientRow.company_name || submittingClientRow.legal_business_name || "(unnamed)")}`,
-            licence!.number ? `${licence!.label}: ${licence!.number}` : licence!.oregon ? "No CCB license on file." : `No contractor licence for ${licence!.state || "this state"} on file.`,
+            ...(licence!.oregon
+              ? [licence!.number ? `${licence!.label}: ${licence!.number}` : `No CCB license on file${licence!.reason && /placeholder/.test(licence!.reason) ? ` (${licence!.reason.replace(/^.*?; /, "")})` : ""}.`]
+              : licenceByTrack.length
+                ? licenceByTrack.slice(0, 3).map(({ track: t, answer: a }) => a.number
+                  ? `${t} permit: ${a.label} ${a.number}`
+                  : `${t} permit: ${a.reason || `no ${licence!.state} licence on file`}`)
+                // No permit track could be read: the trackless answer, candidates named — never
+                // "none on file" for a client that holds several.
+                : [licence!.number ? `${licence!.label}: ${licence!.number}` : licence!.candidates.length ? `Several ${licence!.state} licences on file: ${licence!.candidates.join("; ")}` : `No contractor licence for ${licence!.state || "this state"} on file.`]),
+            ...(planSetLicenceDoubt ? [planSetLicenceDoubt] : []),
           ],
       nextAction: !submittingClientRow
         ? "Assign the submitting client in the project header before staging."
-        : licence!.number
-          ? "Verified — this client's contractor info will be used on the filing."
+        : planSetLicenceDoubt
+          ? "Confirm the project is assigned to the right company — the plan set's title-block licence is another client's. Reassign the client in the project header if it is."
           : licence!.oregon
-            ? "Add the client's CCB license number in the Clients tab."
-            : `Confirm which contractor licence ${licence!.state || "the state"} and ${project.ahj || "the AHJ"} require on the application, and add it to the client's state licences in the Clients tab.`,
+            ? (licence!.number ? "Verified — this client's contractor info will be used on the filing." : "Add the client's CCB license number in the Clients tab.")
+            : !licenceMissingTracks.length && licenceByTrack.length
+              ? "Verified — this client's licence for each permit will be used on the filing."
+              : `Confirm which contractor licence ${licence!.state || "the state"} and ${project.ahj || "the AHJ"} require on the ${licenceMissingTracks.map((t) => t.track).join(" / ") || "permit"} application, and add it (with its type) to the client's state licences in the Clients tab.`,
       source: "project.client",
     }),
     submitGateCheck({
@@ -3613,7 +3661,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       // operator still sees + clears it before they submit.
       status: unverifiedForms.length ? "warning" : "pass",
       ownerRole: "Permit Coordinator",
-      requirement: "Auto-acquired/uploaded AHJ permit forms are filled by AI-derived field and signature placement. A human must preview each filled form and mark its mapping verified before the final submit.",
+      requirement: "An auto-acquired or uploaded AHJ form whose field and signature placement was derived automatically (read from the PDF or mapped by AI) must be previewed by a person and its mapping marked verified before the final submit. A form filled from a built-in map written for its exact official revision (matched by the blank's fingerprint) needs no mapping verification.",
       evidence: unverifiedForms.length
         ? unverifiedForms.map((t) => `Unverified mapping: ${t.def.formName}`)
         : ["All matched AHJ forms are built-in or operator-verified."],
@@ -3648,14 +3696,26 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
         id: "permit-path",
         title: "Permit path confirmed (prescriptive vs engineered)",
         lane: "permit",
-        status: gatePermitPath === "unknown" ? "blocker" : "pass",
+        // A PRESCRIPTIVE path whose own BCD 5952 answers a row No is said, never staged silently: the
+        // checklist says a No row may not be submitted on the prescriptive path (dry-run B4c). Operator
+        // ruling pending: a 5952 No row warns, it does not route engineered — the screen
+        // (permitPath.ts) routes on the roofing row only, so the path resolves prescriptive here
+        // (a real issued Coos Bay permit for a 48 in / 120 mph Exposure C design was prescriptive).
+        status: gatePermitPath === "unknown" ? "blocker" : gatePermitPath === "prescriptive" && prescriptiveChecklistNo.length ? "warning" : "pass",
         ownerRole: "Permit Coordinator",
         requirement: "The prescriptive and engineered (PE-stamped) permit applications are mutually exclusive and the AHJ accepts exactly one. The permit path must be confirmed before the AHJ permit can be staged.",
-        evidence: [gatePermitPath === "unknown" ? "Permit path not yet confirmed for this project." : `Permit path: ${gatePermitPath}.`],
+        evidence: [
+          gatePermitPath === "unknown" ? "Permit path not yet confirmed for this project." : `Permit path: ${gatePermitPath}.`,
+          ...(gatePermitPath === "prescriptive" ? prescriptiveChecklistNo.map((clause) => `BCD 5952 ${clause}`) : []),
+        ],
         nextAction: gatePermitPath === "unknown"
           ? "Set the permit path on Manual entry → Permit path (prescriptive vs engineered) before staging the AHJ permit."
-          : "Permit path is confirmed.",
+          : gatePermitPath === "prescriptive" && prescriptiveChecklistNo.length
+            ? "The permit path is prescriptive, but this job's BCD 5952 answers a row No — and the checklist says a No row may not be submitted on the prescriptive path. Confirm with the AHJ, change the design (e.g. re-space the attachments), or choose the engineered path (Manual entry → Permit path)."
+            : "Permit path is confirmed.",
         source: "permit.path",
+        // prepareSubmission asks the path only off the NEM lane.
+        ...(gatePermitPath === "unknown" ? { holds: [{ label: "Permit path not confirmed", tracks: tracksHeld("permit") }] } : {}),
       }),
     submitGateCheck({
       id: "qc-human-review",
@@ -3696,6 +3756,15 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       ],
       nextAction: reviewerBlockers.length || learnedHistoricalBlockers.length ? "Clear AHJ blocker callouts and learned historical gaps before staging." : reviewerWarnings.length || historicalMissing.length || blockedPermitSteps.length ? "Confirm warnings and checklist gaps with evidence." : "PermitFlow requirements are clear.",
       source: "requirements.reviewer.history",
+      // Each finding holds only the filings it is about (gateScope.findingHoldScope: a structural
+      // conflict holds the building permit, not the utility's application nor the separate
+      // electrical permit); a learned pattern by its own words (historicalBlockerScope).
+      ...(reviewerBlockers.length || learnedHistoricalBlockers.length ? {
+        holds: [
+          ...reviewerBlockers.map((f) => ({ label: f.title, tracks: tracksHeld(findingHoldScope(f)) })),
+          ...learnedHistoricalBlockers.map((item) => ({ label: `Historical blocker: ${item.title}`, tracks: tracksHeld(historicalBlockerScope(historicalReport, item)) })),
+        ],
+      } : {}),
     }),
     submitGateCheck({
       id: "ahj-nem-docs",
@@ -3729,30 +3798,55 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
     // here put "The submit gate is blocked: … checklist, filled" and phase BLOCKED beside an
     // ENABLED Stage portals (29cd57b5, e6b3afde). prepareSubmission still re-counts after its
     // fill, so a blank that fails to fill is still refused there.
+    //
+    // A FORM STAGE DOWNLOADS ITSELF IS NOT OWED EITHER (gates-proper C1): the issuing agency's curated
+    // seed (Michael's Marion B-01S / E-01), a cited agency PDF the model may map, the AHJ's own seed /
+    // the BCD 5952, or research on an open cooldown — owedMissingDocuments' third bucket, read off the
+    // acquisition's own plan. It is said ("Stage downloads and fills it") and never blocks; the check
+    // is a WARNING so it is seen. What IS owed says what to do about it: a form nothing will fetch is
+    // "find the official form or upload the blank", a file is "attach it or split it out".
     submitGateCheck({
       id: "document-inventory",
       title: "Required documents attached",
       lane: gateDocs.owed.some((d) => d.lane === "nem") && !gateDocs.owed.some((d) => d.lane === "permit") ? "nem" : "permit",
-      status: gateDocs.owed.length ? "blocker" : docInventory.missingAdvisory.length ? "warning" : "pass",
+      // An application set nobody knows is a WARNING (seen, never blocking) — never "pass".
+      status: gateDocs.owed.length ? "blocker" : docInventory.missingAdvisory.length || gateDocs.acquiredAtStaging.length || docInventory.applicationSetUnknown ? "warning" : "pass",
       ownerRole: "Permit Ops",
       requirement: "Every required submittal document must be attached as a file (or identified in the uploaded plan set) before staging — the AHJ rejects incomplete packages.",
       evidence: [
-        `${docInventory.presence.filter((d) => d.present).length}/${docInventory.required.length} required documents present${gateDocs.filledAtStaging.length ? `, ${gateDocs.filledAtStaging.length} more filled from a stored template at staging` : ""}.`,
+        `${docInventory.presence.filter((d) => d.present).length}/${docInventory.required.length} required documents present${gateDocs.filledAtStaging.length ? `, ${gateDocs.filledAtStaging.length} more filled from a stored template at staging` : ""}${gateDocs.acquiredAtStaging.length ? `, ${gateDocs.acquiredAtStaging.length} more downloaded and filled by Stage` : ""}.`,
+        // Never dropped by the evidence cap ("NOT KNOWN:" names a document question, like MISSING):
+        // the count above is of a set that may not include the AHJ's applications at all.
+        ...(docInventory.applicationSetUnknown ? [`NOT KNOWN: ${docInventory.applicationSetUnknown}`] : []),
         ...docInventory.presence.filter((d) => d.present).slice(0, 4).map((d) => documentPresenceLine(d.label, d.via)),
         ...gateDocs.filledAtStaging.map((d) => `Filled at staging: ${d.label} — the form's template is on file; staging fills it and offers it to any upload slot that asks for it (check the portal's attachment list before submitting)`),
+        ...gateDocs.acquiredAtStaging.map((d) => `Stage downloads and fills it: ${d.label} — ${acquisitionSentence(gateDocs.acquiredVia.get(d))}`),
         ...gateDocs.owed.map((d) => `MISSING (required): ${d.label} — ${d.why}`),
         ...docInventory.missingAdvisory.map((d) => `Missing (advisory): ${d.label}`),
       ],
-      nextAction: gateDocs.owed.length
-        ? `Attach or split out the missing document(s) before staging: ${gateDocs.owed
-            .map((d) => (d.docType === "structural_letter" && d.why ? `${d.label} — ${d.why}` : d.label))
+      nextAction: !gateDocs.owed.length && !docInventory.missingAdvisory.length && docInventory.applicationSetUnknown
+        ? docInventory.applicationSetUnknown
+        : gateDocs.owed.length
+        ? `Missing before staging: ${gateDocs.owed
+            .map((d) => `${d.docType === "structural_letter" && d.why ? `${d.label} (${d.why})` : d.label} — ${owedDocumentAction(d)}`)
             .join("; ")}.`
         : docInventory.missingAdvisory.length
           ? "Confirm the advisory document(s) are included in the plan set."
-          : gateDocs.filledAtStaging.length
-            ? `All required documents are attached; staging fills the rest from stored templates: ${gateDocs.filledAtStaging.map((d) => d.label).join("; ")}.`
-            : "All required documents are attached.",
+          : gateDocs.acquiredAtStaging.length
+            ? `Nothing to attach: Stage downloads and fills ${gateDocs.acquiredAtStaging.map((d) => d.label).join("; ")}${gateDocs.filledAtStaging.length ? `, and fills ${gateDocs.filledAtStaging.map((d) => d.label).join("; ")} from stored templates` : ""}. If a download fails, Stage says so and stops.`
+            : gateDocs.filledAtStaging.length
+              ? `All required documents are attached; staging fills the rest from stored templates: ${gateDocs.filledAtStaging.map((d) => d.label).join("; ")}.`
+              : "All required documents are attached.",
       source: "documents.inventory",
+      // Each owed document holds the filings prepareSubmission's own filter says carry it
+      // (stagingMissingDocuments: lane, then discipline) — asked here once, for every track.
+      ...(gateDocs.owed.length ? {
+        holds: gateDocs.owed.map((d) => ({
+          label: d.label,
+          action: owedDocumentAction(d),
+          tracks: GATE_TRACKS.filter((t) => stagingMissingDocuments({ ...docInventory, missingBlocking: [d] }, t).length > 0),
+        })),
+      } : {}),
     }),
     submitGateCheck({
       id: "nem-preflight",
@@ -4782,7 +4876,8 @@ export function getApplicationDocumentPackage(db: AppDb, projectId: string): App
 function assembleApplicationDocumentPackage(db: AppDb, projectId: string) {
   const detail = getProjectDetail(db, projectId);
   const client = detail.project.clientId ? (() => { try { return getClient(db, detail.project.clientId!); } catch { return null; } })() : null;
-  const pkg = buildApplicationDocumentPackage(detail.project, client);
+  // Each issuing-agency line's status from the inventory the fill and the gate read (agency-apps-close MF3).
+  const pkg = buildApplicationDocumentPackage(detail.project, client, { agencyStatus: agencyListStatusResolver(db, detail.project) });
 
   // A MISSING DOCUMENT IS NOT A MISSING FIELD, AND THE PACKET SCREEN SAID IT WAS.
   //
@@ -4813,10 +4908,20 @@ function assembleApplicationDocumentPackage(db: AppDb, projectId: string) {
   // screen beside a gate that said "filled at staging" (e6b3afde, 29cd57b5). prepareSubmission's
   // post-fill check stays on the raw inventory — the fill has already run there.
   try {
-    const gateDocs = owedMissingDocuments(db, detail.project, documentInventory(db, detail.project));
+    const inventory = documentInventory(db, detail.project);
+    const gateDocs = owedMissingDocuments(db, detail.project, inventory);
     const row = (d: DocPresence) => ({ docType: d.docType, label: d.label, lane: d.lane, why: d.why });
+    // Nothing known about this AHJ's applications: the packet says so instead of an all-clear.
+    if (inventory.applicationSetUnknown) pkg.applicationSetUnknown = inventory.applicationSetUnknown;
     pkg.missingDocuments = gateDocs.owed.map(row);
     pkg.filledAtStagingDocuments = gateDocs.filledAtStaging.map(row);
+    pkg.acquiredAtStagingDocuments = gateDocs.acquiredAtStaging.map((d) => ({
+      ...row(d),
+      why: acquisitionSentence(gateDocs.acquiredVia.get(d)),
+      via: gateDocs.acquiredVia.get(d)?.via ?? "curated",
+      sourceUrl: gateDocs.acquiredVia.get(d)?.sourceUrl ?? "",
+      ...(gateDocs.acquiredVia.get(d)?.inFlight ? { inFlight: gateDocs.acquiredVia.get(d)!.inFlight } : {}),
+    }));
     pkg.missingDocumentsStatus = "resolved";
   } catch (err) {
     // Leave missingDocuments ABSENT on purpose: [] would be a claim we cannot make.
@@ -4855,10 +4960,16 @@ function assembleApplicationDocumentPackage(db: AppDb, projectId: string) {
       verifiedBy: learned.verifiedBy,
     };
     // Merge the learned required docs into the profile's list (dedup), and if the
-    // builder fell back to a generic profile, adopt the learned AHJ identity.
+    // builder fell back to a generic profile, adopt the learned AHJ identity. A learned line for a
+    // TRACK another agency issues does not come back behind that agency's own application — the
+    // same replacement the builder made (applicationDocsAgency.agencyListReplacesLine; agency-apps-close
+    // MF2 at the door: Michael's card re-grew the city's "portal entry" and generic checklist lines).
+    let agencyList: ReturnType<typeof issuingAgencyDocumentList> = null;
+    try { agencyList = issuingAgencyDocumentList(detail.project); } catch { agencyList = null; }
+    const learnedLines = learned.requiredDocuments.filter((line) => !agencyList || !agencyListReplacesLine(agencyList, line));
     pkg.profile = {
       ...pkg.profile,
-      requiredDocuments: Array.from(new Set([...pkg.profile.requiredDocuments, ...learned.requiredDocuments])),
+      requiredDocuments: Array.from(new Set([...pkg.profile.requiredDocuments, ...learnedLines])),
       portalName: pkg.profile.portalName || learned.portalName,
       sourceUrl: pkg.profile.sourceUrl || learned.portalUrl,
       name: /generic/i.test(pkg.profile.name) && learned.ahj
@@ -4990,8 +5101,8 @@ export async function readStageResults(db: AppDb, projectId: string): Promise<{
   return { applicationDocs, reviewerReport, historicalReport };
 }
 
-export function rerunQc(db: AppDb, projectId: string): ProjectDetail {
-  const result = runQcForProject(db, projectId);
+export function rerunQc(db: AppDb, projectId: string, options: QcRunOptions = {}): ProjectDetail {
+  const result = runQcForProject(db, projectId, options);
   addAuditLog(db, projectId, "system", "qc gate", "project.qc_rerun", { ...result });
   return getProjectDetail(db, projectId);
 }
@@ -5565,6 +5676,14 @@ export function classifyCorrectionTrack(...parts: Array<string | null | undefine
 export function correctionOnTrack(want: "permit" | "nem", ...parts: Array<string | null | undefined>): boolean {
   const track = classifyCorrectionTrack(...parts);
   return track === want || track === "unclassified";
+}
+
+/** WHICH FILINGS A LEARNED HISTORICAL BLOCKER HOLDS (gates-proper C2): its own words and its
+ *  cause's, classified by classifyCorrectionTrack (strong signals only) — an unclassified item
+ *  holds every filing. The gate's permit-requirements check and prepareSubmission ask this. */
+export function historicalBlockerScope(report: HistoricalFailureReport, item: HistoricalFailureReport["checklist"][number]): GateHoldScope {
+  const cause = report.topRejectionCauses.find((c) => c.signature === item.sourceCauseSignature);
+  return correctionHoldScope(classifyCorrectionTrack(item.title, item.why, item.action, cause?.title, cause?.rootCause, cause?.requiredAction));
 }
 
 export async function reopenCorrectionOnPortal(
@@ -6176,7 +6295,8 @@ export async function recordPermitStatusCheck(
     }
 
     if (target) {
-      const frequency = Number(target.check_frequency_days ?? 7);
+      // The cadence follows THIS reading: an open filing is read again tomorrow (effectiveCheckDays).
+      const frequency = effectiveCheckDays(target.check_frequency_days, classification.outcome);
       db.run(
         `UPDATE permit_check_targets
          SET last_checked_at = ?, next_check_at = ?, latest_outcome = ?, latest_status_label = ?, updated_at = ?
@@ -6469,6 +6589,16 @@ function closeCorrectionsOnTerminalStatus(
   return closed;
 }
 
+/** The required PERMIT tracks (building / electrical / combo — never NEM) with a TRACKED filing
+ *  that is not yet done (isTrackDone). A required track nobody has filed/tracked is not "in
+ *  review" and does not hold the headline — the tracks panel already shows it as not started. */
+function permitTracksStillOpen(db: AppDb, projectId: string): SubmittalTrackType[] {
+  const row = db.get<ProjectRow>("SELECT * FROM projects WHERE id = ?", [projectId]);
+  if (!row) return [];
+  const required = requiredTracks(mapProject(row));
+  return required.filter((t) => t !== "nem" && trackHasFiling(db, projectId, t, required) && !isTrackDone(db, projectId, t, required));
+}
+
 function updateProjectForPermitOutcome(
   db: AppDb,
   currentStatus: ProjectRecord["status"],
@@ -6572,7 +6702,21 @@ const MONITOR_WAITING_MAY_ADVANCE = new Set(["awaiting_human_submit", "submitted
   if (outcome === "correction_flagged") update("correction_received", "Permit monitor flagged a correction. Review bucket and next action.", "correction_open");
   else if (outcome === "nem_approved" && !isPermit) update("nem_approved", message, "nem_approved");
   else if (outcome === "ready_for_issue" && !isNem) update("ready_for_issue", message, "ready_for_issue");
-  else if (outcome === "issued" && !isNem) update("issued", message, "permit_issued");
+  else if (outcome === "issued" && !isNem) {
+    // ONE PERMIT ISSUED IS NOT THE PROJECT'S PERMITS ISSUED (live 2026-09-28: a separate-permit
+    // AHJ's electrical permit read "Permit Issued" while its building permit sat in review, and the
+    // project headline said "issued"). The headline is "issued" only once every required PERMIT
+    // track is done — isTrackDone, the one answer the tracks panel and the handoff read. Before
+    // that the issued filing is news on its own track card; the project reads "submitted" (in
+    // review), except where a greater permit state (fees due / approved) or the NEM approval
+    // already holds it — this writer never rewinds those.
+    const open = permitTracksStillOpen(db, projectId);
+    if (!open.length) update("issued", message, "permit_issued");
+    else if (["awaiting_human_submit", "submitted", "issued"].includes(currentStatus)) {
+      const named: Record<string, string> = { building: "building permit", electrical: "electrical permit", combo: "building + electrical permit", permit: "permit", mpu: "panel-upgrade permit" };
+      update("submitted", `${message.replace(/\s+$/, "")} Not yet issued: the ${open.map((t) => named[t] ?? `${t} permit`).join(" and the ")}.`, "under_review");
+    }
+  }
   else if (outcome === "reviewed_by_ahj" && !isNem) update("approved", message, "permit_approved");
   else if (outcome === "waiting" && MONITOR_WAITING_MAY_ADVANCE.has(currentStatus) && !waitingWouldRewindAnotherTrack()) {
     // THE PORTAL IS TRUTH ABOUT WHETHER A FILING EXISTS (operator ruling, 2026-09-20).
@@ -6843,7 +6987,7 @@ export async function runDuePermitChecks(
     const gatheredNothing = !rawStatusText && !isAutoSeedDisabled();
     const alreadyKnown = Boolean(text(target.latest_outcome));
     if (gatheredNothing && (source === "mock" || alreadyKnown)) {
-      const days = Math.max(1, Math.floor(Number(target.check_frequency_days || 7)));
+      const days = effectiveCheckDays(target.check_frequency_days, text(target.latest_outcome));
       db.run("UPDATE permit_check_targets SET last_checked_at = ?, next_check_at = ?, updated_at = ? WHERE id = ?", [
         now,
         new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString(),
@@ -7307,6 +7451,27 @@ export function packagedDocumentsByType(db: AppDb, project: ProjectRecord, track
   return submissionDocumentsByType(db, project, track);
 }
 
+/** THE DOCUMENTS THIS FILING OWES THE PORTAL beyond the plan set (docs plan D7). The AHJ's required
+ *  list (requiredListCheck: the per-job lookup's issuing-agency forms, the state checklist, the KB's
+ *  lines) — each item ON FILE in THIS track's payload (docsByType is already track-scoped, so the
+ *  building B-01S never rides the electrical permit, and a utility bill never rides a permit). One
+ *  entry per document; the plan set (the recording uploads it) and generated worksheets excluded. */
+export function owedAttachmentsFor(db: AppDb, project: ProjectRecord, docsByType: Record<string, string>): Array<{ docType: string; label: string }> {
+  const out: Array<{ docType: string; label: string }> = [];
+  let items: Array<{ text: string; docTypes: string[]; present: boolean }> = [];
+  // An unreadable list never reads as "nothing owed" (skeptic eb36a8f MF2): a sentinel the approved
+  // final submit refuses on (recipeAdapter.finalSubmitRefusalsNow).
+  try { items = requiredListCheck(db, project, documentInventory(db, project)).items as typeof items; } catch { return [{ docType: "__unreadable__", label: "the required-document list could not be read" }]; }
+  for (const it of items) {
+    if (!it?.present || !Array.isArray(it.docTypes)) continue;
+    const docType = it.docTypes.find((t) => docsByType[t] && t !== "plan_set" && !/^generated_/.test(t));
+    if (!docType || out.some((o) => o.docType === docType)) continue;
+    const label = String(it.text || docType).split(" — ")[0].replace(/^[^:]{0,100}\(issues the [^:]*?\):\s*/i, "").trim() || docType;
+    out.push({ docType, label });
+  }
+  return out;
+}
+
 /**
  * THE DOCUMENT GATE'S FILTER — the one prepareSubmission turns into its 409.
  *
@@ -7348,6 +7513,77 @@ export function stagingMissingDocuments(inventory: DocumentInventory, track?: Su
     if (discipline === "combo" || rowDiscipline === "combo") return true;
     return rowDiscipline === discipline;
   });
+}
+
+/**
+ * THE REQUIRED DOCUMENTS A STAGED DRAFT DID NOT CARRY — how Approve judges a draft that already exists
+ * (gates-proper C1). Never the pre-Stage look-ahead: a draft is judged by what went up with it, not by
+ * what Stage would acquire now, and not by what is on disk now. Michael Sheridan's electrical draft
+ * (191e45c8) was staged at 18:47Z, before the Marion E-01 existed; once the E-01 was fetched and filled
+ * (02:19Z) the disk said "present", and Approve would have read the draft as complete.
+ *
+ * The track's required blocking rows (stagingMissingDocuments' own lane / discipline filter) are
+ * checked against the run's recorded payload (`packagedDocTypes`, written at staging). A run staged
+ * before that record existed is judged by POSITIVE proof only: a row on file now whose every upload /
+ * stored template arrived AFTER the draft was staged was not in it; a row with no such proof is taken
+ * as carried (no false stop on a legacy draft). A row not on file now was not carried either.
+ * `onFileNow` says which fix applies: re-stage (it is on file now), or get it on file first.
+ */
+export function draftDocumentGaps(
+  db: AppDb,
+  project: ProjectRecord,
+  run: { started_at?: unknown; result_json?: unknown },
+  track: SubmittalTrackType | null,
+): Array<{ label: string; onFileNow: boolean }> {
+  const inv = documentInventory(db, project);
+  const trackRows = stagingMissingDocuments({ ...inv, missingBlocking: inv.presence.filter((p) => p.blocking) }, track ?? undefined);
+  const result = parseJson<Record<string, unknown>>(text(run.result_json) || "{}", {});
+  const carried = Array.isArray(result.packagedDocTypes) ? (result.packagedDocTypes as unknown[]).map(String) : null;
+  const startedMs = Date.parse(text(run.started_at));
+  // A row not on disk that the staging-time fill produces from a stored template: the draft's own
+  // staging ran that fill, so it carried the form if the template was on file then (its age decides,
+  // below). Anything else not on disk was not in the draft.
+  const produced = missingFilledAtStaging(db, project, trackRows.filter((d) => !d.present));
+  // THE SAME PACKAGING ON BOTH SIDES: the recorded list is Object.keys(packagedDocumentsByType) at
+  // staging, so a row is judged only under a key that packaging gives it NOW — a document the
+  // payload keys another way (an alias, a family key), or would not carry on this track anyway, is
+  // no proof of anything, and never a reason to refuse a fresh draft.
+  const nowPackaged = carried ? new Set(Object.keys(packagedDocumentsByType(db, project, track))) : null;
+  const templateIds = carried ? [] : loadStoredTemplates(db, project.ahj, project.state).map((t) => t.templateId);
+  const out: Array<{ label: string; onFileNow: boolean }> = [];
+  for (const d of trackRows) {
+    const keys = [d.docType, ...(d.altDocTypes || [])];
+    if (!d.present && !produced.has(d)) { out.push({ label: d.label, onFileNow: false }); continue; }
+    if (d.via === "in plan set") continue; // the plan set carries it
+    if (carried && nowPackaged) {
+      // A FORM THE STAGING FILL MAKES FROM A STORED TEMPLATE, not filled here yet, is judged against
+      // the RECORD alone (skeptic gates-proper MF2): nothing on disk can speak for it, and a template
+      // stored after the draft (by another job — templates are shared) must not read as "carried".
+      if (!d.present && produced.has(d)) {
+        if (!keys.some((k) => carried.includes(k))) out.push({ label: d.label, onFileNow: true });
+        continue;
+      }
+      const packagedKeys = keys.filter((k) => nowPackaged.has(k));
+      if (packagedKeys.length && !packagedKeys.some((k) => carried.includes(k))) out.push({ label: d.label, onFileNow: true });
+      continue;
+    }
+    if (Number.isFinite(startedMs) && documentArrivedAfter(db, project, keys, startedMs, templateIds)) out.push({ label: d.label, onFileNow: true });
+  }
+  return out;
+}
+
+/** Did every copy of these document types (uploads, and the stored templates a filled form comes
+ *  from) arrive after `sinceMs`? false when nothing dated is found — no proof, no claim. */
+function documentArrivedAfter(db: AppDb, project: ProjectRecord, keys: string[], sinceMs: number, templateIds: string[]): boolean {
+  const ph = keys.map(() => "?").join(", ");
+  const times: number[] = db.query<Row>(`SELECT uploaded_at FROM project_documents WHERE project_id = ? AND doc_type IN (${ph})`, [project.id, ...keys])
+    .map((r) => Date.parse(text(r.uploaded_at)));
+  if (templateIds.length) {
+    const rows = db.query<Row>(`SELECT created_at FROM ahj_form_templates WHERE id IN (${templateIds.map(() => "?").join(", ")}) AND form_type IN (${ph})`, [...templateIds, ...keys]);
+    times.push(...rows.map((r) => Date.parse(text(r.created_at))));
+  }
+  const dated = times.filter(Number.isFinite);
+  return dated.length > 0 && dated.every((t) => t > sinceMs);
 }
 
 /**
@@ -7401,6 +7637,350 @@ function kbRowRank(row: { state?: string; ahj?: string; verified_at?: string | n
   if (!projectState || String(row.state ?? "").trim().toLowerCase() !== projectState) rank += 2;
   if (!isVerifiedKnowledge(row)) rank += 1;
   return rank;
+}
+
+/**
+ * WHICH PORTAL, WHICH RECIPE, FOR THIS STAGE — the resolution prepareSubmission runs after its gates:
+ * the learned profile and platform, the own recipe (discipline-checked), the entity evidence and the
+ * one host predicate (hostFitsTrackAndEntity) every candidate URL is judged by, the KB / fuzzy /
+ * per-job-lookup / draft / statewide candidates, the entity's OWN portal, and the shared-portal
+ * borrow. Moved out of prepareSubmission unchanged (split-issuer, 2026-09-28) so it can be asked
+ * without a browser and without the staging gates — the tests and the base-parity replay call it.
+ * Portal truth (merged 2026-09-28) lives here too, for the track's VIEW (`project` is what
+ * projectForTrack gave — the issuing agency when another agency issues this permit): the statewide
+ * portal only on evidence (D1, statewideEvidence.statewideDecisionFor — read ONCE per stage), a
+ * statewide URL from any store refused when that evidence says the AHJ files elsewhere
+ * (statewideUrlRefusal, inside fitUrl so the returned permitSafeUrl holds it at the researched-URL
+ * door too), and a recipe its portal refused ("not served here", D5) never replayed nor lending its URL.
+ * Writes only the audit rows it always wrote (a legacy recipe skipped, a borrow refused / taken,
+ * the statewide portal taken / withheld / a statewide URL refused, a not-served recipe skipped).
+ */
+export function resolveStagePortal(db: AppDb, input: {
+  projectId: string;
+  project: ProjectRecord;
+  track: SubmittalTrackType | undefined;
+  /** The portal_profiles row's type ("mock" when none). */
+  portalType: string;
+  isRealPortal: boolean;
+}) {
+  const { projectId, project, track, portalType, isRealPortal } = input;
+  // Platform-driven adapter reuse: a new AHJ on a KNOWN platform (e.g. City of Lafayette
+  // on Accela/Oregon ePermitting) reuses that platform's hand-coded adapter even if its
+  // portal_type isn't the canonical one — only the entry URL + login differ. The platform
+  // comes from the learned KB profile. Gated on a real portal profile so mock/dev is
+  // unaffected.
+  const learnedProfile = isRealPortal
+    ? findLearnedProfileForProject(db, { state: project.state, ahj: project.ahj, utility: project.utility })
+    : null;
+  const platform = String(learnedProfile?.portalPlatform ?? "").toLowerCase();
+  // PLATFORM FALLBACK FROM URL: portal_platform is empty on many learned/seeded KB rows
+  // (nothing backfills it), and an empty platform used to dead-end dispatch as NoAdapter
+  // even when the row's portal_url plainly identifies the platform (live: City of Salem
+  // carried the aca-oregon.accela.com URL with a blank platform). Sniff the URL only when
+  // the platform column is empty — an explicit value always wins.
+  const platformUrlHint = String((learnedProfile as { portalUrl?: string } | null)?.portalUrl ?? "").toLowerCase();
+  const isAccela = portalType === "accela_oregon"
+    || (isRealPortal && (platform.includes("accela") || (!platform && /accela\.com|citizenaccess/.test(platformUrlHint))));
+  const isPowerClerk = portalType === "powerclerk_pge"
+    || (isRealPortal && (platform.includes("powerclerk") || (!platform && /powerclerk\.com/.test(platformUrlHint))));
+  // Recipe replay is the FIRST-LINE (universal) path: if an admin has recorded a complete recipe
+  // for this AHJ (or its utility), replay it — even on a known platform (PowerClerk/Accela). The
+  // hand-coded platform adapters are the FALLBACK when no recipe exists. The lookup is track-
+  // scoped so a NEM stage never picks up an AHJ permit recipe (and vice-versa).
+  // Which permit discipline this track files under - the recipe key's second dimension.
+  const trackDiscipline = recipeDisciplineForTrack(track);
+  let recipe = track === "nem"
+    // NEM stages against the utility's recorded recipe.
+    ? findCompleteRecipeForProject(db, { scopeType: "utility", state: project.state, utility: project.utility })
+    // Permit tracks replay ONLY an AHJ-scoped recipe — never a utility (NEM) recipe, which is a
+    // different portal and form. No AHJ recipe → self-seed / hand-coded fallback, not a wrong-track replay.
+    : findCompleteRecipeForProject(db, { scopeType: "ahj", state: project.state, ahj: project.ahj, utility: project.utility, discipline: trackDiscipline });
+  // A RECIPE ITS PORTAL REFUSED ("not served here", portal-truth D5) never replays — even one a
+  // person re-promoted without clearing the flag. The flag names the portal's words.
+  if (recipe && isNotServedRecipe(recipe)) {
+    addAuditLog(db, projectId, "system", "submit gate", "portal.not_served_recipe_skipped", { track: track ?? "permit", recipeId: recipe.id, reason: recipe.flagReason.slice(0, 300) });
+    recipe = null;
+  }
+  // LEGACY-ROW DISCIPLINE CHECK. Recipes are keyed per AHJ per discipline, but rows
+  // recorded before that dimension existed carry discipline '' and are accepted as a
+  // fallback. If such a row was actually learned for the OTHER discipline, its steps pick
+  // the wrong jurisdiction row and record type — so drop it here rather than replaying it.
+  // Dropping (instead of refusing the stage) is the unlock: with no recipe in hand the
+  // dispatch falls through to the universal learner, which now seeds THIS discipline's own
+  // recipe. Refusing left the second discipline able to neither replay nor self-seed.
+  let droppedLegacyRecipeDiscipline: "electrical" | "structural" | null = null;
+  if (recipe && trackDiscipline && !recipe.discipline) {
+    try {
+      const learnedFor = recipeDisciplineFromSteps(getPortalRecipe(db, recipe.id).steps);
+      if (disciplineConflictsWithTrack(learnedFor, track)) {
+        droppedLegacyRecipeDiscipline = learnedFor;
+        addAuditLog(db, projectId, "system", "submit gate", "portal.discipline_recipe_skipped", {
+          track: track ?? "permit", recipeId: recipe.id, learnedFor,
+        });
+        recipe = null;
+      }
+    } catch { /* unreadable steps — leave the recipe in place for the gate below */ }
+  }
+
+  // ── WHOSE PORTAL? (rule 5, both ways, and the entity) ────────────────────────────────────
+  // Every URL this stage could launch, and the recipe it could replay, is judged by ONE
+  // predicate — hostFitsTrackAndEntity — against what the shared tables say about THIS
+  // project's own utility (NEM) or AHJ (permit). A permit track never gets a utility portal and
+  // a NEM track never gets a permit portal; a URL or recipe for entity X is never used for Y; and
+  // where a person verified the entity's portal, nothing stored or researched that disagrees is
+  // launched. Evidence: a ComEd project staged with the PGE recipe (fe12ed81); Tigard researched
+  // to Accela against its verified EnerGov row; a Tigard KB row carrying PGE's PowerClerk.
+  const hostEntityInput = {
+    scope: scopeForTrack(track),
+    state: project.state,
+    name: track === "nem" ? project.utility : project.ahj,
+  };
+  const hostEntity = portalEntityEvidence(db, hostEntityInput);
+  // A recipe is judged on the OTHER evidence — never on its own row, or a mis-keyed recipe would
+  // vouch for its own wrong host.
+  const judgeRecipe = (r: { id: string; portalUrl?: string; steps?: import("../../shared/src/types").RecipeStep[] }) =>
+    recipeHostFit(track, portalEntityEvidence(db, { ...hostEntityInput, excludeRecipeIds: [r.id] }), r);
+  /** Why candidate URLs were refused on this stage — the operator reads these if nothing fits. */
+  const refusedUrls: Array<{ url: string; source: string; code: string; reason: string }> = [];
+  // PORTAL-TRUTH D1 AT EVERY READ (statewideEvidence.statewideUrlRefusal — the predicate the research
+  // write doors ask too): a stored / learned / researched URL on the STATEWIDE host is not served
+  // when this AHJ's own evidence says it files elsewhere. The statewide fallback below is D1's own
+  // answer, and an operator's URL is judged at its route. The decision is read ONCE per stage, for
+  // this track's view (`project`: the issuing agency when another agency issues this permit), and
+  // permitSafeUrl — returned to prepareSubmission for the researched URL — closes over the same
+  // memo, so every door on this stage reads the one decision.
+  let statewideDecisionMemo: ReturnType<typeof statewideDecisionFor> | undefined;
+  const statewideDecision = () => (statewideDecisionMemo === undefined ? (statewideDecisionMemo = statewideDecisionFor(db, project, track)) : statewideDecisionMemo);
+  const fitUrl = (url: string | null | undefined, source: PortalUrlSource): string => {
+    const value = String(url ?? "").trim();
+    if (!value) return "";
+    const fit = hostFitsTrackAndEntity(track, hostEntity, value, source);
+    if (fit.fits) {
+      const refusal = scopeForTrack(track) === "ahj" && source !== "statewide" && source !== "operator" && isStatewidePortalUrl(project.state, value)
+        ? statewideUrlRefusal(db, project, track, value, statewideDecision())
+        : "";
+      if (!refusal) return value;
+      if (!refusedUrls.some((r) => r.url === value)) {
+        refusedUrls.push({ url: value, source, code: "statewide_elsewhere", reason: refusal });
+        addAuditLog(db, projectId, "system", "submit gate", "portal.statewide_url_refused", { track: track ?? "permit", url: value, source, reason: refusal.slice(0, 600) });
+      }
+      return "";
+    }
+    if (!refusedUrls.some((r) => r.url === value)) refusedUrls.push({ url: value, source, code: fit.code, reason: fit.reason });
+    return "";
+  };
+  // The own recipe: its entry URL and every portal it navigates to. A TRACK conflict keeps the
+  // existing gate below (flag for re-record, stop); an entity/platform misfit stops the run
+  // without touching the recipe — it is valid for whichever entity it was learned on.
+  let recipeTrackConflict: (HostFit & { url: string }) | null = null;
+  let recipeEntityMisfit: (HostFit & { url: string }) | null = null;
+  if (recipe) {
+    const fit = judgeRecipe(recipe);
+    if (!fit.fits) {
+      if (fit.code === "track_conflict") recipeTrackConflict = fit;
+      else recipeEntityMisfit = fit;
+    }
+  }
+
+  // Resolve stored credentials for session-expired auto-login. Passed
+  // in-memory to the adapter; never logged. Falls back gracefully when
+  // no credential has been stored for this client+portal combination.
+  //
+  // Lookup chain (the operator may store a credential keyed by any of these):
+  //   1. exact portal_type (the canonical "accela_oregon"/"powerclerk_pge")
+  //   2. portal URL hostname — covers credentials saved via the per-project
+  //      "Manage logins" panel, whose portal_type is a channel-derived slug
+  //      (e.g. "oregon_epermitting_accela") that won't equal the canonical type.
+  //   3. the client's single credential when unambiguous.
+  // Resolve the portal's login URL for the hostname match: learned KB profile,
+  // recorded recipe, else the built-in applicationDocs sourceUrl.
+  //
+  // RESOLVED HERE, BEFORE THE FIELD GATE (pure DB reads — no browser, no research): the
+  // shared-portal reuse below needs the AHJ's OWN portal to match a recipe to, and the field
+  // gate needs to know whether a recipe will drive the run.
+  // The fallback URL MUST be scoped to the track so a NEM stage never matches the AHJ
+  // permit credential (and vice-versa). learnedProfile/recipe are already track-scoped
+  // above; the applicationDocs sourceUrl is AHJ-scoped, so only use it for permit tracks.
+  // For the NEM track, the fallback URL is the UTILITY's portal URL from the KB
+  // (e.g. Pacific Power → pacificpower.net), never the AHJ permit portal.
+  let utilityPortalUrl = "";
+  let ahjPortalUrl = "";
+  const projectState = (project.state || "").trim().toLowerCase();
+  if (track === "nem" && project.utility) {
+    // "OR the name IS a url": reference imports have twice filed the portal link in
+    // portal_name with portal_url empty (Tigard, Douglas County) — same fallback as the
+    // knowledgeBase mapper, kept in SQL because this exact-key read bypasses the mapper.
+    // EVERY row for the utility, best first — the utility-keyed row (no AHJ), this state, a
+    // verified row — and the first candidate that FITS wins. LIMIT 1 used to take whichever row
+    // SQLite returned first, which could be an AHJ row carrying that AHJ's permit portal.
+    const utilRows = db.query<{ portal_url?: string; portal_name?: string; state?: string; ahj?: string; verified_at?: string | null }>(
+      `SELECT portal_url, portal_name, state, ahj, verified_at FROM permit_utility_knowledge
+        WHERE utility = ? AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE 'http%')`,
+      [project.utility],
+    ).sort((a, b) => kbRowRank(a, projectState, true) - kbRowRank(b, projectState, true));
+    for (const row of utilRows) {
+      utilityPortalUrl = [String(row.portal_url ?? ""), String(row.portal_name ?? "")]
+        .map((u) => fitUrl(/^https?:\/\/\S+$/i.test(u.trim()) ? u.trim() : "", "kb")).find(Boolean) ?? "";
+      if (utilityPortalUrl) break;
+    }
+  } else if (track !== "nem" && project.ahj) {
+    // A human-verified AHJ in the KB may carry a portal URL even without a required-documents list,
+    // so a permit self-seed can launch from it (mirrors the NEM utility-URL lookup). This is a real
+    // portal ENTRY, unlike the applicationDocs sourceUrl (an AHJ info page), so it gates the gate.
+    // BOTH columns, chosen in JS — because the KB sweep (2026-09-21) found every shape at once:
+    // the reference import files the AHJ link in portal_NAME (71 rows), the learn path parks the
+    // UTILITY's PowerClerk on AHJ-side rows (23 rows), and Happy Valley had both inverted in one
+    // row (EnerGov in name, PowerClerk in url). The rule: for a PERMIT lookup, take the first
+    // candidate that is an http URL and FITS the track and this AHJ — url column first, then name.
+    // Every row for the AHJ name, best first (this state, verified): the same name in another
+    // state is another city (the KB has "City of Tigard" in OR, AL, AR and WA).
+    const ahjRows = db.query<{ portal_url?: string; portal_name?: string; state?: string; ahj?: string; verified_at?: string | null }>(
+      `SELECT portal_url, portal_name, state, ahj, verified_at FROM permit_utility_knowledge
+        WHERE ahj = ? AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE 'http%')`,
+      [project.ahj],
+    ).filter((r) => !projectState || !String(r.state ?? "").trim() || String(r.state).trim().toLowerCase() === projectState)
+      .sort((a, b) => kbRowRank(a, projectState, false) - kbRowRank(b, projectState, false));
+    for (const row of ahjRows) {
+      ahjPortalUrl = [String(row.portal_url ?? ""), String(row.portal_name ?? "")]
+        .map((u) => fitUrl(/^https?:\/\/\S+$/i.test(u.trim()) ? u.trim() : "", "kb")).find(Boolean) ?? "";
+      if (ahjPortalUrl) break;
+    }
+  }
+  // Fuzzy fallback: the exact-name lookups above miss imported KB rows keyed by
+  // legal names ("Portland General Electric") when the project says "PGE". Same
+  // resolver the auto-learn planner uses — state-filtered token/acronym matching.
+  if (track === "nem" ? !utilityPortalUrl : !ahjPortalUrl) {
+    const fuzzy = findKnowledgeForLearn(db, {
+      state: project.state,
+      ahj: track !== "nem" ? project.ahj : undefined,
+      utility: track === "nem" ? project.utility : undefined,
+    });
+    if (track === "nem") utilityPortalUrl = fitUrl(fuzzy.utility?.portalUrl, "kb");
+    else ahjPortalUrl = fitUrl(fuzzy.ahj?.portalUrl, "kb");
+  }
+  // THE PER-JOB LOOKUP'S PORTAL for this track's permit (cited, seeded) — judged like research
+  // (a verified portal for the AHJ outranks it; an information page never fits). The statewide
+  // portal is not taken here: that answer is the statewide fallback below, labelled as such.
+  if (track !== "nem" && !ahjPortalUrl) {
+    const looked = permitAnswerForTrack(project, track)?.portalUrl.value ?? "";
+    if (looked && !isStatewidePortalUrl(project.state, looked)) ahjPortalUrl = fitUrl(looked, "research");
+  }
+  // A draft/recording recipe (not yet promoted to "complete") still carries the entry URL the
+  // operator — or a prior auto-learn pass — pointed the recorder at. Recover it so the universal
+  // self-seed can launch the right portal even before any recipe is verified. Track-scoped exactly
+  // like the complete-recipe lookup above (NEM → utility key; permit → AHJ only, never utility).
+  const draftRecipeRaw = track === "nem"
+    ? findAnyRecipeForProject(db, { scopeType: "utility", state: project.state, utility: project.utility })
+    : findAnyRecipeForProject(db, { scopeType: "ahj", state: project.state, ahj: project.ahj, utility: project.utility, discipline: trackDiscipline });
+  // A draft whose portals do not fit (a Tigard draft that navigates to Accela) lends no URL.
+  const draftFit = draftRecipeRaw ? judgeRecipe(draftRecipeRaw) : null;
+  // …nor one its portal REFUSED ("not served here", portal-truth D5): the next stage must not reuse
+  // the host that told this AHJ it does not serve the address.
+  const draftNotServed = Boolean(draftRecipeRaw && isNotServedRecipe(draftRecipeRaw));
+  const draftRecipe = draftRecipeRaw && draftFit?.fits && !draftNotServed ? draftRecipeRaw : null;
+  if (draftRecipeRaw && draftFit && !draftFit.fits) {
+    refusedUrls.push({ url: draftFit.url || String(draftRecipeRaw.portalUrl ?? ""), source: "recipe", code: draftFit.code, reason: draftFit.reason });
+  } else if (draftRecipeRaw && draftNotServed) {
+    refusedUrls.push({ url: String(draftRecipeRaw.portalUrl ?? ""), source: "recipe", code: "not_served", reason: draftRecipeRaw.flagReason });
+  }
+  // A PERMIT track must never launch a utility platform (PowerClerk etc.), a NEM track never a
+  // permit portal, and neither a portal that belongs to another entity. A learned profile /
+  // recipe / KB row matched via the project's UTILITY (or AHJ) can carry the other track's URL —
+  // every candidate goes through fitUrl so resolution falls through to a real source instead of
+  // stopping at the track/host-conflict guard below.
+  const permitSafeUrl = (url: string | null | undefined, source: PortalUrlSource = "kb"): string => fitUrl(url, source);
+  // Statewide-portal fallback: an Oregon AHJ with no portal URL of its own whose process
+  // profile files through e-permitting/Accela uses the shared Oregon ePermitting portal
+  // (one Accela instance for all subscribed jurisdictions — only the jurisdiction field
+  // differs), instead of failing with "no portal URL known".
+  //
+  // B2 (2026-09-25): the fallback no longer needs a seeded process profile that says
+  // "e-permitting". City of Jefferson had none, so its permit tracks resolved no portal of their
+  // own, never borrowed, and launched BCD's help page instead. permitProcess.statewidePortalFor
+  // answers from the per-job lookup first (this AHJ files on the statewide portal / on a
+  // DIFFERENT portal → no fallback), then from the cited state rule when nothing says otherwise.
+  // A person's verified portal for the AHJ still outranks it (fitUrl → hostFitsTrackAndEntity).
+  // PORTAL-TRUTH D1 (Corvallis, 2026-09-28): the fallback is taken ONLY on evidence that this AHJ
+  // (or the agency issuing this permit) files on the statewide portal; anything saying it files
+  // elsewhere — the lookup NAMING its own portal, kept or not — or nothing at all is "unknown, a
+  // person confirms", named in the run's message and audited, never the statewide portal. The
+  // decision is the one statewideDecision() above read for this track's view.
+  let statewidePortalUrl = "";
+  let statewideBasis = "";
+  if (track !== "nem" && !ahjPortalUrl && !draftRecipe) {
+    const statewide = statewideDecision();
+    if (statewide && statewide.url !== null) {
+      statewidePortalUrl = permitSafeUrl(statewide.url, "statewide");
+      statewideBasis = describeCited("Statewide portal", statewide.basis);
+      addAuditLog(db, projectId, "system", "submit gate", "portal.statewide_taken", { track: track ?? "permit", url: statewide.url, basis: statewideBasis.slice(0, 400) });
+    } else if (statewide) {
+      const ruleUrl = String(stateRulesFor(project.state).statewidePortal?.value ?? "");
+      refusedUrls.push({ url: ruleUrl, source: "statewide", code: "withheld", reason: statewide.withheld });
+      addAuditLog(db, projectId, "system", "submit gate", "portal.statewide_withheld", {
+        track: track ?? "permit", url: ruleUrl, reason: statewide.withheld.slice(0, 600),
+        evidence: statewide.evidence.slice(0, 6).map((e) => ({ kind: e.kind, source: e.source, url: e.url ?? null })),
+      });
+    }
+  }
+  // The AHJ's / utility's OWN portal, from its own evidence only — never from a borrowed recipe.
+  const ownPortalUrl =
+    permitSafeUrl(learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl) ||
+    (recipe && !recipeTrackConflict && !recipeEntityMisfit ? String(recipe.portalUrl ?? "") : "") ||
+    (draftRecipe ? String(draftRecipe.portalUrl ?? "") : "") ||
+    (track === "nem" ? utilityPortalUrl : (ahjPortalUrl || statewidePortalUrl)) ||
+    "";
+
+  // ── SHARED-PORTAL REUSE (portalRecipes.findBorrowableRecipe; operator ruling 2026-09-24) ──
+  // No complete recipe of its own → a complete recipe learned for ANOTHER entity on the SAME
+  // portal, SAME record type and discipline may replay here. Recorded on the run, shown to the
+  // operator, never demoted or healed by this project's run, and the run stops at review.
+  let borrowed: BorrowedRecipeChoice | null = null;
+  let borrowDecisionReason = "";
+  if (!recipe && !recipeEntityMisfit && !recipeTrackConflict && track) {
+    try {
+      const decision = findBorrowableRecipe(db, {
+        track, state: project.state, ahj: project.ahj, utility: project.utility,
+        targetPortalUrl: ownPortalUrl, targetSource: ownPortalUrl && ownPortalUrl === statewidePortalUrl ? "statewide" : "kb", entity: hostEntity,
+        targetRecordType: lookedUpRecordType(project, track)?.value ?? "",
+      });
+      borrowDecisionReason = decision.reason;
+      // B4: A BORROWED RECIPE MUST BIND TO THIS PROJECT, or it is not borrowed. Every agency /
+      // jurisdiction selection binds from the target's per-job answer (never the donor's literal);
+      // a selection that cannot be bound refuses the borrow with the named reason.
+      if (decision.choice) {
+        const probe = bindRecipeForReplay({
+          steps: decision.choice.recipe.steps ?? [], portalUrl: decision.choice.recipe.portalUrl,
+          project: project, fieldValues: {}, track,
+          borrowed: { learnedFor: decision.choice.learnedFor, discipline: decision.choice.discipline },
+          agency: issuingAgencyFor(project, track),
+        });
+        if (probe.refusal) {
+          addAuditLog(db, projectId, "system", "submit gate", "portal.recipe_borrow_refused", {
+            track, recipeId: decision.choice.recipe.id, learnedFor: decision.choice.learnedFor, reason: probe.refusal,
+          });
+          borrowDecisionReason = `borrow refused: ${probe.refusal}`;
+          decision.choice = null;
+        }
+      }
+      if (decision.choice) {
+        borrowed = decision.choice;
+        recipe = decision.choice.recipe;
+        addAuditLog(db, projectId, "system", "submit gate", "portal.recipe_borrowed", {
+          track, recipeId: borrowed.recipe.id, recipeVersion: borrowed.recipe.version,
+          learnedFor: borrowed.learnedFor, learnedForState: borrowed.learnedForState,
+          portalHost: borrowed.portalHost, recordType: borrowed.recordType, discipline: borrowed.discipline,
+        });
+      }
+    } catch (err) {
+      logger.warn("prepare-submission", `shared-portal recipe lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return {
+    learnedProfile, platform, isAccela, isPowerClerk, trackDiscipline, recipe, droppedLegacyRecipeDiscipline,
+    hostEntity, recipeTrackConflict, recipeEntityMisfit, refusedUrls, permitSafeUrl,
+    utilityPortalUrl, ahjPortalUrl, draftRecipe, statewidePortalUrl, statewideBasis, ownPortalUrl,
+    borrowed, borrowDecisionReason,
+  };
 }
 
 export async function prepareSubmission(
@@ -7597,6 +8177,38 @@ export async function prepareSubmission(
     }
   }
 
+  // A TRACKLESS STAGE CANNOT FILE A SPLIT-ISSUER PROJECT (round-1 skeptic, 2026-09-28). The legacy
+  // combined stage (the dashboard's "Prepare Submittal" posts {}) resolves ONE portal — the project
+  // AHJ's (projectForTrack(project, undefined) is the project) — and files every required permit
+  // there. When any required permit track is issued by another agency (the operator's per-track
+  // issuer, or the per-job lookup's cited one — permitProcess.trackIssuer), that is the other agency's
+  // permit on the wrong portal. Refused before anything is built, opened or recorded; each permit
+  // stages from its own track card, where its issuer's portal resolves. A project with no split
+  // (every required track's view is the project itself — the SAME object) is untouched.
+  if (!track) {
+    const splitTracks = required.filter((t) => t !== "nem" && projectForTrack(detail.project, t) !== detail.project);
+    if (splitTracks.length) {
+      const permitTracks = required.filter((t) => t !== "nem");
+      const label = (t: string): string => (t === "combo" || t === "permit" ? "combination" : t === "mpu" ? "service-upgrade (MPU)" : t);
+      const issuers = permitTracks.map((t) => ({ track: t, issuer: trackIssuer(detail.project, t).name }));
+      // One clause per issuing agency: "the building permit is issued by City of Newberg, the
+      // electrical by Yamhill County"; "the building and electrical permits are issued by Marion County".
+      const byIssuer = new Map<string, string[]>();
+      for (const x of issuers) byIssuer.set(x.issuer, [...(byIssuer.get(x.issuer) ?? []), label(x.track)]);
+      const said = [...byIssuer.entries()].map(([issuer, labels], i) => {
+        const names = labels.length > 1 ? `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}` : labels[0];
+        return i === 0 ? `the ${names} permit${labels.length > 1 ? "s are" : " is"} issued by ${issuer}` : `the ${names} by ${issuer}`;
+      }).join(", ");
+      addAuditLog(db, projectId, "system", "submit gate", "portal.trackless_split_refused", {
+        tracks: issuers, split: splitTracks,
+      });
+      throw new HttpError(409,
+        `Stage each permit from its track card — ${said}. `
+        + "A combined stage opens one portal (the project AHJ's), so it would file another agency's permit there. Nothing was opened.",
+        { tracklessSplitIssuer: true, tracks: issuers, split: splitTracks });
+    }
+  }
+
   const failCount = detail.qcResults.filter((result) => result.qcStatus === "fail").length;
   // 'Background job failed' items are OPERATOR NOTIFICATIONS (escalated by the
   // job worker), not data-quality gates — counting them would let e.g. a failed
@@ -7613,11 +8225,16 @@ export async function prepareSubmission(
   // pending item hold staging?" let the gate go green while this 409 still refused.
   const pendingCount = detail.humanReviewItems.filter(isCriticalReviewItem).length;
   const reviewerReport = buildReviewerReportFor(db, detail.project);
-  const reviewerBlockers = reviewerReport.findings.filter((finding) => finding.severity === "blocker");
+  // ONLY THE FINDINGS THAT HOLD THIS FILING (gateScope — the answer the gate, Stage and Approve
+  // read): a structural conflict does not refuse the utility's application or the separate
+  // electrical permit. A trackless stage (null) is held by every finding.
+  const reviewerBlockers = reviewerReport.findings.filter((finding) => finding.severity === "blocker"
+    && scopeHoldsTrack(findingHoldScope(finding), track ?? null));
   const historicalReport = buildHistoricalFailureReport(db, projectId, null);
   const learnedHistoricalMissing = historicalReport.checklist.filter((item) => {
     const cause = historicalReport.topRejectionCauses.find((candidate) => candidate.signature === item.sourceCauseSignature);
-    return item.status === "missing" && Boolean(cause && cause.count > 0 && cause.severity === "blocker");
+    return item.status === "missing" && Boolean(cause && cause.count > 0 && cause.severity === "blocker")
+      && scopeHoldsTrack(historicalBlockerScope(historicalReport, item), track ?? null);
   });
   if (failCount > 0 || pendingCount > 0 || reviewerBlockers.length > 0 || learnedHistoricalMissing.length > 0) {
     throw new HttpError(409, "Submission staging blocked until QC failures, required human review items, and AHJ reviewer gate blockers are resolved.", {
@@ -7660,7 +8277,9 @@ export async function prepareSubmission(
   const lane = track === "nem" ? "nem" : track ? "permit" : null;
   const missingDocs = stagingMissingDocuments(inv, track);
   if (missingDocs.length > 0) {
-    throw new HttpError(409, `Submission staging blocked: required document(s) not attached — ${missingDocs.map((d) => d.label).join("; ")}. Attach or split out each document before staging so the AHJ/utility receives a complete package.`, {
+    // Each document says its own fix (owedDocumentAction — the gate's words): a form Stage could not
+    // acquire is found / uploaded as a blank; a file is attached or split out of the plan set.
+    throw new HttpError(409, `Submission staging blocked: required document(s) not attached${track !== "nem" ? " after Stage's own form acquisition and fill" : ""} — ${missingDocs.map((d) => `${d.label} (${owedDocumentAction(d)})`).join("; ")}. The AHJ/utility must receive a complete package.`, {
       missingDocuments: missingDocs.map((d) => ({ docType: d.docType, label: d.label, lane: d.lane })),
     });
   }
@@ -7730,277 +8349,25 @@ export async function prepareSubmission(
   let portalLabel = isRealPortal
     ? (portalProfile?.portal_name || portalType)
     : "Mock portal";
-  // Platform-driven adapter reuse: a new AHJ on a KNOWN platform (e.g. City of Lafayette
-  // on Accela/Oregon ePermitting) reuses that platform's hand-coded adapter even if its
-  // portal_type isn't the canonical one — only the entry URL + login differ. The platform
-  // comes from the learned KB profile. Gated on a real portal profile so mock/dev is
-  // unaffected.
-  const learnedProfile = isRealPortal
-    ? findLearnedProfileForProject(db, { state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
-    : null;
-  const platform = String(learnedProfile?.portalPlatform ?? "").toLowerCase();
-  // PLATFORM FALLBACK FROM URL: portal_platform is empty on many learned/seeded KB rows
-  // (nothing backfills it), and an empty platform used to dead-end dispatch as NoAdapter
-  // even when the row's portal_url plainly identifies the platform (live: City of Salem
-  // carried the aca-oregon.accela.com URL with a blank platform). Sniff the URL only when
-  // the platform column is empty — an explicit value always wins.
-  const platformUrlHint = String((learnedProfile as { portalUrl?: string } | null)?.portalUrl ?? "").toLowerCase();
-  const isAccela = portalType === "accela_oregon"
-    || (isRealPortal && (platform.includes("accela") || (!platform && /accela\.com|citizenaccess/.test(platformUrlHint))));
-  const isPowerClerk = portalType === "powerclerk_pge"
-    || (isRealPortal && (platform.includes("powerclerk") || (!platform && /powerclerk\.com/.test(platformUrlHint))));
-  // Recipe replay is the FIRST-LINE (universal) path: if an admin has recorded a complete recipe
-  // for this AHJ (or its utility), replay it — even on a known platform (PowerClerk/Accela). The
-  // hand-coded platform adapters are the FALLBACK when no recipe exists. The lookup is track-
-  // scoped so a NEM stage never picks up an AHJ permit recipe (and vice-versa).
-  // Which permit discipline this track files under - the recipe key's second dimension.
-  const trackDiscipline = recipeDisciplineForTrack(track);
-  let recipe = track === "nem"
-    // NEM stages against the utility's recorded recipe.
-    ? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
-    // Permit tracks replay ONLY an AHJ-scoped recipe — never a utility (NEM) recipe, which is a
-    // different portal and form. No AHJ recipe → self-seed / hand-coded fallback, not a wrong-track replay.
-    : findCompleteRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility, discipline: trackDiscipline });
-  // LEGACY-ROW DISCIPLINE CHECK. Recipes are keyed per AHJ per discipline, but rows
-  // recorded before that dimension existed carry discipline '' and are accepted as a
-  // fallback. If such a row was actually learned for the OTHER discipline, its steps pick
-  // the wrong jurisdiction row and record type — so drop it here rather than replaying it.
-  // Dropping (instead of refusing the stage) is the unlock: with no recipe in hand the
-  // dispatch falls through to the universal learner, which now seeds THIS discipline's own
-  // recipe. Refusing left the second discipline able to neither replay nor self-seed.
-  let droppedLegacyRecipeDiscipline: "electrical" | "structural" | null = null;
-  if (recipe && trackDiscipline && !recipe.discipline) {
-    try {
-      const learnedFor = recipeDisciplineFromSteps(getPortalRecipe(db, recipe.id).steps);
-      if (disciplineConflictsWithTrack(learnedFor, track)) {
-        droppedLegacyRecipeDiscipline = learnedFor;
-        addAuditLog(db, projectId, "system", "submit gate", "portal.discipline_recipe_skipped", {
-          track: track ?? "permit", recipeId: recipe.id, learnedFor,
-        });
-        recipe = null;
-      }
-    } catch { /* unreadable steps — leave the recipe in place for the gate below */ }
-  }
-
-  // ── WHOSE PORTAL? (rule 5, both ways, and the entity) ────────────────────────────────────
-  // Every URL this stage could launch, and the recipe it could replay, is judged by ONE
-  // predicate — hostFitsTrackAndEntity — against what the shared tables say about THIS
-  // project's own utility (NEM) or AHJ (permit). A permit track never gets a utility portal and
-  // a NEM track never gets a permit portal; a URL or recipe for entity X is never used for Y; and
-  // where a person verified the entity's portal, nothing stored or researched that disagrees is
-  // launched. Evidence: a ComEd project staged with the PGE recipe (fe12ed81); Tigard researched
-  // to Accela against its verified EnerGov row; a Tigard KB row carrying PGE's PowerClerk.
-  const hostEntityInput = {
-    scope: scopeForTrack(track),
-    state: detail.project.state,
-    name: track === "nem" ? detail.project.utility : detail.project.ahj,
-  };
-  const hostEntity = portalEntityEvidence(db, hostEntityInput);
-  // A recipe is judged on the OTHER evidence — never on its own row, or a mis-keyed recipe would
-  // vouch for its own wrong host.
-  const judgeRecipe = (r: { id: string; portalUrl?: string; steps?: import("../../shared/src/types").RecipeStep[] }) =>
-    recipeHostFit(track, portalEntityEvidence(db, { ...hostEntityInput, excludeRecipeIds: [r.id] }), r);
-  /** Why candidate URLs were refused on this stage — the operator reads these if nothing fits. */
-  const refusedUrls: Array<{ url: string; source: string; code: string; reason: string }> = [];
-  const fitUrl = (url: string | null | undefined, source: PortalUrlSource): string => {
-    const value = String(url ?? "").trim();
-    if (!value) return "";
-    const fit = hostFitsTrackAndEntity(track, hostEntity, value, source);
-    if (fit.fits) return value;
-    if (!refusedUrls.some((r) => r.url === value)) refusedUrls.push({ url: value, source, code: fit.code, reason: fit.reason });
-    return "";
-  };
-  // The own recipe: its entry URL and every portal it navigates to. A TRACK conflict keeps the
-  // existing gate below (flag for re-record, stop); an entity/platform misfit stops the run
-  // without touching the recipe — it is valid for whichever entity it was learned on.
-  let recipeTrackConflict: (HostFit & { url: string }) | null = null;
-  let recipeEntityMisfit: (HostFit & { url: string }) | null = null;
-  if (recipe) {
-    const fit = judgeRecipe(recipe);
-    if (!fit.fits) {
-      if (fit.code === "track_conflict") recipeTrackConflict = fit;
-      else recipeEntityMisfit = fit;
-    }
-  }
-
-  // Resolve stored credentials for session-expired auto-login. Passed
-  // in-memory to the adapter; never logged. Falls back gracefully when
-  // no credential has been stored for this client+portal combination.
-  //
-  // Lookup chain (the operator may store a credential keyed by any of these):
-  //   1. exact portal_type (the canonical "accela_oregon"/"powerclerk_pge")
-  //   2. portal URL hostname — covers credentials saved via the per-project
-  //      "Manage logins" panel, whose portal_type is a channel-derived slug
-  //      (e.g. "oregon_epermitting_accela") that won't equal the canonical type.
-  //   3. the client's single credential when unambiguous.
-  // Resolve the portal's login URL for the hostname match: learned KB profile,
-  // recorded recipe, else the built-in applicationDocs sourceUrl.
-  //
-  // RESOLVED HERE, BEFORE THE FIELD GATE (pure DB reads — no browser, no research): the
-  // shared-portal reuse below needs the AHJ's OWN portal to match a recipe to, and the field
-  // gate needs to know whether a recipe will drive the run.
+  // WHOSE PORTAL THIS TRACK FILES ON (split issuer): the track-scoped view — the project itself (the
+  // same object) when this track's issuer is the project AHJ, else the project with the ISSUER as its
+  // AHJ (permitProcess.projectForTrack / trackIssuer: the operator's per-track issuer, else the per-job
+  // lookup's cited agency for this permit). Every portal door below reads it — the recipe and KB keys,
+  // the learned profile, the entity the one host predicate judges, the borrow and its agency binding,
+  // cold-start research, the kill-switch, the field values, the learner and the adapters — so a
+  // county-AHJ project's building permit stages on the city that issues it, and the city's portal is
+  // never refused as a foreign entity for that track (nor accepted for the county's electrical one).
+  // NEM and a trackless stage: the project, untouched.
+  const portalProject = projectForTrack(detail.project, track);
   const clientId = detail.project.clientId ?? "";
-  // The fallback URL MUST be scoped to the track so a NEM stage never matches the AHJ
-  // permit credential (and vice-versa). learnedProfile/recipe are already track-scoped
-  // above; the applicationDocs sourceUrl is AHJ-scoped, so only use it for permit tracks.
-  // For the NEM track, the fallback URL is the UTILITY's portal URL from the KB
-  // (e.g. Pacific Power → pacificpower.net), never the AHJ permit portal.
-  let utilityPortalUrl = "";
-  let ahjPortalUrl = "";
-  const projectState = (detail.project.state || "").trim().toLowerCase();
-  if (track === "nem" && detail.project.utility) {
-    // "OR the name IS a url": reference imports have twice filed the portal link in
-    // portal_name with portal_url empty (Tigard, Douglas County) — same fallback as the
-    // knowledgeBase mapper, kept in SQL because this exact-key read bypasses the mapper.
-    // EVERY row for the utility, best first — the utility-keyed row (no AHJ), this state, a
-    // verified row — and the first candidate that FITS wins. LIMIT 1 used to take whichever row
-    // SQLite returned first, which could be an AHJ row carrying that AHJ's permit portal.
-    const utilRows = db.query<{ portal_url?: string; portal_name?: string; state?: string; ahj?: string; verified_at?: string | null }>(
-      `SELECT portal_url, portal_name, state, ahj, verified_at FROM permit_utility_knowledge
-        WHERE utility = ? AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE 'http%')`,
-      [detail.project.utility],
-    ).sort((a, b) => kbRowRank(a, projectState, true) - kbRowRank(b, projectState, true));
-    for (const row of utilRows) {
-      utilityPortalUrl = [String(row.portal_url ?? ""), String(row.portal_name ?? "")]
-        .map((u) => fitUrl(/^https?:\/\/\S+$/i.test(u.trim()) ? u.trim() : "", "kb")).find(Boolean) ?? "";
-      if (utilityPortalUrl) break;
-    }
-  } else if (track !== "nem" && detail.project.ahj) {
-    // A human-verified AHJ in the KB may carry a portal URL even without a required-documents list,
-    // so a permit self-seed can launch from it (mirrors the NEM utility-URL lookup). This is a real
-    // portal ENTRY, unlike the applicationDocs sourceUrl (an AHJ info page), so it gates the gate.
-    // BOTH columns, chosen in JS — because the KB sweep (2026-09-21) found every shape at once:
-    // the reference import files the AHJ link in portal_NAME (71 rows), the learn path parks the
-    // UTILITY's PowerClerk on AHJ-side rows (23 rows), and Happy Valley had both inverted in one
-    // row (EnerGov in name, PowerClerk in url). The rule: for a PERMIT lookup, take the first
-    // candidate that is an http URL and FITS the track and this AHJ — url column first, then name.
-    // Every row for the AHJ name, best first (this state, verified): the same name in another
-    // state is another city (the KB has "City of Tigard" in OR, AL, AR and WA).
-    const ahjRows = db.query<{ portal_url?: string; portal_name?: string; state?: string; ahj?: string; verified_at?: string | null }>(
-      `SELECT portal_url, portal_name, state, ahj, verified_at FROM permit_utility_knowledge
-        WHERE ahj = ? AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE 'http%')`,
-      [detail.project.ahj],
-    ).filter((r) => !projectState || !String(r.state ?? "").trim() || String(r.state).trim().toLowerCase() === projectState)
-      .sort((a, b) => kbRowRank(a, projectState, false) - kbRowRank(b, projectState, false));
-    for (const row of ahjRows) {
-      ahjPortalUrl = [String(row.portal_url ?? ""), String(row.portal_name ?? "")]
-        .map((u) => fitUrl(/^https?:\/\/\S+$/i.test(u.trim()) ? u.trim() : "", "kb")).find(Boolean) ?? "";
-      if (ahjPortalUrl) break;
-    }
-  }
-  // Fuzzy fallback: the exact-name lookups above miss imported KB rows keyed by
-  // legal names ("Portland General Electric") when the project says "PGE". Same
-  // resolver the auto-learn planner uses — state-filtered token/acronym matching.
-  if (track === "nem" ? !utilityPortalUrl : !ahjPortalUrl) {
-    const fuzzy = findKnowledgeForLearn(db, {
-      state: detail.project.state,
-      ahj: track !== "nem" ? detail.project.ahj : undefined,
-      utility: track === "nem" ? detail.project.utility : undefined,
-    });
-    if (track === "nem") utilityPortalUrl = fitUrl(fuzzy.utility?.portalUrl, "kb");
-    else ahjPortalUrl = fitUrl(fuzzy.ahj?.portalUrl, "kb");
-  }
-  // THE PER-JOB LOOKUP'S PORTAL for this track's permit (cited, seeded) — judged like research
-  // (a verified portal for the AHJ outranks it; an information page never fits). The statewide
-  // portal is not taken here: that answer is the statewide fallback below, labelled as such.
-  if (track !== "nem" && !ahjPortalUrl) {
-    const looked = permitAnswerForTrack(detail.project, track)?.portalUrl.value ?? "";
-    const statewideHost = portalHostOf(stateRulesFor(detail.project.state).statewidePortal?.value ?? "");
-    if (looked && portalHostOf(looked) !== statewideHost) ahjPortalUrl = fitUrl(looked, "research");
-  }
-  // A draft/recording recipe (not yet promoted to "complete") still carries the entry URL the
-  // operator — or a prior auto-learn pass — pointed the recorder at. Recover it so the universal
-  // self-seed can launch the right portal even before any recipe is verified. Track-scoped exactly
-  // like the complete-recipe lookup above (NEM → utility key; permit → AHJ only, never utility).
-  const draftRecipeRaw = track === "nem"
-    ? findAnyRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
-    : findAnyRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility, discipline: trackDiscipline });
-  // A draft whose portals do not fit (a Tigard draft that navigates to Accela) lends no URL.
-  const draftFit = draftRecipeRaw ? judgeRecipe(draftRecipeRaw) : null;
-  const draftRecipe = draftRecipeRaw && draftFit?.fits ? draftRecipeRaw : null;
-  if (draftRecipeRaw && draftFit && !draftFit.fits) {
-    refusedUrls.push({ url: draftFit.url || String(draftRecipeRaw.portalUrl ?? ""), source: "recipe", code: draftFit.code, reason: draftFit.reason });
-  }
-  // A PERMIT track must never launch a utility platform (PowerClerk etc.), a NEM track never a
-  // permit portal, and neither a portal that belongs to another entity. A learned profile /
-  // recipe / KB row matched via the project's UTILITY (or AHJ) can carry the other track's URL —
-  // every candidate goes through fitUrl so resolution falls through to a real source instead of
-  // stopping at the track/host-conflict guard below.
-  const permitSafeUrl = (url: string | null | undefined, source: PortalUrlSource = "kb"): string => fitUrl(url, source);
-  // Statewide-portal fallback: an Oregon AHJ with no portal URL of its own whose process
-  // profile files through e-permitting/Accela uses the shared Oregon ePermitting portal
-  // (one Accela instance for all subscribed jurisdictions — only the jurisdiction field
-  // differs), instead of failing with "no portal URL known".
-  //
-  // B2 (2026-09-25): the fallback no longer needs a seeded process profile that says
-  // "e-permitting". City of Jefferson had none, so its permit tracks resolved no portal of their
-  // own, never borrowed, and launched BCD's help page instead. permitProcess.statewidePortalFor
-  // answers from the per-job lookup first (this AHJ files on the statewide portal / on a
-  // DIFFERENT portal → no fallback), then from the cited state rule when nothing says otherwise.
-  // A person's verified portal for the AHJ still outranks it (fitUrl → hostFitsTrackAndEntity).
-  let statewidePortalUrl = "";
-  let statewideBasis = "";
-  if (track !== "nem" && !ahjPortalUrl && !draftRecipe) {
-    const process = findAhjProcessProfile(detail.project);
-    const statewide = statewidePortalFor(detail.project, track, { processProfileMethod: process?.submissionMethod ?? null });
-    if (statewide) {
-      statewidePortalUrl = permitSafeUrl(statewide.url, "statewide");
-      statewideBasis = describeCited("Statewide portal", statewide.basis);
-    }
-  }
-  // The AHJ's / utility's OWN portal, from its own evidence only — never from a borrowed recipe.
-  const ownPortalUrl =
-    permitSafeUrl(learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl) ||
-    (recipe && !recipeTrackConflict && !recipeEntityMisfit ? String(recipe.portalUrl ?? "") : "") ||
-    (draftRecipe ? String(draftRecipe.portalUrl ?? "") : "") ||
-    (track === "nem" ? utilityPortalUrl : (ahjPortalUrl || statewidePortalUrl)) ||
-    "";
-
-  // ── SHARED-PORTAL REUSE (portalRecipes.findBorrowableRecipe; operator ruling 2026-09-24) ──
-  // No complete recipe of its own → a complete recipe learned for ANOTHER entity on the SAME
-  // portal, SAME record type and discipline may replay here. Recorded on the run, shown to the
-  // operator, never demoted or healed by this project's run, and the run stops at review.
-  let borrowed: BorrowedRecipeChoice | null = null;
-  let borrowDecisionReason = "";
-  if (!recipe && !recipeEntityMisfit && !recipeTrackConflict && track) {
-    try {
-      const decision = findBorrowableRecipe(db, {
-        track, state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility,
-        targetPortalUrl: ownPortalUrl, targetSource: ownPortalUrl && ownPortalUrl === statewidePortalUrl ? "statewide" : "kb", entity: hostEntity,
-        targetRecordType: lookedUpRecordType(detail.project, track)?.value ?? "",
-      });
-      borrowDecisionReason = decision.reason;
-      // B4: A BORROWED RECIPE MUST BIND TO THIS PROJECT, or it is not borrowed. Every agency /
-      // jurisdiction selection binds from the target's per-job answer (never the donor's literal);
-      // a selection that cannot be bound refuses the borrow with the named reason.
-      if (decision.choice) {
-        const probe = bindRecipeForReplay({
-          steps: decision.choice.recipe.steps ?? [], portalUrl: decision.choice.recipe.portalUrl,
-          project: detail.project, fieldValues: {}, track,
-          borrowed: { learnedFor: decision.choice.learnedFor, discipline: decision.choice.discipline },
-          agency: issuingAgencyFor(detail.project, track),
-        });
-        if (probe.refusal) {
-          addAuditLog(db, projectId, "system", "submit gate", "portal.recipe_borrow_refused", {
-            track, recipeId: decision.choice.recipe.id, learnedFor: decision.choice.learnedFor, reason: probe.refusal,
-          });
-          borrowDecisionReason = `borrow refused: ${probe.refusal}`;
-          decision.choice = null;
-        }
-      }
-      if (decision.choice) {
-        borrowed = decision.choice;
-        recipe = decision.choice.recipe;
-        addAuditLog(db, projectId, "system", "submit gate", "portal.recipe_borrowed", {
-          track, recipeId: borrowed.recipe.id, recipeVersion: borrowed.recipe.version,
-          learnedFor: borrowed.learnedFor, learnedForState: borrowed.learnedForState,
-          portalHost: borrowed.portalHost, recordType: borrowed.recordType, discipline: borrowed.discipline,
-        });
-      }
-    } catch (err) {
-      logger.warn("prepare-submission", `shared-portal recipe lookup failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
+  // WHICH PORTAL, WHICH RECIPE (resolveStagePortal): learned profile -> own recipe -> entity evidence
+  // and the one host predicate -> KB / lookup / draft / statewide candidates -> the own portal -> borrow.
+  const stagePortal = resolveStagePortal(db, { projectId, project: portalProject, track, portalType, isRealPortal });
+  const {
+    learnedProfile, platform, isAccela, isPowerClerk, trackDiscipline, recipe, droppedLegacyRecipeDiscipline,
+    hostEntity, recipeTrackConflict, recipeEntityMisfit, refusedUrls, permitSafeUrl,
+    utilityPortalUrl, ahjPortalUrl, draftRecipe, statewidePortalUrl, ownPortalUrl, borrowed, borrowDecisionReason,
+  } = stagePortal;
 
   // Precedence: recipe (universal, first-line) → hand-coded platform adapter → mock.
   const adapterActorName = selectAdapterActor(Boolean(recipe), isAccela, isPowerClerk);
@@ -8031,7 +8398,7 @@ export async function prepareSubmission(
   let credentialUrl =
     ownPortalUrl ||
     (borrowed ? String(borrowed.recipe.portalUrl ?? "") : "") ||
-    (track === "nem" ? "" : permitSafeUrl(findApplicationProfile(detail.project).sourceUrl)) ||
+    (track === "nem" ? "" : permitSafeUrl(findApplicationProfile(portalProject).sourceUrl)) ||
     "";
 
   // LOCK THE PORTAL OUT ONCE IT HAS REFUSED THE LOGIN, BEFORE A BROWSER OPENS.
@@ -8088,9 +8455,9 @@ export async function prepareSubmission(
         });
         researched = String(research.portalUrl || "");
         webGrounded = research.webGrounded;
-      } else if (track !== "nem" && detail.project.ahj) {
+      } else if (track !== "nem" && portalProject.ahj) {
         const { research } = await researchAndSaveAhj(db, {
-          ahj: detail.project.ahj, state: detail.project.state || "", utility: detail.project.utility,
+          ahj: portalProject.ahj, state: portalProject.state || "", utility: portalProject.utility,
         });
         researched = String(research.portalUrl || "");
         webGrounded = research.webGrounded;
@@ -8110,7 +8477,7 @@ export async function prepareSubmission(
         addAuditLog(db, projectId, "system", "submit gate", "portal.url_researched", {
           track: track ?? "permit", url: credentialUrl, ...researchedUrlProvenance(webGrounded),
         });
-        logger.info("prepare-submission", `cold-start research resolved a portal URL for ${detail.project.ahj || detail.project.utility}: ${credentialUrl}`);
+        logger.info("prepare-submission", `cold-start research resolved a portal URL for ${portalProject.ahj || portalProject.utility}: ${credentialUrl}`);
       }
     } catch (err) {
       logger.warn("prepare-submission", `cold-start portal research failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -8157,10 +8524,12 @@ export async function prepareSubmission(
   // Overlay the linked client's contractor/licensing identity onto the project
   // snapshot the adapters read, so submissions use authoritative client data
   // (CCB#, electrical license, installer company) instead of hardcoded names.
-  const overlay = clientStagingOverlay(db, detail.project.clientId, portalType);
+  // The licence keys are THIS track's in THIS state (clients.licenceOverlay) — never Oregon's CCB
+  // on another state's filing.
+  const overlay = clientStagingOverlay(db, detail.project.clientId, portalType, { state: String(detail.project.state ?? ""), track: track ?? null });
   const stagedProject = Object.keys(overlay).length > 0
-    ? { ...detail.project, parserSnapshot: { ...detail.project.parserSnapshot, ...overlay } }
-    : detail.project;
+    ? { ...portalProject, parserSnapshot: { ...portalProject.parserSnapshot, ...overlay } }
+    : portalProject;
 
   // LLM-assisted gap-fill for the hand-coded adapters: build the same planner the auto-learn
   // engine uses so PowerClerk/Accela fill any REQUIRED field their fixed selectors miss — from
@@ -8184,6 +8553,7 @@ export async function prepareSubmission(
         // The permit/AHJ application lists differ by discipline - the TRACK carries it
         // (electrical files the electrical application; building/combo file structural).
         permitType: isNemTrack ? undefined : (track === "electrical" ? "electrical" : "structural"),
+        track: track ?? null,
       });
       gapFillPlanner = built.planner;
       gapFillFields = built.projectFields;
@@ -8210,6 +8580,9 @@ export async function prepareSubmission(
     // run id it names — portal-bot re-checks both, with the environment, at the click.
     runApproval: resolvedAutoSubmit ? runApproval : null,
     runId,
+    // THE DOCUMENTS THIS FILING OWES beyond the plan set (docs plan D7) - permit tracks only.
+    // A trackless (legacy) stage still gets the list (skeptic eb36a8f MF2) - only the NEM track owes none.
+    owedAttachments: track === "nem" ? [] : owedAttachmentsFor(db, detail.project, docsByType),
     // Operator-delegated submit for the HAND-CODED adapters: the same decision. With no recipe
     // (the hand-coded and self-seed paths) the decision refuses, so this is false there.
     allowFinalSubmit: allowFinalSubmit === true && resolvedAutoSubmit,
@@ -8253,7 +8626,7 @@ export async function prepareSubmission(
     // The per-job lookup's issuing agency for THIS track, for a hand-coded adapter choosing
     // between an address's jurisdiction rows (portal-bot addressVersion). A recipe replay reads
     // the same answer from its bound field values (bindRecipeForReplay → issuingAgency).
-    issuingAgency: track && track !== "nem" ? (issuingAgencyFor(detail.project, track)?.value ?? null) : null,
+    issuingAgency: track && track !== "nem" ? (issuingAgencyFor(portalProject, track)?.value ?? null) : null,
     // Track-scoped portal URL so multi-tenant platform adapters (PowerClerk hosts PGE
     // AND PacifiCorp on different subdomains) log in to the RIGHT portal instead of a
     // hardcoded default. Already permit/utility scoped by the credentialUrl resolution.
@@ -8305,9 +8678,9 @@ export async function prepareSubmission(
   // registry resolves to a manual handoff and no automation is driven at all.
   const portalPaused = isPortalPaused(db, {
     scopeType: track === "nem" ? "utility" : "ahj",
-    state: detail.project.state,
-    ahj: detail.project.ahj,
-    utility: detail.project.utility,
+    state: portalProject.state,
+    ahj: portalProject.ahj,
+    utility: portalProject.utility,
     platform,
   });
   const channelDecision = resolvePortalChannel({
@@ -8326,9 +8699,22 @@ export async function prepareSubmission(
   // status/audit text below doesn't read "Mock portal" for a run that actually drives a browser.
   if (!isRealPortal && runActorLabel !== "MockPortalAdapter") {
     portalLabel = track === "nem"
-      ? (detail.project.utility ? `${detail.project.utility} (NEM portal)` : "Utility NEM portal")
-      : (detail.project.ahj ? `${detail.project.ahj} (permit portal)` : "AHJ permit portal");
+      ? (portalProject.utility ? `${portalProject.utility} (NEM portal)` : "Utility NEM portal")
+      : (portalProject.ahj ? `${portalProject.ahj} (permit portal)` : "AHJ permit portal");
   }
+  // WHAT THE AUDIT TRAIL CALLS THIS RUN'S PORTAL (dry run 2026-09-28, B12: 45 of 45 real staging runs
+  // were audited portalType "mock"). `portalType` above is the portal_profiles row's type, "mock" when
+  // there is none — and nothing writes portal_profiles, so every real run fell back to it. That
+  // variable stays exactly as it is: it keys the credential lookup, the per-client browser profile
+  // directory, the staging overlay and the field resolver, and renaming it would log every client out
+  // of every portal. The AUDIT value is its own, from the dispatch decision: "mock" only when the mock
+  // adapter is the one that ran; a stored profile's type when there is one; else the host the run
+  // was pointed at; else the track's kind of portal.
+  const auditPortalType = runActorLabel === "MockPortalAdapter"
+    ? "mock"
+    : isRealPortal
+      ? portalType
+      : (portalHostOf(String(recipe?.portalUrl ?? "") || portalEntryUrl || credentialUrl) || (track === "nem" ? "utility_portal" : "permit_portal"));
   // DISCIPLINE GATE input (see portalChannel.recipeDisciplineFromSteps): the ACA
   // learner bakes the learn project's permit discipline into the recorded jurisdiction
   // row + record-type steps. Recipes ARE keyed per discipline (migration v14,
@@ -8374,6 +8760,39 @@ export async function prepareSubmission(
       + "Submit (or discard) the staged draft first if it needs to be replaced.",
       { track: first, permitNumber: null, submittedAt: null, stagedMeanwhile });
   }
+  // A PER-JOB QUESTION THE JOB HAS NOT ANSWERED STOPS THE STAGE HERE — BEFORE A BROWSER OPENS
+  // (dryrun-0928 B2). The recipe about to replay asks who owns the system (or whether it is behind
+  // the meter / the disconnect distance), the answer is THIS job's, and no document states it. The
+  // live PacifiCorp recipe filed the learn job's "Customer-Owned" on every job; the replay binder
+  // (R10) now binds that control to the job's key, and an unanswered key would replay a blank — so
+  // the question is asked first, named, the way the question bank lists it for intake. Same
+  // predicate as the bank, the binders and the planner (shared/src/perJobQuestions).
+  if (recipe && runActorLabel === "RecipeAdapter" && !channelDecision.blocked
+      && !recipeTrackConflict && !recipeEntityMisfit && !recipeDisciplineConflict) {
+    let open: Array<{ key: string; label: string }> = [];
+    try {
+      const gateValues = resolveRecipeFieldValues(db, stagedProject, portalType, track ?? null);
+      const gateBinding = bindRecipeForReplay({
+        steps: recipe.steps ?? [], portalUrl: recipe.portalUrl, project: portalProject, fieldValues: gateValues, track,
+        borrowed: borrowed ? { learnedFor: borrowed.learnedFor, discipline: borrowed.discipline } : null,
+        agency: issuingAgencyFor(portalProject, track),
+      });
+      open = openPerJobQuestions(gateBinding.steps, { ...gateValues, ...gateBinding.fieldValues });
+    } catch (err) {
+      // The replay path binds the same steps again inside the run below and records its own failure.
+      logger.warn("prepare-submission", `per-job question check could not read the recipe: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (open.length) {
+      addAuditLog(db, projectId, "system", "submit gate", "portal.per_job_question_open", {
+        track: track ?? "permit", recipeId: recipe.id, questions: open,
+      });
+      throw new HttpError(409,
+        `Staging paused before opening the portal: ${portalLabel} asks ${open.length === 1 ? "a question" : `${open.length} questions`} only a person can answer for this job — `
+        + `${open.map((q) => `"${q.label}"`).join("; ")}. The recorded answer belonged to another job, so it is never replayed; `
+        + "answer it under the project's portal questions (or send the intake link), then stage again. Nothing was opened.",
+        { unansweredPortalQuestions: open, track: track ?? "permit", recipeId: recipe.id });
+    }
+  }
   let result: Record<string, unknown>;
   // What the replay-failure classifier decided about the recipe, for the run's own message.
   let replayVerdictNote = "";
@@ -8392,6 +8811,25 @@ export async function prepareSubmission(
     runId, projectId, portalProfileId: safePortalProfileId, startedAt: ts, permitType: track ?? "permit",
     actor: runActorLabel, recipeId: recipe?.id ?? null, recipeVersion: recipe?.version ?? null,
   });
+  // EVERY STAGING BROWSER LAUNCH IS A POSSIBLE DRAFT ON A REAL ACCOUNT, WRITTEN DOWN BEFORE IT OPENS
+  // (dryrun-0928 B11). Only the learn and the benchmark wrote the draft ledger, so a clean project's
+  // building and electrical replays left two drafts on Oregon ePermitting that the list a company is
+  // handed for cleanup never showed. Written at each launch below — not at the run row, since several
+  // branches after it open nothing (kill-switch, host/entity/discipline conflicts) — and a headed
+  // retry is a second browser, so a second row. The learn path writes its own (autoLearnPortal).
+  const ledgerStagingLaunch = (purpose: string, url: string): void => {
+    try {
+      recordDraftTouch(buildDraftTouch({
+        portalUrl: url, projectId, purpose,
+        note: resolvedAutoSubmit
+          ? `an approved run (named approval, run ${runId}) — may be FILED, not only drafted`
+          : `staging stops at review; automation never submits it (run ${runId})`,
+        credentials: clientId ? listPortalCredentials(db, clientId) : [],
+      }));
+    } catch (err) {
+      logger.warn("prepare-submission", `draft ledger row not written: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
   try {
     if (channelDecision.blocked) {
       // Kill-switch tripped: surface a manual handoff and drive NO automation.
@@ -8416,7 +8854,7 @@ export async function prepareSubmission(
       } catch { /* best-effort */ }
       const msg = isNemTrack
         ? `The recorded recipe for ${portalLabel} points at an AHJ permit portal (${badUrl}) — that's a building-permit system, not the ${detail.project.utility || "utility"} interconnection portal. It was mis-recorded and has been flagged for re-recording. Record the utility's NEM portal, then re-stage.`
-        : `The recorded recipe for ${portalLabel} points at a utility interconnection portal (${badUrl}) — that's the NEM portal, not the ${detail.project.ahj || "AHJ"} permit portal. It was mis-recorded and has been flagged for re-recording. Record the AHJ's permit portal, then re-stage.`;
+        : `The recorded recipe for ${portalLabel} points at a utility interconnection portal (${badUrl}) — that's the NEM portal, not the ${portalProject.ahj || "AHJ"} permit portal. It was mis-recorded and has been flagged for re-recording. Record the AHJ's permit portal, then re-stage.`;
       addAuditLog(db, projectId, "system", "submit gate", "portal.track_host_conflict", { track: track ?? "permit", url: badUrl, recipeId: recipe.id });
       result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
     } else if (recipe && runActorLabel === "RecipeAdapter" && recipeEntityMisfit) {
@@ -8424,7 +8862,7 @@ export async function prepareSubmission(
       // entity's — another utility's/AHJ's portal, or one a person verified is NOT where this
       // entity files. Nothing is launched and the recipe is left exactly as it is (it may be
       // right for whoever it was learned on); the operator fixes the key or the KB.
-      const who = track === "nem" ? (detail.project.utility || "this utility") : (detail.project.ahj || "this AHJ");
+      const who = track === "nem" ? (portalProject.utility || "this utility") : (portalProject.ahj || "this AHJ");
       const msg = `Staging stopped before opening a browser: the recipe found for ${who} drives ${recipeEntityMisfit.url} — ${recipeEntityMisfit.reason}. Nothing was launched and the recipe was not changed. If ${who} really files there, save that portal on ${who}'s knowledge-base profile (verified) and re-stage; otherwise record ${who}'s own portal.`;
       addAuditLog(db, projectId, "system", "submit gate", "portal.recipe_entity_conflict", {
         track: track ?? "permit", recipeId: recipe.id, url: recipeEntityMisfit.url, code: recipeEntityMisfit.code, reason: recipeEntityMisfit.reason,
@@ -8456,11 +8894,11 @@ export async function prepareSubmission(
       // anything binds or runs them. A human step edit does not bump the version, so heals and the
       // demotion are measured against every field of these steps, selectors included.
       const replayStepsSig = recipeStepsSignature(recipe.steps ?? []);
-      const replayFieldValues = resolveRecipeFieldValues(db, stagedProject, portalType);
+      const replayFieldValues = resolveRecipeFieldValues(db, stagedProject, portalType, track ?? null);
       replayBinding = bindRecipeForReplay({
-        steps: recipe.steps ?? [], portalUrl: recipe.portalUrl, project: detail.project, fieldValues: replayFieldValues, track,
+        steps: recipe.steps ?? [], portalUrl: recipe.portalUrl, project: portalProject, fieldValues: replayFieldValues, track,
         borrowed: borrowed ? { learnedFor: borrowed.learnedFor, discipline: borrowed.discipline } : null,
-        agency: issuingAgencyFor(detail.project, track),
+        agency: issuingAgencyFor(portalProject, track),
       });
       if (replayBinding.changes.length) {
         addAuditLog(db, projectId, "system", "portal staging", "portal.replay_binding", {
@@ -8469,6 +8907,7 @@ export async function prepareSubmission(
       }
       const boundRecipe = { ...recipe, steps: replayBinding.steps };
       const boundValues = { ...replayFieldValues, ...replayBinding.fieldValues };
+      ledgerStagingLaunch(`staging replay (${track ?? "permit"} track, run ${runId})`, String(recipe.portalUrl || credentialUrl || ""));
       result = await recipeStageRunner(boundRecipe, stagedProject, boundValues, docsByType, files, stageOptions);
 
       // A BOT WALL MUST NOT BLOCK A FILING — RETRY WITH A REAL WINDOW.
@@ -8491,6 +8930,7 @@ export async function prepareSubmission(
           projectId, portal: portalLabel,
         });
         try {
+          ledgerStagingLaunch(`staging replay (${track ?? "permit"} track, run ${runId}) — headed retry, a second browser; may leave a second draft`, String(recipe.portalUrl || credentialUrl || ""));
           const headedResult = await recipeStageRunner(
             boundRecipe, stagedProject, boundValues, docsByType, files,
             { ...stageOptions, headless: false },
@@ -8546,6 +8986,27 @@ export async function prepareSubmission(
       // wall) is not a failure of anything and never reaches here.
       // Only a replay that FAILED (not a pause) is judged. A paused run stopped at a challenge.
       const replayFailed = result && result.ok === false && !(typeof result.pauseReason === "string" && result.pauseReason);
+      // THE PORTAL SAID THIS ADDRESS IS NOT SERVED THERE (portal-truth D5). The replay stopped with
+      // the portal's own words; nothing filed here is kept for this entity on that host: its own
+      // recipe is refused (flagged, demoted — never replayed again until a person clears it); on a
+      // BORROWED run the donor is untouched and a refused row is saved for THIS entity, so the next
+      // stage neither borrows nor falls back to this host.
+      const notServed = replayFailed ? notServedInResult(result) : null;
+      if (notServed) {
+        const where = track === "nem" ? (portalProject.utility || "this utility") : (portalProject.ahj || "this AHJ");
+        const host = portalHostOf(String(recipe.portalUrl ?? "")) || String(recipe.portalUrl ?? "");
+        try {
+          recordPortalNotServed(db, {
+            scopeType: track === "nem" ? "utility" : "ahj", state: portalProject.state, ahj: portalProject.ahj, utility: portalProject.utility,
+            discipline: trackDiscipline, portalUrl: String(recipe.portalUrl ?? ""), quote: notServed, projectId, recipeId: borrowed ? null : recipe.id,
+          });
+        } catch (e) {
+          logger.warn("portal", "could not record the not-served refusal", { projectId, err: e instanceof Error ? e.message : String(e) });
+        }
+        replayVerdictNote = borrowed
+          ? ` ${host} said this address is not served there ("${notServed}"): ${where} does not file this permit on that portal. The ${borrowed.learnedFor} recipe was not changed; nothing was kept for ${where} on ${host}. A person confirms ${where}'s own portal.`
+          : ` ${host} said this address is not served there ("${notServed}"): the recipe was refused (flagged; it will not replay again until a person clears the flag). A person confirms ${where}'s own portal.`;
+      }
       // A BORROWED recipe's failure on another entity's page says nothing about the recipe on its
       // own entity: it never demotes, never flags, never queues a re-learn. It is recorded (with
       // what the classifier would have said) and the run stops — that is the ruling's "drift
@@ -8555,9 +9016,9 @@ export async function prepareSubmission(
         addAuditLog(db, projectId, "system", "portal staging", "portal.borrowed_recipe_failed", {
           runId, recipeId: recipe.id, learnedFor: borrowed.learnedFor, attribution: blame.attribution, reason: blame.reason,
         });
-        replayVerdictNote = ` This run replayed the ${borrowed.learnedFor} recipe on the shared portal; it stopped here and the ${borrowed.learnedFor} recipe was not changed.`;
+        if (!notServed) replayVerdictNote = ` This run replayed the ${borrowed.learnedFor} recipe on the shared portal; it stopped here and the ${borrowed.learnedFor} recipe was not changed.`;
       }
-      const replayVerdict = replayFailed && !borrowed
+      const replayVerdict = replayFailed && !borrowed && !notServed
         ? (() => {
           try {
             return demoteOnReplayFailure(db, recipe.id, extractStageFailureMessage(result), recipe.version, { runId, projectId, expectedStepsSig: stepsSigNow });
@@ -8597,6 +9058,9 @@ export async function prepareSubmission(
                   createdBy: "auto-relearn (stale recipe)",
                   permitType: track === "nem" ? undefined : (track === "electrical" || track === "mpu" || detail.project.permitType === "electrical" ? "electrical" : "structural"),
                   discipline: trackDiscipline,
+                  // The stale recipe was found under THIS stage's view; the re-learn keys on the same
+                  // one (autoLearn learnIssuerTrack) — null for a trackless stage, never a derived view.
+                  track: track ?? null,
                 }, { projectId, priority: 5, maxRetries: 0 });
               }).catch(() => null);
               relearnQueued = true;
@@ -8636,7 +9100,7 @@ export async function prepareSubmission(
         const msg = trackHostConflict
           ? (track === "nem"
             ? `The only portal URL known for ${portalLabel} is an AHJ permit portal (${credentialUrl}) — not the ${detail.project.utility || "utility"} interconnection portal. Staging stopped so the interconnection isn't filed in the wrong system. Record the utility's NEM portal once (or add its URL to the knowledge base) and re-stage.`
-            : `The only portal URL known for ${portalLabel} is a utility interconnection portal (${credentialUrl}) — that's the NEM portal, not the ${detail.project.ahj || "AHJ"} permit portal. Staging stopped so the permit isn't filed in the wrong system. Record the AHJ's permit portal once (or add its URL to the knowledge base) and re-stage.`)
+            : `The only portal URL known for ${portalLabel} is a utility interconnection portal (${credentialUrl}) — that's the NEM portal, not the ${portalProject.ahj || "AHJ"} permit portal. Staging stopped so the permit isn't filed in the wrong system. Record the AHJ's permit portal once (or add its URL to the knowledge base) and re-stage.`)
           : `Staging stopped before opening a browser: ${credentialUrl} — ${learnFit.reason}.`;
         addAuditLog(db, projectId, "system", "submit gate", trackHostConflict ? "portal.track_host_conflict" : "portal.entity_host_conflict", { track: track ?? "permit", url: credentialUrl, code: learnFit.code });
         result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
@@ -8654,6 +9118,11 @@ export async function prepareSubmission(
             // The recipe key's discipline for this track - MUST be the same value the
             // lookup above asked for, or the learned recipe is never found again.
             discipline: trackDiscipline,
+            // AND THE SAME ISSUER (split issuer): this stage's own track, null when trackless, so the
+            // learn keys on exactly `portalProject` — the view whose portal `credentialUrl` is — and
+            // never re-derives a view from the permit type (a trackless stage's "structural" swapped
+            // to the building issuer and saved the county's portal under the city's key).
+            track: track ?? null,
             // The self-seed IS this track's staging run when no trusted recipe exists yet, so the
             // operator's delegated submit has to reach it here too — otherwise the only portals it
             // can never file on are precisely the ones with no recipe.
@@ -8677,8 +9146,10 @@ export async function prepareSubmission(
         }
       }
     } else if (runActorLabel === "OregonEPermittingAdapter") {
+      ledgerStagingLaunch(`staging, hand-coded Oregon ePermitting adapter (${track ?? "permit"} track, run ${runId})`, credentialUrl);
       result = await stageWithAccela(stagedProject, files, stageOptions);
     } else if (runActorLabel === "PowerClerkAdapter") {
+      ledgerStagingLaunch(`staging, hand-coded PowerClerk adapter (${track ?? "permit"} track, run ${runId})`, credentialUrl);
       result = await stageWithPowerClerk(stagedProject, files, stageOptions);
     } else if (runActorLabel === "NoAdapter" || autoSeedEnabled) {
       // Nothing REAL to drive: no recorded recipe and either no adapter for this real
@@ -8688,15 +9159,20 @@ export async function prepareSubmission(
       // the portal moves a real filing to awaiting_human_submit, and the mock approve
       // path then fabricates MOCK-/CONF- permit numbers staff would trust. Stop and
       // surface the actionable blocker instead.
-      const where = track === "nem" ? (detail.project.utility || "this utility") : (detail.project.ahj || "this AHJ");
+      const where = track === "nem" ? (portalProject.utility || "this utility") : (portalProject.ahj || "this AHJ");
       // The portal may be KNOWN and a recording found for it, refused on purpose (production
       // 2026-09-27, City of Jefferson building: the Coos Bay recording would pick the city row
       // where Marion County issues). "No portal automation is available" then reads as a missing
       // URL and sends the operator to re-paste one that is already there — say the real reason.
       const refused = borrowDecisionReason.startsWith("borrow refused: ") ? borrowDecisionReason.slice("borrow refused: ".length) : "";
+      // THE STATEWIDE PORTAL WAS WITHHELD (portal-truth D1): say why — the operator confirms the
+      // AHJ's own portal; "no portal automation" would read as a missing URL.
+      const withheld = refusedUrls.find((r) => r.code === "withheld")?.reason ?? "";
       const msg = refused
         ? `No recording exists yet for ${where}'s ${track} permit${ownPortalUrl ? ` on ${portalHostOf(ownPortalUrl) || ownPortalUrl}` : ""}, and the recording learned elsewhere on that portal was not reused: ${refused}. Nothing was opened. This permit needs one supervised learn or recording for its issuing agency; then re-stage.`
-        : `No portal automation is available for ${where} yet, so there's nothing to stage against. Record the portal once (paste its login/landing URL under "Record this portal") or add its URL to the knowledge base, then re-stage.`;
+        : withheld
+          ? `No portal is confirmed for ${where}'s ${track ?? "permit"} permit, so nothing was opened. ${withheld}`
+          : `No portal automation is available for ${where} yet, so there's nothing to stage against. Record the portal once (paste its login/landing URL under "Record this portal") or add its URL to the knowledge base, then re-stage.`;
       result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
     } else {
       // The mock stands in ONLY when there is no real portal AND auto-seed is off —
@@ -8737,6 +9213,13 @@ export async function prepareSubmission(
     const evidenceDir = String((result as Record<string, unknown>).evidenceDir
       ?? (result as Record<string, unknown>).debugDir ?? "").trim();
     const outcomeShotPath = String((result as Record<string, unknown>).outcomeShotPath ?? "").trim();
+    // THE DRAFT THIS RUN LEFT, NAMED (dryrun-0928 B11): the reference portal-bot read off the review
+    // page's URL (PowerClerk's ProjectId) goes on the draft ledger beside the launch row, and stays in
+    // result_json. A URL with no record key (an Accela wizard page) is recorded as the page link only.
+    const draftRef = (result as { draftReference?: { link?: string; id?: string } }).draftReference;
+    if (!clicked && draftRef && (draftRef.id || draftRef.link)) {
+      annotateDraft(projectId, String(draftRef.id || draftRef.link), `${track ?? "permit"} staging run ${runId}${draftRef.id ? " — the portal's own reference" : " — review page link (its URL carries no record key)"}`);
+    }
     // WHICH RECIPE DROVE THIS RUN, AND WHO IT WAS LEARNED FOR — on the run row (result_json), in
     // the stage line and on the submission, so the operator reviewing the staged application
     // knows it was filled from another jurisdiction's recipe.
@@ -8810,7 +9293,9 @@ export async function prepareSubmission(
           String((result as Record<string, unknown>).debugDir ?? ""),
           // Persist WHICH adapter actually drove this run — the autopilot approve path
           // must never mock-submit a run that a real adapter staged (see autopilot.ts).
-          asJson({ ...result, actor: runActorLabel, harnessAbort: outcome.harnessAbort || undefined, submissionVerdict: outcome.submissionVerdict ?? undefined, borrowedRecipe: borrowedRecord }),
+          // packagedDocTypes: WHAT THIS DRAFT WAS HANDED (the track-scoped payload) — Approve judges a
+          // draft by it (draftDocumentGaps), never by what is on disk later (gates-proper C1).
+          asJson({ ...result, actor: runActorLabel, harnessAbort: outcome.harnessAbort || undefined, submissionVerdict: outcome.submissionVerdict ?? undefined, borrowedRecipe: borrowedRecord, packagedDocTypes: Object.keys(docsByType) }),
           pauseReason, runId],
       );
 
@@ -8907,7 +9392,8 @@ export async function prepareSubmission(
         clicked ? "portal.final_submit_clicked" : pauseReason ? "portal.paused_for_human" : adapterFailed ? "portal.run_failed" : "portal.staged_to_review", {
           runId,
           portalProfileId,
-          portalType,
+          portalType: auditPortalType,
+          adapter: runActorLabel,
           runStatus,
           finalSubmitClickedByAutomation: clicked,
           ...(adapterFailed ? { failureReason: failureMessage, harnessAbort: outcome.harnessAbort } : {}),

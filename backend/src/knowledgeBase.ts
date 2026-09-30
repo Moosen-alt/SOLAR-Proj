@@ -20,13 +20,17 @@ import type { AppDb } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
 import { id } from "./ids";
 import { asJson, bool, parseJson, text } from "./json";
-import { findApplicationProfile } from "./applicationDocs";
+import { FALLBACK_PROFILE_IDS, findApplicationProfile } from "./applicationDocs";
+import { classifyChannelWords, isStatewidePortalUrl } from "./permitProcess";
+import { usStateCode } from "./permitPath";
 import { enrichMboxLearningWithLlm, stripUrlsFromModelMemory } from "./llm";
 import { allAhjProcessProfiles, findAhjProcessProfile } from "./processProfiles";
 import { nowIso } from "./time";
 import { logger } from "./logger";
 import { inferPlatform, isRecognizedPlatform, looksLikeBareUrl } from "./portalPlatformRules";
-import { isUtilityPlatformUrl } from "./portalChannel";
+import { isInformationalPageUrl, isUtilityPlatformUrl, portalHostOf } from "./portalChannel";
+import { HttpError } from "./httpError";
+import { KNOWN_POWERCLERK_PORTALS, foreignKnownTenant, knownPowerClerkUtility, knownTenantOwner, provablyDifferentUtility, sameUtilityEntity } from "./utilityIdentity";
 
 type Row = Record<string, unknown>;
 
@@ -123,10 +127,102 @@ const CREDENTIAL_LABEL =
 const USER_PASS_PAIR =
   /[\w.+-]+@[\w-]+\.[a-z]{2,}\s+(?=\S{6,})(?=\S*[a-z])(?=\S*[A-Z])(?=\S*\d)\S+/;
 
+// A LOGIN HANDLE AND ITS PASSWORD, NOTHING ELSE (leak sweep company-leak-5, 2026-09-28). A shared
+// row carried "<Handle> & <password>" — no label, no email — and neither test above saw it. Both
+// shapes below are anchored to the WHOLE segment (an optional short "Accela login:" label first),
+// so prose never matches: the second token must be one unbroken token of 6+ characters with no
+// parentheses (a fee line's "(5-15kVA)" has them).
+//   "<handle> & <secret>": the secret carries a letter AND a digit or a password symbol, and is not
+//     an email ("Contact & permits@city.gov" is a contact; "Solar & Battery-Storage" is a scope).
+//   "<handle> <secret>": the handle looks like a login (CamelCase, a digit, "_" or "."), the secret
+//     is lower + upper + digit — "Model IQ8Plus-72" is a model line, not a login.
+const HANDLE_AMP_SECRET =
+  /^\s*(?:[^:|]{1,40}:\s*)?[A-Za-z][\w.@+-]{2,63}\s*&\s*(?![\w.+-]+@[\w-]+\.[\w.-]+\s*$)(?=[^\s()]{6,}\s*$)(?=[^\s()]*[A-Za-z])(?=[^\s()]*[\d!#$%^&*?~+=@])[^\s()]+\s*$/;
+const HANDLE_SPACE_SECRET =
+  /^\s*(?:[^:|]{1,40}:\s*)?(?=[A-Za-z][\w.+-]*(?:[a-z][A-Z]|\d|_|\.))[A-Za-z][\w.+-]{2,63}\s+(?=[^\s()]{6,}\s*$)(?=[^\s()]*[a-z])(?=[^\s()]*[A-Z])(?=[^\s()]*\d)[^\s()]+\s*$/;
+
 /** True when a note segment looks like it carries a credential rather than portal knowledge. */
 export function looksLikeCredentialNote(segment: string): boolean {
   const s = String(segment ?? "");
-  return CREDENTIAL_LABEL.test(s) || USER_PASS_PAIR.test(s);
+  return CREDENTIAL_LABEL.test(s) || USER_PASS_PAIR.test(s) || HANDLE_AMP_SECRET.test(s) || HANDLE_SPACE_SECRET.test(s);
+}
+
+/** A shared row's notes as ANY reader is served them: every credential-shaped segment
+ *  (looksLikeCredentialNote — the write guard's own predicate) dropped. Byte-identical when clean. */
+export function servedKnowledgeNotes(notes: string): string {
+  const raw = String(notes ?? "");
+  if (!raw) return raw;
+  const segs = raw.split(" | ");
+  if (!segs.some((seg) => looksLikeCredentialNote(seg.trim()))) return raw;
+  return segs.filter((seg) => !looksLikeCredentialNote(seg.trim())).join(" | ");
+}
+
+/**
+ * THE ONE-TIME CLEANUP OF A CREDENTIAL ALREADY SITTING IN A SHARED NOTE (migration v42, forms skeptic
+ * K1 — rule 2). The write guard (noteSegments) only runs when a row is written, so a row seeded before
+ * it — one unverified row carried a plaintext "<handle> & <password>" pair — kept it in the shared
+ * knowledge base every org can read. Drops the credential-shaped segments from UNVERIFIED rows only:
+ * a human-verified row is never auto-rewritten (rule 3, isVerifiedKnowledge) — its notes are filtered
+ * when served (servedKnowledgeNotes) and it is counted for the operator. Never logs a segment or a
+ * row's text. Idempotent.
+ */
+export function purgeCredentialNoteSegments(db: AppDb): { cleaned: string[]; keptVerified: string[] } {
+  const cleaned: string[] = [];
+  const keptVerified: string[] = [];
+  const rows = db.query<{ id: string; notes: string | null; verified_at: string | null }>(
+    "SELECT id, notes, verified_at FROM permit_utility_knowledge WHERE notes IS NOT NULL AND notes <> ''");
+  for (const row of rows) {
+    const notes = String(row.notes ?? "");
+    const next = servedKnowledgeNotes(notes);
+    if (next === notes) continue;
+    if (isVerifiedKnowledge(row)) { keptVerified.push(row.id); continue; }
+    db.run("UPDATE permit_utility_knowledge SET notes = ? WHERE id = ?", [next, row.id]);
+    cleaned.push(row.id);
+  }
+  return { cleaned, keptVerified };
+}
+
+// ---------------------------------------------------------------------------------------------
+// WHAT A LEARN PLANNER MAY READ FROM A SHARED NOTE (leak sweep company-leak-5). The KB is shared
+// across every company on purpose — but its notes were written from ONE company's sheets, and they
+// carry that company's facts: "Operator credential stored for this portal.", its login usernames and
+// emails, its licence numbers ("metro license # <n>"). Handed to another company's learn planner as
+// AHJ context, the planner could type the first company's licence into the second company's filing,
+// and a login pair reached the model (hard rule 2). The row stays as it is (shared knowledge, and
+// rule 3 for verified rows); what leaves for the model is filtered here, segment by segment.
+// ---------------------------------------------------------------------------------------------
+const LOGIN_FACT = /\bcredentials?\b[^|]{0,40}\b(stored|on file|saved)\b|«pw»|\b(user\s*-?\s*name|user\s*id|log\s*-?\s*in|logon|sign\s*-?\s*in|pw|pwd|password|pass)\s*[:=]/i;
+/** A login label directly followed by the email it logs in with ("User name <email>", "Login - <email>").
+ *  Never the bare word: "…/Login/Index" in a portal URL and "only the login differs per AHJ" are knowledge. */
+const LOGIN_EMAIL = /\b(user\s*-?\s*name|username|user\s*id|log\s*-?\s*in|logon|sign\s*-?\s*in)\s*(?:[:=-]\s*|\s+(?:is\s+)?)[\w.+-]+@[\w-]+\.[a-z]{2,}/i;
+/** "<handle> & <email>" — a username paired with the login email, the whole segment. */
+const HANDLE_AMP_EMAIL = /^\s*(?:[^:|]{1,40}:\s*)?[A-Za-z][\w.+-]{2,63}\s*&\s*[\w.+-]+@[\w-]+\.[\w.-]+\s*$/;
+/** A licence / registration NUMBER after its label ("metro license # 12345", "CCB# 123456",
+ *  "License No. C1234"). The label stays (the AHJ asks for that licence); the number is the
+ *  job's company's own and comes from the job's client, never from a shared note. */
+const LICENCE_NUMBER = /\b((?:licen[cs]e|lic\.|registration|reg\.?|ccb|cslb|hic)\s*(?:no\.?|number|num\.?|#)?\s*[:#]?\s*)([A-Z]{0,4}-?\d{3,}[A-Z]?)\b/gi;
+
+/** One shared note segment is another company's fact (a login, a stored credential) — never sent to a model. */
+export function isCompanyLoginSegment(segment: string): boolean {
+  const s = String(segment ?? "");
+  return looksLikeCredentialNote(s) || LOGIN_FACT.test(s) || HANDLE_AMP_EMAIL.test(s) || LOGIN_EMAIL.test(s);
+}
+
+/** A licence / registration number in shared prose, replaced by a pointer to the job's own company
+ *  (the label stays — the AHJ asking for that licence is knowledge; the number is one company's). */
+export function redactLicenceNumbers(text: string): string {
+  return String(text ?? "").replace(LICENCE_NUMBER, (_m, label: string) => `${label}[the job's company's own number]`);
+}
+
+/** The shared notes as a learn planner may read them: credential / login segments dropped, licence
+ *  numbers replaced by a pointer to the job's own company. " | "-joined segments in, the same out. */
+export function learnSafeNotes(notes: string): string {
+  return String(notes ?? "")
+    .split(" | ")
+    .map((seg) => seg.trim())
+    .filter((seg) => seg && !isCompanyLoginSegment(seg))
+    .map((seg) => redactLicenceNumbers(seg))
+    .join(" | ");
 }
 
 // Notes are stored as " | "-joined segments. Split before merging so dedupe
@@ -197,6 +293,94 @@ function confidenceFrom(existing: string, incoming?: PermitUtilityKnowledgeProfi
 export function isVerifiedKnowledge(row: { verifiedAt?: unknown; verified_at?: unknown } | null | undefined): boolean {
   if (!row) return false;
   return text(row.verifiedAt ?? row.verified_at).trim() !== "";
+}
+
+/**
+ * IS THIS NAME A JURISDICTION THE SHARED KB KNOWS ON SOMEONE'S AUTHORITY — a human-verified row
+ * (isVerifiedKnowledge) or one an official / sanitized-reference source wrote. What the product
+ * LEARNED never counts: the birth learn (learnFromProject, run right after a project's first QC)
+ * writes `<state>|<ahj as typed>|<utility>` for a typo the moment it is saved, and AI research lands
+ * under the same key — either would silence the near-miss question on the very next QC run.
+ * EXACT key reads only, by state: the fuzzy resolver (knowledgeNameMatchScore) scores
+ * "City Of Smonroe" against "Monroe" at 82 by containment and would call the typo known. The
+ * utility segment is left open (`state|name|%`; a normalized key holds only [a-z0-9 |]) so a
+ * verified row filed under a utility still answers. Read-only.
+ */
+export function knownKnowledgeName(db: AppDb, state: string, name: string): boolean {
+  if (!clean(name)) return false;
+  const prefix = `${normalize(state)}|${normalize(name)}|`;
+  try {
+    for (const row of db.query<Row>("SELECT verified_at, sources_json FROM permit_utility_knowledge WHERE profile_key LIKE ?", [`${prefix}%`])) {
+      if (isVerifiedKnowledge(row)) return true;
+      const sources = parseJson<KnowledgeSource[]>(text(row.sources_json), []);
+      if (sources.some((s) => s && (s.sourceType === "official" || s.sourceType === "sanitized_reference"))) return true;
+    }
+  } catch { /* table not there yet: not known */ }
+  return false;
+}
+
+/**
+ * THE ONE-TIME CLEANUP OF A KNOWN TENANT WRITTEN AS ANOTHER UTILITY'S PORTAL (migration v41, leak
+ * sweep 2026-09-28). The bare /PACIFIC/ and /PGE/ regexes in portalFromProject wrote PacifiCorp's
+ * PowerClerk as "Pacific Gas and Electric Company"'s own portal, Portland General's as a CA "PGE"'s,
+ * and PacifiCorp's as WA "Pacific County PUD"'s — pooled knowledge, so one project poisoned the row
+ * for every tenant. This clears the portal (URL, and the name/platform describing that tenant) from
+ * every row carrying pacificorpnetmetering / pgenm whose utility is provably NOT that tenant's owner
+ * (utilityIdentity.foreignKnownTenant — the one identity). It also drops the utility-NAMED document
+ * lines projectDocs added under the same regexes ("Pacific Power customer generation application",
+ * "PGE SLD/site/spec upload package", "PowerClerk interconnection application").
+ *
+ * NEVER a human-verified row (rule 3, isVerifiedKnowledge). A correct row (Pacific Power in OR/WA/
+ * CA/UT/ID/WY, PGE in OR) is not touched. Idempotent; returns what it did.
+ */
+export function purgeForeignKnownTenantPortals(db: AppDb): { cleared: string[]; docsTrimmed: string[]; keptVerified: string[] } {
+  const out = { cleared: [] as string[], docsTrimmed: [] as string[], keptVerified: [] as string[] };
+  const FOREIGN_DOC_LINES: Array<{ line: string; owner: "pacificorp" | "portland_general" }> = [
+    { line: "Pacific Power customer generation application", owner: "pacificorp" },
+    { line: "PGE SLD/site/spec upload package", owner: "portland_general" },
+    { line: "PowerClerk interconnection application", owner: "portland_general" },
+  ];
+  const rows = db.query<Row>(
+    `SELECT * FROM permit_utility_knowledge
+     WHERE lower(portal_url) LIKE '%powerclerk.com%' OR required_documents_json LIKE '%Pacific Power customer generation application%'
+        OR required_documents_json LIKE '%PGE SLD/site/spec upload package%' OR required_documents_json LIKE '%PowerClerk interconnection application%'`,
+  );
+  const ts = nowIso();
+  for (const row of rows) {
+    const key = text(row.profile_key);
+    const entity = { state: text(row.state), utility: text(row.utility) };
+    const url = text(row.portal_url);
+    const host = portalHostOf(url);
+    const owner = knownTenantOwner(host);
+    const foreignPortal = owner ? foreignKnownTenant(host, entity) : null;
+    const identity = knownPowerClerkUtility(entity);
+    const docs = parseJson<string[]>(text(row.required_documents_json), []);
+    const keptDocs = docs.filter((d) => {
+      const hit = FOREIGN_DOC_LINES.find((f) => f.line.toLowerCase() === String(d).trim().toLowerCase());
+      return !hit || hit.owner === identity;
+    });
+    const trimDocs = keptDocs.length !== docs.length;
+    if (!foreignPortal && !trimDocs) continue;
+    if (isVerifiedKnowledge(row)) { out.keptVerified.push(key); continue; }
+    if (foreignPortal) {
+      const portalName = text(row.portal_name);
+      const platform = text(row.portal_platform);
+      db.run(
+        "UPDATE permit_utility_knowledge SET portal_url = '', portal_name = ?, portal_platform = ?, updated_at = ? WHERE profile_key = ?",
+        [
+          /powerclerk|pacific power customer generation/i.test(portalName) ? "" : portalName,
+          /powerclerk/i.test(platform) ? "" : platform,
+          ts, key,
+        ],
+      );
+      out.cleared.push(key);
+    }
+    if (trimDocs) {
+      db.run("UPDATE permit_utility_knowledge SET required_documents_json = ?, updated_at = ? WHERE profile_key = ?", [asJson(keptDocs), ts, key]);
+      out.docsTrimmed.push(key);
+    }
+  }
+  return out;
 }
 
 function correctionSignature(correction: KnowledgeFacts["correction"]): string {
@@ -284,8 +468,11 @@ export function extractProjectFeatureTags(project: ProjectRecord): string[] {
   if (project.utility) tags.add(`utility:${tag(project.utility)}`);
   const portal = portalFromProject(project);
   if (portal.portalName) tags.add(`portal:${tag(portal.portalName)}`);
-  if (/pacific|pacificorp/i.test(project.utility)) tags.add("utility_family:pacific_power");
-  if (/\bpge\b|portland general/i.test(project.utility)) tags.add("utility_family:pge");
+  // The project's utility family by the one state-gated identity (utilityIdentity) — a PG&E job is
+  // not the Pacific Power family and must not match PacifiCorp's history.
+  const family = knownPowerClerkUtility(project);
+  if (family === "pacificorp") tags.add("utility_family:pacific_power");
+  if (family === "portland_general") tags.add("utility_family:pge");
   if (/powerwall|tesla/i.test(all)) tags.add("battery:powerwall");
   if (/battery|\bESS\b|backup|encharge|powerwall/i.test(all)) tags.add("scope:ess");
   if (/non.backup|rate saver|self.consumption/i.test(all)) tags.add("ess_mode:non_backup");
@@ -354,7 +541,10 @@ function mapKnowledge(row: Row): PermitUtilityKnowledgeProfile {
     verifiedAt: text(row.verified_at).trim() || null,
     verifiedBy: text(row.verified_by),
     sources: parseJson<KnowledgeSource[]>(text(row.sources_json), []),
-    notes: text(row.notes),
+    // Served WITHOUT a credential-shaped segment (rule 2): a shared row written before the write guard
+    // existed — or a human-verified one the v42 cleanup may not touch (rule 3) — never shows a
+    // password to any reader (GET /api/knowledge-base is readable by every org).
+    notes: servedKnowledgeNotes(text(row.notes)),
     firstSeenAt: text(row.first_seen_at),
     lastLearnedAt: text(row.last_learned_at),
     updatedAt: text(row.updated_at),
@@ -433,6 +623,21 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
       portalPlatform: clean(facts.portalPlatform) || (isRecognizedPlatform(platform) ? platform : facts.portalPlatform),
     };
   }
+  // AN INFORMATION PAGE IS NEVER A PORTAL (portal-truth D2, 2026-09-28). City of Corvallis's row
+  // held Oregon BCD's help page ("…/bcd/epermitting/help/…/permit-for-solar.aspx") as its portal,
+  // and every door downstream had to refuse it again. Every writer funnels through here — learn,
+  // AI research, the reference import, the verified saves (which refuse loudly before they get
+  // here: saveVerifiedAhjProfile / saveVerifiedUtilityProfile) — so this is the one seam that keeps
+  // a help/guide page or a document out of portal_url, judged by THE one predicate
+  // (portalChannel.isInformationalPageUrl). The refused URL is kept as a note segment, never lost.
+  if (clean(facts.portalUrl) && isInformationalPageUrl(clean(facts.portalUrl))) {
+    const refused = clean(facts.portalUrl);
+    facts = {
+      ...facts,
+      portalUrl: "",
+      notes: [clean(facts.notes), `Refused as a portal URL: ${refused} is an information page (help / guide / document), not an application portal`].filter(Boolean).join(" | "),
+    };
+  }
   // RULE 5 AT THE KB WRITE (close-2 item 7): an AHJ-KEYED row never carries a UTILITY portal. The
   // learn path used to stamp PGE's PowerClerk login onto every (ahj, utility) row a PGE project
   // touched ("or|city of tigard|portland general electric" -> pgenm.powerclerk.com), and the
@@ -440,6 +645,14 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
   // learn path funnel through here, so this is the one seam: the utility portal (its URL and the
   // name / platform that describe it) is moved to the UTILITY's own row (state, "", utility) —
   // verified rows there still fill blanks only — or dropped when no utility is named.
+  // A KNOWN UTILITY'S TENANT IS NEVER WRITTEN AS ANOTHER UTILITY'S PORTAL (leak sweep 2026-09-28).
+  // PacifiCorp's / Portland General's PowerClerk belongs to that utility only (utilityIdentity — the
+  // one state-gated identity). Whatever path carries it here for a utility that provably is not the
+  // owner (a CA "Pacific Gas and Electric", a WA "Pacific County PUD"), the portal is dropped; only a
+  // person's own verified write may say otherwise.
+  if (!facts.verifiedAt && clean(facts.portalUrl) && foreignKnownTenant(portalHostOf(clean(facts.portalUrl)), { state: facts.state, utility: facts.utility })) {
+    facts = { ...facts, portalUrl: "", portalName: "", portalPlatform: "" };
+  }
   if (clean(facts.ahj) && isUtilityPlatformUrl(clean(facts.portalUrl))) {
     const utilityPortal = { portalUrl: clean(facts.portalUrl), portalName: clean(facts.portalName), portalPlatform: clean(facts.portalPlatform) };
     facts = { ...facts, portalUrl: "", portalName: "", portalPlatform: "" };
@@ -806,12 +1019,15 @@ function projectDocs(project: ProjectRecord): string[] {
   if (/label|placard/i.test(textBlob)) add("PV label / placard schedule");
   if (/utility bill|account|meter/i.test(textBlob)) add("Utility bill / account / meter evidence");
 
-  if (/PGE|PORTLAND GENERAL/i.test(project.utility)) {
+  // WHICH UTILITY, by the one anchored state-gated answer (utilityIdentity) — a CA "Pacific Gas and
+  // Electric" or "PGE" (PG&E) job is neither Portland General nor PacifiCorp.
+  const knownUtility = knownPowerClerkUtility(project);
+  if (knownUtility === "portland_general") {
     add("PowerClerk interconnection application");
     add("PGE SLD/site/spec upload package");
     add("Utility account and meter verification");
   }
-  if (/PACIFIC|PACIFICORP/i.test(project.utility)) {
+  if (knownUtility === "pacificorp") {
     add("Pacific Power customer generation application");
     add("Meter photo");
     add("UL 1741 SB / inverter settings evidence");
@@ -828,23 +1044,27 @@ function projectDocs(project: ProjectRecord): string[] {
 function portalFromProject(project: ProjectRecord): { portalName: string; portalUrl: string; utilityPortal: { portalName: string; portalUrl: string } | null } {
   const appProfile = findApplicationProfile(project);
   const process = findAhjProcessProfile(project);
-  const portalName = process?.submissionMethod || appProfile.portalName || "";
-  const portalUrl = appProfile.sourceUrl || "";
-  let utilityPortal: { portalName: string; portalUrl: string } | null = null;
-  if (/PGE|PORTLAND GENERAL/i.test(project.utility)) {
-    // The interconnection application lives behind the PowerClerk login, NOT on the public
-    // resource-library landing page. Seed the real portal-ENTRY URL so the universal self-seed
-    // (auto-learn) launches against the actual form instead of an info page it can never fill.
-    // Same value the hand-coded PowerClerk adapter targets (powerClerk.ts PGE_LOGIN_URL).
-    utilityPortal = { portalName: "PowerClerk", portalUrl: "https://pgenm.powerclerk.com/MvcAccount/Login" };
-  }
-  if (/PACIFIC|PACIFICORP/i.test(project.utility)) {
-    // PacifiCorp (Pacific Power / Rocky Mountain Power) customer generation runs on a PowerClerk
-    // tenant — the application form is behind this login, NOT the pacificpower.net marketing page.
-    // Seed the real portal-ENTRY URL (mirrors the PGE block above) so the universal self-seed
-    // (auto-learn) launches the actual form. portalCredentials.ts aliases the marketing hosts to this.
-    utilityPortal = { portalName: "Pacific Power Customer Generation Portal", portalUrl: "https://pacificorpnetmetering.powerclerk.com/MvcAccount/Login" };
-  }
+  // A FALLBACK PROFILE IS NOT THE AHJ'S KNOWLEDGE (portal-truth D2). The generic Oregon profile's
+  // name ("Oregon ePermitting") and source (BCD's help page) were written into EVERY Oregon AHJ's
+  // row with no profile of its own as "learned" — Corvallis's row among them — and the next
+  // resolver read them back as that AHJ's portal. Only a profile written for THIS jurisdiction
+  // (a hand-written registry entry, or one synthesized from its own seeded process) contributes.
+  const ownProfile = !FALLBACK_PROFILE_IDS.has(appProfile.id);
+  const portalName = process?.submissionMethod || (ownProfile ? appProfile.portalName : "") || "";
+  const portalUrl = ownProfile ? appProfile.sourceUrl || "" : "";
+  // The interconnection application lives behind the PowerClerk login, NOT on the public
+  // resource-library / marketing page. Seed the real portal-ENTRY URL so the universal self-seed
+  // (auto-learn) launches against the actual form instead of an info page it can never fill. Same
+  // values the hand-coded PowerClerk adapter targets (powerClerk.ts PGE_LOGIN_URL);
+  // portalCredentials.ts aliases the PacifiCorp marketing hosts to its tenant.
+  //
+  // ONLY for the utility that IS Portland General / PacifiCorp (utilityIdentity: an anchored name in
+  // that utility's own states). The bare /PACIFIC/ and /PGE/ regexes this replaced wrote PacifiCorp's
+  // tenant as Pacific Gas & Electric's own portal (and Portland General's for a CA "PGE") into the
+  // shared KB, and NEM staging launched it — leak sweep 2026-09-28.
+  const knownUtility = knownPowerClerkUtility(project);
+  const known = knownUtility ? KNOWN_POWERCLERK_PORTALS[knownUtility] : null;
+  const utilityPortal = known ? { portalName: known.portalName, portalUrl: known.portalUrl } : null;
   return { portalName, portalUrl, utilityPortal };
 }
 
@@ -1251,22 +1471,35 @@ function inferAhj(value: string): string {
   return titleCase(raw);
 }
 
-function inferPortal(value: string): string {
+function inferPortal(value: string, state: string): string {
   if (/powerclerk/i.test(value)) return "PowerClerk";
   if (/devhub/i.test(value)) return "DevHub";
   if (/projectdox/i.test(value)) return "ProjectDox";
   if (/energov/i.test(value)) return "EnerGov";
-  if (/aca|accela/i.test(value)) return "Accela";
+  // Whole words: a bare "aca" substring matched "vacation", "academy" and "Placa".
+  if (/\baca\b|\baccela\b/i.test(value)) return "Accela";
   if (/mygov/i.test(value)) return "MyGov";
-  if (/epermitting|e-permitting|accela/i.test(value)) return "Oregon ePermitting";
+  // An e-permitting portal is OREGON's ePermitting only in Oregon (usStateCode — the one "is this
+  // Oregon" answer). Elsewhere it is the jurisdiction's own online portal.
+  if (/\be-?permitting\b/i.test(value)) return usStateCode(state) === "OR" ? "Oregon ePermitting" : "Online e-permitting portal";
   if (/development direct/i.test(value)) return "Development Direct";
   return "";
 }
 
+/** Test hooks for the mbox learner's state / portal inference (pure). */
+export function inferMboxState(value: string, ahj: string, utility: string): string { return inferState(value, ahj, utility); }
+export function inferMboxPortal(value: string, state: string): string { return inferPortal(value, state); }
+
 function inferState(value: string, ahj: string, utility: string): string {
   const stateMatch = value.match(/\b(AK|AL|AR|AZ|CA|CO|FL|GA|ID|IL|MA|MD|MI|MN|MO|NC|NJ|NM|NV|NY|OH|OR|PA|SC|TN|TX|UT|VA|WA|WI)\b/);
   if (stateMatch) return stateMatch[1].toUpperCase();
-  if (/portland|clackamas|washington county|hillsboro|salem|oregon/i.test(`${ahj}\n${value}`)) return "OR";
+  // A PLACE NAME IS NOT A STATE. "Portland", "Salem", "Washington County" and a town named Oregon
+  // exist in several states (ME, MA, PA, WI, IL, OH…); guessing Oregon from them filed another
+  // state's email under Oregon's knowledge. Only the state's own name, in a state position
+  // ("Salem, Oregon", "State of Oregon", "Oregon 97301"), says Oregon. Otherwise: unknown.
+  if (/,\s*oregon\b|\bstate of oregon\b|\boregon\s+9[78]\d{3}\b/i.test(`${ahj}\n${value}`)) return "OR";
+  // (The utility line is a separate sweep finding — PacifiCorp / Pacific Power serve more than
+  // Oregon — left to its own round.)
   if (/pacific power|pacificorp|pge|portland general/i.test(utility)) return "OR";
   if (/srp|aps|unisource|maricopa|pinal|phoenix|tucson/i.test(`${utility}\n${ahj}\n${value}`)) return "AZ";
   if (/fpl|duke energy|miami|tampa|orange county|broward/i.test(`${utility}\n${ahj}\n${value}`)) return "FL";
@@ -1402,8 +1635,8 @@ function buildMboxLearningRecord(input: {
   const bucket = classifyMboxBucket(input.combined);
   const utility = input.defaults.utility || inferUtility(input.combined);
   const jurisdiction = input.defaults.ahj || inferAhj(input.combined);
-  const portalName = inferPortal(input.combined);
   const state = input.defaults.state || inferState(input.combined, jurisdiction, utility);
+  const portalName = inferPortal(input.combined, state);
   const taxonomy = correctionTaxonomy(input.combined, bucket.bucket);
   const sample = redactSample(`${input.subject}\n${input.from}\n${input.combined}`);
   const record: MboxExtractedLearningRecord = {
@@ -1879,10 +2112,17 @@ function researchProvenance(research: ResearchProvenanceFlag, sourceLabel: strin
 export function saveResearchedAhjProfile(
   db: AppDb,
   input: { state: string; ahj: string; utility?: string },
-  research: AhjResearchResult & ResearchProvenanceFlag,
+  research: AhjResearchResult & ResearchProvenanceFlag & {
+    /** The AHJ's forms / applications page the form search named (ahjFormAuto — already checked to
+     *  be on the AHJ's own site). Kept as its OWN note segment ("Forms page: <url>"), so it merges
+     *  and dedupes by segment and steers the next search (knowledgeResearchHint). */
+    formsPageUrl?: string;
+  },
 ): PermitUtilityKnowledgeProfile {
   const provenance = researchProvenance(research, "AI AHJ research");
   const scrub = (s: string): string => (provenance.modelMemory ? stripUrlsFromModelMemory(s) : s);
+  const formsPageSegment = research.formsPageUrl && /^https?:\/\//i.test(research.formsPageUrl) && !provenance.modelMemory
+    ? `Forms page: ${research.formsPageUrl}` : "";
   const noteParts = [
     "AI-researched AHJ profile — verify against the official site before relying on it.",
     provenance.note,
@@ -1902,12 +2142,24 @@ export function saveResearchedAhjProfile(
     requiredDocuments: research.requiredDocuments.map(scrub).filter(Boolean),
     sources: [provenance.source],
     confidence: "seeded",
-    notes: noteParts.join(" "),
+    // The research blob stays one segment (unchanged); the forms page is a segment of its own.
+    notes: [noteParts.join(" "), formsPageSegment].filter(Boolean).join(" | "),
   };
   return upsertKnowledge(db, facts, {
     eventType: "ahj.ai_researched",
     details: { ahj: input.ahj, state: input.state, utility: input.utility || "", platform: research.portalPlatform, confidence: research.confidence, docCount: research.requiredDocuments.length, webGrounded: research.webGrounded ?? null },
   });
+}
+
+/** A PERSON'S verified save naming an information page as the portal is refused OUT LOUD (a 409
+ *  the editor shows), not silently dropped like an automatic write: they typed it, and a verified
+ *  row outranks everything (portal-truth D2 — the one predicate, isInformationalPageUrl). */
+function refuseInformationalPortal(input: { portalUrl?: string; portalName?: string }): void {
+  for (const u of [clean(input.portalUrl), looksLikeBareUrl(clean(input.portalName)) ? clean(input.portalName) : ""]) {
+    if (u && isInformationalPageUrl(u)) {
+      throw new HttpError(409, `${u} is an information page (help / guide / document), not an application portal — save the portal's own entry page, where an application is filed.`, { hostRefused: true, code: "not_a_portal" });
+    }
+  }
 }
 
 // Human-verified AHJ profile upsert — a coordinator confirming/correcting what the
@@ -1930,6 +2182,7 @@ export function saveVerifiedAhjProfile(
   },
 ): PermitUtilityKnowledgeProfile {
   if (!input.ahj?.trim()) throw new Error("ahj is required.");
+  refuseInformationalPortal(input);
   const noteParts = [
     "Human-verified AHJ profile.",
     input.portalPlatform ? `Portal platform: ${input.portalPlatform} (reuse existing ${input.portalPlatform} automation; only entry URL + login differ per AHJ).` : "",
@@ -2098,6 +2351,7 @@ export function saveVerifiedUtilityProfile(
   },
 ): PermitUtilityKnowledgeProfile {
   if (!input.utility?.trim()) throw new Error("utility is required.");
+  refuseInformationalPortal(input);
   const noteParts = [
     "Human-verified utility NEM profile.",
     input.portalPlatform ? `Portal platform: ${input.portalPlatform} (reuse existing ${input.portalPlatform} automation; only entry URL + login differ per utility).` : "",
@@ -2158,7 +2412,7 @@ export function findLearnedProfileForProject(
   for (const key of candidates) {
     const row = db.get<Row>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [key]);
     if (row) {
-      const profile = mapKnowledge(row);
+      const profile = withoutInformationalPortal(mapKnowledge(row));
       if (!requireDocs || profile.requiredDocuments.length) return profile;
     }
   }
@@ -2168,6 +2422,18 @@ export function findLearnedProfileForProject(
   const fuzzy = findKnowledgeByName(db, "ahj", input.ahj, input.state);
   if (fuzzy && (!requireDocs || fuzzy.requiredDocuments.length)) return fuzzy;
   return null;
+}
+
+/** A ROW WRITTEN BEFORE THE WRITE DOOR (portal-truth D2) may still hold an information page as its
+ *  portal: the profile the stage / the learner / the research hint read never returns it as one.
+ *  The row itself is untouched (a verified row is never auto-edited); the listing still shows it. */
+export function withoutInformationalPortal(profile: PermitUtilityKnowledgeProfile): PermitUtilityKnowledgeProfile {
+  const url = clean(profile.portalUrl);
+  const name = clean(profile.portalName);
+  const badUrl = Boolean(url) && isInformationalPageUrl(url);
+  const badName = looksLikeBareUrl(name) && isInformationalPageUrl(name);
+  if (!badUrl && !badName) return profile;
+  return { ...profile, ...(badUrl ? { portalUrl: "" } : {}), ...(badName ? { portalName: "" } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -2261,7 +2527,7 @@ function findKnowledgeByName(
       : [profileKey({ state, ahj: wanted }), profileKey({ ahj: wanted })];
   for (const key of exactKeys) {
     const row = db.get<Row>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [key]);
-    if (row) return mapKnowledge(row);
+    if (row) return withoutInformationalPortal(mapKnowledge(row));
   }
   // 2) Fuzzy scan over rows of the same kind (thousands of rows is fine for SQLite+JS).
   const col = kind === "utility" ? "utility" : "ahj";
@@ -2273,14 +2539,21 @@ function findKnowledgeByName(
     const rowState = normalize(profile.state || "");
     // A row pinned to a different state never matches; empty-state rows match anywhere.
     if (stateNorm !== "unknown" && rowState !== "unknown" && rowState !== stateNorm) continue;
-    let score = knowledgeNameMatchScore(wanted, kind === "utility" ? profile.utility : profile.ahj);
+    // The one utility identity first (utilityIdentity, judged in the PROJECT's state): "PacifiCorp"
+    // IS "Pacific Power" in Oregon (the fuzzy scorer scores that 0), and "Pacific Gas and Electric"
+    // is provably NOT "Pacific Power" (the fuzzy scorer scores that 65).
+    let score = kind === "utility" && sameUtilityEntity(state, wanted, profile.utility)
+      ? 100
+      : kind === "utility" && provablyDifferentUtility(state, wanted, profile.utility)
+        ? 0
+        : knowledgeNameMatchScore(wanted, kind === "utility" ? profile.utility : profile.ahj);
     if (!score) continue;
     if (rowState !== "unknown" && rowState === stateNorm) score += 6; // prefer state-pinned rows
     if (isVerifiedKnowledge(profile)) score += 4; // human-verified beats seeded on ties
     if (profile.notes) score += 2;
     if (!best || score > best.score) best = { profile, score };
   }
-  return best && best.score >= 60 ? best.profile : null;
+  return best && best.score >= 60 ? withoutInformationalPortal(best.profile) : null;
 }
 
 export interface LearnKnowledgeMatch {
@@ -2328,17 +2601,27 @@ export function knowledgeResearchHint(
       (`${profile.notes} ${profile.portalUrl}`.match(/https?:\/\/[^\s"'<>)\]]+\.pdf\b[^\s"'<>)\]]*/gi) || []).map((u) => u.trim()),
     ),
   ].slice(0, 5);
-  const notes = clean(profile.notes).slice(0, 700);
+  // The same filter as the learn planner's KB block: this text goes to a model too (llm research).
+  const notes = clean(learnSafeNotes(profile.notes)).slice(0, 700);
+  // A STATEWIDE PORTAL NAMED ONLY IN WORDS is not asserted (portal-truth D1). Learned rows carry the
+  // generic fallback's own "Oregon ePermitting" laundered in (City of Beaverton, Seaside, Willamina),
+  // and "Known portal: Oregon ePermitting" steered research straight back to the statewide portal
+  // for a city that files on its own. Omitted — at read; the row is untouched — unless a PERSON
+  // verified the row or the row itself holds a statewide URL. Judged under the asking state and the
+  // row's own (a row filed under the wrong state still carries Oregon's words).
+  const statewideWordsOnly = !isVerifiedKnowledge(profile) && !looksLikeBareUrl(clean(profile.portalName)) && [input.state, profile.state].some((st) =>
+    classifyChannelWords(st, profile!.portalName) === "statewide" && !isStatewidePortalUrl(st, profile!.portalUrl));
+  const portalName = statewideWordsOnly ? "" : profile.portalName;
   const text = [
     `Our internal knowledge base already has a ${scope === "ahj" ? "jurisdiction" : "utility"} record for "${name}"${profile.state ? ` (${profile.state})` : ""} [confidence: ${profile.confidence}]:`,
-    profile.portalName ? `- Known portal: ${profile.portalName}` : "",
+    portalName ? `- Known portal: ${portalName}` : "",
     profile.portalUrl ? `- Known portal URL: ${profile.portalUrl}` : "",
     profile.requiredDocuments.length ? `- Known required documents: ${profile.requiredDocuments.slice(0, 12).join("; ")}` : "",
     notes ? `- Notes: ${notes}` : "",
     "Treat this as a STARTING POINT for your search — confirm against the official site (it may be stale) and fill the gaps.",
   ].filter(Boolean).join("\n").slice(0, 1400);
   // A record with only a name adds nothing worth prompting with.
-  if (!profile.portalName && !profile.portalUrl && !profile.requiredDocuments.length && !notes) return null;
+  if (!portalName && !profile.portalUrl && !profile.requiredDocuments.length && !notes) return null;
   return { text, pdfUrls };
 }
 

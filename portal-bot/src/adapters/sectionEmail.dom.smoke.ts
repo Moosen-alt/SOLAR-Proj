@@ -104,6 +104,30 @@ await page.setContent(`<!doctype html><body><h3>Contact Information</h3>
 const optional = await (makeAdapter(true) as unknown as EmailPass).fillSectionEmails([], []);
 check("no required email anywhere → the pass does nothing", optional === 0 && (await v("e")) === "", `filled ${optional}`);
 
+// "APPLICANT" IS WHOSE FILING IT IS (shared contactRoles.contactSectionRole — the one predicate the
+// Accela contact pass, its dialog guard and the replay binder ask): on a PERMIT filing the applicant
+// is the filing company (live City of Corvallis, 2026-09-28: the Applicant dialog came out with the
+// homeowner's e-mail); on a utility interconnection the applicant is the customer, as before.
+const APPLICANT_PAGE = `<!doctype html><body><section><h3>Applicant Information</h3>
+  <div><label for="a-email">Email *</label><input id="a-email" type="text"></div></section></body>`;
+const withProfile = (profile: "permit_standard" | "residential_nem"): EmailPass => {
+  const a = new AutoLearnAdapter("Section Email Fixture", planner, {
+    maxPages: 1, policyProfile: profile, contactIdentity: { email: INSTALLER_EMAIL }, siteContactIdentity: { email: OWNER_EMAIL },
+  });
+  (a as unknown as { page: unknown }).page = page;
+  return a as unknown as EmailPass;
+};
+await page.setContent(APPLICANT_PAGE);
+const permitSteps: RecipeStep[] = [];
+await withProfile("permit_standard").fillSectionEmails(permitSteps, []);
+check("PERMIT filing: the Applicant section's required Email is the FILING COMPANY's, bound to installerEmail",
+  (await v("a-email")) === INSTALLER_EMAIL && permitSteps[0]?.field === "installerEmail", `got ${JSON.stringify(await v("a-email"))} ${JSON.stringify(permitSteps)}`);
+await page.setContent(APPLICANT_PAGE);
+const nemSteps: RecipeStep[] = [];
+await withProfile("residential_nem").fillSectionEmails(nemSteps, []);
+check("MUST EXCLUDE — utility interconnection: the Applicant is the CUSTOMER (owner's e-mail, homeownerEmail), unchanged",
+  (await v("a-email")) === OWNER_EMAIL && nemSteps[0]?.field === "homeownerEmail", `got ${JSON.stringify(await v("a-email"))}`);
+
 await browser.close();
 await new Promise<void>((r) => server.close(() => r()));
 if (failures) { console.error(`\n${failures} section-email check(s) FAILED.`); process.exit(1); }

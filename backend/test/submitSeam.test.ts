@@ -467,7 +467,7 @@ check("1k. and the approve button stays available (a later track still needs it)
     "NON_QC_REVIEW_FIELDS", "ADVISORY_REVIEW_ISSUE_TYPES", "reviewItemBuckets", "reopenResultMessage", "showSubmitBlockerNote",
     "applyAutopilotState", "startAutopilot", "fmtDate", "boardReviewCountChip", "boardCardHtml",
     "resetAutopilotRail", "AUTOPILOT_LOAD_FAILED_TEXT", "refreshAutopilot", "selectProject",
-    "permitTargetKindLabel", "renderPermitMonitor", "TRACK_STATE_WORDS", "trackStateWords", "kbConfidenceBadge",
+    "permitTargetKindLabel", "portalSaysFor", "renderPermitMonitor", "TRACK_STATE_WORDS", "trackStateWords", "kbConfidenceBadge",
     "permitTargetOptionLabel", "renderPermitStatusTargetPicker", "permitStatusTargetId", "recordPermitStatus", "handleStaleRecheckClick",
     "syncPermitForm",
     "plural", "statusBadge", "briefClass", "submitGateClass", "bandHead", "gateEvidenceSplit", "renderSubmitGate",
@@ -611,6 +611,8 @@ check("1k. and the approve button stays available (a later track still needs it)
     lib.showSubmitBlockerNote({ ...blockedGate, decision: "blocked" }, 1, { key: "gate_blocked", gateChecked: true, allFiled: false }) === true);
   check("10g3. MUST PASS: a list-tier (unchecked) answer cannot withhold it",
     lib.showSubmitBlockerNote({ ...blockedGate, decision: "blocked" }, 1, { key: "waiting_on_agency", gateChecked: false, allFiled: true }) === true);
+  check("10g-auto. withheld while automation is doing it (the automatic chain splits the plan set / finds the forms)",
+    lib.showSubmitBlockerNote({ ...blockedGate, decision: "blocked" }, 1, { key: "automation_running", gateChecked: true, allFiled: false }) === false);
   // The server's allFiled decides, not the key: ec5c36d3's shape (every filing made, answer
   // still ready_to_stage) withholds; a key from the old "all filed" list with allFiled:false does not.
   check("10g4. MUST PASS: allFiled:true withholds it whatever the key (ready_to_stage)",

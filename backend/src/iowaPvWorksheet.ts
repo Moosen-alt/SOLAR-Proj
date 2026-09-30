@@ -28,6 +28,7 @@
 import type { ProjectRecord } from "../../shared/src/types";
 import { parseRating } from "./codeReviewRules";
 import { evidenceForTopic } from "./projectEvidence";
+import { structureAnswerOf, structureDescriptionOf, structureMeaningOf } from "./applicationDocsAgency";
 
 export interface WorksheetQuestion { key: string; label: string; options: string[]; kind: "form-fact" }
 export interface IowaPvWorksheet {
@@ -283,8 +284,15 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   const set = (id: string, v: string, why: string) => { values[id] = v; basis[id] = why; };
   // One- and two-family dwelling (page 3 location, and 690.7's 600 V ceiling for such dwellings).
   const units = firstNumber(s.dwellingUnits);
-  const cat = String(s.constructionCategory ?? "").trim();
-  const oneTwo = (units != null && units >= 1 && units <= 2) || /\bR-?3\b|single[-\s]?family|two[-\s]?family|duplex/i.test(cat);
+  // The parsed category, or the occupancy group when the category is blank ("R-3" is the one- and
+  // two-family group — exactly this row).
+  const cat = String(s.constructionCategory || s.occupancyType || "").trim();
+  // The structure answer through the ONE structure predicate (structureMeaningOf, B5) — the
+  // operator's portal-question answer lands in structureDescription, which this never read.
+  const structure = structureMeaningOf(s);
+  const catOneTwo = /\bR-?3\b|single[-\s]?family|two[-\s]?family|duplex/i.test(cat);
+  const oneTwo = (units != null && units >= 1 && units <= 2) || catOneTwo
+    || structure === "single_family" || structure === "two_family";
   const ask = (key: string, label: string, options: string[] = []) => {
     if (!questions.some((q) => q.key === key)) questions.push({ key, label, options, kind: "form-fact" });
   };
@@ -430,7 +438,14 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   }
 
   // ── page 3: location ───────────────────────────────────────────────────────────────────
-  set("p3.loc12fam", onBuilding && oneTwo ? "X" : "", oneTwo ? `derived: ${units != null ? `${units} dwelling unit(s)` : `occupancy "${cat}"`}` : "dwelling units / occupancy not parsed");
+  // The structure named as the ONE predicate resolved it — a plan-set derivation (operator ruling
+  // 2026-09-28) with the words that decided it.
+  const structureWords = (): string => {
+    const answer = structureAnswerOf(s);
+    const d = structureDescriptionOf(s);
+    return `structure "${answer}"${d.source === "plan" && d.value === answer ? ` (from the plan set: ${d.basis})` : ""}`;
+  };
+  set("p3.loc12fam", onBuilding && oneTwo ? "X" : "", oneTwo ? `derived: ${units != null ? `${units} dwelling unit(s)` : catOneTwo ? `occupancy "${cat}"` : structureWords()}` : "dwelling units / occupancy not parsed");
   set("p3.locOther", "", "");
   set("p3.locNotBuilding", ground && !roof ? "X" : "", ground && !roof ? "derived: ground mount" : "");
   if (onBuilding && !oneTwo) ask("dwellingUnits", "How many dwelling units are in the building the array is on?", ["1", "2", "3 or more"]);

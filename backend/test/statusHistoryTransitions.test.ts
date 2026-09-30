@@ -1245,6 +1245,9 @@ async function openProjectInDashboard(body: unknown): Promise<string> {
   installDashDom();
   try {
     await dash!.selectProject("P1").catch(() => { /* unrelated panels may fail on stub data */ });
+    // selectProject's un-awaited background load (application docs + found forms, then a repaint)
+    // settles HERE, so its requests count as opening the project — not as whatever the caller does next.
+    await new Promise((r) => setTimeout(r, 120));
     return String((dashElement("permitChecks") as { innerHTML: string }).innerHTML || "");
   } finally {
     restoreDashDom();

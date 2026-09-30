@@ -41,6 +41,12 @@ const check = (ok: boolean, label: string, detail = ""): void => {
 const CLIENT = {
   id: "client-fake-1", companyName: "Fake Solar Co (TEST)", legalBusinessName: "Fake Solar Co LLC", ccbLicenseNumber: "000000",
   contactName: "Test Contact", contactEmail: "contact@example.invalid", portalIdentities: [],
+  // The State licences editor's rows must fit the pane too (FAKE numbers).
+  stateLicenses: [
+    { state: "MA", kind: "construction_supervisor", number: "CS-000000", expires: "2027-01-01", holder: "Fake Supervisor With A Long Name" },
+    { state: "MA", kind: "home_improvement_contractor", number: "000000" },
+    { state: "WA", kind: "electrical_contractor", number: "FAKEEC000000XX", expires: "2027-06-30" },
+  ],
 };
 const CREDS = [
   { id: "cred-1", portalType: "accela_oregon", usernameReference: "fake.user.one@example.invalid", hasSecret: true },

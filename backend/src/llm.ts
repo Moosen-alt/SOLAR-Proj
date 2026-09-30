@@ -2,13 +2,14 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { performance } from "node:perf_hooks";
-import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, JurisdictionCodeResearchInput, DesignCriteriaResearchResult, ParserExtractedField, ParserFieldEvidence, ParserExtractionConflict, ParserExtractionUncertainty, ParserExtractionResolution, PlanPageIndex, CodeEdition, CodeFamily, CodeFamilyAdoptionModel, JurisdictionAdoptionModel, UpcomingCodeEdition, WebLookupResult } from "../../shared/src/types";
+import type { AcroFieldForMapping, AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, JurisdictionCodeResearchInput, DesignCriteriaResearchResult, ParserExtractedField, ParserFieldEvidence, ParserExtractionConflict, ParserExtractionUncertainty, ParserExtractionResolution, PlanPageIndex, CodeEdition, CodeFamily, CodeFamilyAdoptionModel, JurisdictionAdoptionModel, UpcomingCodeEdition, WebLookupResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
 import { persistLlmCall } from "./llmAccounting";
 import { routeFor, taskForLabel, takeAdvisorSlot, describeRoutes, BASELINE_MODEL, type LlmEffort, type LlmTask, type ResolvedRoute, type AdvisorConfig } from "./modelRouting";
 import { lookupCecInverter, lookupCecModuleMake } from "./cecEquipment";
 import { planTextForExtraction } from "./structuralIntake";
+import { CONTRACT_PRICE_LABEL, VALUATION_BOX_LABEL } from "./valuation";
 import type { CodeResearchProvenance } from "./codeProfiles";
 
 // Claude Opus 5: drop-in successor to Opus 4.8 at identical pricing with a
@@ -612,7 +613,11 @@ const PORTAL_FIELD_HINTS: Array<{ re: RegExp; field: string }> = [
   { re: /electrical licens/i, field: "electricalLicenseNumber" },
   { re: /installer.*email|contractor.*email|business email/i, field: "installerEmail" },
   { re: /installer.*phone|contractor.*phone|business phone/i, field: "installerPhone" },
-  { re: /valuation|job value|contract (price|value)|cost of/i, field: "jobValue" },
+  // A box that says CONTRACT keeps the contract price; every other Job Value / Valuation /
+  // Estimated Cost box takes the declared valuation (valuation.ts — the one label predicate the
+  // learn-time correction and the replay rebind ask too). Order matters: contract first.
+  { re: CONTRACT_PRICE_LABEL, field: "jobValue" },
+  { re: VALUATION_BOX_LABEL, field: "declaredValuation" },
 ];
 
 function isSensitivePortalLabel(label: string): boolean {
@@ -846,13 +851,22 @@ export function shouldWrapperRetry(err: unknown): boolean {
  *  and env override findAhjFormUrl already used (AHJ_FORM_LOOKUP_TIMEOUT_MS, kept for
  *  compatibility); WEB_RESEARCH_TIMEOUT_MS is the name that says what it covers. */
 export function webResearchBudgetMs(): number {
-  return Math.max(45000, Number(process.env.WEB_RESEARCH_TIMEOUT_MS) || Number(process.env.AHJ_FORM_LOOKUP_TIMEOUT_MS) || 180000);
+  // 240 s: the fee researcher's budget for the same kind of call (feeSchedules.FEE_RESEARCH_CLIENT_TIMEOUT_MS,
+  // not imported — feeSchedules imports this module). findAhjFormUrl's comment claimed to match it at
+  // 180 s and did not: on a never-seen AHJ (2026-09-28) its searches measured 59–176 s and the first
+  // aborted at 180,012 ms, which threw away the search-result URLs already received and shortened the
+  // AHJ's cooldown claim to an hour. Still env-overridable, never below the old 45 s floor.
+  return Math.max(45000, Number(process.env.WEB_RESEARCH_TIMEOUT_MS) || Number(process.env.AHJ_FORM_LOOKUP_TIMEOUT_MS) || 240000);
 }
 
 /** Output budget for the research siblings. Their outputs measured 4.7-5.8k tokens; at the old
  *  3000 a fixed timeout would only have turned into max_tokens truncation that parses to {} —
  *  the trap findAhjFormUrl hit (44c9ba5). */
 export const WEB_RESEARCH_MAX_TOKENS = 6000;
+
+/** Output ceiling for the flat-form vision pass (thinking included). 4096 truncated a two-page
+ *  application (City of Waltham, 2026-09-28) before any JSON; a ceiling is not spend. */
+export const FLAT_FORM_OVERLAY_MAX_TOKENS = 16000;
 
 // DESIGN-CRITERIA LOOKUP (one AHJ: ground snow, ultimate wind speed, exposure). Measured on 10
 // AHJs in 8 states (2026-09-24): it never returned a wrong value, but it returned ONE value in
@@ -1749,6 +1763,7 @@ STRUCTURAL (read from structural notes / roof framing plan — drive prescriptiv
 - lightFrame: "yes" if the structure is conventional light-frame (dimensional lumber or engineered wood rafters/trusses) construction, "no" if it is not (e.g. steel/concrete/heavy timber), else omit
 - framingType: "rafter" or "truss" — the roof framing member type
 - structureType: "manufactured" if the documents state THIS house is a manufactured/mobile (HUD) home, "site_built" if they state site-built; else omit (a disclaimer, exclusion or code title is not an answer)
+- structureDescription: which building carries the ARRAY, from the site plan / roof plan layout — exactly one of "Single-family dwelling", "Two-family dwelling (duplex)", "Townhouse", "Manufactured home", "Accessory building (garage/shed)". Single-family dwelling unless the array is on a detached garage/shed/barn/ADU (Accessory building) or the dwelling is a duplex/townhouse/manufactured home; another structure merely drawn on the lot does not count; omit if the plan set does not show it
 - roofLayers: number of existing roofing layers/coverings under the array (number, e.g. 1)
 - moduleHeightAboveRoof: max height of the module top above the roof surface in inches (number, e.g. 10)
 - gravityWindDesign: "yes" only when structural design notes/details establish design for the site's gravity and wind loads; cite the evidence, not just a jurisdiction default.
@@ -1882,10 +1897,13 @@ Rules:
     //   · an API error instrument() had already retried (and the SDK before it) — up to 4 more attempts;
     //   · a safety refusal — the same bytes refused the same way, paid for twice;
     //   · a 32000-token truncation — re-running it from 16000 repeats both calls for the same cap.
-    // A PAGE-IMAGE read starts at 32000: eight scanned sheets measured 17,552 output tokens
-    // (set A, 2026-09-27), so a 16000 start always truncated and paid for a wasted first call
-    // (16k tokens, ~155 s) before the 2x retry. Text reads keep the measured 16000.
-    const outBudget = images.length ? 32000 : 16000;
+    // EVERY read starts at 32000. A page-image read measured 17,552 output tokens (eight scanned
+    // sheets, set A, 2026-09-27); a TEXT read of an installer's full plan set measured 16,470
+    // (live intake test, WA, 2026-09-29), with two more at 13,110 and 13,451 — so the earlier
+    // "measured 16000" for text was the dev corpus, not production, and a 16000 start truncated,
+    // paid ~155 s for the wasted call, then re-ran at 32000 (5.2 min for one step). A larger cap
+    // costs nothing unless it is used: only tokens actually written are billed.
+    const outBudget = 32000;
     const attempt = async (note: string) => {
       const info: { stopReason?: string | null } = {};
       const text = await this.askLong("extractProjectFields", system, user, outBudget, undefined, images, info);
@@ -2745,6 +2763,7 @@ SOLAR DOMAIN DEFAULTS (apply when a REQUIRED field asks and the project DATA / k
 - For an electrical-services / fee page that lists many capacity tiers (kVA), fill ONLY the renewable-energy / PV tier matching the system's AC rating in kVA (systemSizeAcKw — the inverters' continuous AC output, NOT the DC module nameplate) and leave the other count fields EMPTY (not 0); the agency confirms the tier at intake. If a tier takes a count, it is normally "1"; only a single "total kVA" field takes the kVA number. "Category of Construction" = the STRUCTURE TYPE the system is installed on (a house → the 1-or-2-family-dwelling option), NEVER "Other"/"Solar"; "Type of Work" on an existing building → "Alteration", never "New" (Oregon BCD ePermitting guidance: "Solar is not considered 'Other' under CoC or under ToW").
 - SYSTEM ADDITIONS / MODIFICATIONS: when the project DATA carries existing-system fields (hasExistingSystem, existingSystemSizeDcKw, existingInverterMake/Model, nemTariff, …), the application must DISCLOSE the existing system: "existing generation on site?" → Yes; existing size/equipment fields → the existing* keys (existingSystemSizeDcKw, existingInverterMake, existingInverterModel, existingModuleMake, existingModuleModel, existingBatteryMakeModel); "total"/"combined"/"aggregate" system size after the addition → totalSystemSizeDcKw / totalSystemSizeAcKw — NEVER the new-only systemSizeDcKw. Plain "system size" for the NEW equipment being added stays systemSizeDcKw/systemSizeAcKw. Existing NEM agreement/application numbers are sensitive — bind field: "existingNemAgreementNumber" / "existingNemApplicationNumber" only, never a literal.
 - A required DATE field with no project value (e.g. an estimated commissioning date) → use todayDate plus a few weeks, formatted MM/DD/YYYY.
+- JOB VALUE / VALUATION / ESTIMATED COST / CONSTRUCTION VALUE / "value of work" boxes → field: "declaredValuation" (the declared valuation, the same figure the PDF application states). jobValue / contractAmount are the CONTRACT price the client pays: use them ONLY for a box explicitly labelled contract price / contract amount — never for a Job Value or Valuation box.
 - NOTICES / COMPLIANCE ACKNOWLEDGMENTS → AGREE. Operator standing policy: on a page of notices, disclosures, code-compliance statements or acknowledgment checkboxes ("I have read...", "I understand...", "I acknowledge...", "I agree to comply..."), CHECK every required acknowledgment box and continue — these gate entry to the application and a human has authorized agreeing to them. This NEVER extends to the FINAL SUBMIT/attestation-and-file button, payment, or anything that files the application: those remain recorded-only for a human.
 - Any REQUIRED (asterisk) Yes/No or dropdown MUST be answered — use these defaults or kbContext rather than leaving it blank.
 
@@ -2905,6 +2924,7 @@ Return ONLY JSON:
 
   async verifyPortalFillVision(input: PortalFillVisionVerifyInput): Promise<PortalFillVerification> {
     const system = `You are a QA agent verifying that a solar permit portal was filled correctly. You will be shown a screenshot of the review/confirm screen. Compare what you see against the project's authoritative data. Flag any mismatch.
+Solid pink/magenta rectangles are DELIBERATE masks over secrets (utility account / meter numbers) the automation typed and must not show you: never list them as a match, a mismatch or an issue.
 Return ONLY JSON:
 {"matches":[{"label":"<field>","expected":"<project value>","found":"<value on screen>","ok":<bool>}],
  "overallConfidence":"low|medium|high",
@@ -3098,14 +3118,14 @@ Notes:
 
 HOW TO SEARCH (do this thoroughly — these forms are usually easy to find):
 1. Search for the AHJ's permitting / building-department "Forms & Applications" or "Permitting Center" page on its own .gov/.us site (e.g. "<AHJ> permitting center forms applications", "<AHJ> building permit application pdf", "<AHJ> electrical permit application pdf").
-2. Open that forms page and pull the DIRECT links to the blank building permit application AND the electrical permit application PDFs (residential solar usually needs BOTH a BLD and an ELE permit).
-3. Return every blank-form PDF you find, best/most-relevant first.
+2. From the search results, pull the DIRECT links to the blank building permit application AND the electrical permit application documents (residential solar usually needs BOTH a BLD and an ELE permit). Always report the forms/applications page itself in formsPageUrl — that page is read separately and the document links on it are checked.
+3. Return every blank-form document link you find, best/most-relevant first.
 
 Return ONLY JSON:
 {
   "formName": "<the official form's title (or 'Building + Electrical permit applications')>",
-  "candidateUrls": ["<direct https URL(s) that download a blank PDF, best first — only URLs you actually found, ending in .pdf or a direct download>"],
-  "formsPageUrl": "<the AHJ forms/applications landing page you found these on, or ''>",
+  "candidateUrls": ["<direct https URL(s) that download a blank form document, best first — only URLs you actually found: a .pdf link, or a document-center / file-view link with no extension (e.g. /DocumentCenter/View/<id>/<name>, /home/showpublisheddocument/<id>)>"],
+  "formsPageUrl": "<the AHJ forms/applications landing page on the AHJ's own site, or ''>",
   "submissionMethod": "<email | online portal | in-person | combination — how this AHJ takes the completed application, if stated>",
   "submittalPortalUrl": "<the URL of the actual submittal PORTAL where the completed application is uploaded/entered, if there is one (login/landing page), else ''>",
   "portalPlatform": "<which platform the submittal portal runs on, if identifiable: 'Oregon ePermitting' (Accela), 'Portland Portal' (City of Portland Development Hub), 'ProjectDox' (Avolve), 'Email', or 'Other'>",
@@ -3126,12 +3146,17 @@ Rules:
     const userMsg = `AHJ: ${input.ahj}\nState: ${input.state}\nForm needed: residential solar ${formType.replace(/_/g, " ")} (building + electrical permit applications).${input.knownContext ? `\n\n${input.knownContext}\nStart from the known portal/URLs above when searching.` : ""}\nFind the AHJ's forms/applications page and the direct blank PDF links.`;
     let parsed: Partial<AhjFormUrlResult> = {};
     let lookupError = "";
+    // THE SEARCH RESULTS THEMSELVES (Waltham, 2026-09-28): the call already receives every result's
+    // URL and title; only the model's text was kept, so a document link the model saw but did not
+    // list was thrown away. Kept as data for the acquisition's own predicate (ahjFormAuto).
+    let searchResults: Array<{ url: string; title: string }> = [];
     try {
       // A GROUNDED SEARCH NEEDS A GROUNDED BUDGET. This ran on askWithWebSearch's 45-second
       // default while making up to three web searches, and on City of Salem it aborted at
       // 45,016ms — after which the harvest reported "research found no forms page", a claim
-      // about the jurisdiction rather than about us. The fee researcher already uses 240s for
-      // the same kind of call (FEE_RESEARCH_CLIENT_TIMEOUT_MS); this matches it and stays
+      // about the jurisdiction rather than about us. The fee researcher uses 240s for the same
+      // kind of call (FEE_RESEARCH_CLIENT_TIMEOUT_MS); webResearchBudgetMs matches it (it said so
+      // at 180s and did not — one Beaverton search aborted at 180,012 ms) and stays
       // env-overridable for a machine on a slower link.
       const budgetMs = webResearchBudgetMs();
       // 1024 was the signature default and far too small for this call: with the budget fixed it
@@ -3139,7 +3164,9 @@ Rules:
       // truncating the JSON so it parsed to {} — which the harvest then read as "this AHJ has no
       // forms page". The sibling research calls all use 3000; this one returns several URLs plus
       // notes after three searches, so it gets more.
-      const raw = (await this.askWithWebSearch("findAhjFormUrl", system, userMsg, 4000, 3, budgetMs)).text;
+      const web = await this.askWithWebSearch("findAhjFormUrl", system, userMsg, 4000, 3, budgetMs);
+      const raw = web.text;
+      searchResults = (web.resultUrls || []).map((url) => ({ url, title: String(web.resultTitles?.[url] || "") }));
       parsed = this.parseJson(raw, {});
       // A RESPONSE WE COULD NOT READ IS NOT AN ANSWER OF "NOTHING". parseJson returns {} for
       // truncated or malformed output, which is byte-identical to a genuine empty result. If the
@@ -3174,6 +3201,7 @@ Rules:
       // "We could not look" is a different report from "we looked and there is nothing".
       lookupFailed: Boolean(lookupError),
       lookupError,
+      searchResults,
     };
   }
 
@@ -3184,23 +3212,25 @@ Rules:
   // legitimately carry spaces and keep everything before a 2+-space gap.
   private cleanFieldSourceString(raw: string): string {
     const s = raw.split(/\s{2,}/)[0].trim();
-    return s.startsWith("lit:") ? s : s.split(/\s+/)[0];
+    return s.startsWith("lit:") || s.startsWith("operator:") ? s : s.split(/\s+/)[0];
   }
 
   async mapAcroFormFields(input: {
     ahj: string;
     state: string;
     formName: string;
-    fields: { name: string; type: string }[];
+    fields: AcroFieldForMapping[];
+    captionSide?: "below" | "above" | "left" | "right" | null;
     availableSources: string[];
   }): Promise<AhjFieldMapResult> {
     const system = `You map a blank permit PDF's form fields onto a solar project's known data, so the form can be auto-filled.
 
-You are given the form's AcroForm FIELD NAMES (and types) and the list of AVAILABLE DATA SOURCES. For each form field you can confidently fill, choose the single best matching source. Leave a field out entirely if no source clearly matches (do not guess).
+You are given the form's AcroForm FIELDS — each with its widget name, type, page, and the PRINTED TEXT around the box on the page — and the list of AVAILABLE DATA SOURCES. For each form field you can confidently fill, choose the single best matching source. Leave a field out entirely if no source clearly matches (do not guess).
 
 Source syntax (use these EXACT strings):
 - "project.<key>" / "snapshot.<key>" / "client.<key>" / "computed.<key>" — pull from project data
 - "lit:<text>" — a literal constant (use for fixed marks, e.g. "lit:X" for a checkbox, "lit:Solar")
+- "operator:<printed caption>" — NOT a value: a blank the applicant must fill by hand because no source answers it
 
 Return ONLY JSON. Every key is required — send an empty array where you have nothing, and
 null for an "equals" you do not need:
@@ -3210,18 +3240,40 @@ null for an "equals" you do not need:
   "notes": "<short note on anything ambiguous or left blank, e.g. signature/date fields left for the human>"
 }
 Rules:
+- THE PRINTED CAPTION OUTRANKS THE WIDGET NAME. Widget names were auto-generated from nearby text and are often SHIFTED onto the neighbouring box (a box named "Telephone" whose caption reads "Email Address" is an EMAIL box; a box named "SECTION 3 CONSTRUCTION SERVICES" whose caption reads "Name (Print)" is a name box). Decide what each box is from its "caption" first, then the other printed text near it, and only then its name.
 - Use the EXACT field names provided (case/spacing matters). Source strings are the part BEFORE any "(...)" annotation in the sources list.
 - Put checkbox-type fields in "checkboxes", text fields in "textFields".
+- WHO IS WHO: this project is submitted by the licensed CONTRACTOR, who is also the APPLICANT / AUTHORIZED AGENT; the property-owner block holds the homeowner (project.homeownerName, snapshot.homeownerEmail, snapshot.homeownerPhone). Wherever the form names the authorized agent / applicant as a PERSON — the agent's name box, an owner authorization's "hereby authorize ___", an "Owner/Authorized Agent" declaration the agent signs — use computed.applicantSignerName, the ONE source for that person everywhere on the form. The agent's company is client.installerCompanyName; the agent's address / phone / email are client.installerStreet / client.installerPhone / client.installerEmail.
+- PRINT-NAME LINES: a "Print name" / "Printed name" / "Name (print)" blank next to or under a SIGNATURE line names whoever signs there — computed.applicantSignerName for the applicant's/agent's signature (computed.electricianSignerName for the electrician's), project.homeownerName only for a signature line that is the property owner's alone.
+- ONE SIGNER, ONE SOURCE: an "I, ____" declarant blank and the "Print Name" under the SAME signature are the SAME person and must bind to the SAME source.
+- LICENCES: client.ccbLicenseNumber is OREGON's CCB number — never on another state's form. A licence / registration NUMBER slot binds by the licence it NAMES (read its caption AND the section header above it): a construction supervisor licence → client.stateLicence.construction_supervisor; a home improvement contractor registration (HIC) → client.stateLicence.home_improvement_contractor; an electrical contractor licence → client.stateLicence.electrical_contractor; a master / supervising electrician licence → client.stateLicence.master_electrician; a solar contractor licence → client.stateLicence.solar_contractor; a general / building contractor licence → client.stateLicence.contractor; an expiration beside one → that source's ".expires". Only a slot that names NO particular licence ("License #") binds client.stateContractorLicense. Never bind one licence source to two slots that ask for different licences. A licence HOLDER's name slot (e.g. "Licensed Construction Supervisor") is the licence holder, NOT the applicant — never computed.applicantSignerName; bind the holder source (client.stateLicence.construction_supervisor.holder / client.stateLicence.master_electrician.holder), else return it as "operator:<caption>". Never tick "Not Applicable" beside a licence section.
+- ESTIMATED COST / VALUATION is NOT a fee-payment field: an "estimated cost", "cost of construction", "valuation" or "job value" blank maps to computed.estimatedJobValue. In a cost-breakdown TABLE (one row per trade — Building, Electrical, Plumbing, Mechanical… — plus a Total), map it ONLY to the Total row (plus at most the single trade row this solar permit is for, when it is clearly captioned); leave every other row out. A parcel / APN / assessor's map-and-parcel blank maps to snapshot.parcelNumber.
+- OPERATOR ITEMS: a blank the applicant must fill that NO source answers (zoning district, proposed use, lot area, frontage, setbacks, flood zone, water supply, sewage disposal, a licence holder's name, …) goes in textFields (or checkboxes) with source "operator:<its printed caption>" so it is listed for the operator by name. Never use it for signature, date-signed, fee-payment or official-use-only fields.
+- NEVER tick or fill a box attesting that a document is attached or on file (e.g. "Workers' Compensation Insurance affidavit attached — Yes/No"): return it as "operator:<caption>".
 - COMPLIANCE-CHECKLIST forms (rows of Yes/No or Complies checkboxes): for the STRUCTURAL PRESCRIPTIVE rows (roof mount, light-frame construction, risk category, ground snow load, wind exposure, wind speed, rafter/truss spacing, PV dead load, module height above roof, roofing layers) map the row's Yes box to the matching "computed.presc<Criterion>Yes" source and its No box to "computed.presc<Criterion>No" — these resolve from the project's parsed data and stay blank when unverified. A single "meets all prescriptive criteria" attestation box maps to "computed.prescAllYes". For rows a code-standard residential rooftop PV install satisfies by definition (listed equipment, rapid shutdown, racking per manufacturer letter), map "lit:X"; skip rows needing project-specific measurements with no matching source and name them in "notes". The mapping is human-verified before real use — a mostly-complete checklist beats an empty one.
 - "computed.presc*Answer" sources return the word Yes/No — use them ONLY in "textFields" (a written Yes/No blank), never as a checkbox source.
 - NEVER map signature, date-signed, or fee-payment fields — leave them for the human.
 - NEVER map utility account number or meter number onto a public form field unless the field name explicitly asks for it.
 - Return valid JSON only.`;
+    // Each field with its printed text: THE caption (the form's calibrated side) and whatever else
+    // is printed around the box. The blank's own text only — no field value, no project data.
+    const q = (s: string | undefined): string => JSON.stringify(String(s ?? "").slice(0, 90));
+    const fieldLine = (f: AcroFieldForMapping): string => {
+      const near = (["left", "right", "below", "above"] as const)
+        .filter((side) => f.captions?.[side] && f.captions[side] !== f.caption)
+        .map((side) => `${side} ${q(f.captions![side])}`);
+      return [f.name, f.type, f.page != null ? `p${f.page + 1}` : "", f.caption ? `caption: ${q(f.caption)}` : "caption: (none found)",
+        near.length ? `near: ${near.join(", ")}` : ""].filter(Boolean).join(" | ");
+    };
+    const sideNote = input.captionSide
+      ? `On this form captions are printed ${input.captionSide === "left" || input.captionSide === "right" ? `to the ${input.captionSide} of` : input.captionSide} their boxes (most widget names agree with that side); "caption" is that text.`
+      : `No single caption side could be confirmed on this form; "caption" is the text on the box's own line to its left, when there is one — judge each box from all the printed text around it.`;
     const userMsg = `AHJ: ${input.ahj} (${input.state})
 Form: ${input.formName}
 
-FORM FIELDS (name | type):
-${input.fields.slice(0, 200).map((f) => `${f.name} | ${f.type}`).join("\n")}
+${sideNote}
+FORM FIELDS (name | type | page | printed caption | other printed text near the box):
+${input.fields.slice(0, 200).map(fieldLine).join("\n")}
 
 AVAILABLE DATA SOURCES:
 ${input.availableSources.join("\n")}`;
@@ -3232,7 +3284,7 @@ ${input.availableSources.join("\n")}`;
     let checkboxEntries: Array<[string, { source?: unknown; equals?: unknown }]> = [];
     let mapNotes = "";
     try {
-      const raw = await this.askLong("mapAcroFormFields", system, userMsg, 4096, ACRO_FIELD_MAP_FORMAT);
+      const raw = await this.askLong("mapAcroFormFields", system, userMsg, 8192, ACRO_FIELD_MAP_FORMAT);
       const structured = this.readStructured(raw, acroFieldMapSchema, "mapAcroFormFields");
       if (structured) {
         textEntries = structured.textFields.map((f) => [f.name, f.source]);
@@ -3252,9 +3304,17 @@ ${input.availableSources.join("\n")}`;
       logger.warn("llm", "mapAcroFormFields failed", { err: errMsg(err) });
     }
     const textFields: Record<string, string> = {};
+    // "operator:<caption>" is not a value: the blank is named for the operator, never filled.
+    const operatorItems: Array<{ field?: string; label: string }> = [];
+    const asOperatorItem = (field: string, src: string): boolean => {
+      if (!src.startsWith("operator:")) return false;
+      if (field) operatorItems.push({ field, label: src.slice("operator:".length).trim() || field });
+      return true;
+    };
     {
       for (const [k, v] of textEntries) {
         const src = this.cleanFieldSourceString(String(v));
+        if (asOperatorItem(k, src)) continue;
         if (k && src && /^(project|snapshot|client|computed)\.|^lit:/.test(src)) textFields[k] = src;
       }
     }
@@ -3262,6 +3322,7 @@ ${input.availableSources.join("\n")}`;
     {
       for (const [k, rule] of checkboxEntries) {
         let src = this.cleanFieldSourceString(String(rule?.source || ""));
+        if (asOperatorItem(k, src)) continue;
         // An EMPTY equals must be dropped, not kept: at fill time `equals: ""`
         // would mean "check when the value resolves EMPTY" — i.e. tick the box
         // exactly when the data is unverified. (fillLoadedForm guards this too.)
@@ -3282,7 +3343,7 @@ ${input.availableSources.join("\n")}`;
         }
       }
     }
-    return { provider: "claude", textFields, checkboxes, notes: mapNotes };
+    return { provider: "claude", textFields, checkboxes, notes: mapNotes, ...(operatorItems.length ? { operatorItems } : {}) };
   }
 
   async mapFlatFormOverlay(input: {
@@ -3301,7 +3362,7 @@ For each blank/line/box on the form that one of the AVAILABLE DATA SOURCES shoul
 - "ny": normalized vertical position (0=top edge, 1=bottom edge) of the text BASELINE (the line the text sits on)
 - "size": font size in points (8-10 typical)
 - "maxWidthFrac": optional, the available width as a fraction of page width
-- "label": the form's printed label for this blank (for human review)
+- "label": the form's printed label for this blank EXACTLY as printed (e.g. "Name:") — the fill finds it on the page and writes inside that label's row. When one label is printed in several sections, prefix the section header: "PROPERTY OWNER - Name:", "APPLICANT - Name:". For a shaded section header with blank rows under it (e.g. "DESCRIPTION OF WORK"), the label is the header's own text.
 
 ALSO locate every SIGNATURE line (where a handwritten signature goes) and return it under "signatures" with:
 - "role": whose signature — one of "applicant","owner","contractor","electrician","other". Infer from the label: "supervising electrician","licensed electrician","electrician signature" → "electrician"; "property owner","homeowner" → "owner"; "contractor" → "contractor"; the main submittal/authorized signature → "applicant"
@@ -3321,6 +3382,11 @@ Rules:
 - PRINT-NAME LINES: a "Print name" / "Printed name" / "Name (print)" blank next to or under a SIGNATURE line is a regular text field, not a signature — place "computed.applicantSignerName" there (or "computed.electricianSignerName" when the adjacent signature is the electrician's). These are routinely left blank by mappers and then bounced by the AHJ; map them whenever the signer is the applicant/agent.
 - For checkboxes (e.g. "Type of work: Other"), use source "lit:X" placed at the box.
 - COMPLIANCE CHECKLISTS (e.g. a prescriptive solar checklist where each row has Yes/No or Complies boxes): for the STRUCTURAL PRESCRIPTIVE rows (roof mount, light-frame construction, risk category, ground snow load, wind exposure, wind speed, rafter/truss spacing, PV dead load, module height above roof, roofing layers) place the matching "computed.presc<Criterion>Yes" source at the row's Yes/Complies box and "computed.presc<Criterion>No" at its No box — each draws an "X" only when the project's parsed data answers that way, so an unverified row stays blank for the operator. A single "meets all prescriptive criteria" box gets "computed.prescAllYes". Written blanks on those rows (e.g. "Ground snow load: ___ psf") take the matching "snapshot.*" value source. For rows a code-standard residential rooftop PV install satisfies by definition (flush roof mount, listed equipment, engineered racking per manufacturer letter, rapid shutdown, permitted conductor sizing), place "lit:X" in the Yes/Complies box. SKIP rows requiring project-specific data with no matching source (spans, site distances) — list those skipped rows in "notes" so the operator finishes them. The map is human-verified before real use, so favor covering the standard rows over leaving the checklist blank.
+- ONE SIGNER, ONE SOURCE: an "I, ____" declarant blank and the "Print Name" under the SAME signature are the SAME person — the same source. The authorized agent / applicant as a PERSON is computed.applicantSignerName everywhere on the form.
+- LICENCES: client.ccbLicenseNumber is OREGON's CCB number — never on another state's form. A licence / registration NUMBER blank takes the source of the licence it NAMES (client.stateLicence.construction_supervisor / .home_improvement_contractor / .electrical_contractor / .master_electrician / .solar_contractor / .contractor, and ".expires" for its expiry); only a blank that names no particular licence takes client.stateContractorLicense. A licence HOLDER's name blank is not the applicant — never computed.applicantSignerName; it takes the holder source (client.stateLicence.construction_supervisor.holder / client.stateLicence.master_electrician.holder).
+- ESTIMATED COST / VALUATION is not a fee: an "estimated cost" / "valuation" blank takes computed.estimatedJobValue — in a cost table ONLY the Total row. A parcel / APN / map-and-parcel / tax-map / tax-lot blank takes snapshot.parcelNumber (never the description of work). A DESCRIPTION OF WORK / scope-of-work area takes computed.descriptionOfWork.
+- OPERATOR ITEMS: for a blank you can see that NO source answers (zoning district, lot area, frontage, setbacks, flood zone, water supply, sewage disposal…), add a "fields" entry with source "operator:<its printed label>" at that blank — it is listed for the operator, never drawn. Never for signature, date-signed, fee-payment or official-use-only blanks.
+- NEVER place a mark attesting that a document is attached or on file (e.g. "Workers' Compensation affidavit attached — Yes/No"): use "operator:<label>" instead.
 - ROLE/SECTION checkboxes: if the form has checkboxes that select WHO a section describes — e.g. "Property owner" vs "Tenant", "Contractor" vs "Subcontractor", "Applicant" vs "Contact Person", "Owner" vs "Agent" — check the boxes that match THIS filing: this project is submitted by the licensed CONTRACTOR who is also the APPLICANT, and the property-owner block holds the homeowner. So place "lit:X" in the "Property owner", "Contractor", and "Applicant" boxes (and any equivalent owner/contractor/applicant selector), and DO NOT check "Tenant", "Subcontractor", or "Contact Person". Place the X precisely inside the small box, not on the label.
 - Coordinates must be precise — they will be used verbatim. Return valid JSON only.`;
 
@@ -3334,17 +3400,23 @@ Rules:
 
     let raw = "";
     try {
-      const msg = await this.instrument("mapFlatFormOverlay", this.routeOf("mapFlatFormOverlay"), { pages: input.pages.length, schema: true }, (t) =>
-        this.client.messages.create({
+      // A 4096-token ceiling (thinking included) truncated City of Waltham's two-page application
+      // mid-JSON: "hit max_tokens … returned no JSON", so NO placements and NO signature lines were
+      // stored for it. The ceiling is not spend — the model stops when it is done — so it is sized
+      // for a multi-page form, and the call streams, which the SDK requires above ~21k tokens and
+      // which keeps a long read from tripping the non-streaming timeout.
+      const msg = await this.instrument("mapFlatFormOverlay", this.routeOf("mapFlatFormOverlay"), { pages: input.pages.length, schema: true, maxTokens: FLAT_FORM_OVERLAY_MAX_TOKENS }, (t) =>
+        this.client.messages.stream({
           model: t.model,
-          max_tokens: 4096,
+          max_tokens: FLAT_FORM_OVERLAY_MAX_TOKENS,
           thinking: { type: "adaptive" },
           output_config: outputConfigFor(t, OVERLAY_MAP_FORMAT)!,
           system: this.cachedSystem(system),
           messages: [{ role: "user", content }],
-        }),
+        }).finalMessage(),
       );
       raw = this.textOf(msg);
+      if (msg.stop_reason === "max_tokens") logger.warn("llm", "mapFlatFormOverlay hit its token ceiling", { maxTokens: FLAT_FORM_OVERLAY_MAX_TOKENS, pages: input.pages.length });
     } catch (err) {
       logger.warn("llm", "mapFlatFormOverlay failed", { err: errMsg(err) });
     }
@@ -3367,12 +3439,19 @@ Rules:
         }
       : this.parseJson<{ fields?: unknown[]; signatures?: unknown[]; notes?: string }>(raw, {});
     const fields: AhjOverlayMapResult["fields"] = [];
+    // "operator:<label>" marks a printed blank no source answers — named for the operator, never drawn.
+    const operatorItems: Array<{ label: string }> = [];
     if (Array.isArray(parsed.fields)) {
       for (const f of parsed.fields) {
         const o = f as Record<string, unknown>;
         const source = this.cleanFieldSourceString(String(o.source || ""));
         const nx = Number(o.nx);
         const ny = Number(o.ny);
+        if (source.startsWith("operator:")) {
+          const label = source.slice("operator:".length).trim() || String(o.label ?? "").trim();
+          if (label) operatorItems.push({ label });
+          continue;
+        }
         if (!/^(project|snapshot|client|computed)\.|^lit:/.test(source)) continue;
         if (!Number.isFinite(nx) || !Number.isFinite(ny) || nx < 0 || nx > 1 || ny < 0 || ny > 1) continue;
         fields.push({
@@ -3409,7 +3488,7 @@ Rules:
         });
       }
     }
-    return { provider: "claude", fields, signatures, notes: String(parsed.notes || "") };
+    return { provider: "claude", fields, signatures, notes: String(parsed.notes || ""), ...(operatorItems.length ? { operatorItems } : {}) };
   }
 
   // ---------------------------------------------------------------------------

@@ -61,10 +61,17 @@ check("PARSED WINS: the plan set's house is what gets filed", () => {
   assert.equal(PARSED.county, "Coos");
 });
 
-check("BLANK STAYS BLANK: an unstated house fact resolves empty, never a default number", () => {
-  for (const key of ["existingBuildingArea", "buildingHeightFeet", "buildingHeightInches", "numberOfStories", "county"]) {
-    assert.equal(BLANK[key], "",
-      `${key} resolved to ${JSON.stringify(BLANK[key])} — a confident wrong number is worse than a blank the operator is asked about`);
+// OPERATOR RULING 2026-09-27 (Michael Sheridan's Marion building page refused three blanks: "Just put
+// 0's there, that's what we do normally"): an unstated rooftop-retrofit geometry fact is entered as 0,
+// never another house's number and never a blank that stops the filing. The county is a place, not a
+// measurement: it stays blank.
+check("UNSTATED GEOMETRY IS 0 (operator ruling): height, stories, existing area — never another house's, never blank", () => {
+  for (const key of ["existingBuildingArea", "buildingHeightFeet", "buildingHeightInches", "numberOfStories"]) {
+    assert.equal(BLANK[key], "0", `${key} resolved to ${JSON.stringify(BLANK[key])}`);
+  }
+  assert.equal(BLANK.county, "", "the county is never defaulted");
+  for (const key of ["existingBuildingArea", "buildingHeightFeet", "numberOfStories"]) {
+    assert.notEqual(BLANK[key], { existingBuildingArea: "1675", buildingHeightFeet: "15", numberOfStories: "1" }[key], `${key} carried the Coos Bay learn house's value`);
   }
 });
 

@@ -458,6 +458,10 @@
             <strong><i data-lucide="alert-triangle" style="width:13px;height:13px;vertical-align:-2px"></i> Portal review mismatch</strong> — the staged portal form may not match the project record. Review before approving.<br>
             <span id="reviewMismatchList" class="mono" style="font-size:12px"></span>
           </div>
+          <div id="reviewHandoffBanner" style="display:none;margin:6px 0 2px;padding:8px 12px;background:#fff3cd;border:1px solid #ffc107;border-radius:6px;font-size:12px;color:#664d03">
+            <strong><i data-lucide="info" style="width:13px;height:13px;vertical-align:-2px"></i> Before you submit on the portal</strong> — what automation could not finish on the review page it handed over.<br>
+            <span id="reviewHandoffList" style="font-size:12px"></span>
+          </div>
           <div id="gapFillBanner" style="display:none;margin:6px 0 2px;padding:8px 12px;background:#fde2e1;border:1px solid #f1948a;border-radius:6px;font-size:12px;color:#7b241c">
             <strong><i data-lucide="alert-circle" style="width:13px;height:13px;vertical-align:-2px"></i> Required fields left blank</strong> — these portal fields had no project data, so the automation left them blank instead of guessing. Add the data to the project, then re-stage before submitting.<br>
             <span id="gapFillList" class="mono" style="font-size:12px"></span>
@@ -750,6 +754,17 @@
                     </select>
                   </label>
                   <div class="manual-entry-hint">A manufactured home cannot use the prescriptive path and needs engineering that carries the load to the foundation. Your answer here overrides what the plan-set text suggests.</div>
+                  <label class="manual-entry-field">Structure description (the building the array is on — permit forms print it)
+                    <select id="manualStructureDescription">
+                      <option value="">From the plan set (asked when it does not show it)</option>
+                      <option value="Single-family dwelling">Single-family dwelling</option>
+                      <option value="Two-family dwelling (duplex)">Two-family dwelling (duplex)</option>
+                      <option value="Townhouse">Townhouse</option>
+                      <option value="Manufactured home">Manufactured home</option>
+                      <option value="Accessory building (garage/shed)">Accessory building (garage/shed)</option>
+                    </select>
+                  </label>
+                  <div class="manual-entry-hint">Blank reads the plan set: single-family unless it shows the array on a detached garage / shed / ADU, or a duplex, townhouse or manufactured home (each form's fill note names the words it read). An answer here always wins.</div>
                   <label class="manual-entry-field">Homeowner email
                     <input id="manualHomeownerEmail" type="email" placeholder="owner@example.com" />
                   </label>
@@ -1094,7 +1109,7 @@
             <span>Signatures</span>
             <span id="signaturesSummaryCount" class="muted" style="font-size:12px;font-weight:400"></span>
           </summary>
-          <p class="muted" style="font-size:12px;margin:6px 0">Store your signature once (PNG with a transparent background works best). It's stamped on the matching signature line of permit forms — the applicant line by default. Add others (owner, contractor, electrician) for any line that needs them. You still review and do the final portal submit.</p>
+          <p class="muted" style="font-size:12px;margin:6px 0">Store your signature once (PNG with a transparent background works best). It's stamped on the matching signature line of permit forms — the applicant line by default. An electrician or contractor signature belongs to ONE company (the one whose licence it is) and is stamped only on that company's jobs; a company with none gets the line left unsigned and named. You still review and do the final portal submit.</p>
           <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px;padding:8px;border:1px dashed var(--line);border-radius:6px">
             <span style="font-size:12px;font-weight:600;width:100%">Add a signature</span>
             <select id="addSigRole" style="padding:5px 7px;font-size:13px">
@@ -1103,6 +1118,9 @@
               <option value="contractor">Contractor</option>
               <option value="electrician">Electrician</option>
               <option value="other">Other</option>
+            </select>
+            <select id="addSigClient" hidden title="The company whose licence this person signs under — stamped only on that company's jobs" style="padding:5px 7px;font-size:13px">
+              <option value="">Company (required)…</option>
             </select>
             <input id="addSigName" placeholder="Label (e.g. your name)" style="flex:1;min-width:120px;padding:5px 7px;font-size:13px" />
             <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px"><input id="addSigDefault" type="checkbox" checked> default for role</label>
@@ -1278,6 +1296,11 @@
             <label>Bond carrier<input id="c_bondCarrier" /></label>
           </div>
           <label>Insurance carrier<input id="c_insuranceCarrier" /></label>
+
+          <h3>State licences</h3>
+          <p class="muted">One row per licence this company holds, by state and type. The bot puts each number only in the slot that asks for that type, in that state &mdash; never another state's or another company's. Oregon's CCB / electrical / supervising-electrician numbers stay in the fields above.</p>
+          <div id="stateLicencesList" class="stack compact"></div>
+          <button type="button" id="addStateLicenceBtn" class="secondary"><i data-lucide="plus"></i><span>Add state licence</span></button>
 
           <h3>Business address</h3>
           <label>Address<input id="c_businessAddress" /></label>

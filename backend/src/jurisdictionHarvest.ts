@@ -57,7 +57,8 @@
 //    a human's. The lead's own resolution of the Coos conflict took a ratio analysis and a
 //    currency chain across four documents; no rule in here reproduces that judgement.
 //  * It does not overwrite human-verified knowledge. A form template whose map is verified is
-//    skipped by name (storeAhjFormTemplate would otherwise stamp verified:false over it), and
+//    skipped — asked of the row the store would replace, by the store's own predicate
+//    (storeAhjFormTemplate refuses a verified slot by itself; asking first saves the model call), and
 //    a verified fee schedule is protected by saveFeeSchedule's own guard, whose refusal this
 //    module surfaces rather than swallowing.
 //  * It does not silently drop a link. Anchors that matched nothing are counted, anchors that
@@ -83,6 +84,8 @@ import {
   classifyFormType,
   sha256,
   storeAhjFormTemplate,
+  VerifiedTemplateRefusal,
+  verifiedStoreRefusal,
   type StoredFieldMap,
 } from "./ahjFormAuto";
 // The document's own account of itself — "Revised 12/23/2022" — has ONE reader, in
@@ -831,22 +834,14 @@ function filenameFor(url: string, linkText: string): string {
 
 /** Is the row storeAhjFormTemplate WOULD overwrite human-verified?
  *
- *  It must be asked of exactly that row: storeAhjFormTemplate dedupes on
- *  (lower(ahj_name), lower(state), form_type) and re-derives form_type from the
- *  filename, so a fuzzy-name check (hasStoredTemplateOfType) would answer about a
- *  different row. And it must be asked at all, because storeAhjFormTemplate
- *  stamps `verified: false` on every store — it protects nothing by itself. */
-export function storedTemplateIsVerified(db: AppDb, ahj: string, state: string, formType: string): boolean {
-  const row = db.get<{ field_map: string }>(
-    "SELECT field_map FROM ahj_form_templates WHERE lower(ahj_name) = lower(?) AND lower(state) = lower(?) AND form_type = ? LIMIT 1",
-    [ahj, state, formType],
-  );
-  if (!row) return false;
-  try {
-    return (JSON.parse(row.field_map || "{}") as StoredFieldMap)?.verified === true;
-  } catch {
-    return false;
-  }
+ *  It must be asked of exactly that row, so it is asked with the store's OWN input (the real
+ *  filename, form name, source URL) through the store's own predicate (verifiedStoreRefusal →
+ *  templateSlot): the store re-types form_type from the filename and keys the building side by
+ *  kind, so a lookup by form type alone can answer about a different row (a verified structural
+ *  application behind an unverified prescriptive one). The store refuses a verified slot by itself;
+ *  asking first only saves the model call. */
+export function storedTemplateIsVerified(db: AppDb, input: Parameters<typeof verifiedStoreRefusal>[1]): boolean {
+  return verifiedStoreRefusal(db, input) != null;
 }
 
 const isPdfBytes = (b: Uint8Array): boolean => b.length > 4 && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46;
@@ -1131,15 +1126,15 @@ export async function harvestJurisdiction(
     }
 
     // ---- 3a. THE FORM, off the very same bytes ------------------------------
-    if (storedTemplateIsVerified(db, ahj, state, formType)) {
-      doc.form = {
-        action: "skipped_verified", mappedFields: null, acroFields: null,
-        note: `a human has verified the stored ${formType.replace(/_/g, " ")} map for ${ahj}; storeAhjFormTemplate would stamp verified:false over it, so this pass leaves it alone`,
-      };
+    const formName = squash(target.text) || `${ahj} ${formType.replace(/_/g, " ")}`;
+    const skippedVerified = {
+      action: "skipped_verified" as const, mappedFields: null, acroFields: null,
+      note: `a human has verified the stored ${formType.replace(/_/g, " ")} map this blank would replace for ${ahj}; the store refuses to overwrite it, so this pass leaves it alone`,
+    };
+    if (storedTemplateIsVerified(db, { ahjName: ahj, state, formType, filename, map: { formName, sourceUrl: doc.finalUrl } })) {
+      doc.form = skippedVerified;
       continue;
     }
-
-    const formName = squash(target.text) || `${ahj} ${formType.replace(/_/g, " ")}`;
     let acro: Awaited<ReturnType<typeof buildFieldMapForPdf>> = null;
     if (options.llm) {
       try {
@@ -1186,6 +1181,8 @@ export async function harvestJurisdiction(
         note: acro ? `stored as ${formType}: ${mapped} mapped field(s) of ${acro.fieldCount}` : `stored as ${formType}, unmapped blank`,
       };
     } catch (err) {
+      // A person verified the slot while this pass mapped: the store refused, nothing was written.
+      if (err instanceof VerifiedTemplateRefusal) { doc.form = skippedVerified; continue; }
       doc.form = { action: "failed", mappedFields: null, acroFields: null, note: `store failed: ${err instanceof Error ? err.message : String(err)}` };
       warnings.push(`storing ${filename} failed: ${err instanceof Error ? err.message : String(err)}`);
     }

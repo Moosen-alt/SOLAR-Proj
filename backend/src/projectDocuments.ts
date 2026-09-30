@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
+import { addAuditLog } from "./audit";
 import { id } from "./ids";
 import { nowIso } from "./time";
 import { text as s } from "./json";
@@ -279,12 +280,33 @@ export function getProjectDocumentFile(db: AppDb, projectId: string, docId: stri
 }
 
 export function deleteProjectDocument(db: AppDb, projectId: string, docId: string): { deleted: boolean } {
-  const row = db.get<Row>("SELECT stored_path FROM project_documents WHERE id = ? AND project_id = ?", [docId, projectId]);
+  const row = db.get<Row>("SELECT stored_path, doc_type FROM project_documents WHERE id = ? AND project_id = ?", [docId, projectId]);
   if (!row) throw new HttpError(404, "Document not found.");
   const stored = s(row.stored_path);
   if (stored && fs.existsSync(stored)) { try { fs.unlinkSync(stored); } catch { /* ignore */ } }
   db.run("DELETE FROM project_documents WHERE id = ?", [docId]);
+  // A removal is a document change too (documentsChangedAt) — and a deleted row leaves no
+  // timestamp of its own behind, so the fact is written where the audit trail keeps facts. The
+  // doc type only: a filename can carry a homeowner's name.
+  addAuditLog(db, projectId, "system", "documents", DOCUMENT_DELETED_ACTION, { docType: s(row.doc_type) });
   return { deleted: true };
+}
+
+const DOCUMENT_DELETED_ACTION = "project.document_deleted";
+
+/**
+ * WHEN THIS PROJECT'S DOCUMENTS LAST CHANGED — the newest upload/split/generated row, or the
+ * newest removal, whichever is later (null when nothing was ever on file). THE one answer to
+ * "has the document set changed since X?": a verdict computed FROM the documents (QC's
+ * "Required document … not attached … Staging will refuse without it" rows, the bill-on-file
+ * wait) is stale once this is newer than the verdict, and is re-judged (autoStageSteps STEP 1).
+ */
+export function documentsChangedAt(db: AppDb, projectId: string): string | null {
+  const uploaded = s(db.get<Row>("SELECT MAX(uploaded_at) AS t FROM project_documents WHERE project_id = ?", [projectId])?.t);
+  const removed = s(db.get<Row>(
+    "SELECT MAX(created_at) AS t FROM audit_logs WHERE project_id = ? AND action = ?", [projectId, DOCUMENT_DELETED_ACTION])?.t);
+  const newest = uploaded > removed ? uploaded : removed;
+  return newest || null;
 }
 
 // docType -> stored file path map for a project (latest per type), for the submittal

@@ -205,6 +205,10 @@ const reviewBody = (mode: string): string => {
   // pixel in onsubmit — not state-changing, the form's POST still files.)
   if (mode === "sameOriginFetchClick") return `${summary}<form method="post" action="/m/${mode}/apply/submit"><button type="submit" id="btnSubmit" onclick="fetch('/m/${mode}/analytics', { method: 'POST', body: 'e=click' }).catch(function(){})">Submit Application</button></form>`;
   if (mode === "iframeBeacon") return `${summary}<iframe name="trk" src="about:blank" style="width:1px;height:1px"></iframe><form id="tf" method="post" action="/m/${mode}/track" target="trk"><input type="hidden" name="e" value="submit"></form><form method="post" action="/m/${mode}/apply/submit" onsubmit="document.getElementById('tf').submit()"><button type="submit" id="btnSubmit">Submit Application</button></form>`;
+  // autosubmit-close-2 skeptic: server-side GTM whose QUERY names the event (the path decides), and a
+  // pre-submit validation fetch whose path says "submit" while the form's own POST is what files.
+  if (mode === "gtmCollect") return `${summary}<form method="post" action="/m/${mode}/apply/submit"><button type="submit" id="btnSubmit" onclick="fetch('/m/${mode}/gtm/collect?en=form_submit', { method: 'POST', body: 'e=1' }).catch(function(){})">Submit Application</button></form>`;
+  if (mode === "validateSubmit") return `${summary}<form method="post" action="/m/${mode}/apply/submit"><button type="submit" id="btnSubmit" onclick="fetch('/m/${mode}/api/validate-submit', { method: 'POST', body: 'v=1' }).catch(function(){})">Submit Application</button></form>`;
   if (mode === "imgPing") return `${summary}<form method="post" action="/m/${mode}/apply/submit" onsubmit="new Image().src='/m/${mode}/pixel.gif?e=submit'"><button type="submit" id="btnSubmit">Submit Application</button></form>`;
   return `${summary}<form method="post" action="/m/${mode}/apply/submit"><button type="submit" id="btnSubmit">Submit Application</button></form>`;
 };
@@ -552,7 +556,7 @@ if (want("alertPay")) {
 }
 
 console.log("\n14. autosubmit-2 MF-S4: a request that takes the approved window but is not the filing is never reported as the filing");
-for (const [mode, kind] of [["sameOriginFetchClick", "fetch/XHR"], ["iframeBeacon", "subframe navigation"]] as const) {
+for (const [mode, kind] of [["sameOriginFetchClick", "fetch/XHR"], ["iframeBeacon", "subframe navigation"], ["gtmCollect", "fetch/XHR"], ["validateSubmit", "fetch/XHR"]] as const) {
   if (!want(mode)) continue;
   const o = await stage(mode, "1", {}, undefined, 800);
   const m = msgOf(o.r);

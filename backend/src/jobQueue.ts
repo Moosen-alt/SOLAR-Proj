@@ -11,6 +11,7 @@ import { scanFolder } from "./batchImport";
 import { nowIso } from "./time";
 import { logger } from "./logger";
 import { runWithLlmContext } from "./llmAccounting";
+import { noteJobProgress, parseJobProgressNote, type JobProgressNote } from "./jobProgress";
 
 export type JobType =
   | "permit_checks"
@@ -51,6 +52,8 @@ export interface JobRecord {
   finishedAt: string | null;
   progress: number;
   progressTotal: number;
+  /** The step the job named as it started it (jobProgress.noteJobProgress), or null. */
+  progressNote: JobProgressNote | null;
   result: Record<string, unknown> | null;
   error: string | null;
   retryCount: number;
@@ -86,6 +89,7 @@ function mapJob(row: Row): JobRecord {
     finishedAt: row.finished_at == null ? null : String(row.finished_at),
     progress: Number(row.progress ?? 0),
     progressTotal: Number(row.progress_total ?? 0),
+    progressNote: parseJobProgressNote(row.progress_note),
     result: row.result == null ? null : safeParse(row.result, null),
     error: row.error == null ? null : String(row.error),
     retryCount: Number(row.retry_count ?? 0),
@@ -174,6 +178,10 @@ export function getJob(db: AppDb, jobId: string): JobRecord | null {
 function updateJobProgress(db: AppDb, jobId: string, progress: number, total: number): void {
   db.run("UPDATE job_queue SET progress = ?, progress_total = ? WHERE id = ?", [progress, total, jobId]);
 }
+
+// The step a running job names (job_queue.progress_note) lives in jobProgress.ts — a leaf shared
+// with nextStep, the reader. Re-exported for callers that already import this module.
+export { noteJobProgress, parseJobProgressNote, type JobProgressNote } from "./jobProgress";
 
 // Streaming MBOX reader — processes 50 GB+ without loading into memory.
 // Yields raw message strings in chunks of chunkSize.
@@ -669,7 +677,9 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
       result = await runFolderScanJob(db, job);
     } else if (job.jobType === "stage_step") {
       const { processStageStep } = await import("./autoStageSteps");
-      const step = await processStageStep(db, String(job.projectId));
+      // Each step names itself on the job row (progress_note) as it starts — the project page's
+      // "Checking the AHJ's required official forms… (started HH:MM)" line reads it (nextStep).
+      const step = await processStageStep(db, String(job.projectId), { onStep: (label) => noteJobProgress(db, job.id, label) });
       result = { ran: step.ran, stoppedAt: step.stoppedAt, message: step.reason };
       // The chain runs server-side while the operator may be looking at the project. Without
       // an event the open page keeps showing "not run" until someone reloads it.
@@ -718,7 +728,7 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
       // the same coarse phase→percent mapping the dashboard's progress bar expects.
       const { autoLearnPortal } = await import("./autoLearn");
       const { sseBroadcast } = await import("./events");
-      const p = job.payload as { scope?: string; portalUrl?: string; createdBy?: string; permitType?: string; discipline?: string };
+      const p = job.payload as { scope?: string; portalUrl?: string; createdBy?: string; permitType?: string; discipline?: string; track?: string | null };
       const projectId = String(job.projectId);
       const learnResult = await autoLearnPortal(db, projectId, {
         scope: p.scope === "utility" ? "utility" : "ahj",
@@ -727,6 +737,10 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
         permitType: p.permitType === "electrical" ? "electrical" : p.permitType === "structural" ? "structural" : undefined,
         // Carried so a queued/auto re-learn writes the SAME discipline the lookup keys on.
         discipline: typeof p.discipline === "string" ? p.discipline : undefined,
+        // ...and the SAME issuer view: a stage's re-learn carries its own track (null = trackless —
+        // JSON keeps the null), so it keys where the stale recipe was found. An operator's queued
+        // learn carries none and names its permit by permitType / discipline.
+        ...(p.track !== undefined ? { track: typeof p.track === "string" && p.track.trim() ? p.track.trim() : null } : {}),
         onProgress: (prog) => {
           const percent =
             prog.phase === "login" ? 8

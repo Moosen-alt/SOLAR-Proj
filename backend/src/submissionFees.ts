@@ -47,7 +47,7 @@ import { id } from "./ids";
 import { text } from "./json";
 import { nowIso } from "./time";
 import { logger } from "./logger";
-import { batteryStatus, SERVICE_FEEDER_200A_LABEL, SERVICE_FEEDER_CHARGE_KIND } from "./batteryServiceFeeder";
+import { isServiceLineBaseKind, serviceLineCounts, SERVICE_FEEDER_200A_LABEL, SERVICE_FEEDER_400A_LABEL } from "./batteryServiceFeeder";
 import { stateRulesFor } from "./permitProcess";
 import { portalFeeSummary } from "./portalFeeReadings";
 
@@ -1147,7 +1147,9 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
       // the sheet contradicting itself (the no-schedule battery note below already
       // stops at an actual — one question, one answer). Kind-specific on purpose:
       // every other unpriced charge keeps its unknown under an actual.
-      if (charge.kind === SERVICE_FEEDER_CHARGE_KIND && isPortalFigure(line.source)) continue;
+      // (Every service line — the battery's, a service upgrade's in either tier — is the same
+      // kind of question: owed, only its amount missing.)
+      if (isServiceLineBaseKind(charge.kind) && isPortalFigure(line.source)) continue;
       unknowns.push(`${who} also charges "${charge.label}" on this filing, and it is not priced. ${charge.reason}`);
     }
     // A BATTERY JOB'S SERVICES/FEEDERS <=200A LINE, WHEN NO SCHEDULE ITEMISED IT.
@@ -1164,18 +1166,31 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
     // adds "combo" or "building"+"electrical"), so the permit billing track always
     // includes the filing this rule is about. An operator-entered actual is the
     // portal's own total and already contains it.
-    if (
-      line.track === "permit"
-      && !isPortalFigure(line.source)
-      && batteryStatus(project.parserSnapshot as Record<string, unknown> | null | undefined) === "yes"
-      && !(line.charges ?? []).some((c) => c.kind === SERVICE_FEEDER_CHARGE_KIND)
-    ) {
-      unknowns.push(
-        `Battery/ESS job: the electrical permit for ${who} also bills one "${SERVICE_FEEDER_200A_LABEL}" line `
-        + `(operator rule 2026-09-24), and no published schedule on file itemises it for this project — `
-        + `the permit amount shown does not include it. Add it from the jurisdiction's electrical fee schedule, `
-        + `or enter the portal's own fee.`,
-      );
+    // A SERVICE UPGRADE is the same shape (live Corvallis 2026-09-28): the plan set's own
+    // upgrade is a services line on the electrical permit, counted by the ONE count
+    // (batteryServiceFeeder.serviceLineCounts) the portal boxes and the PDF read.
+    const svcLines = serviceLineCounts(project.parserSnapshot as Record<string, unknown> | null | undefined);
+    const itemised = (line.charges ?? []).some((c) => isServiceLineBaseKind(c.kind));
+    if (line.track === "permit" && !isPortalFigure(line.source) && !itemised) {
+      if (svcLines.battery) {
+        unknowns.push(
+          `Battery/ESS job: the electrical permit for ${who} also bills one "${SERVICE_FEEDER_200A_LABEL}" line `
+          + `(operator rule 2026-09-24), and no published schedule on file itemises it for this project — `
+          + `the permit amount shown does not include it. Add it from the jurisdiction's electrical fee schedule, `
+          + `or enter the portal's own fee.`,
+        );
+      }
+      if (svcLines.upgrade) {
+        const tier = svcLines.upgradeAmps == null ? "a services/feeders line in the tier of the new service (its size is not on file)"
+          : svcLines.upgradeAmps <= 200 ? `one "${SERVICE_FEEDER_200A_LABEL}" line`
+          : svcLines.upgradeAmps <= 400 ? `one "${SERVICE_FEEDER_400A_LABEL}" line`
+          : `a services/feeders line for a ${svcLines.upgradeAmps} A service`;
+        unknowns.push(
+          `Service upgrade job: the electrical permit for ${who} also bills ${tier} for the plan set's service upgrade, `
+          + `and no published schedule on file itemises it for this project — the permit amount shown does not include it. `
+          + `Add it from the jurisdiction's electrical fee schedule, or enter the portal's own fee.`,
+        );
+      }
     }
     if (line.paymentMethod === "mailed_check") {
       outOfPortalPayments.push(

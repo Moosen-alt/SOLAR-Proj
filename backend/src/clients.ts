@@ -1,17 +1,24 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { ClientPartnerContact, ClientPortalIdentity, ClientRecord, ClientStateLicense } from "../../shared/src/types";
+import type { ClientPartnerContact, ClientPortalIdentity, ClientRecord, ClientStateLicense, LicenceAnswer, LicenceKind } from "../../shared/src/types";
+import { canonicalLicenceKind, kindForSlot, LICENCE_KIND_SET, LICENCE_KINDS, licenceKindWords } from "../../shared/src/licenceKinds";
 import type { AppDb } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
 import { HttpError } from "./httpError";
 import { phoneSegmentKeys } from "./portalRecipes";
 import { id } from "./ids";
+import { COMPANY_IDENTIFIER_KEY, looksLikePlaceholderIdentifier } from "../../shared/src/companyFacts";
+import { usStateCode } from "./permitPath";
 import { nowIso } from "./time";
 import { text as s } from "./json";
 import { addAuditLog } from "./audit";
 import { deleteCustomer } from "./crm";
 
 type Row = Record<string, unknown>;
+
+// The licence vocabulary is shared (shared/src/licenceKinds.ts); the slot predicate is re-exported
+// here so every door imports "which licence for this slot" from one module.
+export { canonicalLicenceKind, kindForSlot, LICENCE_KINDS } from "../../shared/src/licenceKinds";
 
 
 function mapIdentity(row: Row): ClientPortalIdentity {
@@ -77,12 +84,348 @@ function jsonArray(raw: unknown): Record<string, unknown>[] {
   if (Array.isArray(raw)) return raw as Record<string, unknown>[];
   try { const v = JSON.parse(s(raw) || "[]"); return Array.isArray(v) ? v : []; } catch { return []; }
 }
-/** Stored/accepted licences: state + number required; kind free text. */
+/** A licence expiry as YYYY-MM-DD; "" when it is not a date (MM/DD/YYYY is converted). */
+function isoDay(raw: unknown): string {
+  const t = s(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(t);
+  return m ? `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}` : "";
+}
+
+/** Stored/accepted licences: state + number required. The kind is normalised to a canonical
+ *  LicenceKind ("EC" → electrical_contractor, "CSL" → construction_supervisor, "home_improvement" →
+ *  home_improvement_contractor); a kind no canonical kind matches keeps its text so nothing an
+ *  operator typed is destroyed — such a licence is never offered to a slot (licenceFor names it). */
 export function parseStateLicenses(raw: unknown): ClientStateLicense[] {
   return jsonArray(raw)
-    .map((l) => ({ state: s(l?.state).trim().toUpperCase().slice(0, 2), kind: s(l?.kind).trim(), number: s(l?.number).trim() }))
-    .filter((l) => l.state && l.number);
+    .map((l) => {
+      const typed = s(l?.kind).trim();
+      const out: ClientStateLicense = { state: s(l?.state).trim().toUpperCase().slice(0, 2), kind: canonicalLicenceKind(typed) || typed, number: s(l?.number).trim() };
+      const expires = isoDay(l?.expires);
+      if (expires) out.expires = expires;
+      const holder = s(l?.holder).replace(/\s+/g, " ").trim();
+      if (holder) out.holder = holder;
+      return out;
+    })
+    .filter((l) => /^[A-Z]{2}$/.test(l.state) && l.number);
 }
+
+// =============================================================================================
+// WHICH LICENCE GOES IN THIS SLOT — THE ONE ANSWER.
+//
+// A company files in several states and a state issues it several licences (Massachusetts: a
+// Construction Supervisor licence, a Home Improvement Contractor registration, an Electrical
+// Contractor licence, all on one application). "The first licence on file for the state" put one
+// number in every slot, and the portal overlay handed Oregon's CCB to a "contractor licence" box in
+// any state. licenceFor answers by KIND, for THIS project's client only:
+//   - an explicit kind (a slot that names its licence, a typed source) gets that kind or nothing;
+//   - a generic slot ("License #") gets the kind the PERMIT needs — building: contractor, then
+//     construction supervisor, then home improvement, then solar; electrical: electrical
+//     contractor, then solar (never a general contractor's number); combo: the building list then
+//     electrical; any other track: the one contractor licence on file, and "" with the candidates
+//     named when there is more than one;
+//   - business_registration is never offered as a contractor licence;
+//   - nothing of the needed kind on file = "" and a reason — never another kind's, another
+//     state's or another company's number (no default client, ever).
+// Oregon's licences live in the named columns (ccb = contractor, electrical = electrical
+// contractor, electrician + supervisor name = master electrician) — they are OREGON's, always
+// (the CCB and the BCD licences are Oregon boards'), whatever the client's licenseState says: a
+// column never follows licenseState, and the CCB is never offered as another state's licence
+// (licences skeptic L5 — a WA licenseState used to take the CCB off every Oregon job). On an
+// Oregon job a GENERIC contractor-licence slot is the CCB on every track (L6); the BCD electrical
+// licence goes only in a slot that names the electrical licence. A project with no recorded state
+// is UNKNOWN — no licence at all, never Oregon's by default. Read by: the submit gate
+// (contractorLicenceForState), the form fill (ahjForms) and the portal overlay (licenceOverlay).
+// =============================================================================================
+
+/** Anything that carries a client's licences: a clients ROW (snake_case) or a ClientRecord. */
+export type LicenceClient = Row | Partial<ClientRecord> | null | undefined;
+
+interface LicenceEntry { state: string; kind: LicenceKind | ""; typedKind: string; number: string; expires: string; holder: string; column: boolean; placeholder?: boolean }
+
+const pick = (c: Record<string, unknown>, snake: string, camel: string): string => s(c[snake] ?? c[camel]).trim();
+
+/** Does the object carry any client identity at all? ({} / null = no client.) */
+function hasClient(c: LicenceClient): c is Record<string, unknown> {
+  return !!c && typeof c === "object" && Object.keys(c).length > 0;
+}
+
+/** THE STATE A JOB'S LICENCES ARE READ IN — one answer for every licence door (licenceFor, the
+ *  submit gate, the portal overlay, the form fill, the cover sheet). The project's state as its
+ *  two-letter code (usStateCode: "Oregon" is OR — a spelled-out state must not lose its CCB); a
+ *  BLANK state is UNKNOWN ("") — no state's licences, never Oregon's by default (licences skeptic);
+ *  anything unrecognised is kept upper-cased, so it names no licence on file. */
+export function licenceJobState(projectState: unknown): string {
+  const raw = String(projectState ?? "").trim();
+  if (!raw) return "";
+  return usStateCode(raw) || raw.toUpperCase();
+}
+
+/** Every licence the client holds in `state`, in the order they are preferred: Oregon — the named
+ *  columns first (they ARE Oregon's CCB/BCD numbers), then typed OR entries; any other state — the
+ *  typed entries only (the named columns are Oregon's, never another state's). */
+function licenceEntries(client: Record<string, unknown>, state: string): LicenceEntry[] {
+  const columns: LicenceEntry[] = [];
+  if (state === "OR") {
+    const ccb = pick(client, "ccb_license_number", "ccbLicenseNumber");
+    if (ccb) columns.push({ state, kind: "contractor", typedKind: "contractor", number: ccb, expires: isoDay(pick(client, "ccb_expiration", "ccbExpiration")) || pick(client, "ccb_expiration", "ccbExpiration"), holder: "", column: true });
+    const ec = pick(client, "electrical_license_number", "electricalLicenseNumber");
+    if (ec) columns.push({ state, kind: "electrical_contractor", typedKind: "electrical_contractor", number: ec, expires: "", holder: "", column: true });
+    const el = pick(client, "electrician_license_number", "electricianLicenseNumber");
+    const sup = pick(client, "electrical_supervisor_name", "electricalSupervisorName");
+    if (el || sup) columns.push({ state, kind: "master_electrician", typedKind: "master_electrician", number: el, expires: "", holder: sup, column: true });
+  }
+  const typedRaw = Array.isArray(client.stateLicenses) ? client.stateLicenses : client.state_licenses_json;
+  const typed: LicenceEntry[] = parseStateLicenses(typedRaw).filter((l) => l.state === state).map((l) => ({
+    state, kind: (LICENCE_KIND_SET.has(l.kind) ? l.kind : "") as LicenceKind | "", typedKind: l.kind, number: l.number,
+    expires: l.expires ?? "", holder: l.holder ?? "", column: false,
+  }));
+  // A NAMED COLUMN'S EXPIRY / HOLDER CAN LIVE ON ITS TYPED TWIN. The BCD electrical and supervising-
+  // electrician columns carry no expiry, and each licence kind now has its own expiry key — so an
+  // Oregon "Electrical License Expiration" box reads the electrical licence's date, never the CCB's.
+  // The operator supplies it by adding the same number (with its date) under Clients → State licences:
+  // a typed OR entry of the column's kind and number lends the column its expiry / holder.
+  for (const col of columns) {
+    const twin = typed.find((t) => t.kind === col.kind && t.number && normNumber(t.number) === normNumber(col.number));
+    if (!twin) continue;
+    if (!col.expires && twin.expires) col.expires = twin.expires;
+    if (!col.holder && twin.holder) col.holder = twin.holder;
+  }
+  // A PLACEHOLDER IS NOT A LICENCE (leak-fix-portal P7, companyFacts.looksLikePlaceholderIdentifier —
+  // the one placeholder predicate): "TEST-160001", "XXX-0000", "0000" is never offered to any door
+  // (the submit gate, the form fill, the cover sheet, the portal overlay). The entry stays, with no
+  // number, so licenceFor names it for the operator — never printing the value.
+  const unplaceholder = (e: LicenceEntry): LicenceEntry => (looksLikePlaceholderIdentifier(e.number) ? { ...e, number: "", placeholder: true } : e);
+  return [...columns, ...typed].map(unplaceholder);
+}
+
+export type LicenceTrack = "building" | "electrical" | "combo" | "unknown";
+/** A submittal track / form track / discipline, as the licence question reads it. NEM, a legacy
+ *  "permit" and anything unrecognised are "unknown" — a generic slot there takes the one contractor
+ *  licence on file, or nothing when several could fit. */
+export function licenceTrack(track: string | null | undefined): LicenceTrack {
+  const t = String(track ?? "").trim().toLowerCase();
+  if (["building", "structural", "prescriptive", "engineered"].includes(t)) return "building";
+  if (["electrical", "mpu"].includes(t)) return "electrical";
+  if (t === "combo") return "combo";
+  return "unknown";
+}
+
+const TRACK_KINDS: Record<Exclude<LicenceTrack, "unknown">, LicenceKind[]> = {
+  building: ["contractor", "construction_supervisor", "home_improvement_contractor", "solar_contractor"],
+  electrical: ["electrical_contractor", "solar_contractor"],
+  combo: ["contractor", "construction_supervisor", "home_improvement_contractor", "solar_contractor", "electrical_contractor"],
+};
+const CONTRACTOR_KINDS: LicenceKind[] = LICENCE_KINDS.filter((k) => k.contractorLicence).map((k) => k.kind);
+
+/** What a slot needs: an explicit kind, or the slot's printed text + the permit's track. */
+export type LicenceNeed = LicenceKind | { slotText?: string | null; track?: string | null };
+
+function answer(state: string, over: Partial<LicenceAnswer>): LicenceAnswer {
+  return { number: "", kind: "", state, label: "", expires: "", holder: "", reason: "", candidates: [], ...over };
+}
+function labelFor(e: LicenceEntry): string {
+  return e.state === "OR" && e.column && e.kind === "contractor" ? "CCB" : `${e.state} ${licenceKindWords(e.kind)}`;
+}
+function found(e: LicenceEntry): LicenceAnswer {
+  return answer(e.state, { number: e.number, kind: e.kind, label: labelFor(e), expires: e.expires, holder: e.holder });
+}
+const normNumber = (n: string): string => n.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+/** The one entry of `kind` — the first when it is a named column (Oregon's own), else the single
+ *  distinct number; several different numbers of one kind is ambiguous (null + the entries). */
+function entryOfKind(entries: LicenceEntry[], kind: LicenceKind): { entry: LicenceEntry | null; ambiguous: LicenceEntry[] } {
+  const of = entries.filter((e) => e.kind === kind);
+  const withNumber = of.filter((e) => e.number);
+  if (!withNumber.length) return { entry: of[0] ?? null, ambiguous: [] };
+  if (withNumber[0].column) return { entry: withNumber[0], ambiguous: [] };
+  const distinct = new Map(withNumber.map((e) => [normNumber(e.number), e]));
+  return distinct.size === 1 ? { entry: withNumber[0], ambiguous: [] } : { entry: null, ambiguous: [...distinct.values()] };
+}
+
+/**
+ * THE ONE ANSWER to "which licence number goes in this slot, for this project's client and state".
+ * `client` is ONLY the project's own client (a row or record); no client → "". See the block above.
+ */
+export function licenceFor(client: LicenceClient, projectState: string, need: LicenceNeed): LicenceAnswer {
+  const st = licenceJobState(projectState);
+  if (!hasClient(client)) return answer(st, { reason: "no client is assigned to this project" });
+  // AN UNKNOWN STATE HAS NO LICENCE — never Oregon's by default: which state's licence the job takes
+  // is the question, and nothing on file answers it.
+  if (!st) return answer(st, { reason: "the project's state is not recorded, so which state's licence it takes is unknown — set the project's state" });
+  const entries = licenceEntries(client, st);
+  const untyped = entries.filter((e) => !e.kind && e.number).map((e) => `${e.number}${e.typedKind ? ` ("${e.typedKind}")` : ""}`);
+  const placeholders = entries.filter((e) => e.placeholder).map((e) => labelFor(e));
+  const untypedNote = (untyped.length ? `; a ${st} licence with no recognised type is on file (${untyped.join(", ")}) — set its type under Clients` : "")
+    + (placeholders.length ? `; the ${placeholders.join(", ")} on the client record looks like a test / placeholder value, never filed — correct it under Clients` : "");
+  const describe = (e: LicenceEntry): string => `${labelFor(e)} ${e.number}`;
+
+  let kinds: LicenceKind[];
+  let explicit: LicenceKind | null = null;
+  if (typeof need === "string") explicit = need;
+  else {
+    const slot = kindForSlot(need.slotText);
+    if (slot && slot !== "generic") explicit = slot;
+  }
+  if (explicit) kinds = [explicit];
+  // OREGON: A GENERIC CONTRACTOR-LICENCE SLOT IS THE CCB, ON EVERY TRACK AND EVERY FORM TYPE
+  // (licences skeptic L6) — the gate, the fill and the portal's generic key ask this one line. The
+  // BCD electrical licence goes only in a slot that names it.
+  else if (st === "OR") kinds = ["contractor"];
+  else {
+    const track = licenceTrack(typeof need === "string" ? null : need.track);
+    if (track === "unknown") {
+      // ANY TRACK WE CANNOT NAME: the one contractor licence on file, never a guess among several.
+      const pool = entries.filter((e) => e.number && e.kind && CONTRACTOR_KINDS.includes(e.kind));
+      const distinct = [...new Map(pool.map((e) => [normNumber(e.number), e])).values()];
+      if (distinct.length === 1) return found(distinct[0]);
+      if (distinct.length > 1) {
+        return answer(st, {
+          reason: `several ${st} licences are on file (${distinct.map(describe).join("; ")}) and neither this slot nor the permit says which one it takes`,
+          candidates: distinct.map(describe),
+        });
+      }
+      return answer(st, { reason: `no ${st} contractor licence on file${untypedNote}` });
+    }
+    kinds = TRACK_KINDS[track];
+  }
+  for (const kind of kinds) {
+    const { entry, ambiguous } = entryOfKind(entries, kind);
+    if (ambiguous.length) {
+      return answer(st, {
+        kind, label: `${st} ${licenceKindWords(kind)}`,
+        reason: `${ambiguous.length} different ${st} ${licenceKindWords(kind)} numbers are on file (${ambiguous.map((e) => e.number).join(", ")}) — keep the one that applies under Clients`,
+        candidates: ambiguous.map(describe),
+      });
+    }
+    // A holder-only entry (a supervising electrician's name with no licence number) still answers
+    // the holder, and is "no number" for a number slot.
+    if (entry && (entry.number || explicit)) return entry.number ? found(entry) : { ...found(entry), reason: `no ${st} ${licenceKindWords(kind)} number on file${untypedNote}` };
+  }
+  const words = explicit ? licenceKindWords(explicit) : kinds[0] === "electrical_contractor" ? licenceKindWords("electrical_contractor") : "contractor licence";
+  return answer(st, { kind: explicit ?? "", label: `${st} ${words}`, reason: `no ${st} ${words} on file${untypedNote}` });
+}
+
+/** The submit gate's question, through licenceFor so the gate and the fill never disagree: Oregon —
+ *  the CCB (Oregon's contractor registration, required on every Oregon permit); any other state —
+ *  the licence the permit's track takes (unknown track: the one contractor licence on file). The
+ *  number is "" when none is on file — an unknown, never a CCB demand outside Oregon. */
+export function contractorLicenceForState(clientRow: LicenceClient, projectState: string, track?: string | null): LicenceAnswer & { oregon: boolean } {
+  const st = licenceJobState(projectState);
+  const oregon = st === "OR";
+  // The generic slot's answer — on an Oregon job that IS the CCB (licenceFor, L6).
+  const got = licenceFor(clientRow, st, { track: track ?? null });
+  // `state` stays "" for a blank project state (the gate's wording says "this state" then).
+  return { ...got, oregon, state: String(projectState ?? "").trim() ? st : "", label: oregon ? "CCB" : got.label || `${st} licence` };
+}
+
+/** The licence columns of a project's client, by id (null when there is no client or no row). */
+export function clientLicenceRow(db: AppDb, clientId: string | null | undefined): Row | null {
+  if (!clientId) return null;
+  return db.get<Row>(
+    `SELECT id, company_name, legal_business_name, ccb_license_number, ccb_expiration, electrical_license_number,
+            electrician_license_number, electrical_supervisor_name, license_state, state_licenses_json
+       FROM clients WHERE id = ?`, [clientId]) ?? null;
+}
+
+/** contractorLicenceForState for a project's client, read by id ("" when there is no client). */
+export function contractorLicenceForClient(db: AppDb, clientId: string | null | undefined, projectState: string, track?: string | null): ReturnType<typeof contractorLicenceForState> {
+  return contractorLicenceForState(clientLicenceRow(db, clientId), projectState, track);
+}
+
+/** The licence keys the portal overlay and the recipe resolver carry, every one answered by
+ *  licenceFor for THIS job's state and track. Oregon: the named columns, as they always were. */
+export const LICENCE_OVERLAY_KEYS = [
+  "ccbLicenseNumber", "ccbExpiration", "contractorLicenseNumber", "contractorLicenseExpiration",
+  "electricalLicenseNumber", "electricalLicenseExpiration", "electricianLicenseNumber", "electricianLicenseExpiration", "electricalSupervisorName",
+  "constructionSupervisorLicenseNumber", "constructionSupervisorLicenseExpiration", "homeImprovementLicenseNumber", "homeImprovementLicenseExpiration",
+] as const;
+export type LicenceOverlayKey = (typeof LICENCE_OVERLAY_KEYS)[number];
+
+/**
+ * THE PORTAL'S LICENCE KEYS FOR ONE JOB — every key present, "" where nothing of the needed kind is
+ * on file (a present-but-empty key is a BLANK answer to recipe replay; an absent one would fall
+ * back to the recorded literal, which is the learn company's licence). ccbLicenseNumber is "the
+ * contractor licence this filing takes": Oregon's CCB on an Oregon job (every track), elsewhere the
+ * generic-by-track licence (never the Oregon CCB); ccbExpiration is the CHOSEN licence's expiry.
+ * Every kind the overlay carries has its OWN number and expiry key too (licences skeptic L1/L3):
+ * contractorLicenseNumber binds a contractor licence on ANY track, and an electrical / supervising-
+ * electrician expiry is never the generic licence's date. An expiry is present only beside its
+ * number.
+ */
+export function licenceOverlay(client: LicenceClient, job: { state: string; track: string | null }): Record<LicenceOverlayKey, string> {
+  const st = licenceJobState(job.state);
+  const generic = licenceFor(client, st, { track: job.track });
+  const contractor = licenceFor(client, st, "contractor");
+  const ec = licenceFor(client, st, "electrical_contractor");
+  const master = licenceFor(client, st, "master_electrician");
+  const csl = licenceFor(client, st, "construction_supervisor");
+  const hic = licenceFor(client, st, "home_improvement_contractor");
+  const expires = (a: LicenceAnswer): string => (a.number ? a.expires : "");
+  return {
+    ccbLicenseNumber: generic.number,
+    ccbExpiration: expires(generic),
+    contractorLicenseNumber: contractor.number,
+    contractorLicenseExpiration: expires(contractor),
+    electricalLicenseNumber: ec.number,
+    electricalLicenseExpiration: expires(ec),
+    electricianLicenseNumber: master.number,
+    electricianLicenseExpiration: expires(master),
+    electricalSupervisorName: master.holder,
+    constructionSupervisorLicenseNumber: csl.number,
+    constructionSupervisorLicenseExpiration: expires(csl),
+    homeImprovementLicenseNumber: hic.number,
+    homeImprovementLicenseExpiration: expires(hic),
+  };
+}
+
+/** EVERY licence number the client holds — any state, any kind, the named columns and the typed
+ *  entries — for the learn-time guard (portalRecipes.withholdClientLicenceLiterals): a recorded
+ *  literal equal to one of these is that company's licence, never kept in a shared recipe. */
+export function clientLicenceNumbers(client: LicenceClient): string[] {
+  if (!hasClient(client)) return [];
+  const out = new Set<string>();
+  for (const [snake, camel] of [["ccb_license_number", "ccbLicenseNumber"], ["electrical_license_number", "electricalLicenseNumber"],
+    ["electrician_license_number", "electricianLicenseNumber"], ["metro_city_license_number", "metroCityLicenseNumber"], ["docket_number", "docketNumber"]] as const) {
+    const v = pick(client, snake, camel);
+    if (v) out.add(v);
+  }
+  const c = client as Record<string, unknown>;
+  const typedRaw = Array.isArray(c.stateLicenses) ? c.stateLicenses : c.state_licenses_json;
+  for (const row of jsonArray(typedRaw)) {
+    const n = s(row?.number).trim();
+    if (n) out.add(n);
+  }
+  return [...out];
+}
+
+/** clientLicenceNumbers for a project's client, read by id ([] when there is no client). */
+export function clientLicenceNumbersForClient(db: AppDb, clientId: string | null | undefined): string[] {
+  if (!clientId) return [];
+  const row = db.get<Row>(
+    `SELECT ccb_license_number, electrical_license_number, electrician_license_number, metro_city_license_number, docket_number, state_licenses_json
+       FROM clients WHERE id = ?`, [clientId]);
+  return row ? clientLicenceNumbers(row) : [];
+}
+
+/** Every contractor/person licence the client holds in `state`, labelled ("MA construction
+ *  supervisor licence: CS-…"), for a document that lists them — through licenceFor, so a cover sheet
+ *  names the same numbers the forms and the portal get. Never a business registration. */
+export function stateLicenceLines(client: LicenceClient, state: string): string[] {
+  const kinds: LicenceKind[] = ["contractor", "construction_supervisor", "home_improvement_contractor", "electrical_contractor", "solar_contractor", "master_electrician"];
+  const out: string[] = [];
+  for (const kind of kinds) {
+    const a = licenceFor(client, state, kind);
+    if (a.number) out.push(`${a.label}: ${a.number}`);
+  }
+  return out;
+}
+
+/** licenceOverlay for a project's client, read by id (every key "" when there is no client). */
+export function licenceOverlayForClient(db: AppDb, clientId: string | null | undefined, job: { state: string; track: string | null }): Record<LicenceOverlayKey, string> {
+  return licenceOverlay(clientLicenceRow(db, clientId), job);
+}
+
 /** Stored/accepted partner contacts: a company name required; scope by portal and/or AHJ. */
 export function parsePartnerContacts(raw: unknown): ClientPartnerContact[] {
   return jsonArray(raw)
@@ -183,6 +526,36 @@ export function getClient(db: AppDb, clientId: string): ClientRecord {
   return mapClient(row, identitiesFor(db, clientId));
 }
 
+/**
+ * THE COMPANY FACTS A PORTAL ASKS BESIDE THE LICENCE (leak sweep 2026-09-28): insurance and bond
+ * carriers and expiries, and the installer's street split into number and name. They had NO keys,
+ * so a portal box asking for them could only ever freeze the LEARN company's answer into a shared
+ * recipe (permiteyes.us carried one company's "808" / street name unbound; a bond expiry was bound
+ * to the CCB licence's expiry). Read from THIS project's own client row only.
+ *
+ * EVERY KEY IS ALWAYS PRESENT, "" where the client has no value — including a job with no client. A
+ * recipe step bound to a key the dictionary defines replays that key's value, blank included; a key
+ * the dictionary lacks would fall back to the recorded literal, which is another company's.
+ */
+export const COMPANY_FACT_KEYS = ["insuranceCarrier", "insuranceExpiration", "bondCarrier", "bondExpiration", "installerStreetNumber", "installerStreetName"] as const;
+export function clientCompanyFactFields(db: AppDb, clientId: string | null | undefined): Record<string, string> {
+  const out: Record<string, string> = Object.fromEntries(COMPANY_FACT_KEYS.map((k) => [k, ""]));
+  if (!clientId) return out;
+  const row = db.get<Row>("SELECT insurance_carrier, insurance_expiry, bond_carrier, bond_expiry, business_address FROM clients WHERE id = ?", [clientId]);
+  if (!row) return out;
+  out.insuranceCarrier = s(row.insurance_carrier).trim();
+  out.insuranceExpiration = s(row.insurance_expiry).trim();
+  out.bondCarrier = s(row.bond_carrier).trim();
+  out.bondExpiration = s(row.bond_expiry).trim();
+  // The street LINE (before the first comma), split at its house number: "123 SE Example Ave Ste 4-567"
+  // -> "123" + "SE Example Ave Ste 4-567". No leading number: the whole line is the street name.
+  const line = s(row.business_address).split(",")[0].replace(/\s+/g, " ").trim();
+  const m = /^(\d+[A-Za-z]?(?:-\d+)?)\s+(.+)$/.exec(line);
+  out.installerStreetNumber = m ? m[1] : "";
+  out.installerStreetName = m ? m[2] : line;
+  return out;
+}
+
 interface PortalIdentityInput {
   portalType?: string;
   installerCompanyLabel?: string;
@@ -250,9 +623,48 @@ export function updateClient(db: AppDb, clientId: string, payload: Record<string
   });
 }
 
+/**
+ * A SAVE NEVER DROPS A STORED LICENCE ROW THE EDITOR COULD NOT SHOW (licences skeptic, editor P7).
+ * The Clients editor sends its FULL list on every save, but it only ever saw what parseStateLicenses
+ * returns: a holder-only row (a supervising electrician's name, no number), an expiry that is not a
+ * date the parser reads ("Aug 15 2028") and any key the model does not know were invisible to it —
+ * and so were wiped by an unrelated save. Merged here, where every writer passes:
+ *   - a stored row the read path drops entirely is KEPT verbatim (the operator never saw it, so the
+ *     list cannot have removed it);
+ *   - a stored row the editor did see, sent back (same state + number), keeps its unknown keys and
+ *     its unreadable expiry under the editor's values;
+ *   - a row the editor saw and did not send back was removed on purpose — it goes.
+ */
+export function mergeStateLicenceSave(storedRaw: unknown, incoming: unknown): Record<string, unknown>[] {
+  const next = parseStateLicenses(incoming);
+  const stored = jsonArray(storedRaw).filter((r) => r && typeof r === "object");
+  const idOf = (state: unknown, number: unknown): string => `${s(state).trim().toUpperCase().slice(0, 2)}|${normNumber(s(number))}`;
+  const seenByEditor = new Map<string, Record<string, unknown>>();
+  const invisible: Record<string, unknown>[] = [];
+  for (const row of stored) {
+    const parsed = parseStateLicenses([row]);
+    if (!parsed.length) invisible.push(row);
+    else seenByEditor.set(idOf(parsed[0].state, parsed[0].number), row);
+  }
+  const out: Record<string, unknown>[] = next.map((l) => {
+    const prior = seenByEditor.get(idOf(l.state, l.number));
+    if (!prior) return { ...l };
+    const merged: Record<string, unknown> = { ...prior, ...l };
+    // The editor could not show an expiry it cannot read — keep the stored text rather than lose it.
+    if (!l.expires && s(prior.expires).trim() && !isoDay(prior.expires)) merged.expires = prior.expires;
+    else if (!l.expires) delete merged.expires;
+    if (!l.holder) delete merged.holder;
+    return merged;
+  });
+  return [...out, ...invisible];
+}
+
 /** stateLicenses / partnerContacts: written only when present in the payload (partial update). */
 function writeLicenceAndPartnerJson(db: AppDb, clientId: string, payload: Record<string, unknown>): void {
-  if ("stateLicenses" in payload) db.run("UPDATE clients SET state_licenses_json = ? WHERE id = ?", [JSON.stringify(parseStateLicenses(payload.stateLicenses)), clientId]);
+  if ("stateLicenses" in payload) {
+    const stored = db.get<Row>("SELECT state_licenses_json FROM clients WHERE id = ?", [clientId])?.state_licenses_json;
+    db.run("UPDATE clients SET state_licenses_json = ? WHERE id = ?", [JSON.stringify(mergeStateLicenceSave(stored, payload.stateLicenses)), clientId]);
+  }
   if ("partnerContacts" in payload) db.run("UPDATE clients SET partner_contacts_json = ? WHERE id = ?", [JSON.stringify(parsePartnerContacts(payload.partnerContacts)), clientId]);
 }
 
@@ -580,12 +992,18 @@ export async function offboardClient(db: AppDb, clientId: string, opts: Offboard
 // Returns the installer/licensing overlay for a project's linked client, keyed
 // to the snapshot field names the portal adapters already read. Empty object
 // when the project has no client.
-export function clientStagingOverlay(db: AppDb, clientId: string | null, portalType: string): Record<string, string> {
+//
+// THE JOB IS REQUIRED: a licence is a state's and a permit's (licenceOverlay). On an Oregon job the
+// licence keys are the named columns exactly as before; elsewhere ccbLicenseNumber is that state's
+// licence for this track, never Oregon's CCB. `track` null = not known (a generic slot then takes
+// the one contractor licence on file, or nothing when several could fit).
+export function clientStagingOverlay(db: AppDb, clientId: string | null, portalType: string, job: { state: string; track: string | null }): Record<string, string> {
   if (!clientId) return {};
   const row = db.get<Row>("SELECT * FROM clients WHERE id = ?", [clientId]);
   if (!row) return {};
   const client = mapClient(row, identitiesFor(db, clientId));
   const identity = client.portalIdentities.find((entry) => entry.portalType === portalType);
+  const licences = licenceOverlay(client, job);
 
   const overlay: Record<string, string> = {
     installerCompanyName: identity?.installerCompanyLabel || client.legalBusinessName || client.companyName,
@@ -611,7 +1029,7 @@ export function clientStagingOverlay(db: AppDb, clientId: string | null, portalT
       [client.businessCity, client.businessState].filter(Boolean).join(", ") +
       (client.businessZip ? ` ${client.businessZip}` : ""),
     installerContactName: client.contactName || client.authorizedSignerName,
-    ccbLicenseNumber: client.ccbLicenseNumber,
+    ccbLicenseNumber: licences.ccbLicenseNumber,
     // A LICENCE NUMBER WITHOUT ITS EXPIRY IS HALF AN ANSWER, AND THE OTHER HALF HAD NO KEY.
     //
     // Portals that ask for a contractor licence usually ask when it expires in the next box.
@@ -621,12 +1039,23 @@ export function clientStagingOverlay(db: AppDb, clientId: string | null, portalT
     // paymentBoundary.dom.smoke: the licence expiration came out "". This is exactly the class
     // battery capacity was in before 55b5d24; the repair is the same one — give the value a
     // key, and the literal stops being its only carrier.
-    ccbExpiration: client.ccbExpiration,
-    electricalLicenseNumber: client.electricalLicenseNumber,
+    // THE CHOSEN licence's expiry (licenceOverlay) — Oregon's CCB expiry on an Oregon job.
+    ccbExpiration: licences.ccbExpiration,
+    contractorLicenseNumber: licences.contractorLicenseNumber,
+    contractorLicenseExpiration: licences.contractorLicenseExpiration,
+    electricalLicenseNumber: licences.electricalLicenseNumber,
+    electricalLicenseExpiration: licences.electricalLicenseExpiration,
     docketNumber: client.docketNumber,
-    metroCityLicenseNumber: client.metroCityLicenseNumber,
-    electricalSupervisorName: client.electricalSupervisorName,
-    electricianLicenseNumber: client.electricianLicenseNumber,
+    // THE METRO / CITY BUSINESS LICENCE IS PORTLAND METRO'S (an Oregon licence): only on an Oregon
+    // job — blank elsewhere, never one region's number in another state's box (licences skeptic).
+    metroCityLicenseNumber: licenceJobState(job.state) === "OR" ? client.metroCityLicenseNumber : "",
+    electricalSupervisorName: licences.electricalSupervisorName,
+    electricianLicenseNumber: licences.electricianLicenseNumber,
+    electricianLicenseExpiration: licences.electricianLicenseExpiration,
+    constructionSupervisorLicenseNumber: licences.constructionSupervisorLicenseNumber,
+    constructionSupervisorLicenseExpiration: licences.constructionSupervisorLicenseExpiration,
+    homeImprovementLicenseNumber: licences.homeImprovementLicenseNumber,
+    homeImprovementLicenseExpiration: licences.homeImprovementLicenseExpiration,
     authorizedSignerName: client.authorizedSignerName,
     authorizedSignerTitle: client.authorizedSignerTitle,
   };
@@ -634,6 +1063,7 @@ export function clientStagingOverlay(db: AppDb, clientId: string | null, portalT
     overlay.powerclerkExistingContact = identity.installerContactCode;
     overlay.accelaContactCode = identity.installerContactCode;
   }
-  // Drop empties so we never overwrite real snapshot values with blanks.
-  return Object.fromEntries(Object.entries(overlay).filter(([, v]) => v));
+  // Drop empties so we never overwrite real snapshot values with blanks — and a PLACEHOLDER licence /
+  // docket / registration ("TEST-160001") is never an identifier any door files (companyFacts).
+  return Object.fromEntries(Object.entries(overlay).filter(([k, v]) => v && !(COMPANY_IDENTIFIER_KEY.test(k) && looksLikePlaceholderIdentifier(v))));
 }

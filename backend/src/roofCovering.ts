@@ -62,19 +62,46 @@ export function classifyRoofCovering(material: unknown, subtypeHint: unknown = "
 /** OREGON'S ROOFING ROW (ORSC / BCD 440-5952): "roofing is metal, single-layer wood shingles or
  *  shakes, or no more than two layers of composition shingles". true = the covering qualifies,
  *  false = it does not (tile, membrane, a third comp layer, a second wood layer), null = unknown
- *  (no material, or a layer count the documents do not state). bcdChecklistFacts fills the
- *  checklist row from it and permitPath's Oregon screen routes on it — the same answer twice. */
-export function oregonRoofingRowQualifies(material: unknown, subtype: unknown, layers: unknown): boolean | null {
+ *  (no material, or a covering the classifier does not recognise). bcdChecklistFacts fills the
+ *  checklist row from it, permitPath's Oregon screen routes on it and formFactQuestions asks the
+ *  layer count only when it says unknown — the same answer three times.
+ *
+ *  AN UNSTATED LAYER COUNT IS ASSUMED COMPLIANT (operator ruling 2026-09-28, "Assume 1-2 layers is
+ *  good"): no plan set states it, so a composition or wood roof whose layer count nobody gave passes
+ *  the row — the same shape as the module-height ruling of 2026-09-27 — and `assumedLayers` says so,
+ *  so every place that shows the answer can name the assumption. A STATED count always wins: "3 or
+ *  more" composition layers (or a second wood layer) still fails the row and routes engineered. */
+export interface OregonRoofingRow {
+  qualifies: boolean | null;
+  /** The row passed on the operator's default, not on a stated layer count. */
+  assumedLayers: boolean;
+}
+export const ROOF_LAYERS_RULING = "operator ruling 2026-09-28";
+export function oregonRoofingRow(material: unknown, subtype: unknown, layers: unknown): OregonRoofingRow {
   const covering = classifyRoofCovering(material, subtype).family;
   const m = String(layers ?? "").trim().match(/^\s*(\d+(?:\.\d+)?)/);
   const n = m ? Number(m[1]) : null;
-  if (!String(material ?? "").trim() && covering !== "tile") return null;
+  const known = (qualifies: boolean | null): OregonRoofingRow => ({ qualifies, assumedLayers: false });
+  if (!String(material ?? "").trim() && covering !== "tile") return known(null);
   // The row is an ALLOWLIST: a recognised covering outside it answers No.
-  if (covering === "tile" || covering === "membrane" || covering === "slate") return false;
-  if (covering === "metal") return true;
-  if (covering === "composition") return n == null ? null : n <= 2;
-  if (covering === "wood") return n == null ? null : n <= 1;
-  return null;
+  if (covering === "tile" || covering === "membrane" || covering === "slate") return known(false);
+  if (covering === "metal") return known(true);
+  if (covering === "composition" || covering === "wood") {
+    if (n == null) return { qualifies: true, assumedLayers: true };
+    return known(covering === "composition" ? n <= 2 : n <= 1);
+  }
+  return known(null);
+}
+export function oregonRoofingRowQualifies(material: unknown, subtype: unknown, layers: unknown): boolean | null {
+  return oregonRoofingRow(material, subtype, layers).qualifies;
+}
+
+/** The words that name an assumed layer count, for a fill note / path basis ("" when the row did
+ *  not pass on the default). Wood is said as ONE layer: the row admits one, not two. */
+export function assumedRoofLayersNote(material: unknown, subtype: unknown, layers: unknown): string {
+  if (!oregonRoofingRow(material, subtype, layers).assumedLayers) return "";
+  const wood = classifyRoofCovering(material, subtype).family === "wood";
+  return `roof layer count not stated — assumed ${wood ? "a single layer of wood shingles/shakes" : "1-2 layers of composition"} (${ROOF_LAYERS_RULING}, "Assume 1-2 layers is good"); a stated ${wood ? "second layer" : "3 or more layers"} fails the roofing row`;
 }
 
 export type TileAttachmentMethod = "tile hook" | "tile-replacement mount" | "comp-out";

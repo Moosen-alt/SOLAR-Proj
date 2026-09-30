@@ -579,6 +579,17 @@ async function testSensitiveFieldsRedacted() {
   assert.ok(!serialized.includes("9990001111"), "the planner account value must never be in the recorded steps");
   assert.ok(!serialized.includes("ACCT-9001"), "the project account number must never be in the recorded steps");
   assert.ok(!serialized.includes("MTR-5002"), "the project meter number must never be in the recorded steps");
+
+  // ...AND THE LEARN ACTUALLY TYPES THEM (live PGE 2026-09-28: both revealed boxes were "filled"
+  // with "" and the portal's review listed them as Missing Required Fields). What goes into the
+  // box is the PROJECT's value, read by name — the same one the recorded step types on replay —
+  // never the planner's (it holds no secret; "9990001111" is invented).
+  const typedInto = (label: string) => log.fills.filter((f) => f.key.includes(label)).map((f) => f.value);
+  assert.ok(typedInto("Account Number").includes("ACCT-9001"), `the project's account number was not typed (typed: ${JSON.stringify(typedInto("Account Number").map((v) => v.length))})`);
+  assert.ok(!typedInto("Account Number").includes("9990001111"), "the planner's invented account number must never be typed");
+  assert.ok(typedInto("Meter Number").includes("MTR-5002"), "the project's meter number (deterministic pass) was not typed");
+  // The value is never in the result either.
+  assert.ok(!result.message.includes("ACCT-9001") && !result.message.includes("MTR-5002"), "a secret leaked into the result message");
 }
 
 // 7) THE ACCELA TRAP: on a read-only Review page, "Continue Application" SUBMITS.
