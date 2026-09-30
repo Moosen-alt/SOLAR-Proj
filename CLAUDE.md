@@ -17,11 +17,16 @@ AHJ documents → stage the portal application → human verifies + submits.
 - `npm run typecheck` — tsc, no emit. (A pre-existing nodemailer types error may
   appear in some environments; everything else must be clean.)
 - `npm run smoke` — full end-to-end on a scratch DB. Must stay green.
-- `npm run backend:test:unit` / `npm run portal:test:unit` — unit suites (chained
-  `&&`, so the FIRST failure stops the chain — later tests may not have run).
-  `backend:test:unit` ends by running `backend:test:unit:2`; register NEW backend
-  tests at the end of `:2`. The first script hit cmd.exe's 8191-char limit on
-  Windows ("The command line is too long." — nothing runs, and the exit is 1).
+- `npm run backend:test:unit` / `npm run portal:test:unit` — unit suites via
+  `scripts/run-unit-tests.ts`. DISCOVERED from disk (`backend/test/*.test.ts`,
+  `portal-bot/**/*.test.ts`): a new test needs NO registration in package.json.
+  Runs every suite in its own process (serial — some boot servers on port bands),
+  reaps each suite's process group so leaked servers can't break later suites, and
+  prints a summary with a denominator. `--only <substr>`, `--shard i/n` (CI),
+  `--suite all`. Exit 0 with `FAIL - ` lines counts as red. (These used to be
+  290 `&&`-chained links in package.json: a chain stops at the first failure,
+  overflowed cmd.exe's 8191-char limit on Windows, and made every parallel PR that
+  added a test conflict on the same line.)
 - `npm run portal:test:dom` — every real-Chromium smoke, each in its own process
   (`scripts/run-dom-smokes.ts`). Discovers `*.dom.smoke.ts` from disk, so a new one
   runs without being registered anywhere. Runs ALL of them even when some fail, and
