@@ -84,6 +84,12 @@ jobs:
         continue-on-error: true
         run: npm run backend:test:unit -- --concurrency ${{ vars.CI_TEST_CONCURRENCY || 1 }}
 
+      # portal-bot's profileQueue.test.ts launches a real persistent Chromium context,
+      # and a fresh runner has no browser.
+      - name: Install Chromium for the portal suite
+        if: steps.scope.outputs.code == 'true'
+        run: npx playwright install --with-deps chromium
+
       - name: Portal-bot unit
         id: portal
         if: steps.scope.outputs.code == 'true'
@@ -102,6 +108,7 @@ jobs:
         with:
           name: unit-test-logs
           path: .unit-test-logs/
+          include-hidden-files: true
           retention-days: 7
 
       - name: Verdict
