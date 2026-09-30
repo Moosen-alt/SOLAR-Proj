@@ -41,6 +41,14 @@
 //
 //   EXIT 0 WITH "FAIL - " LINES IS A FAILURE. Same rule as the DOM runner: a suite that prints a
 //   red check and still exits clean has a broken exit path, and that needs its own repair.
+//
+//   KNOWN-RED IS A QUARANTINE, NOT A SKIP. scripts/known-red.json lists tests that are red on main
+//   RIGHT NOW, each with the open P0 issue fixing it. They still run and are printed in their own
+//   section, but they don't fail the run — otherwise one red on main turns every PR red, including
+//   the PR that fixes it, and a whole team of agents stops. The quarantine cannot go stale: a
+//   listed test that PASSES fails the run until its entry is deleted, so the fixing PR is the one
+//   that removes it; an entry naming a file that no longer exists fails the run too. Only the lead
+//   adds entries (CONSTITUTION.md §11), always with a P0 issue.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -75,6 +83,27 @@ const NOT_UNIT = new Map<string, string>([
 ]);
 
 const IGNORED_DIRS = new Set([".git", "node_modules", "dist", "data", "portal-profiles"]);
+
+/** Tests red on main right now, each tied to the open P0 issue fixing it (see the header). */
+interface KnownRed { test: string; issue: number; reason: string }
+const KNOWN_RED_FILE = path.join(REPO_ROOT, "scripts", "known-red.json");
+const loadKnownRed = (): { entries: Map<string, KnownRed>; problems: string[] } => {
+  const entries = new Map<string, KnownRed>();
+  const problems: string[] = [];
+  if (!fs.existsSync(KNOWN_RED_FILE)) return { entries, problems };
+  let raw: unknown;
+  try { raw = JSON.parse(fs.readFileSync(KNOWN_RED_FILE, "utf8")); }
+  catch (e) { return { entries, problems: [`scripts/known-red.json is not valid JSON: ${String(e)}`] }; }
+  if (!Array.isArray(raw)) return { entries, problems: ["scripts/known-red.json must be a JSON array"] };
+  for (const e of raw as Array<Partial<KnownRed>>) {
+    if (typeof e?.test !== "string" || !Number.isInteger(e?.issue) || (e.issue as number) < 1 || typeof e?.reason !== "string" || !e.reason.trim()) {
+      problems.push(`known-red entry needs {test, issue (a P0 issue number), reason}: ${JSON.stringify(e)}`);
+      continue;
+    }
+    entries.set(e.test, e as KnownRed);
+  }
+  return { entries, problems };
+};
 
 const discover = (suite: SuiteName): string[] => {
   const { root, recursive } = SUITES[suite];
@@ -212,6 +241,13 @@ const runOne = (rel: string): Promise<Result> =>
 // ---------------------------------------------------------------------------------------------
 
 const discovered = suites.flatMap((s) => discover(s));
+const knownRed = loadKnownRed();
+// An entry for a test that no longer exists is stale bookkeeping: report it. Entries for another
+// suite's files are simply not this run's business (a backend run doesn't discover portal tests).
+const allTests = new Set((["backend", "portal"] as SuiteName[]).flatMap((s) => discover(s)));
+for (const t of knownRed.entries.keys()) {
+  if (!allTests.has(t)) knownRed.problems.push(`known-red entry names a test that does not exist: ${t} (delete the entry)`);
+}
 const excluded = discovered.filter((r) => NOT_UNIT.has(r)).map((rel) => ({ rel, reason: NOT_UNIT.get(rel)! }));
 const runnable = discovered.filter((r) => !NOT_UNIT.has(r));
 const matched = only.length ? runnable.filter((r) => only.some((f) => r.toLowerCase().includes(f.toLowerCase()))) : runnable;
@@ -250,18 +286,24 @@ const worker = async (): Promise<void> => {
 await Promise.all(Array.from({ length: Math.min(CONCURRENCY, selected.length) }, () => worker()));
 
 results.sort((a, b) => a.rel.localeCompare(b.rel));
-const by = (o: Outcome): Result[] => results.filter((r) => r.outcome === o);
+const isKnownRed = (r: Result): boolean => knownRed.entries.has(r.rel);
+const by = (o: Outcome): Result[] => results.filter((r) => r.outcome === o && !isKnownRed(r));
 const passed = by("pass");
 const failed = by("fail");
 const timeouts = by("timeout");
 const lied = by("lied");
+// Quarantined tests: still red (expected) vs now passing (the entry must be deleted).
+const stillRed = results.filter((r) => isKnownRed(r) && r.outcome !== "pass");
+const nowGreen = results.filter((r) => isKnownRed(r) && r.outcome === "pass");
 
 const rule = "=".repeat(94);
 console.log(`\n${rule}\nUNIT TEST SUMMARY (${suiteArg})\n${rule}`);
 // THE DENOMINATOR LINE — every number is a share of `discovered`.
 console.log(
   `${discovered.length} test files discovered = ${passed.length} passed + ${failed.length} failed + ` +
-  `${timeouts.length} timed out + ${lied.length} exit-code-lied + ${excluded.length} excluded (not unit)` +
+  `${timeouts.length} timed out + ${lied.length} exit-code-lied + ` +
+  `${stillRed.length + nowGreen.length} known-red (${stillRed.length} still red, ${nowGreen.length} now passing) + ` +
+  `${excluded.length} excluded (not unit)` +
   `${filteredOut ? ` + ${filteredOut} filtered out by --only` : ""}` +
   `${otherShards ? ` + ${otherShards} in other shards` : ""}`,
 );
@@ -286,6 +328,25 @@ report("FAILED", failed, "red checks: the test ran and disagreed with the code")
 report("TIMED OUT", timeouts, `killed at ${TIMEOUT_MS / 1000}s: a hang, not a red check. Find what never resolved`);
 report("EXIT CODE LIED", lied, "printed failures and STILL exited 0: fix the test's exit path first");
 
+if (stillRed.length) {
+  console.log(`\nKNOWN RED: quarantined, still failing, NOT failing this run (${stillRed.length})\n${"-".repeat(94)}`);
+  console.log("  Red on main and tracked. Each is a P0: fix it, and delete its entry in scripts/known-red.json.");
+  for (const r of stillRed) {
+    const k = knownRed.entries.get(r.rel)!;
+    console.log(`  ${r.rel}  [${r.outcome}] -> issue #${k.issue}: ${k.reason}`);
+    for (const l of r.failLines.slice(0, 5)) console.log(`      ${l}`);
+  }
+}
+if (nowGreen.length) {
+  console.log(`\nKNOWN RED NOW PASSES: delete these entries from scripts/known-red.json (${nowGreen.length})\n${"-".repeat(94)}`);
+  console.log("  The quarantine may not outlive the bug. This run fails until the entries are removed.");
+  for (const r of nowGreen) console.log(`  ${r.rel}  (issue #${knownRed.entries.get(r.rel)!.issue})`);
+}
+if (knownRed.problems.length) {
+  console.log(`\nKNOWN-RED LIST PROBLEMS (${knownRed.problems.length})\n${"-".repeat(94)}`);
+  for (const p of knownRed.problems) console.log(`  ${p}`);
+}
+
 if (excluded.length) {
   console.log(`\nEXCLUDED: discovered but deliberately not unit tests (${excluded.length})\n${"-".repeat(94)}`);
   for (const x of excluded) console.log(`  ${x.rel}\n      ${x.reason}`);
@@ -293,6 +354,6 @@ if (excluded.length) {
 if (filteredOut) console.log(`\nNOT RUN THIS PASS: ${filteredOut} test(s) excluded by --only ${JSON.stringify(only.join(","))}.`);
 if (otherShards) console.log(`\nNOT RUN IN THIS SHARD: ${otherShards} test(s) belong to the other ${shardCount - 1} shard(s).`);
 
-const bad = failed.length + timeouts.length + lied.length;
+const bad = failed.length + timeouts.length + lied.length + nowGreen.length + knownRed.problems.length;
 console.log(`\n${bad === 0 ? "GREEN" : `RED: ${bad} problem(s)`}`);
 process.exit(bad === 0 ? 0 : 1);

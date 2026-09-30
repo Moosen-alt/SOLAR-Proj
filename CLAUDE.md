@@ -4,13 +4,25 @@ Node/TypeScript monorepo that automates residential solar permit + NEM
 (interconnection) submissions: parse plan sets → QC → reviewer gate → build/fill
 AHJ documents → stage the portal application → human verifies + submits.
 
+## Working here as an agent
+
+This repo is worked as a GitHub-board team: the owner, **Fable** (the lead: triage,
+dispatch, review, merge, the Owner Digest) and worker agents. Before any task read
+**[CONSTITUTION.md](CONSTITUTION.md)**, which is binding (roles, the `/claim` protocol,
+filing issues, PRs, escalation), and your manual in `docs/agents/`. **Trunk is `main`:**
+branch from it, PR into it, never push to it. Open work lives in **GitHub Issues**, not in
+`docs/HANDOFF.md`. Workers never merge, never edit CONSTITUTION.md / AGENTS.md / CLAUDE.md /
+docs/HANDOFF.md in a feature PR, and never touch live portals, real credentials or
+production data.
+
 ## Layout
 
 - `backend/src` — Express API + SQLite (better-sqlite3), all business logic.
 - `portal-bot/src` — Playwright automation (auto-learn, recipes, human capture).
 - `frontend/` — single-page vanilla-JS dashboard (`dashboard.js`, no framework).
 - `shared/src/types.ts` — the single shared type surface. Add types here first.
-- `backend/test`, `portal-bot/src/**/*.test.ts` — plain tsx test scripts (no runner).
+- `backend/test`, `portal-bot/src/**/*.test.ts` — plain tsx test scripts, discovered
+  and run by `scripts/run-unit-tests.ts` (no framework).
 
 ## Commands
 
@@ -142,5 +154,6 @@ scoping them without a decision.
 ## Current handoff notes
 
 Deploying/hosting: `docs/SERVER_SETUP.md`. Dev onboarding: `docs/DEVELOPER_ONBOARDING.md`.
-Product packets: `docs/products/`. See `docs/HANDOFF.md` for the running state, open issues, and what to verify
-live after each pull.
+Product packets: `docs/products/`. **Open work is the GitHub issue board** (constitution §3).
+`docs/HANDOFF.md` is the narrative history of past sessions and what to verify live after each
+pull; it is not the work queue.

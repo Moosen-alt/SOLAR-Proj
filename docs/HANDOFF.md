@@ -3,6 +3,11 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+> **Since 2026-09-30 the work queue is the GitHub issue board, not this file.** The open
+> items below are being re-verified against the current code and filed as issues (items
+> already done are dropped). The "open issues" / "next work" lists in this file are
+> history: don't start work from them. Start from an issue. See `CONSTITUTION.md` §3.
+
 ## FEES VERIFY THEMSELVES WHERE A MACHINE CAN, AND A PERSON CONFIRMS IN ONE CLICK (2026-09-27, fees-verify)
 
 Operator: "there is no place to verify them. Can we just have it verify itself or something?"

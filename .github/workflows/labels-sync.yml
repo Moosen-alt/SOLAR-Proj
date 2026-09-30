@@ -1,0 +1,45 @@
+# Creates and updates the board's labels from .github/labels.json (name, color, description).
+# Labels that are NOT in the file are left alone — this never deletes anything.
+name: Sync labels
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/labels.json"]
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const wanted = JSON.parse(fs.readFileSync('.github/labels.json', 'utf8'));
+            const existing = await github.paginate(github.rest.issues.listLabelsForRepo, { ...context.repo, per_page: 100 });
+            const byName = new Map(existing.map((l) => [l.name.toLowerCase(), l]));
+            let created = 0, updated = 0, same = 0;
+            for (const w of wanted) {
+              if (w.description.length > 100) throw new Error(`description over 100 chars: ${w.name}`);
+              const color = w.color.replace('#', '').toLowerCase();
+              const cur = byName.get(w.name.toLowerCase());
+              if (!cur) {
+                await github.rest.issues.createLabel({ ...context.repo, name: w.name, color, description: w.description });
+                created++;
+              } else if (cur.name !== w.name || cur.color.toLowerCase() !== color || (cur.description || '') !== w.description) {
+                await github.rest.issues.updateLabel({ ...context.repo, name: cur.name, new_name: w.name, color, description: w.description });
+                updated++;
+              } else {
+                same++;
+              }
+            }
+            const msg = `Labels: ${created} created, ${updated} updated, ${same} unchanged (${wanted.length} in labels.json).`;
+            core.info(msg);
+            await core.summary.addRaw(msg).write();

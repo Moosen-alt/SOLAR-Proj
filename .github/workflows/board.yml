@@ -1,0 +1,299 @@
+# THE BOARD BOT — the claim protocol and status transitions from CONSTITUTION.md §3, enforced by
+# GitHub instead of trusted to each agent's memory.
+#
+# Load-bearing choices:
+#
+#   ONE RUN AT A TIME PER ISSUE. The concurrency group is the issue/PR number and runs QUEUE rather
+#   than cancel, so when two agents post `/claim` seconds apart, the second run starts only after
+#   the first has labeled the issue in-progress — and is refused. That is the whole mutex.
+#
+#   BUT A QUEUE HOLDS ONE. GitHub keeps only ONE pending run per concurrency group: a newer pending
+#   run cancels the older pending one. So (a) the concurrency group sits on the JOB, behind an `if`
+#   that admits only events that matter — ordinary comments never run the job, never enter the
+#   queue, and never cancel a pending merge; and (b) any event that is still dropped is repaired by
+#   the scheduled sweep, which reconciles every in-review issue against its PRs. A lost `/claim`
+#   gets no reply, and agents treat no reply as "not yours" (docs/agents/worker.md §2).
+#
+#   ONLY EVENTS THAT NEED WORK RUN (and bill minutes — the repository is private). An issue opened
+#   already carrying a status/epic/digest/triage label has nothing to do, so it is filtered out
+#   before a runner starts; bulk-creating the board costs no minutes.
+#
+#   ONLY THE BOT'S OWN MARKERS COUNT. Who holds a claim is read from hidden `<!-- board:... -->`
+#   markers in comments written by a Bot account (this workflow). Every agent posts as the owner's
+#   user account, so a marker pasted into an agent's comment is ignored — nobody can fake a claim.
+#
+#   MERGE CLOSES THE ISSUE HERE, NOT VIA GITHUB. `Closes #N` auto-closes only when a PR merges into
+#   the repository's DEFAULT branch. Until the owner makes `main` the default, that would silently
+#   leave merged work open; so this workflow closes linked issues itself on any merge.
+#
+#   NEW ISSUES WITHOUT A STATUS GET `needs-triage`, so nothing filed can fall between the cracks.
+name: Board
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened, closed, reopened]
+  pull_request:
+    types: [opened, reopened, edited, ready_for_review, synchronize, closed]
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
+
+jobs:
+  board:
+    if: >-
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request == null && startsWith(github.event.comment.body, '/'))
+      || (github.event_name == 'issues' && (github.event.action != 'opened' || !(
+            contains(toJSON(github.event.issue.labels.*.name), 'status:')
+         || contains(toJSON(github.event.issue.labels.*.name), 'type:epic')
+         || contains(toJSON(github.event.issue.labels.*.name), 'owner-digest')
+         || contains(toJSON(github.event.issue.labels.*.name), 'needs-triage'))))
+      || github.event_name == 'pull_request'
+      || github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+    concurrency:
+      group: board-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const R = context.repo;
+            const OWNER = context.repo.owner;
+            const STATUS = ['status:ready', 'status:in-progress', 'status:in-review', 'status:changes-requested', 'status:blocked', 'status:needs-owner'];
+            const LEADS = ['fable', 'owner'];
+            const STALE_HOURS = 36;
+            const NO_TRIAGE = ['type:epic', 'owner-digest'];
+
+            const names = (x) => (x.labels || []).map((l) => (typeof l === 'string' ? l : l.name));
+            const getIssue = async (n) => (await github.rest.issues.get({ ...R, issue_number: n })).data;
+            const say = (n, body) => github.rest.issues.createComment({ ...R, issue_number: n, body });
+            const removeLabel = async (n, name) => {
+              try { await github.rest.issues.removeLabel({ ...R, issue_number: n, name }); }
+              catch (e) { if (e.status !== 404) throw e; }
+            };
+
+            // Exactly one status:* label (or none when `status` is null, e.g. on close).
+            async function setStatus(n, status) {
+              const have = names(await getIssue(n));
+              for (const l of have) if (STATUS.includes(l) && l !== status) await removeLabel(n, l);
+              if (status && have.includes('needs-triage')) await removeLabel(n, 'needs-triage');
+              if (status && !have.includes(status)) await github.rest.issues.addLabels({ ...R, issue_number: n, labels: [status] });
+            }
+
+            const LINK = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)/gi;
+            const linkedIssues = (body) => [...new Set([...(body || '').matchAll(LINK)].map((m) => Number(m[1])))];
+
+            async function openPrsFor(n) {
+              const prs = await github.paginate(github.rest.pulls.list, { ...R, state: 'open', per_page: 100 });
+              return prs.filter((p) => linkedIssues(p.body).includes(n));
+            }
+
+            // The current claim holder: the last claim/release marker written by a Bot account.
+            async function currentClaim(n) {
+              const comments = await github.paginate(github.rest.issues.listComments, { ...R, issue_number: n, per_page: 100 });
+              let who = null;
+              for (const c of comments) {
+                if (!c.user || c.user.type !== 'Bot') continue;
+                const m = /<!-- board:(?:claim=([a-z0-9-]+)|release) -->/i.exec(c.body || '');
+                if (m) who = m[1] ? m[1].toLowerCase() : null;
+              }
+              return who;
+            }
+
+            // Blocked issues whose `Depends on:` issues are all closed become ready.
+            async function unblockSweep() {
+              const blocked = await github.paginate(github.rest.issues.listForRepo, { ...R, state: 'open', labels: 'status:blocked', per_page: 100 });
+              for (const b of blocked) {
+                if (b.pull_request) continue;
+                const line = /Depends on:\s*([^\n]*)/i.exec(b.body || '');
+                if (!line) continue;
+                const deps = [...line[1].matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
+                if (!deps.length) continue;
+                const states = await Promise.all(deps.map(async (d) => { try { return (await getIssue(d)).state; } catch { return 'unknown'; } }));
+                if (states.every((s) => s === 'closed')) {
+                  await setStatus(b.number, 'status:ready');
+                  await say(b.number, `🔓 Unblocked: ${deps.map((d) => '#' + d).join(', ')} ${deps.length > 1 ? 'are' : 'is'} closed. Ready to claim.`);
+                }
+              }
+            }
+
+            async function onComment() {
+              const issue = context.payload.issue;
+              if (issue.pull_request) return; // commands act on issues, not PRs
+              const first = (context.payload.comment.body || '').trim().split(/\r?\n/)[0].replace(/^\[[^\]]+\]\s*/, '');
+              const m = /^\/(claim|release|block|unblock|ready|needs-owner)\b\s*([A-Za-z0-9-]*)\s*(.*)$/i.exec(first);
+              if (!m) return;
+              const cmd = m[1].toLowerCase();
+              const who = m[2].toLowerCase();
+              const rest = m[3].trim();
+              const n = issue.number;
+              if (!who) { await say(n, `⛔ \`/${cmd}\` needs your agent id first, e.g. \`/${cmd} worker-3\`.`); return; }
+              const fresh = await getIssue(n);
+              if (fresh.state !== 'open') { await say(n, `⛔ #${n} is closed.`); return; }
+              const labels = names(fresh);
+              const status = labels.find((l) => STATUS.includes(l)) || '(none)';
+              const isLead = LEADS.includes(who);
+
+              if (cmd === 'claim') {
+                const why = [];
+                if (labels.includes('type:epic')) why.push('it is an epic (claim its sub-issues)');
+                if (labels.includes('owner-action')) why.push('it is an owner action');
+                if (!isLead && !labels.includes('bot-safe')) why.push('it is not labeled `bot-safe`');
+                if (!['status:ready', 'status:changes-requested'].includes(status)) why.push(`its status is \`${status}\``);
+                if (why.length) { await say(n, `⛔ Not claimable by **${who}**: ${why.join('; ')}. Pick another issue.`); return; }
+                const prs = status === 'status:changes-requested' ? await openPrsFor(n) : [];
+                await setStatus(n, 'status:in-progress');
+                const where = prs.length
+                  ? `Fix the review on ${prs.map((p) => '#' + p.number).join(', ')} (branch \`${prs[0].head.ref}\`).`
+                  : `Branch from \`main\` and open a PR into \`main\` whose body says \`Closes #${n}\`.`;
+                await say(n, `🔒 Claimed by **${who}**. ${where} The claim is released automatically after ${STALE_HOURS}h without activity. <!-- board:claim=${who} -->`);
+                return;
+              }
+
+              if (cmd === 'release') {
+                const holder = await currentClaim(n);
+                if (!isLead && holder !== who) { await say(n, `⛔ **${who}** does not hold the claim on #${n}${holder ? ` (**${holder}** does)` : ''}.`); return; }
+                const prs = await openPrsFor(n);
+                const next = prs.length ? 'status:changes-requested' : 'status:ready';
+                await setStatus(n, next);
+                await say(n, `🔓 Released by **${who}**${rest ? `: ${rest}` : ''}. Now \`${next}\`. <!-- board:release -->`);
+                return;
+              }
+
+              if (cmd === 'block') {
+                if (!rest) { await say(n, '⛔ `/block` needs a reason, e.g. `/block worker-3 waiting on #12`.'); return; }
+                await setStatus(n, 'status:blocked');
+                await say(n, `⛔ Blocked by **${who}**: ${rest} <!-- board:release -->`);
+                return;
+              }
+
+              if (!isLead) { await say(n, `⛔ \`/${cmd}\` is for the lead (fable) or the owner.`); return; }
+
+              if (cmd === 'unblock' || cmd === 'ready') {
+                await setStatus(n, 'status:ready');
+                await say(n, `✅ **${who}**: back to \`status:ready\`${rest ? ` (${rest})` : ''}. <!-- board:release -->`);
+                return;
+              }
+
+              if (cmd === 'needs-owner') {
+                if (!rest) { await say(n, '⛔ `/needs-owner` needs the question for the owner.'); return; }
+                await setStatus(n, 'status:needs-owner');
+                await say(n, `❓ @${OWNER}: decision needed (asked by **${who}**): ${rest}`);
+              }
+            }
+
+            async function onPullRequest() {
+              const pr = context.payload.pull_request;
+              const action = context.payload.action;
+              const linked = linkedIssues(pr.body);
+              if (!linked.length) return;
+
+              if (action === 'closed') {
+                for (const n of linked) {
+                  let issue;
+                  try { issue = await getIssue(n); } catch { continue; }
+                  if (issue.pull_request || issue.state !== 'open') continue;
+                  if (pr.merged) {
+                    await setStatus(n, null);
+                    await github.rest.issues.update({ ...R, issue_number: n, state: 'closed', state_reason: 'completed' });
+                    await say(n, `✅ Done: merged in #${pr.number}.`);
+                  } else if (names(issue).includes('status:in-review')) {
+                    await setStatus(n, 'status:ready');
+                    await say(n, `↩️ #${pr.number} was closed without merging, so this is \`status:ready\` again. <!-- board:release -->`);
+                  }
+                }
+                if (pr.merged) await unblockSweep();
+                return;
+              }
+
+              if (pr.draft) return;
+              let safety = false;
+              for (const n of linked) {
+                let issue;
+                try { issue = await getIssue(n); } catch { continue; }
+                if (issue.pull_request || issue.state !== 'open') continue;
+                const labels = names(issue);
+                if (labels.includes('safety-critical')) safety = true;
+                if (!labels.includes('status:in-review')) {
+                  await setStatus(n, 'status:in-review');
+                  if (['opened', 'reopened', 'ready_for_review'].includes(action)) await say(n, `🔎 In review: #${pr.number}.`);
+                }
+              }
+              if (safety && !names(pr).includes('safety-critical')) {
+                await github.rest.issues.addLabels({ ...R, issue_number: pr.number, labels: ['safety-critical'] });
+              }
+            }
+
+            async function onIssues() {
+              const issue = context.payload.issue;
+              if (issue.pull_request) return;
+              const action = context.payload.action;
+              const labels = names(issue);
+              if (action === 'opened') {
+                if (!labels.some((l) => STATUS.includes(l)) && !labels.some((l) => NO_TRIAGE.includes(l)) && !labels.includes('needs-triage')) {
+                  await github.rest.issues.addLabels({ ...R, issue_number: issue.number, labels: ['needs-triage'] });
+                }
+                return;
+              }
+              if (action === 'closed') {
+                await setStatus(issue.number, null);
+                await unblockSweep();
+                return;
+              }
+              if (action === 'reopened' && !labels.some((l) => NO_TRIAGE.includes(l))) await setStatus(issue.number, 'status:ready');
+            }
+
+            // Repairs anything a dropped event missed: every in-review issue is checked against the
+            // PRs that link it. Merged → close it. No open PR any more → back to ready.
+            async function reconcileReviews() {
+              const inReview = (await github.paginate(github.rest.issues.listForRepo, { ...R, state: 'open', labels: 'status:in-review', per_page: 100 }))
+                .filter((i) => !i.pull_request);
+              if (!inReview.length) return;
+              const prs = [];
+              for (let page = 1; page <= 3; page++) {
+                const { data } = await github.rest.pulls.list({ ...R, state: 'all', sort: 'updated', direction: 'desc', per_page: 100, page });
+                prs.push(...data);
+                if (data.length < 100) break;
+              }
+              for (const i of inReview) {
+                const linking = prs.filter((p) => linkedIssues(p.body).includes(i.number));
+                const merged = linking.find((p) => p.merged_at);
+                if (merged) {
+                  await setStatus(i.number, null);
+                  await github.rest.issues.update({ ...R, issue_number: i.number, state: 'closed', state_reason: 'completed' });
+                  await say(i.number, `✅ Done: merged in #${merged.number} (closed by the sweep).`);
+                } else if (!linking.some((p) => p.state === 'open')) {
+                  await setStatus(i.number, 'status:ready');
+                  await say(i.number, `↩️ No open PR closes this any more, so it is \`status:ready\` again. <!-- board:release -->`);
+                }
+              }
+            }
+
+            // Scheduled sweep: release idle claims, repair review states, unblock what's unblocked.
+            async function onSweep() {
+              const cutoff = Date.now() - STALE_HOURS * 3600 * 1000;
+              const working = await github.paginate(github.rest.issues.listForRepo, { ...R, state: 'open', labels: 'status:in-progress', per_page: 100 });
+              for (const w of working) {
+                if (w.pull_request || new Date(w.updated_at).getTime() > cutoff) continue;
+                const prs = await openPrsFor(w.number);
+                await setStatus(w.number, prs.length ? 'status:changes-requested' : 'status:ready');
+                await say(w.number, `⏰ No activity for ${STALE_HOURS}h, so the claim is released. <!-- board:release -->`);
+              }
+              await reconcileReviews();
+              await unblockSweep();
+            }
+
+            const ev = context.eventName;
+            if (ev === 'issue_comment') await onComment();
+            else if (ev === 'pull_request') await onPullRequest();
+            else if (ev === 'issues') await onIssues();
+            else await onSweep();

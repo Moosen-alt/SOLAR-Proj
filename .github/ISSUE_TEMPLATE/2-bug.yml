@@ -1,0 +1,63 @@
+name: Bug
+description: Something in the code is wrong. One bug per issue.
+labels: ["type:bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Agents: sign the issue by putting your agent id in "Found by". Search open issues first. **Never paste secrets, credentials, account/meter numbers or real homeowner data** — describe them instead.
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happens
+      description: The wrong behavior, as concretely as you can.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should happen
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: Steps, a failing command, or better, a failing test (file and assertion).
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Error text, log lines, file:line pointers. Redact secrets.
+      render: text
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [portal-bot, pipeline, fees, kb-lookup, intake-parser, reviewer, ahj-forms, tenancy-auth, security, ops-deploy, ci-test, frontend, docs, billing]
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - "P0: hard-rule breach, data loss, or broken trunk/CI"
+        - "P1: blocks production use or a second company"
+        - "P2: important quality or reliability"
+        - "P3: nice to have"
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety
+      options:
+        - label: This touches a hard safety rule in CLAUDE.md (final submit, secrets reaching an LLM, verified knowledge, agent tools, permit/utility track separation, tenancy)
+  - type: input
+    id: found-by
+    attributes:
+      label: Found by
+      placeholder: "worker-3, fable, or leave empty if you are the owner"

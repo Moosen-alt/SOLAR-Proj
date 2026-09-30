@@ -1,0 +1,114 @@
+# CI for every PR into main and every push to main. It never deploys (deploy.yml is manual).
+#
+# ONE JOB, ONE REQUIRED CHECK: "CI passed". Branch protection requires exactly that name.
+#
+# Why one job and not a matrix: this repository is private, so Actions minutes are metered, and
+# GitHub bills each JOB separately (its own npm ci, rounded up to the minute). Speed comes from
+# running suites side by side INSIDE this job (CI_TEST_CONCURRENCY), which is unbilled
+# parallelism. It defaults to serial until a concurrent run is proven to match the serial one;
+# serial takes about 25-30 minutes.
+#
+# Every suite runs even when an earlier one fails (continue-on-error), so one red never hides
+# the others; the last step turns any red into a failed check.
+#
+# Repository variables (Settings → Secrets and variables → Actions → Variables), all optional:
+#   CI_RUNNER             runner label; e.g. "self-hosted" to use your own machine (free minutes)
+#   CI_TEST_CONCURRENCY   suites run side by side inside the job (default 1 = serial, the proven
+#                         setting; raise to 3 once a run at 3 has matched the serial results)
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  SESSION_ENCRYPTION_KEY: "ci-only-not-real-replace-in-production"
+  ANTHROPIC_API_KEY: ""
+
+jobs:
+  ci:
+    name: CI passed
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # A PR that only touches docs skips the test suites (the check still reports, so it can merge).
+      - name: What changed
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            files=$(git diff --name-only HEAD^1 HEAD)
+          else
+            files="(not a PR: run everything)"
+          fi
+          echo "$files"
+          code=true
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "$files" ] && \
+             ! echo "$files" | grep -qvE '^(docs/|\.github/ISSUE_TEMPLATE/)|\.md$'; then
+            code=false
+            echo "Docs-only change: skipping the test suites."
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+      - if: steps.scope.outputs.code == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - if: steps.scope.outputs.code == 'true'
+        run: npm ci
+
+      - name: Typecheck
+        id: typecheck
+        if: steps.scope.outputs.code == 'true'
+        continue-on-error: true
+        run: npm run typecheck
+
+      - name: Backend unit
+        id: backend
+        if: steps.scope.outputs.code == 'true'
+        continue-on-error: true
+        run: npm run backend:test:unit -- --concurrency ${{ vars.CI_TEST_CONCURRENCY || 1 }}
+
+      - name: Portal-bot unit
+        id: portal
+        if: steps.scope.outputs.code == 'true'
+        continue-on-error: true
+        run: npm run portal:test:unit -- --concurrency ${{ vars.CI_TEST_CONCURRENCY || 1 }}
+
+      - name: Smoke (end-to-end, scratch DB)
+        id: smoke
+        if: steps.scope.outputs.code == 'true'
+        continue-on-error: true
+        run: npm run smoke
+
+      - name: Upload test logs
+        if: steps.scope.outputs.code == 'true' && (steps.typecheck.outcome == 'failure' || steps.backend.outcome == 'failure' || steps.portal.outcome == 'failure' || steps.smoke.outcome == 'failure')
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-logs
+          path: .unit-test-logs/
+          retention-days: 7
+
+      - name: Verdict
+        if: steps.scope.outputs.code == 'true'
+        run: |
+          echo "typecheck=${{ steps.typecheck.outcome }} backend=${{ steps.backend.outcome }} portal=${{ steps.portal.outcome }} smoke=${{ steps.smoke.outcome }}"
+          for r in "${{ steps.typecheck.outcome }}" "${{ steps.backend.outcome }}" "${{ steps.portal.outcome }}" "${{ steps.smoke.outcome }}"; do
+            if [ "$r" != "success" ]; then echo "A suite ended '$r'. See its step above."; exit 1; fi
+          done
+          echo "Everything passed."

@@ -1,0 +1,51 @@
+name: Task (board work item)
+description: A work item an agent can pick up cold. The format Fable uses for every board task.
+labels: ["needs-triage"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Current behavior, why it matters, what breaks and for whom.
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+    validations:
+      required: true
+  - type: textarea
+    id: criteria
+    attributes:
+      label: Acceptance criteria
+      description: Testable. Include the regression test to add and the suites that must pass.
+      value: |
+        - [ ]
+        - [ ] `npm run typecheck` is clean and every affected suite is green
+    validations:
+      required: true
+  - type: textarea
+    id: pointers
+    attributes:
+      label: Pointers
+      description: Files to touch, related issues, sources.
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety
+      description: Which hard rule(s) in CLAUDE.md this touches and what must not regress, or "No hard safety rule touched."
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Agent notes
+      description: "Priority, size, bot-safe, and a line `Depends on: #12, #15` (or `Depends on: nothing`). The board bot unblocks the issue when every listed issue closes."
+      value: |
+        - Priority:
+        - Size:
+        - Bot-safe:
+        - Depends on: nothing
+    validations:
+      required: true
