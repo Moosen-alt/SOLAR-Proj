@@ -426,6 +426,66 @@ export function resolveClientFromPlanSet(
   };
 }
 
+// ── THE PLAN SET'S LICENCE, AFTER THE JOB IS ASSIGNED ─────────────────────────────────────
+// The title block prints the installer's licence (contractorCcb — any state's, as printed; and the
+// electrical contractor licence). The parser page keeps it on the project as an OBJECT
+// (snapshot.planSetInstaller = { companyName, licences: [...] }) so no value map can ever offer it
+// as a field value: it is a REFERENCE for the operator and a cross-check of the assignment, and it
+// is never filled into a form or a portal (a plan set's number may be another company's).
+
+/** The licence numbers the plan set's title block printed (never an EIN-shaped number). */
+export function planSetPrintedLicences(snapshot: Record<string, unknown> | undefined | null): string[] {
+  const block = (snapshot ?? {}).planSetInstaller;
+  if (!block || typeof block !== "object") return [];
+  const raw = (block as { licences?: unknown }).licences;
+  const list = Array.isArray(raw) ? raw : [];
+  const out: string[] = [];
+  for (const v of list) {
+    const printed = String(v ?? "").trim();
+    if (!printed || classifyLicence(printed).format === "ein") continue;
+    if (!out.includes(printed)) out.push(printed);
+  }
+  return out;
+}
+
+/** Does this client carry the printed licence? The same comparison resolveClientFromPlanSet makes:
+ *  a distinctive format against the client's licences of that format; a plain number against the
+ *  client's plain licences (at least five characters — a short number is no identity). */
+function clientCarries(client: ClientRecord, printed: string): boolean {
+  const p = classifyLicence(printed);
+  if (!p.normalized || p.format === "ein" || (p.format === "plain" && p.normalized.length < 5)) return false;
+  return clientLicences(client).some((l) => l.format === p.format && l.normalized === p.normalized);
+}
+
+/**
+ * "The plan set's licence belongs to <other company>; is this job assigned to the right company?" —
+ * when the plan set prints a licence that ANOTHER client of this project's org carries and the
+ * project's own client does not. null otherwise. Never switches the client: the assignment is the
+ * operator's. Scoped to the project's org (hard rule 6: another tenant's company is never named).
+ */
+export function planSetLicenceWarning(db: AppDb, project: { id?: string; clientId?: string | null; parserSnapshot?: Record<string, unknown> | null; orgId?: string | null }): string | null {
+  const printed = planSetPrintedLicences(project.parserSnapshot ?? undefined);
+  if (!printed.length || !project.clientId) return null;
+  const orgRow = project.id ? db.get<{ org_id?: string | null }>("SELECT org_id FROM projects WHERE id = ?", [project.id]) : null;
+  const orgId = String(orgRow?.org_id || project.orgId || "").trim();
+  if (!orgId) return null;
+  const clients = listClients(db, orgId);
+  const own = clients.find((c) => c.id === project.clientId);
+  if (!own) return null;
+  const foreign: string[] = [];
+  let owned = false;
+  for (const lic of printed) {
+    if (clientCarries(own, lic)) { owned = true; continue; }
+    for (const other of clients) {
+      if (other.id === own.id || !clientCarries(other, lic)) continue;
+      foreign.push(`${lic} (${other.companyName || other.legalBusinessName || "another client"})`);
+    }
+  }
+  if (owned || !foreign.length) return null;
+  const ownName = own.companyName || own.legalBusinessName || "the assigned client";
+  return `The plan set's licence ${foreign.join(", ")} belongs to another company, not ${ownName} — is this job assigned to the right company?`;
+}
+
 /** Is the company name in the plan's text layer? Every significant word of it, order-free (a
  *  title block breaks lines anywhere). undefined when no text was supplied. */
 export function companyNameInText(name: string | undefined, planText: string | undefined): boolean | undefined {

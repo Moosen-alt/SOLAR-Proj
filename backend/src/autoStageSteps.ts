@@ -39,15 +39,44 @@ export interface StageStepOutcome {
   reason: string;
 }
 
+/** What each step of the chain says it is doing while it runs (jobQueue.noteJobProgress → the
+ *  project page's progress line). The forms step is the long one: a never-seen AHJ's search took
+ *  six minutes on 2026-09-28 while the page read "blocked". */
+export const STAGE_STEP_LABELS = {
+  split: "Splitting the plan set into its sheets…",
+  read_bill: "Reading the utility bill…",
+  qc: "Running QC…",
+  acquire_forms: "Checking the AHJ's required official forms…",
+  build_docs: "Building the AHJ / NEM document package…",
+  reviewer_gate: "Running the reviewer gate and the historical check…",
+} as const;
+
+export interface StageStepOptions {
+  /** Called as each step starts, with its STAGE_STEP_LABELS sentence (the worker writes it to the
+   *  job row; a test may collect it). Never awaited; a throw here does not stop the chain. */
+  onStep?: (label: string) => void;
+}
+
 /**
- * Enqueue the auto chain for a project, deduped: a project with a pending stage_step job does
+ * Enqueue the auto chain for a project, deduped: a project with a PENDING stage_step job does
  * not get a second one (re-saving a project three times must not build the packet three times).
  * Called from the parser save/update routes — the two doors a project enters a stage through.
+ *
+ * PENDING ONLY — NEVER RUNNING (dry run 2026-09-28, B1). Evidence that arrives while a chain is
+ * RUNNING must be seen by a chain that starts after it. The parser page creates the project (which
+ * enqueues a chain, claimed ~5 ms later by the instant kick) and uploads the plan set a few hundred
+ * ms after; the chain had already passed STEP 0 with no plan set on file, and the upload's enqueue
+ * was dropped as a duplicate of the RUNNING job — so every project saved from the parser page sat
+ * un-split behind "required documents missing" over sheets it already had. Counting 'running'
+ * protected nothing: jobQueue's PROJECT_BUSY_SQL already keeps a second stage_step for the same
+ * project PENDING until the running one finishes, so two chains never run at once. At most one
+ * follow-up waits; later saves and uploads fold into it. It cannot loop: only HTTP routes call
+ * this, never the chain's own steps.
  */
 export function enqueueStageSteps(db: AppDb, projectId: string): boolean {
   if (!autoStageStepsEnabled()) return false;
   const pending = db.get<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM job_queue WHERE job_type = 'stage_step' AND project_id = ? AND status IN ('pending','running')",
+    "SELECT COUNT(*) AS n FROM job_queue WHERE job_type = 'stage_step' AND project_id = ? AND status = 'pending'",
     [projectId],
   );
   if (Number(pending?.n ?? 0) > 0) return false;
@@ -63,10 +92,13 @@ export function enqueueStageSteps(db: AppDb, projectId: string): boolean {
  * Run every LOCAL step the project's current stage calls for, in order, stopping the moment a
  * step fails to advance. The worker calls this; a test may call it directly.
  */
-export async function processStageStep(db: AppDb, projectId: string): Promise<StageStepOutcome> {
+export async function processStageStep(db: AppDb, projectId: string, opts: StageStepOptions = {}): Promise<StageStepOutcome> {
   const ran: string[] = [];
   const status = (): string =>
     String(db.get<{ status?: string }>("SELECT status FROM projects WHERE id = ?", [projectId])?.status ?? "");
+  const step = (key: keyof typeof STAGE_STEP_LABELS): void => {
+    try { opts.onStep?.(STAGE_STEP_LABELS[key]); } catch { /* a progress note never stops the chain */ }
+  };
 
   if (!autoStageStepsEnabled()) return { ran, stoppedAt: status(), reason: "AUTO_STAGE_STEPS is off." };
 
@@ -92,6 +124,7 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
         )?.n ?? 0)
       : 0;
     if (planSet && splitNewer === 0) {
+      step("split");
       try {
         const { buildUtilityPackage } = await import("./docSplitter");
         const pkg = await buildUtilityPackage(db, projectId, "all");
@@ -123,6 +156,7 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
   // untouched — the extractor refuses passwords and SSNs, and nothing here writes over a
   // value that is already present.
   if (chainOwned) {
+    step("read_bill");
     try {
       const { fillAccountFieldsFromDocuments } = await import("./billVision");
       const { createLLMProvider } = await import("./llm");
@@ -142,11 +176,35 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
   // happens on a save, and a save means the inputs changed — so re-running QC here is judging
   // new evidence, not spinning on old. If the verdict is still qc_failed, the chain stops
   // right below and waits for the next human repair.
-  if (status() === "parsed" || status() === "qc_failed") {
+  //
+  // AND WHENEVER THE DOCUMENTS CHANGED SINCE QC LAST JUDGED THEM (dry run 2026-09-28, B7). QC's
+  // document rows ("Site plan is not attached … Staging will refuse without it") and its
+  // bill-on-file wait are verdicts computed FROM the documents, stored as a snapshot. createProject
+  // runs QC before any upload lands, and this chain splits the plan set at qc_passed /
+  // ready_to_stage — so the rows kept saying "not attached" over sheets the split had just filed,
+  // and the gate listed them under a document check that itself passed. A verdict that depends on
+  // the documents is re-judged when the documents change (projectDocuments.documentsChangedAt —
+  // uploads, splits, removals). QC never promotes past parsed/qc_failed and never demotes a pass.
+  // The document-triggered re-judge refreshes the rows but does NOT demote when its only NEW fails
+  // are the account / meter number (qc.QcRunOptions.holdStatusOnNewBillOnlyFails — converge
+  // 2026-09-28, conservative until the operator rules): a PDF bill uploaded after intake flips those
+  // rows to FAIL, and the bill reader reads images only. Any other new FAIL is real news and stops
+  // the chain below, exactly as at parse.
+  const docsNewerThanQc = async (): Promise<boolean> => {
+    const { documentsChangedAt } = await import("./projectDocuments");
+    const changed = documentsChangedAt(db, projectId);
+    if (!changed) return false;
+    const judged = String(db.get<{ t?: string }>("SELECT MAX(created_at) AS t FROM qc_results WHERE project_id = ?", [projectId])?.t ?? "");
+    // Same millisecond is not proof QC saw it — re-judging is the safe direction.
+    return !judged || changed >= judged;
+  };
+  const qcOwned = status() === "parsed" || status() === "qc_failed";
+  if (qcOwned || (chainOwned && await docsNewerThanQc())) {
+    step("qc");
     const { rerunQc } = await import("./repository");
-    rerunQc(db, projectId);
+    rerunQc(db, projectId, qcOwned ? {} : { holdStatusOnNewBillOnlyFails: true });
     ran.push("qc");
-    logger.info("stage-auto", "QC ran automatically on parse", { project: projectId, verdict: status() });
+    logger.info("stage-auto", qcOwned ? "QC ran automatically on parse" : "QC re-judged: the documents changed since it last ran", { project: projectId, verdict: status() });
   }
   if (status() === "qc_failed") {
     return { ran, stoppedAt: "qc_failed", reason: "QC failed — a person fixes the intake; re-saving restarts the chain." };
@@ -160,17 +218,34 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
   // chain now runs the same acquisition seam, so a new AHJ's first project pulls its forms on
   // the way to ready_to_stage instead of waiting for a human to wonder why nothing built.
   if (status() === "qc_passed") {
-    try {
-      const { getProjectDetail } = await import("./repository");
-      const { prepareOfficialDocuments } = await import("./prepareOfficialDocuments");
-      await prepareOfficialDocuments(db, getProjectDetail(db, projectId).project);
-      ran.push("acquire_forms");
-    } catch (err) {
-      // Acquisition failing must not stop the assembly attempt — stored templates may suffice.
-      logger.warn("stage-auto", "form acquisition failed; assembling from stored templates", {
-        project: projectId, err: err instanceof Error ? err.message : String(err),
-      });
+    // NOT FOR AN AHJ NAME THAT IS STILL A QUESTION. QC files a pending review item on the ahj field
+    // when the name is a near-miss of the address city (qc.ts / ahjNearMiss.ts — "City Of Smonroe"
+    // for Monroe, OR got a forms search and a permit-process lookup for a jurisdiction that does not
+    // exist). Read the RESULTING item (ahjNearMissPending — the one answer, shared with QC's own
+    // lookup skip), never re-derive it: the predicate keeps firing on a confirmed name. Skipping the
+    // whole acquisition pass matters: prepareOfficialDocuments claims the AHJ's 24h research cooldown
+    // before it searches, so a no-research pass would hold the confirmed name shut for a day.
+    // build_docs still runs — nothing new holds the chain. Once a person confirms or corrects the
+    // name, its forms are acquired on the chain that door enqueues (still qc_passed) or at Stage,
+    // whose seam this same function is.
+    const { ahjNearMissPending } = await import("./ahjNearMiss");
+    if (ahjNearMissPending(db, projectId)) {
+      logger.info("stage-auto", "AHJ name is a near-miss of the address city and awaits a person; its forms are not searched for until it is confirmed", { project: projectId });
+    } else {
+      step("acquire_forms");
+      try {
+        const { getProjectDetail } = await import("./repository");
+        const { prepareOfficialDocuments } = await import("./prepareOfficialDocuments");
+        await prepareOfficialDocuments(db, getProjectDetail(db, projectId).project);
+        ran.push("acquire_forms");
+      } catch (err) {
+        // Acquisition failing must not stop the assembly attempt — stored templates may suffice.
+        logger.warn("stage-auto", "form acquisition failed; assembling from stored templates", {
+          project: projectId, err: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
+    step("build_docs");
     const { getApplicationDocumentPackage } = await import("./repository");
     const { addAuditLog } = await import("./audit");
     const pkg = getApplicationDocumentPackage(db, projectId);
@@ -197,6 +272,7 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
   // report. Neither writes projects.status: the reviewer verdict writer (repository) owns
   // stage_detail from here, exactly as it did when a human clicked.
   if (status() === "ready_to_stage") {
+    step("reviewer_gate");
     const { getReviewerReportWithVision, getHistoricalFailureReport } = await import("./repository");
     await getReviewerReportWithVision(db, projectId);
     ran.push("reviewer_gate");

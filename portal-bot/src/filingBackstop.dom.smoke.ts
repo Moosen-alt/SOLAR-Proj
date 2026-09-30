@@ -243,7 +243,7 @@ try {
       await page.waitForTimeout(1200);
     });
     check(`MUST-EXCLUDE ${m}: the review page's own POST never reaches the server during the run`, !r.during.includes("/apply/42"), `POSTs=[${r.during.join(",")}] ${r.msg}`);
-    check(`MUST-EXCLUDE ${m}: it was aborted by the review-page lockdown, and the run STOPS named, ok=false`, /BACKSTOP ABORTED POST \S*\/apply\/42.*REVIEW-PAGE LOCKDOWN/.test(r.refusals) && !r.ok && /STOPPED BY THE NETWORK BACKSTOP/.test(r.msg), `ok=${r.ok} refusals=${r.refusals || "(none)"} ${r.msg}`);
+    check(`MUST-EXCLUDE ${m}: it was aborted by the review-page lockdown and named; a FORM submission (toReviewForm) STOPS the run, a background fetch no longer fails it`, /BACKSTOP ABORTED POST \S*\/apply\/42.*REVIEW-PAGE LOCKDOWN/.test(r.refusals) && (m === "toReviewForm" ? (!r.ok && /STOPPED BY THE NETWORK BACKSTOP/.test(r.msg)) : (r.ok && !/STOPPED BY THE NETWORK BACKSTOP/.test(r.msg))), `ok=${r.ok} refusals=${r.refusals || "(none)"} ${r.msg}`);
     check(`MUST-PASS ${m}: after the hand-off the person's own submit is NOT blocked`, r.afterPosts.includes("/SubmitApplication"), `after=[${r.afterPosts.join(",")}]`);
   }
   {
@@ -261,8 +261,8 @@ try {
   {
     // THE RUN'S OWN LOCK: a stop page that does not name itself review, whose script keeps posting.
     const r = await replay("toSummary", [NEXT_LINK]);
-    check("MUST-EXCLUDE toSummary: after the run locks the page at review, its POSTs are aborted (lockdown), ok=false named",
-      /BACKSTOP ABORTED POST \S*\/keepalive.*REVIEW-PAGE LOCKDOWN — the run is at review/.test(r.refusals) && !r.ok && /STOPPED BY THE NETWORK BACKSTOP/.test(r.msg), `ok=${r.ok} refusals=${r.refusals.slice(0, 300) || "(none)"} ${r.msg}`);
+    check("MUST-EXCLUDE toSummary: after the run locks the page at review, its background POSTs are aborted (lockdown) and named — the run that reached review is not failed by them",
+      /BACKSTOP ABORTED POST \S*\/keepalive.*REVIEW-PAGE LOCKDOWN — the run is at review/.test(r.refusals) && r.ok && !/STOPPED BY THE NETWORK BACKSTOP/.test(r.msg), `ok=${r.ok} refusals=${r.refusals.slice(0, 300) || "(none)"} ${r.msg}`);
   }
   {
     // MUST-PASS: A MID-FLOW POSTBACK IS NOT STALLED. A navigation POST cannot be asked about live

@@ -6,12 +6,20 @@ import type {
   ProjectRecord,
 } from "../../shared/src/types";
 import { nowIso } from "./time";
-import { findAhjProcessProfile, ahjProcessKnowledgeStatus, jurisdictionCore, jurisdictionKind, jurisdictionKindsCompatible } from "./processProfiles";
-import { describeCited, permitProcessFor, statePermitStructure } from "./permitProcess";
-import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, type PermitPathResolution } from "./permitPath";
+import { hasMpuScope } from "./serviceScope";
+import { findAhjProcessProfile, ahjProcessKnowledgeStatus, jurisdictionCore, registryTermMatches } from "./processProfiles";
+import { describeCited, isStatewidePortalUrl, permitChannelLabel, permitProcessFor, statePermitStructure } from "./permitProcess";
+import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, usStateCode, type PermitPathResolution } from "./permitPath";
 // Functions only, called at run time: this module sits inside the permitProcessLookup ->
 // feeSchedules -> knowledgeBase -> applicationDocs import cycle (see applicationDocsAgency's header).
-import { issuingAgencyDocumentList, type AgencyDocumentList } from "./applicationDocsAgency";
+import { agencyListReplacesLine, issuingAgencyDocumentList, type AgencyDocumentList, type AgencyLineStatusOf } from "./applicationDocsAgency";
+import { knownPowerClerkUtility } from "./utilityIdentity";
+// Functions only (same cycle): the licences a document lists are licenceFor's (clients.ts).
+import { licenceJobState, stateLicenceLines } from "./clients";
+
+/** The job's LICENCES are Oregon's (the named CCB / electrical columns): the one licence-state answer,
+ *  clients.licenceJobState ("Oregon" is OR; a blank state is unknown — no state's licences). */
+const isOregonJob = (project: Pick<ProjectRecord, "state">): boolean => licenceJobState(project.state) === "OR";
 
 // ---------------------------------------------------------------------------
 // ONE PERMIT-STRUCTURE ANSWER (new-AHJ e2e, 2026-09-26: permit structure 0/5 right).
@@ -484,6 +492,11 @@ function payload(project: ProjectRecord, key: string): string {
   return clean(project.parserSnapshot[key]);
 }
 
+/** A rating that already carries its unit ("225A", "200 amps") without it — the template adds " A". */
+function ampsOnly(value: string): string {
+  return String(value ?? "").replace(/\s*(?:a|amps?|amperes?)\.?\s*$/i, "");
+}
+
 function yesNo(value: string): string {
   return value ? value : "[verify]";
 }
@@ -507,15 +520,24 @@ function applicationProfileFromProcess(project: ProjectRecord): ApplicationRequi
   if (!hasSignal) return null;
 
   const method = (proc.submissionMethod || "").toLowerCase();
-  const isEpermitting = /e-?permitting|accela|aca/.test(method) || /e-?permitting|accela/.test(notes);
+  // WHOLE WORDS: a bare "aca" substring matched "placa", "vacaville"; "accela" and "e-permitting"
+  // name a platform, not a state.
+  const accela = /\baccela\b|\baca\b/.test(method) || /\baccela\b/.test(notes);
+  const isEpermitting = accela || /\be-?permitting\b/.test(method) || /\be-?permitting\b/.test(notes);
   const isProjectDox = /projectdox|avolve/.test(method) || /projectdox|avolve/.test(notes);
   const isEmail = /email/.test(method) || /email/.test(notes);
   const portalOnly = isEpermitting || isProjectDox || /portal|online/.test(method);
+  // AN IN-PERSON CLAUSE IN THE SEEDED METHOD IS THE CHANNEL. Bernalillo County's reads "BPA: In person
+  // EPA: Bernalillo County accela" — the building permit is filed at the counter; labelling the whole
+  // AHJ a portal hid the in-person banner. The seeded words go through verbatim, and channelKindOf
+  // reads an in-person clause before a platform word.
+  const inPerson = /\bin[\s-]?person\b|\bover[\s-]the[\s-]counter\b|\bwalk[\s-]?in\b|\bdrop[\s-]?off\b/.test(method);
 
   const wantsElectricalApp = proc.requiresElectricalPermitApplication || proc.requiresElectricalStamp || /renewable energy app|electrical app/.test(notes);
   const wantsBuildingApp = proc.requiresBuildingPermitApplication;
   const wantsStructuralApp = proc.requiresStructuralStamp || /struct app|structural app/.test(notes) || wantsBuildingApp;
-  const oregon = project.state.toUpperCase() === "OR";
+  // "Is this Oregon" is the project's STATE and nothing else (usStateCode — one predicate).
+  const oregon = usStateCode(project.state) === "OR";
   const wantsChecklist = proc.requiresSolarChecklist || /checklist/.test(notes) || oregon;
 
   // THE OREGON TEMPLATE IS OREGON'S. "Solar application — PRESCRIPTIVE or STRUCTURAL", the
@@ -546,7 +568,18 @@ function applicationProfileFromProcess(project: ProjectRecord): ApplicationRequi
   }
   if (!requiredDocuments.length) requiredDocuments.push("Plan set and specifications");
 
-  const submissionMethod = isEpermitting ? "Oregon ePermitting (Accela)"
+  // OREGON ePERMITTING IS A HOST, NOT A WORD (portal-truth D4). Tampa, Coral Springs, Sacramento and
+  // Bernalillo run their OWN Accela — and so do Albany, Brownsville and Corvallis in Oregon: an
+  // Oregon profile whose words say "accela" / "e-permitting" labelled Corvallis's card "Oregon
+  // ePermitting (Accela)" while the city files on its own tenant. A URL in the seeded words is
+  // labelled by its host (permitChannelLabel — the one predicate); words alone are named neutrally
+  // (the statewide label comes only with a resolved statewide URL: submittalTracks' channel).
+  const methodUrl = /https?:\/\/[^\s,;)"'<>]+/i.exec(proc.submissionMethod || "")?.[0] ?? "";
+  const urlLabel = methodUrl ? permitChannelLabel(project.state, project.ahj, methodUrl) : null;
+  const submissionMethod = inPerson ? (proc.submissionMethod || "In person")
+    : urlLabel ? urlLabel
+    : accela ? "Accela Citizen Access (online portal)"
+    : isEpermitting ? (proc.submissionMethod || "Online e-permitting portal")
     : isProjectDox ? "ProjectDox (online plan review)"
     : isEmail ? "Email"
     : (proc.submissionMethod || "Verify on the AHJ site");
@@ -606,42 +639,50 @@ function lookedUpDocuments(project: ProjectRecord): { documents: string[]; note:
   return { documents: docs, note: `Required documents from the per-job lookup (seeded, cited): ${sources.join(", ")}.` };
 }
 
-/** Does this AHJ-side name (a project's AHJ, or a registry match term) name the project's
- *  jurisdiction? Whole words, same kind (a county term never matches a city AHJ, nor the reverse). */
-function registryTermMatches(ahjName: string, term: string): boolean {
-  const name = ` ${ahjName.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
-  const t = term.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  if (!t || !name.includes(` ${t} `)) return false;
-  return jurisdictionKindsCompatible(jurisdictionKind(ahjName), jurisdictionKind(term));
-}
+// registryTermMatches (whole words, same kind) lives in processProfiles, beside the kind helpers it
+// uses — ahjForms' built-in registry asks the same question and cannot import this module (cycle).
 
-export function findApplicationProfile(project: ProjectRecord): ApplicationRequirementProfile {
-  const haystack = `${project.ahj} ${project.city} ${project.state}`.toLowerCase();
+/** THE HAND-WRITTEN REGISTRY PROFILE for this project's AHJ — a person wrote it for THAT
+ *  jurisdiction — or null. Never the generic Oregon fallback, never one synthesized from a seeded
+ *  process profile or the per-job lookup: those say nothing about this AHJ's own portal. */
+export function registryApplicationProfileFor(project: Pick<ProjectRecord, "state" | "ahj" | "city">): ApplicationRequirementProfile | null {
   // The hand-written registry is OREGON-specific, but its match terms are bare
   // jurisdiction names that collide across states ("Washington County", "Salem",
   // "Marion County", "Portland" all exist elsewhere). Without this state gate an
   // out-of-state project silently inherited an Oregon profile — including
   // requiresPortalEntryOnly:true flags that SKIP AHJ form acquisition entirely
   // (seen as "no documents pulled" on a WA county).
-  const oregonProject = project.state.trim().toUpperCase() === "OR" || /\boregon\b/.test(haystack) || !project.state.trim();
+  // "IS THIS OREGON" IS THE PROJECT'S STATE — usStateCode, the one predicate. A town named Oregon
+  // (WI, IL, OH, MO) is not Oregon, and a BLANK state is unknown, never Oregon: both used to pick up
+  // Oregon's portal-only profiles, which skip form acquisition and un-block the application rows.
+  const oregonProject = usStateCode(project.state) === "OR";
   // THE PROJECT'S AHJ decides which jurisdiction this is; its mailing city is consulted only when
   // the AHJ field names no place (empty, or only department words). A substring test over
   // "ahj + city" handed a Marion County project with a Salem address the CITY of Salem's PAC
   // profile (array order) — the same county-vs-city confusion as Santa Fe (processProfiles).
   const ahjName = String(project.ahj ?? "").trim();
   const jurisdictionName = jurisdictionCore(ahjName) ? ahjName : String(project.city ?? "").trim();
-  const specific = oregonProject && jurisdictionName
+  return oregonProject && jurisdictionName
     ? applicationProfiles.find((profile) =>
-        profile.id !== "oregon-generic-epermitting" && profile.matchJurisdictions.some((term) => registryTermMatches(jurisdictionName, term)),
-      )
-    : undefined;
+        !FALLBACK_PROFILE_IDS.has(profile.id) && profile.matchJurisdictions.some((term) => registryTermMatches(jurisdictionName, term)),
+      ) ?? null
+    : null;
+}
+/** Profiles that are NOT an AHJ's own knowledge: the generic Oregon fallback, the generic package,
+ *  the per-job lookup's shell. Their portal name / source URL is never written or read as the AHJ's
+ *  portal (learnFromProject, the channel label). */
+export const FALLBACK_PROFILE_IDS: ReadonlySet<string> = new Set(["oregon-generic-epermitting", "generic-unknown-ahj", "lookup-per-job"]);
+
+export function findApplicationProfile(project: ProjectRecord): ApplicationRequirementProfile {
+  const oregonProject = usStateCode(project.state) === "OR";
+  const specific = registryApplicationProfileFor(project);
   if (specific) return specific;
   // No hand-written profile — synthesize from the AHJ's seeded process knowledge so
   // we still pull the right forms for jurisdictions we have real data on.
   const found = lookedUpDocuments(project);
   const synthesized = applicationProfileFromProcess(project);
   if (synthesized) return found ? { ...synthesized, requiredDocuments: found.documents, notes: [found.note, ...synthesized.notes] } : synthesized;
-  if (project.state.toUpperCase() === "OR" || /oregon/.test(haystack)) {
+  if (oregonProject) {
     const generic = applicationProfiles.find((profile) => profile.id === "oregon-generic-epermitting")!;
     return found ? { ...generic, requiredDocuments: found.documents, notes: [found.note, ...generic.notes] } : generic;
   }
@@ -717,7 +758,17 @@ export function describePermitType(
       submissionMethod = /projectdox|avolve/.test(blob) ? "Email (ProjectDox when directed into review)" : "Email";
     } else if (/projectdox|avolve/.test(blob)) submissionMethod = "ProjectDox (online plan review)";
     else if (/portland.*(devhub|hub|portal)/.test(blob)) submissionMethod = "Portland DevHub portal";
-    else if (/epermitting|accela/.test(blob)) submissionMethod = "Oregon ePermitting (Accela)";
+    // A FALLBACK PROFILE KNOWS NOTHING ABOUT THIS AHJ'S CHANNEL (portal-truth D4): the generic
+    // Oregon profile's "Oregon ePermitting" is what labelled Corvallis's card while the city files on
+    // its own Accela tenant. Unknown until something about THIS AHJ says otherwise.
+    else if (FALLBACK_PROFILE_IDS.has(profile.id) && !learned.submissionMethod && !learned.portalPlatform) submissionMethod = "Unknown — verify on the AHJ site";
+    // The statewide label only for a hand-written profile whose portal URL IS the statewide host
+    // (permitChannelLabel); words never earn it — any other Accela / e-permitting platform is named
+    // neutrally (a learned "Accela" in Florida, or Albany's own tenant, is that AHJ's own portal).
+    // (The hand-written registry is Oregon's — findApplicationProfile gates it on the state.)
+    else if (applicationProfiles.some((p) => p.id === profile.id) && isStatewidePortalUrl("OR", profile.sourceUrl)) submissionMethod = permitChannelLabel("OR", "", profile.sourceUrl) ?? "Online portal";
+    else if (/\baccela\b/.test(blob)) submissionMethod = "Accela Citizen Access (online portal)";
+    else if (/\be-?permitting\b/.test(blob)) submissionMethod = "Online e-permitting portal";
     else if (profile.requiresPortalEntryOnly) submissionMethod = "Online portal";
     else submissionMethod = "Unknown — verify on the AHJ site";
   }
@@ -823,17 +874,18 @@ export function namedApplicationForm(profile: ApplicationRequirementProfile, pat
   return "the AHJ's prescriptive OR structural application (pick one by path)";
 }
 
-// Local MPU-scope detection (kept here to avoid a circular import with submittalTracks).
-function applicationHasMpuScope(project: ProjectRecord): boolean {
-  const text = [
-    payload(project, "projectDescriptionText"), payload(project, "description"),
-    payload(project, "scopeText"), payload(project, "electricalCalcText"),
-    payload(project, "sitePlanNotesText"), payload(project, "mpu"), payload(project, "serviceUpgrade"),
-  ].join(" ").toLowerCase();
-  return /\bmpu\b|main panel upgrade|main service panel upgrade|service (panel )?upgrade|\bmsp upgrade\b|panel upgrade|meter.?main upgrade/.test(text);
-}
+// MPU-scope detection: the ONE predicate (serviceScope.ts is a leaf, so no circular import with
+// submittalTracks — the reason a local copy used to live here).
+const applicationHasMpuScope = (project: ProjectRecord): boolean => hasMpuScope(project);
 
-export function buildApplicationDocumentPackage(project: ProjectRecord, client: ClientRecord | null = null): ApplicationDocumentPackage {
+export function buildApplicationDocumentPackage(
+  project: ProjectRecord,
+  client: ClientRecord | null = null,
+  /** agencyStatus: each issuing-agency line's status from the inventory
+   *  (requiredDocuments.agencyListStatusResolver — the packet door passes it). Without it a line
+   *  names its document and claims nothing about it (agency-apps-close MF3). */
+  opts: { agencyStatus?: AgencyLineStatusOf | null } = {},
+): ApplicationDocumentPackage {
   const matched = findApplicationProfile(project);
   // SAY IT ON THE PACKET WHEN THE JURISDICTION KNOWLEDGE WAS NEVER READ.
   //
@@ -863,8 +915,8 @@ export function buildApplicationDocumentPackage(project: ProjectRecord, client: 
   // applications, the state checklist on the prescriptive path and the city's prerequisite step —
   // never the generic fallback's "portal entry" line. Copied, never mutated.
   let agencyList: ReturnType<typeof issuingAgencyDocumentList> = null;
-  try { agencyList = issuingAgencyDocumentList(project); } catch { agencyList = null; }
-  const profile: ApplicationRequirementProfile = agencyList ? withIssuingAgencyList(withKnowledge, agencyList) : withKnowledge;
+  try { agencyList = issuingAgencyDocumentList(project, opts.agencyStatus ?? null); } catch { agencyList = null; }
+  const profile: ApplicationRequirementProfile = agencyList ? withIssuingAgencyList(withKnowledge, agencyList, project) : withKnowledge;
   const answer = permitStructureAnswer(project);
   const structure = answer.structure;
   const permitPath = resolvePermitPath(project);
@@ -913,7 +965,9 @@ export function buildApplicationDocumentPackage(project: ProjectRecord, client: 
     docs.push(buildElectricalWorksheet(project, profile, hasMpu));
   }
   if (profile.requiresBidSheet) docs.push(buildBidSheet(project, profile));
-  if (/PGE|PORTLAND GENERAL|PACIFIC|PACIFICORP/i.test(project.utility)) docs.push(buildUtilityWorksheet(project));
+  // The one state-gated utility identity (utilityIdentity): a CA "Pacific Gas and Electric" / "PGE" job is not
+  // Portland General or PacifiCorp, and gets no worksheet written for their PowerClerk filings.
+  if (knownPowerClerkUtility(project)) docs.push(buildUtilityWorksheet(project));
 
   return {
     projectId: project.id,
@@ -934,17 +988,25 @@ export function buildApplicationDocumentPackage(project: ProjectRecord, client: 
 }
 
 /** The packet profile with the issuing agency's list in front: the agency items, then the base
- *  profile's lines that name no application / checklist / worksheet / portal entry (the plan set,
- *  stamps). The profile's other flags are left as they are — whether a track's application is a
- *  filled PDF or a portal entry is decided per row (requiredDocuments.requiredApplicationDocs, from
- *  the agency's known forms), and the packet keeps whatever transfer sheet the profile builds. */
-function withIssuingAgencyList(profile: ApplicationRequirementProfile, list: AgencyDocumentList): ApplicationRequirementProfile {
-  const kept = profile.requiredDocuments.filter((line) => !/application|checklist|worksheet|portal entry/i.test(line));
+ *  profile's lines the list does not replace (agency-apps-close MF2 — applicationDocsAgency.
+ *  agencyListReplacesLine): a line for a TRACK another agency issues gives way to that agency's own
+ *  application, the AHJ's checklist line to the state checklist the list carries; the AHJ's own
+ *  lines for the tracks it issues itself stay (Coos Bay's building application where Coos County
+ *  issues only the electrical permit), and so do the plan set, specs and stamps. The profile's other
+ *  flags are left as they are — whether a track's application is a filled PDF or a portal entry is
+ *  decided per row (requiredDocuments.requiredApplicationDocs, from the agency's known forms), and
+ *  the packet keeps whatever transfer sheet the profile builds. */
+function withIssuingAgencyList(profile: ApplicationRequirementProfile, list: AgencyDocumentList, project: ProjectRecord): ApplicationRequirementProfile {
+  const kept = profile.requiredDocuments.filter((line) => !agencyListReplacesLine(list, line));
+  const tracks = (agency: string): string => {
+    const t = [...new Set(list.items.filter((i) => i.role === "application" && i.agency === agency).map((i) => i.track === "electrical" ? "electrical" : "structural (building)"))];
+    return t.length ? `the ${t.join(" and ")} permit${t.length > 1 ? "s" : ""}` : "a permit";
+  };
   return {
     ...profile,
     requiredDocuments: [...list.items.map((i) => i.text), ...kept],
     notes: [
-      `The per-job lookup cites ${list.agencies.join(" and ")} as the agency that issues ${list.agencies.length > 1 ? "these permits" : "this job's permit(s)"}${list.sourceUrl ? ` (${list.sourceUrl})` : ""} — the applications listed are ${list.agencies.join(" / ")}'s own, filled from this project's values.`,
+      `The per-job lookup cites ${list.agencies.map((a) => `${a} as the agency that issues ${tracks(a)}`).join(", and ")}${list.sourceUrl ? ` (${list.sourceUrl})` : ""} — those applications are listed as that agency's own; ${project.ahj || "the AHJ"}'s own lines stay for any permit it issues itself.`,
       ...(profile.notes || []),
     ],
   };
@@ -1003,8 +1065,11 @@ function buildCover(project: ProjectRecord, profile: ApplicationRequirementProfi
         client.businessAddress ? `Address: ${client.businessAddress}, ${client.businessCity}, ${client.businessState} ${client.businessZip}` : "",
         client.businessPhone ? `Phone: ${client.businessPhone}` : "",
         client.businessEmail ? `Email: ${client.businessEmail}` : "",
-        client.ccbLicenseNumber ? `CCB: ${client.ccbLicenseNumber}` : "",
-        client.electricalLicenseNumber ? `Electrical license: ${client.electricalLicenseNumber}` : "",
+        // A LICENCE IS A STATE'S (clients.licenceFor): Oregon's CCB / electrical licence on an Oregon
+        // job, exactly as before; elsewhere the licences the client holds in THAT state, by type.
+        ...(isOregonJob(project)
+          ? [client.ccbLicenseNumber ? `CCB: ${client.ccbLicenseNumber}` : "", client.electricalLicenseNumber ? `Electrical license: ${client.electricalLicenseNumber}` : ""]
+          : stateLicenceLines(client, project.state)),
         client.authorizedSignerName ? `Authorized signer: ${client.authorizedSignerName}${client.authorizedSignerTitle ? `, ${client.authorizedSignerTitle}` : ""}` : "",
       ].filter(Boolean).join("\n")
     : "Contractor: [assign client to populate]";
@@ -1104,7 +1169,7 @@ ${!permitPath.standardReview && permitPath.path === "unknown" ? "- Permit-path c
 ${profile.requiresElectricalApplication || separate || hasMpu ? `- ${electricalWorksheetTitle(project)}` : ""}
 ${hasMpu ? "- Electrical permit application is required because a main panel/service upgrade (MPU) is in scope" : ""}
 ${profile.requiresBidSheet ? "- Bid sheet worksheet" : ""}
-${/PGE|PORTLAND GENERAL|PACIFIC|PACIFICORP/i.test(project.utility) ? "- Utility/NEM application worksheet" : ""}
+${knownPowerClerkUtility(project) ? "- Utility/NEM application worksheet" : ""}
 
 Profile notes:
 ${profile.notes.map((note) => `- ${note}`).join("\n")}
@@ -1114,7 +1179,9 @@ ${profile.notes.map((note) => `- ${note}`).join("\n")}
 
 function buildAhjWorksheet(project: ProjectRecord, profile: ApplicationRequirementProfile, client: ClientRecord | null): GeneratedApplicationDocument {
   const contractorLine = client
-    ? `${client.legalBusinessName || client.companyName} | CCB: ${client.ccbLicenseNumber || "[verify]"} | Elec: ${client.electricalLicenseNumber || "[verify]"} | Contact: ${client.contactName || client.authorizedSignerName || "[verify]"}`
+    ? (isOregonJob(project)
+      ? `${client.legalBusinessName || client.companyName} | CCB: ${client.ccbLicenseNumber || "[verify]"} | Elec: ${client.electricalLicenseNumber || "[verify]"} | Contact: ${client.contactName || client.authorizedSignerName || "[verify]"}`
+      : `${client.legalBusinessName || client.companyName} | ${stateLicenceLines(client, project.state).join(" | ") || `${String(project.state || "").toUpperCase()} licence: [verify — none on file]`} | Contact: ${client.contactName || client.authorizedSignerName || "[verify]"}`)
     : "[assign client]";
 
   return doc(
@@ -1143,7 +1210,7 @@ Equipment:
 
 Electrical:
 - Service phase/voltage: ${yesNo(payload(project, "phase"))} / ${yesNo(payload(project, "voltage"))}
-- MSP bus/main: ${yesNo(payload(project, "busRating"))} A bus / ${yesNo(payload(project, "mainBreaker"))} A main
+- MSP bus/main: ${yesNo(ampsOnly(payload(project, "busRating")))} A bus / ${yesNo(ampsOnly(payload(project, "mainBreaker")))} A main
 - PV breaker/OCPD: ${yesNo(payload(project, "pvBreaker"))}
 - AC disconnect: ${yesNo(payload(project, "acDiscReq"))} ${payload(project, "acDiscAmp") ? `(${payload(project, "acDiscAmp")} A)` : ""}
 `,
@@ -1420,7 +1487,8 @@ function packageHtml(
     : "";
   const companyPhone = client ? escapeHtml(client.businessPhone || client.phone) : "";
   const companyEmail = client ? escapeHtml(client.businessEmail || client.contactEmail) : "";
-  const ccb = client ? escapeHtml(client.ccbLicenseNumber) : "";
+  const ccb = client && isOregonJob(project) ? escapeHtml(client.ccbLicenseNumber) : "";
+  const stateLicences = client && !isOregonJob(project) ? stateLicenceLines(client, project.state) : [];
 
   const logoHtml = client?.logoBase64
     ? `<img src="data:${escapeHtml(client.logoMime)};base64,${client.logoBase64}" alt="${companyName} logo" style="max-height:64px;max-width:200px;object-fit:contain" />`
@@ -1434,6 +1502,7 @@ function packageHtml(
           ${companyAddress ? `<div>${companyAddress}</div>` : ""}
           ${companyPhone || companyEmail ? `<div>${[companyPhone, companyEmail].filter(Boolean).join(" &nbsp;·&nbsp; ")}</div>` : ""}
           ${ccb ? `<div>CCB #${ccb}</div>` : ""}
+          ${stateLicences.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}
         </div>
       </div>`
     : "";

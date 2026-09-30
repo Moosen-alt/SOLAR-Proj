@@ -11,6 +11,7 @@ import { decryptStorageState } from "./cryptoStorage";
 import { resolveHeadless } from "./browser";
 import { HUMAN_REVIEW_MESSAGE } from "./adapter";
 import { clearReviewOpen, markReviewOpen } from "./reviewSession";
+import { draftReferenceFromUrl } from "./adapters/submissionLedger";
 
 // One shared cap across EVERY browser-launching path — recipe replay, hand-coded staging, AND the
 // auto-learn self-seed. Each Playwright instance is ~200 MB; >2-3 concurrently OOMs/crashes Chromium.
@@ -213,6 +214,9 @@ interface StageOptions {
   runApproval?: import("../../shared/src/portalSafety").RunApproval | null;
   // The run this stage IS (the approval's runId must equal it).
   runId?: string;
+  // THE DOCUMENTS THIS FILING OWES beyond the recording's uploads (docs plan D7; the backend's
+  // owedAttachmentsFor): attached through the page's recorded attachment row, one row each.
+  owedAttachments?: Array<{ docType: string; label: string }>;
   // OPERATOR-DELEGATED FINAL SUBMIT. Distinct from autoSubmit, which is the RecipeAdapter
   // replaying a TRUSTED recipe through its own recorded submit step. This is the operator
   // saying "file it now, on my behalf" for a HAND-CODED adapter — the equivalent of them
@@ -535,6 +539,20 @@ async function runAdapter(
     const sentFlags = steps.map((s) => s?.data?.finalSubmitRequestSent).filter((v): v is boolean => typeof v === "boolean");
     const finalSubmitRequestSent: boolean | null = sentFlags.length ? sentFlags.some(Boolean) : null;
 
+    // THE DRAFT THIS RUN LEFT, AS THE PORTAL NAMES IT (dryrun-0928 B11). A run that stopped at review
+    // left a draft on a real account; its reference is read off the page it stopped on — its URL, by
+    // the one identifier filter (submissionLedger.draftReferenceFromUrl) — so the draft ledger can
+    // name it (PowerClerk's ProjectId). Never by navigating: this window is the one a person submits
+    // in. An Accela wizard URL carries no record key, and the reference then says so (id "").
+    let draftReference: { link: string; id: string } | null = null;
+    if (reviewResult.ok && !finalSubmitClicked) {
+      try {
+        const pg = (adapter as unknown as { page?: { url?: () => string } | null }).page;
+        const here = pg && typeof pg.url === "function" ? String(pg.url() ?? "") : "";
+        if (here) draftReference = draftReferenceFromUrl(here);
+      } catch { /* a page we cannot read names no draft */ }
+    }
+
     return {
       portalName: adapter.portalName,
       ok,
@@ -548,6 +566,7 @@ async function runAdapter(
       capturedPermitNumber: captured?.permitNumber || "",
       capturedConfirmationNumber: captured?.confirmationNumber || "",
       capturedRecordLink: captured?.recordLink || "",
+      ...(draftReference && draftReference.link ? { draftReference } : {}),
       evidenceDir,
       outcomeShotPath,
       pauseReason: stepPause,
@@ -611,6 +630,7 @@ export async function stageWithRecipe(
     autoSubmit: options.autoSubmit, beforeUpload: options.beforeUpload,
     runApproval: options.runApproval ?? null, runId: options.runId,
     onProgress: options.onProgress,
+    owedAttachments: options.owedAttachments,
   }), project, files, options));
 }
 
@@ -731,7 +751,7 @@ export async function learnPortal(input: {
   uploadMode?: "split" | "combined";
   // Which deterministic policy-answer set the learner may apply ("residential_nem" for
   // utility NEM portals, "none" for AHJ/permit portals). See AutoLearnAdapter options.
-  policyProfile?: "residential_nem" | "none";
+  policyProfile?: "residential_nem" | "permit_standard" | "none";
   // Field keys a REPLAY can resolve. Passed through so the learner refuses to record a
   // binding that could never fill on a future project.
   bindableFields?: string[];

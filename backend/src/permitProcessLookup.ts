@@ -31,12 +31,16 @@
 // and then discarded.
 import type { CitedFact, LLMProvider, PermitFeeAnswer, PermitProcessDiscipline, PermitProcessLookup, PermitProcessPermitAnswer, WebLookupResult } from "../../shared/src/types";
 import type { AppDb } from "./db";
-import { hostFitsTrackAndEntity, isInformationalPageUrl, isPathTenantedHost, isPermitPlatformUrl, isVendorDomain, isVendorRootOrMarketing, portalHostOf, portalTenantKey, salesforceTenantKind, trackSafeUrl, type PortalEntity } from "./portalChannel";
-import { getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stateRulesFor } from "./permitProcess";
+import { hostFitsTrackAndEntity, isInformationalPageUrl, isPathTenantedHost, isPermitPlatformUrl, isVendorDomain, isVendorRootOrMarketing, portalHostOf, portalTenantKey, portalTenantOf, salesforceTenantKind, trackSafeUrl, type PortalEntity } from "./portalChannel";
+import { ahjNameCore, getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stateRulesFor } from "./permitProcess";
+import { CONNECTOR_WORDS, DEPARTMENT_WORDS, GENERIC_ORG_WORDS, agencyNameKey, sameAgencyName, stripDepartmentPhrase } from "./agencyName";
+// Re-exported: the agency-name identity helpers moved to agencyName.ts (pure, no lookup stack) so
+// permitProcess can ask the same question without importing this module back (a cycle).
+export { agencyNameKey, sameAgencyName };
 import { logger } from "./logger";
 import { feeScheduleProfileKey, saveFeeSchedule } from "./feeSchedules";
 import { parseBracketRow } from "./pdfTables";
-import { candidateNamedBy, chooseRecordType, classifyDocument, DOCUMENT_URL, staleOrOtherFeeSource, detectPlatform, documentLinks, excerptFor, extractCodeEditions, extractPrerequisites, isAgencyOwnDomain, isOfficialAgencyHost, linksAnotherModule, platformOfUrl, readPortalCatalog, registrableDomain, resolvePortalFromPages, solarRecordTypeCandidates, tenantContradictsAgency, wordsNameAnotherJurisdiction, type PortalCatalog, type PortalResolution, type RecordTypeCandidate } from "./permitPlatformCatalog";
+import { candidateNamedBy, chooseRecordType, classifyDocument, DOCUMENT_URL, staleOrOtherFeeSource, detectPlatform, documentLinks, excerptFor, extractCodeEditions, extractPrerequisites, isAgencyOwnUrl, isOfficialAgencyHost, linksAnotherModule, platformOfUrl, readPortalCatalog, registrableDomain, resolvePortalFromPages, solarRecordTypeCandidates, tenantContradictsAgency, wordsNameAnotherJurisdiction, type PortalCatalog, type PortalResolution, type RecordTypeCandidate } from "./permitPlatformCatalog";
 import { createPageReader, feeLinePrintedTogether, quoteOnPage, type PageReader, type ReadPage } from "./agencyPageReader";
 import { documentFetchDisabled } from "./documentFetch";
 export { registrableDomain };
@@ -137,8 +141,6 @@ export function acceptCited<T>(
 
 // The DISTINCTIVE words of a name must be in the quote ("Marion" of "Marion County Public Works –
 // Building Inspection Division"); the generic organisational words need not be.
-const GENERIC_ORG_WORDS = new Set(["public", "works", "building", "inspection", "inspections", "division", "department", "dept", "services", "service",
-  "development", "community", "permit", "permits", "permitting", "office", "program", "codes", "code", "planning", "bureau", "agency", "government"]);
 const supportsName = (value: string, quote: string) => {
   const w = words(value).filter((x) => !GENERIC_ORG_WORDS.has(x));
   const q = quote.toLowerCase();
@@ -235,9 +237,15 @@ export interface PortalDecision {
   code: PortalRefusal | "ok";
 }
 export function acceptPortalForPermit(raw: RawFact, source: PortalCandidateSource, ctx: PortalDoorContext): PortalDecision {
-  const refused = (code: PortalRefusal, notFound: string): PortalDecision => ({ fact: { value: null, sourceUrl: str(raw?.sourceUrl), quote: str(raw?.quote).slice(0, 300), origin: "lookup", notFound }, source, attestedBy: null, code });
   const claimed = str(raw?.value);
   const url = /^https?:\/\//i.test(claimed) ? claimed : "";
+  // A portal refused for want of EVIDENCE (unattested / uncited) was still NAMED by a source: the
+  // fact keeps the claim (CitedFact.claimed), so "named, not kept" is never read as "nothing named"
+  // (permitProcess.statewidePortalFor — portal-truth D1).
+  const refused = (code: PortalRefusal, notFound: string): PortalDecision => ({
+    fact: { value: null, sourceUrl: str(raw?.sourceUrl), quote: str(raw?.quote).slice(0, 300), origin: "lookup", notFound, ...(url && (code === "unattested" || code === "uncited") ? { claimed: url } : {}) },
+    source, attestedBy: null, code,
+  });
   const host = portalHostOf(url);
   const quote = str(raw?.quote).slice(0, 300);
   const platformPages = ctx.platformPages ?? [];
@@ -304,8 +312,25 @@ export function acceptPortalForPermit(raw: RawFact, source: PortalCandidateSourc
       return selfCited || q.toLowerCase().includes(h) || /portal|apply online|e-?permitting|citizen access|self[- ]?service|online permit|accela/i.test(q);
     },
   });
-  if (!portal.value) return { fact: portal, source, attestedBy: null, code: raw?.value == null || raw.value === "" ? "none" : "uncited" };
+  if (!portal.value) {
+    const none = raw?.value == null || raw.value === "";
+    return { fact: none || !url ? portal : { ...portal, claimed: url }, source, attestedBy: null, code: none ? "none" : "uncited" };
+  }
   return { fact: portal, source, attestedBy, code: "ok" };
+}
+/** DOES A REDIRECT'S LANDING NAME THIS JURISDICTION (portal-truth D3)? Its tenant on a shared
+ *  instance ("aca-prod.accela.com/CORVALLIS"), an official agency host of it, or the landing page's
+ *  own title / opening words ("City of Corvallis - Permit System"). Another city's tenant or a
+ *  vendor's site names none of them — a named URL landing there is not this AHJ's portal. */
+export function landingNamesJurisdiction(url: string, page: Pick<ReadPage, "title" | "text">, names: string[], state?: string): boolean {
+  const cores = [...new Set(names.map(ahjNameCore).filter((c) => c.length >= 4))];
+  if (!cores.length) return false;
+  const tenant = portalTenantOf(url).replace(/[^a-z0-9]/g, "");
+  if (tenant && cores.some((c) => tenant.includes(c))) return true;
+  const host = portalHostOf(url);
+  if (host && !isVendorDomain(host) && isOfficialAgencyHost(host, names, state)) return true;
+  const words = `${str(page.title)} ${str(page.text).slice(0, 3000)}`.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return cores.some((c) => words.includes(c));
 }
 /** The parse-time door (the process part, the portal step): the same function with what parse time
  *  knows — attestation and rule 5; the issuer's jurisdiction type is judged at finalPortal. */
@@ -319,7 +344,7 @@ export function acceptPortal(raw: RawFact, seenUrls: string[], platformPages: st
  *  saved for the permit AND the type's source page is
  *    - that portal's own tenant (the same host; on a path-tenanted host the same tenant): the
  *      catalog's module page, a public record on it; or
- *    - the ISSUING AGENCY'S OWN page — its own domain by name (isAgencyOwnDomain, every TLD: any
+ *    - the ISSUING AGENCY'S OWN page — its own domain by name (isAgencyOwnUrl: isAgencyOwnDomain on every TLD, any
  *      .gov is not enough, lookup-close-7 R1) — naming no other jurisdiction (its words about its
  *      portal: "select Residential Solar") — never a vendor's host (another tenant's module page, the
  *      vendor's site) and never a page whose domain or words name another jurisdiction.
@@ -343,7 +368,7 @@ export function recordTypeBelongsToPortal(
   const typeNames = (ctx.typeNames ?? names).filter(Boolean);
   // THIS agency's own domain (lookup-close-7 R1) — never merely any .gov: another town's .gov page, or the
   // state's page for a permit the city issues, is not where this portal's record type is named.
-  return isAgencyOwnDomain(sourceHost, names, ctx.state) && !tenantContradictsAgency(source, names, typeNames) && !wordsNameAnotherJurisdiction(str(rt.quote), names, typeNames);
+  return isAgencyOwnUrl(source, names, ctx.state, typeNames) && !wordsNameAnotherJurisdiction(str(rt.quote), names, typeNames);
 }
 /** The same, as the not-found a refused record type is saved with. */
 export function recordTypeForPortal(rt: CitedFact<string> | null, portalUrl: string | null | undefined, ctx: { names?: string[]; typeNames?: string[]; state?: string } = {}): CitedFact<string> | null {
@@ -394,91 +419,6 @@ export const supportsAmount = (fee: PermitFeeAnswer, quote: string) => {
 /** A fee priced by valuation or by a rate (per kW, per $1,000, per sq ft, "each additional") has no
  *  flat amount — one printed row of it is never the job's fee. */
 const RATED_FEE = /valuation|project cost|construction cost|each additional|for the first \$|per\s+(?:kw|kilowatt|watt|sq|square|\$?1,?000|thousand|hour)|\/\s*kw\b|square\s*f(?:ee|oo)t|sq\.?\s*ft/i;
-/** The words a DEPARTMENT adds to an agency's name ("Permit Center", "Building Inspections
- *  Division", "Development Services", "Planning & Zoning", "City Hall"): GENERIC_ORG_WORDS and the
- *  rest. ONE set, read by agencyName (the saved value) and agencyNameKey (the identity question). */
-const DEPARTMENT_WORDS = new Set([...GENERIC_ORG_WORDS, "center", "centre", "hall", "zoning", "land", "use", "engineering", "safety", "official", "officials", "inspector", "inspectors", "section", "unit", "team", "staff", "administration", "admin", "regulatory", "compliance", "review", "reviews", "enforcement", "wires", "wire", "electrical", "electric", "mechanical", "plumbing"]);
-/** A connector joins a name to a department phrase ("Division OF Building Safety", "Building AND
- *  Safety"). The saved NAME pops through "and" / "&" only between two department words ("Planning
- *  and Development Services" is one phrase) and never through "of"; the identity KEY pops through any. */
-const CONNECTOR_WORDS = new Set(["of", "and", "&", "the", "for"]);
-const AND_WORDS = new Set(["and", "&"]);
-const JURISDICTION_TYPE_WORDS = "city|town|county|village|borough|township|parish";
-/**
- * THE TRAILING DEPARTMENT PHRASE, ONE WAY (lookup-close-6 MF6 — fba1e45 popped "Idaho Division of
- * Building Safety" to "Idaho Division of" and saved it). A dangling trailing connector is a
- * truncation ("Santa Fe County Building and") and goes first; then the trailing department words go;
- * a result that ends in a connector popped INTO a department phrase ("Idaho Division of |Building
- * Safety|", "…Department of |Building and Safety|"):
- *   - the saved NAME pops on through "and" / "&" only when the word before it is a department word
- *     too ("Planning and Development Services" -> gone; "Regulation and Licensing" stays), never
- *     through "of", and otherwise keeps the unstripped name (never a dangling "of" / "and", never a
- *     state's bare name for its building division);
- *   - the identity KEY pops through any connector and the phrase before it (a department phrase is
- *     not identity: the City of Los Angeles Department of Building and Safety IS the City of Los
- *     Angeles).
- */
-function stripDepartmentPhrase(tokens: string[], through: boolean): string[] {
-  const low = tokens.map((t) => t.toLowerCase());
-  let end = low.length;
-  while (end > 1 && CONNECTOR_WORDS.has(low[end - 1])) end--;
-  const trimmed = end;
-  for (;;) {
-    while (end > 1 && DEPARTMENT_WORDS.has(low[end - 1])) end--;
-    if (!(end > 1 && CONNECTOR_WORDS.has(low[end - 1]))) break;
-    if (!through) {
-      if (!(AND_WORDS.has(low[end - 1]) && end > 2 && DEPARTMENT_WORDS.has(low[end - 2]))) return tokens.slice(0, trimmed);
-      end--;
-      continue;
-    }
-    while (end > 1 && CONNECTOR_WORDS.has(low[end - 1])) end--;
-  }
-  return tokens.slice(0, end);
-}
-/** The identity key of an agency's name: lower case, punctuation gone, a leading "the" and a
- *  trailing ", XX" state gone, the trailing department phrase gone (stripDepartmentPhrase, through
- *  its connectors: "City of Charleston Permit Center /", "Marion County Public Works Building
- *  Inspection Division"), and the jurisdiction type in ONE form (lookup-close-6 MF5: a county site
- *  styles itself "County of Marin" and the product's AHJ is "Marin County"): "<type> of X" is
- *  "X <type>" ("county of marin" -> "marin county", "township of cherry hill" -> "cherry hill
- *  township", "city of iowa city" -> "iowa city"), and a consolidated "city and county of X" is X
- *  ("city and county of denver" -> "denver"). The type word stays: it is identity. */
-export function agencyNameKey(name: unknown): string {
-  const tokens = str(name).toLowerCase().replace(/,\s*[a-z]{2}\.?\s*$/, "").replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean);
-  if (tokens[0] === "the") tokens.shift();
-  let k = stripDepartmentPhrase(tokens, true).join(" ");
-  k = k.replace(/^city and county of (.+)$/, "$1");
-  const m = new RegExp(`^(${JURISDICTION_TYPE_WORDS}) of (.+)$`).exec(k);
-  if (m) k = m[2].endsWith(` ${m[1]}`) ? m[2] : `${m[2]} ${m[1]}`;
-  return k;
-}
-/** ONE predicate for "is this cited agency THAT agency itself" (lookup-close-5, MF4): the keys are
- *  equal (one form per jurisdiction type — agencyNameKey), or equal once the type word is removed
- *  when exactly ONE side carries one ("Charleston Permit Center" is the City of Charleston; a typeless
- *  name beside a typed one is that agency — the design's caveat: "Charleston Permit Center" beside
- *  "Charleston County" reads as the county too) or both carry a MUNICIPAL one (city / town / village /
- *  borough — a municipality is never two of these, so "City of Venus" for the Town of Venus is a
- *  spelling, not another agency). Two names typed county / township / parish against a different
- *  type are two agencies (Charleston County is not the City of Charleston; Marion County is not the
- *  City of Marion nor the City of Jefferson — the delegation the fee rows carry). Read by
- *  issuedByPublisher (whose portal a permit takes), liftAgreedAgency / agenciesToAsk (which agencies
- *  the parts ask), applyLookupFees (whether the AHJ's fee row delegates to another authority) and
- *  mergeWithEarlier — a department suffix, a stray "/" or "County of X" for "X County" must never
- *  turn the AHJ's own fee into a phantom delegation. */
-export function sameAgencyName(a: unknown, b: unknown): boolean {
-  const ka = agencyNameKey(a);
-  const kb = agencyNameKey(b);
-  if (!ka || !kb) return false;
-  if (ka === kb) return true;
-  const typeOf = (k: string): string => new RegExp(`\\b(${JURISDICTION_TYPE_WORDS})$`).exec(k)?.[1] ?? "";
-  const ta = typeOf(ka);
-  const tb = typeOf(kb);
-  if (!ta && !tb) return false;
-  const municipal = /^(?:city|town|village|borough)$/;
-  if (ta && tb && !(municipal.test(ta) && municipal.test(tb))) return false;
-  const bare = (k: string) => k.replace(new RegExp(` (?:${JURISDICTION_TYPE_WORDS})$`), "");
-  return bare(ka) === bare(kb);
-}
 /** "Marion County (Marion County Public Works Building Inspection Division)" → "Marion County": the
  *  agency's NAME, which is what an address grid, a fee key and a person read. */
 const agencyName = (v: unknown): string | null => {
@@ -925,10 +865,11 @@ export function recordTypeFromCatalog(catalog: PortalCatalog | null, discipline:
 
 /** The production reader: on when a model key is set (the lookup runs at all), page reading is not
  *  switched off (PERMIT_LOOKUP_PAGE_READ=off) and document downloads are allowed. A stubbed-model
- *  test (no key) never touches the network unless it passes its own reader. */
-export function defaultLookupReader(): PageReader | null {
+ *  test (no key) never touches the network unless it passes its own reader. `maxReads`: the read
+ *  budget (the form acquisition reads ONE forms page through the same switches). */
+export function defaultLookupReader(maxReads = 18): PageReader | null {
   if (!process.env.ANTHROPIC_API_KEY || /^(off|0|false)$/i.test(str(process.env.PERMIT_LOOKUP_PAGE_READ)) || documentFetchDisabled()) return null;
-  return createPageReader({ maxReads: 18 });
+  return createPageReader({ maxReads });
 }
 
 /**
@@ -1073,7 +1014,9 @@ export async function runPermitProcessLookup(
   const baseCandidates = (d: PermitProcessDiscipline, partOne: CitedFact<string> | undefined): Array<{ raw: RawFact; source: PortalCandidateSource }> => {
     const out: Array<{ raw: RawFact; source: PortalCandidateSource }> = [];
     if (detPortal && issuedByPublisher(d)) out.push({ raw: { value: detPortal.value, sourceUrl: detPortal.sourceUrl, quote: detPortal.quote }, source: "agency page (our read)" });
-    if (partOne) out.push({ raw: { value: partOne.value, sourceUrl: partOne.sourceUrl, quote: partOne.quote, notFound: partOne.notFound }, source: "process part" });
+    // A claim the PARSE-TIME door refused for want of evidence stays a candidate (its `claimed`), so
+    // the final door can judge it with everything read since (portal-truth D3: a redirect we read).
+    if (partOne) out.push({ raw: { value: partOne.value ?? (partOne.claimed || null), sourceUrl: partOne.sourceUrl, quote: partOne.quote, notFound: partOne.notFound }, source: "process part" });
     return out;
   };
   const preDecided = new Map<PermitProcessDiscipline, PortalDecision>();
@@ -1212,18 +1155,86 @@ export async function runPermitProcessLookup(
   // jurisdiction that issues THIS permit; the first accepted wins, else the most informative refusal.
   const portalNotes: string[] = [];
   const decided = new Map<PermitProcessDiscipline, PortalDecision>();
+  const finalCtx = (d: PermitProcessDiscipline) => doorContextFor(d, { seen: raw.portalUrls, platformPages: [...platformReads.values()].flatMap((pg) => [pg.url, pg.finalUrl]) });
+  const finalCandidates = (p: PermitProcessPermitAnswer) => {
+    const candidates = baseCandidates(p.discipline, p.portalUrl);
+    const step = portalFor.get(p.discipline)?.portalUrl;
+    if (step) candidates.push({ raw: { value: step.value ?? (step.claimed || null), sourceUrl: step.sourceUrl, quote: step.quote, notFound: step.notFound }, source: "portal step" });
+    return candidates;
+  };
+  // A NAMED PORTAL THAT REDIRECTS TO ITS OFFICIAL HOST (portal-truth D3). Corvallis's own page said
+  // "Apply online at www.corvallispermits.com"; that host lands on the city's own Accela tenant
+  // (aca-prod.accela.com/CORVALLIS) and was never a search result, so the door dropped it as "never
+  // returned by the search" — and staging fell to the statewide portal. Each candidate the door
+  // refused for want of attestation alone is now READ ONCE, politely, through the page reader (its
+  // one try, its per-host gap, its budget, never a login). When the read lands on ANOTHER host that
+  // names this jurisdiction (its tenant, its official domain, or the landing page's own title /
+  // opening words), the candidate is judged AS THE LANDING URL — which must pass the whole door on
+  // its own (rule 5, the vendor's root, another module, the issuer's jurisdiction type) — and is
+  // kept WITH that evidence: the URL the source named, the landing, and the hops (CitedFact.redirect).
+  // A landing that names neither the AHJ nor its agency (another city's tenant, a vendor's site) is
+  // not kept, and the reason is added to the refusal.
+  const redirectFor = new Map<string, { finalUrl: string; chain: string[]; status: number }>();
+  const redirectRefusal = new Map<string, string>();
+  if (reader) {
+    for (const p of basePermits) {
+      const d = p.discipline;
+      const ctx = finalCtx(d);
+      for (const c of finalCandidates(p)) {
+        const claimed = str(c.raw?.value);
+        if (!/^https?:\/\//i.test(claimed) || redirectFor.has(claimed) || redirectRefusal.has(claimed)) continue;
+        if (acceptPortalForPermit(c.raw, c.source, ctx).code !== "unattested") continue;
+        const pg = await reader.read(claimed);
+        const landing = str(pg.finalUrl) || claimed;
+        const hops = pg.redirects?.length ? pg.redirects : landing !== claimed ? [claimed, landing] : [claimed];
+        if (portalHostOf(landing) === portalHostOf(claimed)) {
+          // No redirect: a page WE opened attests its host only as a platform page (R3's door).
+          if (pg.ok && detectPlatform(pg)) { ourSeen.push(pg.url, pg.finalUrl); platformReads.set(portalTenantKey(pg.finalUrl), pg); }
+          else redirectRefusal.set(claimed, pg.ok ? `our one read of ${claimed} found no permit portal there` : `our one read of ${claimed} did not succeed (${str(pg.reason).slice(0, 100)})`);
+          continue;
+        }
+        if (!pg.ok) {
+          redirectRefusal.set(claimed, `${claimed} redirects to ${landing}, which our one read could not read (${str(pg.reason).slice(0, 100)})`);
+          continue;
+        }
+        const names = issuer.namesFor(d);
+        if (!landingNamesJurisdiction(landing, pg, names, input.state)) {
+          redirectRefusal.set(claimed, `${claimed} redirects to ${landing}, which names neither ${names.join(" nor ")} (its tenant, domain or page) — not kept`);
+          continue;
+        }
+        // The LANDING is what our read attests — never the named host itself (it only redirects).
+        ourSeen.push(landing);
+        if (detectPlatform(pg)) platformReads.set(portalTenantKey(landing), pg);
+        redirectFor.set(claimed, { finalUrl: landing, chain: hops, status: pg.status });
+      }
+    }
+  }
   const finalPortal = (p: PermitProcessPermitAnswer): CitedFact<string> => {
     const d = p.discipline;
     if (!decided.has(d)) {
-      const ctx = doorContextFor(d, { seen: raw.portalUrls, platformPages: [...platformReads.values()].flatMap((pg) => [pg.url, pg.finalUrl]) });
-      const candidates = baseCandidates(d, p.portalUrl);
-      const step = portalFor.get(d)?.portalUrl;
-      if (step) candidates.push({ raw: { value: step.value, sourceUrl: step.sourceUrl, quote: step.quote, notFound: step.notFound }, source: "portal step" });
+      const ctx = finalCtx(d);
+      // A redirected claim is judged as its landing URL (the citing page's words stay its quote).
+      const candidates = finalCandidates(p).map((c) => {
+        const r = redirectFor.get(str(c.raw?.value));
+        return r ? { ...c, raw: { ...(c.raw as Record<string, unknown>), value: r.finalUrl } } : c;
+      });
       const { decisions, accepted, chosen } = judgePortal(candidates, ctx);
-      decided.set(d, chosen);
+      const redirectedFrom = (x: { claimed: string }) => [...redirectFor.entries()].find(([, r]) => r.finalUrl === x.claimed)?.[0] ?? "";
+      let final: PortalDecision = chosen;
+      if (accepted && redirectedFrom(accepted)) {
+        const from = redirectedFrom(accepted);
+        const r = redirectFor.get(from)!;
+        final = { ...accepted, fact: { ...accepted.fact, redirect: { from, finalUrl: r.finalUrl, chain: r.chain, status: r.status } } };
+      } else if (!final.fact.value) {
+        const claim = str(final.fact.claimed) || str((final as { claimed?: string }).claimed);
+        const why = redirectRefusal.get(claim);
+        if (why) final = { ...final, fact: { ...final.fact, notFound: `${str(final.fact.notFound)}; ${why}`.replace(/^; /, "") } };
+      }
+      decided.set(d, final);
       for (const x of decisions) {
-        if (x === accepted) portalNotes.push(`Portal (${d}): ${x.fact.value} — from the ${x.source}; attested by ${x.attestedBy}; jurisdiction type judged against ${(ctx.typeNames ?? []).join(" / ") || "(none)"}`);
-        else if (x.claimed && !x.fact.value) portalNotes.push(`Portal refused (${d}): ${x.claimed} — from the ${x.source}: ${x.fact.notFound}`);
+        const from = redirectedFrom(x);
+        if (x === accepted) portalNotes.push(`Portal (${d}): ${x.fact.value} — from the ${x.source}${from ? `, named as ${from}, which redirects there (${(redirectFor.get(from)?.chain ?? []).join(" → ")})` : ""}; attested by ${x.attestedBy}; jurisdiction type judged against ${(ctx.typeNames ?? []).join(" / ") || "(none)"}`);
+        else if (x.claimed && !x.fact.value) portalNotes.push(`Portal refused (${d}): ${from ? `${from} → ${x.claimed}` : x.claimed} — from the ${x.source}: ${x.fact.notFound}${redirectRefusal.has(x.claimed) ? `; ${redirectRefusal.get(x.claimed)}` : ""}`);
       }
     }
     return decided.get(d)!.fact;

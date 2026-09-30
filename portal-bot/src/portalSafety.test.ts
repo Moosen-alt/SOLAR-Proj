@@ -379,6 +379,17 @@ const DIALOG_PAYS_NOW = [
   "Fees will be invoiced later. Auto-pay is enabled for this account.",
   "You don't have to pay anything today; the account on file covers the $150 fee.",
   "No need to pay now. Your payment will be processed when you submit.",
+  // autosubmit-close-2 skeptic (verbatim; every one FILED at the fixture's server): an amount with no pay
+  // word was "no payment"; a negation or a deferral anywhere beat a pays-now clause elsewhere.
+  "$150 is due now. Submit application?", "Total due: $150.00. Submit?", "Amount due today: $150. Continue?",
+  "Your balance will be reduced by $150 when you submit. Continue?", "The amount will be taken from your account on submission. OK?",
+  "Pagar $150 y enviar?", "A $150 hold will be placed on your card. Submit?", "Submitting will draw $150 from your escrow account. Continue?",
+  "Clicking OK completes your purchase of the $150 permit. Continue?", "$150 is due now.", "Your balance will be reduced by $150 when you submit.",
+  "Total due: $150.00. Submit this application?", "$150 is due now. Continue?", "Total due: $150.00. Continue?",
+  "You do not need to pay now. Your balance will be reduced by $150 on submit.", "No payment is needed now; $150 is due on submission.",
+  "No need to pay later - the fee is paid when you submit.", "Permit fees will be invoiced later; a $25 convenience fee applies now. Submit?",
+  "Fees will be invoiced later. Total due now: $25.", "There is no charge today. Total due at submission: $150.",
+  "Fees will be billed later. $25 will come out of your account now.", "Your permit fee will be invoiced. Submitting authorizes a $25 charge today.",
 ];
 const DIALOG_FEE_DEFERRED = [
   "Submit application? Fees will be invoiced later.", "A fee of $150 will be invoiced", "Fees will be assessed after review.",
@@ -387,6 +398,10 @@ const DIALOG_FEE_DEFERRED = [
   "No payment is required at this time.",
   // "withdrawn" with no money in it is not paying (MF-S2's vocabulary is money leaving the payer).
   "Fees will be invoiced later. An unsubmitted draft is withdrawn after 30 days.",
+  // The clause reading must not turn the operator's ruling into false stops: an amount that is invoiced,
+  // the click's own "submit now", a negation standing alone.
+  "A fee of $150.00 will be invoiced after review.", "Submit application now? Permit fees ($150) are due at issuance.",
+  "There is no charge to submit this application.", "No payment is required now; the permit fee will be invoiced after plan review.",
 ];
 const DIALOG_NO_PAYMENT = [
   "File this application now?", "Are you sure you want to submit this application?", "Submit this application?",
@@ -477,6 +492,30 @@ await check("SIGNING ACT (MF-S1): a third party's later / offline signing never 
     assert.equal(signatureNamePartOf("First name *", around), "first", `MUST-EXCLUDE First name under ${JSON.stringify(around.slice(0, 50))}`);
     assert.equal(signatureNamePartOf("Last name *", around), "last", `MUST-EXCLUDE Last name under ${JSON.stringify(around.slice(0, 50))}`);
     assert.equal(pc.signatureNamePartOf("First name *", around), "first", "page copy drifted");
+  }
+  // autosubmit-close-2 skeptic, verbatim. REGRESSION (a later DELIVERY is not a later signing): the
+  // applicant signing NOW stays a signature — else the installer contact is typed as the e-signature.
+  for (const [label, around] of [
+    ["Applicant Name *", "I consent to sign this application electronically, and I understand the utility will email the interconnection agreement after approval."],
+    ["Full name *", "Sign below and we will send your permit once it is issued."],
+  ] as Array<[string, string]>) {
+    assert.equal(isSignatureNameBox(label, around), true, `MUST-EXCLUDE (regression) isSignatureNameBox(${JSON.stringify(label)}) under ${JSON.stringify(around.slice(0, 60))}`);
+    assert.equal(pc.isSignatureNameBox(label, around), true, "page copy drifted");
+  }
+  const EMAILED = "Please sign below and the permit will be emailed to you after approval.";
+  assert.equal(signatureNamePartOf("First name *", EMAILED), "first", "MUST-EXCLUDE (regression) First name under a later delivery");
+  assert.equal(signatureNamePartOf("Last name *", EMAILED), "last", "MUST-EXCLUDE (regression) Last name under a later delivery");
+  // THE SUBJECT: a third party named with no first person and no agent capacity is that party's act.
+  for (const around of ["The utility customer of record must sign below.", "The homeowner, not the installer, must sign below.",
+    "The person named on the utility account must sign below.", "The lessor / property manager must sign below.", "Homeowner: please sign below."]) {
+    assert.equal(signatureNamePartOf("First name *", around), "", `MUST-PASS First name under ${JSON.stringify(around)} is that party's, not our signer's`);
+    assert.equal(pc.signatureNamePartOf("Last name *", around), "", "page copy drifted");
+  }
+  for (const [label, around] of [["Owner Name *", "Property owner: sign here."], ["Full name *", "Homeowner to sign below at the time of inspection."],
+    ["Full name *", "Homeowner: please sign below."], ["Full name *", "Sign below (homeowner)."], ["Full name *", "The utility sends the homeowner an e-signature request."],
+    ["Full name *", "Homeowner e-signature"]] as Array<[string, string]>) {
+    assert.equal(isSignatureNameBox(label, around), false, `MUST-PASS isSignatureNameBox(${JSON.stringify(label)}) under ${JSON.stringify(around)} is that party's name box`);
+    assert.equal(pc.isSignatureNameBox(label, around), false, "page copy drifted");
   }
 });
 

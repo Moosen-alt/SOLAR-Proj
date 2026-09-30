@@ -56,6 +56,7 @@ import type {
   NextStepWhy,
   ProjectRecord,
   ProjectStatus,
+  SubmitGateHold,
   SubmitGateReport,
   SubmittalTrackType,
 } from "../../shared/src/types";
@@ -64,6 +65,10 @@ import { isTrackDone, requiredTracks, trackPermitTypes } from "./submittalTracks
 import { trackKind } from "./permitMonitor";
 import { parseJson } from "./json";
 import { billingTrack } from "./submissionFees";
+import { findingHoldScope, gateCheckDefaultScope, scopeHoldsTrack, tracksHeld } from "./gateScope";
+import { issuingAuthorityForTrack } from "./applicationDocsAgency";
+import { parseJobProgressNote } from "./jobProgress";
+import { startedAtLabel } from "./formAcquisitionPlan";
 import {
   buildReviewerReportFor,
   getProjectDetail,
@@ -99,8 +104,8 @@ function gapUnfilledDespiteDataFrom(data: Record<string, unknown> | undefined): 
 }
 
 /** Review-screen comparison + gap-fill lists from a portal_run's result_json. */
-export function reviewInfoFromResultJson(resultJson: unknown): { reviewMismatches: ReviewMismatch[]; reviewAccurate: boolean | null; gapFillMissing: string[]; gapEngineUnfilled: string[] } {
-  const empty = { reviewMismatches: [] as ReviewMismatch[], reviewAccurate: null as boolean | null, gapFillMissing: [] as string[], gapEngineUnfilled: [] as string[] };
+export function reviewInfoFromResultJson(resultJson: unknown): { reviewMismatches: ReviewMismatch[]; reviewAccurate: boolean | null; gapFillMissing: string[]; gapEngineUnfilled: string[]; reviewHandoffNotes: string[] } {
+  const empty = { reviewMismatches: [] as ReviewMismatch[], reviewAccurate: null as boolean | null, gapFillMissing: [] as string[], gapEngineUnfilled: [] as string[], reviewHandoffNotes: [] as string[] };
   if (!resultJson) return empty;
   try {
     const result = JSON.parse(String(resultJson)) as Record<string, unknown>;
@@ -113,6 +118,9 @@ export function reviewInfoFromResultJson(resultJson: unknown): { reviewMismatche
     let reviewAccurate: boolean | null = null;
     const gapMissing = new Set<string>(gapMissingFrom(result));
     const gapEngineGaps = new Set<string>(gapUnfilledDespiteDataFrom(result));
+    // What the person taking the review page must know (dryrun-0928 B3 / B14): unsaved answers, the
+    // portal's own calls the lockdown held back. Its OWN list — never folded into the mismatches.
+    const handoffNotes = new Set<string>();
     for (const step of steps) {
       const data = step.data as Record<string, unknown> | undefined;
       if (!data) continue;
@@ -122,23 +130,42 @@ export function reviewInfoFromResultJson(resultJson: unknown): { reviewMismatche
       }
       for (const f of gapMissingFrom(data)) gapMissing.add(f);
       for (const f of gapUnfilledDespiteDataFrom(data)) gapEngineGaps.add(f);
+      if (Array.isArray(data.reviewHandoffNotes)) for (const n of data.reviewHandoffNotes) if (typeof n === "string" && n.trim()) handoffNotes.add(n.trim());
     }
     if (!reviewMismatches.length && Array.isArray(result.reviewMismatches)) {
       reviewMismatches = result.reviewMismatches as ReviewMismatch[];
       reviewAccurate = typeof result.reviewAccurate === "boolean" ? result.reviewAccurate : null;
     }
-    return { reviewMismatches, reviewAccurate, gapFillMissing: Array.from(gapMissing).slice(0, 20), gapEngineUnfilled: Array.from(gapEngineGaps).slice(0, 20) };
+    return { reviewMismatches, reviewAccurate, gapFillMissing: Array.from(gapMissing).slice(0, 20), gapEngineUnfilled: Array.from(gapEngineGaps).slice(0, 20), reviewHandoffNotes: Array.from(handoffNotes).slice(0, 6) };
   } catch { /* ignore parse errors */ }
   return empty;
 }
 
 /** Reviewer-gate blockers exactly as prepareSubmission and runAutopilotApproval judge them
- *  (the text report, no cached vision verdicts). Read-only via withoutCodeResearch. */
-export function reviewerBlockerList(db: AppDb, project: ProjectRecord): Array<{ code: string; detail: string }> {
+ *  (the text report, no cached vision verdicts). Read-only via withoutCodeResearch. Each carries
+ *  the filings it holds (gateScope.findingHoldScope — the answer prepareSubmission filters by), so
+ *  a reader judging ONE track asks reviewerBlockersFor, never the bare list. */
+export function reviewerBlockerList(db: AppDb, project: ProjectRecord): ReviewerBlocker[] {
   const report = withoutCodeResearch(() => buildReviewerReportFor(db, project));
   return report.findings
     .filter((finding) => finding.severity === "blocker")
-    .map((finding) => ({ code: finding.id, detail: finding.title }));
+    .map((finding) => ({ code: finding.id, detail: finding.title, tracks: tracksHeld(findingHoldScope(finding)) }));
+}
+
+export interface ReviewerBlocker { code: string; detail: string; /** The filings it holds; absent = every one. */ tracks?: SubmittalTrackType[] }
+
+/** THE REVIEWER BLOCKERS THAT HOLD A FILING OF `track` (null = an unknown track: every blocker).
+ *  The one filter Approve (autopilot), the next step's Approve button and runAutopilotApproval use. */
+export function reviewerBlockersFor<T extends ReviewerBlocker>(blockers: T[], track: SubmittalTrackType | null): T[] {
+  return blockers.filter((b) => track === null || !b.tracks || b.tracks.includes(track));
+}
+
+/** Does a gate blocker hold a filing of `track`? Its per-item `holds` when it carries them, else the
+ *  check's own default scope (gateScope.gateCheckDefaultScope: the permit path never holds NEM;
+ *  anything else holds every filing — an unknown never clears); a null track is held by every blocker. */
+export function gateBlockerHoldsTrack(b: { id: string; holds?: Array<{ tracks: SubmittalTrackType[] }> }, track: SubmittalTrackType | null): boolean {
+  if (track === null) return true;
+  return b.holds ? b.holds.some((h) => h.tracks.includes(track)) : scopeHoldsTrack(gateCheckDefaultScope(b.id), track);
 }
 
 /**
@@ -189,6 +216,11 @@ export interface TrackFacts {
   /** The CLIENT's payment for this track is outstanding: a per-submission client with no paid /
    *  waived submission_payments row — exactly what assertSubmissionPaid's 402 refuses on. */
   paymentDue: boolean;
+  /** WHO ISSUES THIS TRACK: the utility for NEM; for a permit, the one predicate
+   *  (applicationDocsAgency.issuingAuthorityForTrack -> formAuthorityFor), so a county-issued
+   *  electrical permit is named as the county's. Optional: absent, the answer falls back to the
+   *  AHJ / utility on the facts record (agencyOf). */
+  agency?: string;
 }
 
 export interface NextStepFacts {
@@ -200,7 +232,10 @@ export interface NextStepFacts {
   utility: string;
   operatorHold: { reason: string; since: string | null } | null;
   openCorrections: CorrectionRecord[];
-  jobInFlight: { jobType: string; since: string } | null;
+  /** step: what the job says it is doing right now (job_queue.progress_note — the automatic chain
+   *  names each step), so the banner can show "Checking the AHJ's required official forms… (started
+   *  HH:MM)" instead of a bare "running". */
+  jobInFlight: { jobType: string; since: string; step?: { label: string; since: string } } | null;
   tracks: TrackFacts[];
   /** The newest correction-reopen run, when it paused for a person and a correction is still open. */
   reopenPause: RunLite | null;
@@ -211,12 +246,17 @@ export interface NextStepFacts {
   portalReadings: number;
   approvedRunIds: string[];
   /** Detail tier only (undefined on the list tier). */
-  gate?: { decision: SubmitGateReport["decision"]; blockers: Array<{ id: string; title: string; nextAction: string }> };
-  /** Detail tier only: reviewer blockers as the approve route judges them. */
-  reviewerBlockers?: Array<{ code: string; detail: string }>;
+  gate?: { decision: SubmitGateReport["decision"]; blockers: Array<{ id: string; title: string; nextAction: string; holds?: SubmitGateHold[] }> };
+  /** Detail tier only: reviewer blockers as the approve route judges them (each with its tracks). */
+  reviewerBlockers?: ReviewerBlocker[];
 }
 
 const ON_PORTAL = new Set(["awaiting_human_submit", "submitted", "paused_for_human"]);
+
+/** How long a queued/started automatic chain (stage_step) reads as "automation running". A real
+ *  chain takes about three minutes (2026-09-28: 2m45s on a Newberg job); past this it is stuck, and
+ *  the page shows the real blockers again rather than "nothing to do". */
+export const AUTO_CHAIN_FRESH_MS = 15 * 60 * 1000;
 
 function groupBy<T>(rows: T[], key: (r: T) => string): Map<string, T[]> {
   const out = new Map<string, T[]>();
@@ -284,6 +324,27 @@ export function loadNextStepFacts(db: AppDb, projects: ProjectRecord[]): Map<str
       ids,
     ).map((r) => [s(r.project_id), { jobType: s(r.job_type), since: s(r.created_at) }] as const),
   );
+  // THE AUTOMATIC CHAIN IS AUTOMATION RUNNING TOO (operator 2026-09-28, a real Newberg job: "Blocked
+  // … Site / plot plan … attach it or split it out of the plan set … can we just not have it do this
+  // automatically?"). It was doing it: the stage_step chain splits the plan set, reads the bill, runs
+  // QC and finds/fills the official forms, and the page listed those very items as the operator's
+  // work while the chain ran. A FRESH chain job (queued or started within AUTO_CHAIN_FRESH_MS) reads
+  // as automation running; a stale one never does — a chain stuck behind a dead worker must not
+  // read as "nothing to do" forever, so the real blockers show again once it is that old.
+  const chainFreshSince = new Date(Date.now() - AUTO_CHAIN_FRESH_MS).toISOString();
+  for (const r of db.query<Row>(
+    `SELECT project_id, created_at, started_at, status, progress_note FROM job_queue
+      WHERE project_id IN (${ph}) AND job_type = 'stage_step'
+        AND ((status = 'pending' AND created_at >= ?) OR (status = 'running' AND COALESCE(started_at, created_at) >= ?))
+      ORDER BY created_at ASC`,
+    [...ids, chainFreshSince, chainFreshSince],
+  )) {
+    // Staging/autopilot in flight keeps its own (more specific) wording.
+    if (jobs.has(s(r.project_id))) continue;
+    // The step the RUNNING chain is on (its own progress note); a queued one has not started a step.
+    const note = s(r.status) === "running" ? parseJobProgressNote(r.progress_note) : null;
+    jobs.set(s(r.project_id), { jobType: "stage_step", since: s(r.created_at), ...(note ? { step: note } : {}) });
+  }
   const qcFails = groupBy(
     db.query<Row>(`SELECT project_id, rule_name, message FROM qc_results WHERE project_id IN (${ph}) AND qc_status = 'fail' ORDER BY created_at DESC`, ids),
     (r) => s(r.project_id),
@@ -358,6 +419,8 @@ export function loadNextStepFacts(db: AppDb, projects: ProjectRecord[]): Map<str
         feeDue: (feeDueKinds.get(pid) ?? []).some(ownsTarget),
         paymentDue: perSubmissionClients.has(s(project.clientId))
           && !(payments.get(pid) ?? []).some((r) => s(r.track) === billingTrack(track) && (s(r.status) === "paid" || s(r.status) === "waived")),
+        // A registry read (permitProcess), never the db — the "reads write nothing" invariant holds.
+        agency: track === "nem" ? s(project.utility).trim() : issuingAuthorityForTrack(project, track),
       };
     });
     const pending = (pendingReview.get(pid) ?? []).map((r) => ({ status: "pending", fieldName: s(r.field_name), issueType: s(r.issue_type) }));
@@ -442,7 +505,9 @@ const GATE_BLOCKER_ASK: Record<string, string> = {
   "permit-path": "confirm the permit path (prescriptive vs engineered)",
   "qc-human-review": "QC failures or pending review items",
   "permit-requirements": "the designer has to clear the reviewer findings",
-  "document-inventory": "required document(s) are missing — attach or split them out",
+  // The fix is per document (find the form / upload the blank, or attach / split out) — it rides
+  // in the check's nextAction, the `why` line; the headline names only the problem.
+  "document-inventory": "required document(s) are missing",
 };
 
 const TRACK_NAME: Record<SubmittalTrackType, string> = {
@@ -461,12 +526,22 @@ function joinNames(items: string[]): string {
 function trackList(tracks: TrackFacts[]): string {
   return joinNames(tracks.map((t) => TRACK_NAME[t.track]));
 }
-function agencyFor(facts: NextStepFacts, track: SubmittalTrackType): string {
-  return track === "nem" ? (facts.utility || "the utility") : (facts.ahj || "the AHJ");
+/** Who issues this track (TrackFacts.agency — the one predicate), else the facts record's AHJ /
+ *  utility. Dry run 2026-09-28, B13: every permit track used to be named as the AHJ's. */
+function agencyOf(facts: NextStepFacts, t: TrackFacts): string {
+  const own = String(t.agency ?? "").trim();
+  if (own) return own;
+  return t.track === "nem" ? (facts.utility || "the utility") : (facts.ahj || "the AHJ");
 }
-function agencies(facts: NextStepFacts, tracks: TrackFacts[]): string {
-  return joinNames([...new Set(tracks.map((t) => agencyFor(facts, t.track)))]);
+/** A track named WITH its issuer — "the building permit (City of X)", "the interconnection (NEM) with
+ *  Utility Y". Names who issues it, never whose portal it is (a statewide portal hosts many agencies). */
+function trackWithAgency(facts: NextStepFacts, t: TrackFacts): string {
+  return t.track === "nem" ? `${TRACK_NAME[t.track]} with ${agencyOf(facts, t)}` : `${TRACK_NAME[t.track]} (${agencyOf(facts, t)})`;
 }
+function tracksWithAgency(facts: NextStepFacts, tracks: TrackFacts[]): string {
+  return joinNames(tracks.map((t) => trackWithAgency(facts, t)));
+}
+const isAre = (n: number): string => (n === 1 ? "is" : "are");
 function why(text: string, fixTarget?: FixTarget): NextStepWhy {
   return fixTarget ? { text: text.slice(0, 240), fixTarget } : { text: text.slice(0, 240) };
 }
@@ -555,9 +630,15 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
 
   // 4. Automation is already doing the next thing.
   if (facts.jobInFlight) {
+    // The step the chain is on, as a why line ("Checking the AHJ's required official forms… (started
+    // HH:MM UTC)") — a six-minute form search on a never-seen AHJ otherwise reads as nothing happening
+    // (operator 2026-09-28: "it looks like its getting lost finding the forms").
+    const step = facts.jobInFlight.step;
     return make("automation_running", "nobody", "waiting",
-      `${facts.jobInFlight.jobType === "autopilot" ? "Autopilot" : "Staging"} is running — nothing to do until it finishes.`,
-      [], null, facts.jobInFlight.since);
+      facts.jobInFlight.jobType === "stage_step"
+        ? "Preparing this project automatically — splitting the plan set, reading the bill, running QC and finding/filling the official forms. Nothing to do until it finishes."
+        : `${facts.jobInFlight.jobType === "autopilot" ? "Autopilot" : "Staging"} is running — nothing to do until it finishes.`,
+      step ? [why(`${step.label} (${startedAtLabel(step.since)})`)] : [], null, facts.jobInFlight.since);
   }
 
   // 5. The newest staging attempt for a track failed AND no draft of it sits on the portal. A
@@ -588,17 +669,25 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
     }
   }
 
-  // 7. Submit-gate / reviewer blockers (detail tier).
-  if (unfinished.length && facts.gate?.decision === "blocked" && facts.gate.blockers.length) {
+  // 7. Submit-gate / reviewer blockers (detail tier) — only those that hold a filing still to be
+  //    made (gateScope: a structural finding does not hold a utility application that is all that
+  //    is left, and a blocker holding only filed tracks holds nothing).
+  const holding = facts.gate?.decision === "blocked"
+    ? facts.gate.blockers.filter((b) => unfinished.some((t) => gateBlockerHoldsTrack(b, t.track)))
+    : [];
+  if (unfinished.length && holding.length) {
     // Reviewer findings / learned rejection patterns are the DESIGNER's to fix (the plan set
     // changes); every other gate blocker (fields, client/CCB, permit path, documents to attach)
     // is the operator's. The headline is the first blocker's own next action, not its check name.
-    const first = facts.gate.blockers[0];
+    const first = holding[0];
     const designer = first.id === "permit-requirements";
-    const more = facts.gate.blockers.length > 1 ? ` (+${facts.gate.blockers.length - 1} more)` : "";
+    const more = holding.length > 1 ? ` (+${holding.length - 1} more)` : "";
+    // Name the filings it holds when it does not hold them all.
+    const heldTracks = unfinished.filter((t) => holding.some((b) => gateBlockerHoldsTrack(b, t.track)));
+    const partial = heldTracks.length < unfinished.length ? ` — it holds the ${trackList(heldTracks)}` : "";
     return make("gate_blocked", designer ? "designer" : "me", "today",
-      `The submit gate is blocked: ${GATE_BLOCKER_ASK[first.id] ?? first.title.toLowerCase()}${more}.`,
-      facts.gate.blockers.map((b) => why(b.nextAction, "submitGate")),
+      `The submit gate is blocked: ${GATE_BLOCKER_ASK[first.id] ?? first.title.toLowerCase()}${more}${partial}.`,
+      holding.map((b) => why(b.nextAction, "submitGate")),
       designer ? btn("openReviewerPacketBtn", "Open Correction Packet") : null);
   }
   passedGateRule = true;
@@ -626,13 +715,41 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
     const approvedRuns = new Set(facts.approvedRunIds);
     const awaitingApproval = staged.filter((t) => !approvedRuns.has(t.stagedRun!.id));
     const approved = staged.filter((t) => approvedRuns.has(t.stagedRun!.id));
+    // WHAT IS NOT STAGED YET IS NAMED HERE TOO (dry run 2026-09-28, B13). Rule 10 outranks rule 14
+    // on purpose (a draft on the portal waits for a person), so "Ready to stage the electrical
+    // permit and interconnection" could never fire while the building draft waited — and an operator
+    // who read "Approve & Submit the building permit", filed it and stopped left two tracks unfiled.
+    const notStaged = unfinished.filter((t) => !t.onPortal);
+    const notStagedTail = notStaged.length
+      ? ` The ${trackList(notStaged)} ${isAre(notStaged.length)} not staged yet — stage ${notStaged.length === 1 ? "it" : "them"} next.`
+      : "";
+    const notStagedWhy = notStaged.length
+      ? [why(`Not staged yet: ${tracksWithAgency(facts, notStaged)} — Stage portals skips a track already on the portal.`, "submittalTracks")]
+      : [];
     if (awaitingApproval.length) {
-      const approveRefused = facts.reviewerBlockers && facts.reviewerBlockers.length > 0;
+      // The draft Approve acts on is the NEWEST awaiting one (autopilot.awaitingPortalRun); it is
+      // refused only by a reviewer blocker that holds ITS track (gateScope — the filter
+      // getAutopilotState's canApprove applies too).
+      const newest = [...awaitingApproval].sort((a, b) => String(b.stagedRun!.startedAt).localeCompare(String(a.stagedRun!.startedAt)))[0];
+      const approveRefused = reviewerBlockersFor(facts.reviewerBlockers ?? [], newest.track).length > 0;
+      // EACH TRACK WITH ITS OWN ISSUER, and the verbs agree with the count. One merged "the X, Y and
+      // Z application is staged on the A and B portal" read as one filing on one portal — it is one
+      // draft per track, each reviewed and submitted on its own.
+      const what = awaitingApproval.length === 1
+        ? `The ${trackWithAgency(facts, awaitingApproval[0])} application is staged on its portal`
+        : `Staged for review: the ${tracksWithAgency(facts, awaitingApproval)}`;
+      const ask = awaitingApproval.length === 1
+        ? (gateChecked ? "review it, approve, then click its submit yourself." : "review it (the project page checks the gate before approval).")
+        : (gateChecked ? "review each on its own portal, approve, then click its submit yourself." : "review each on its own portal (the project page checks the gate before approval).");
       return make("staged_awaiting_submit", "me", "today",
-        gateChecked
-          ? `The ${trackList(awaitingApproval)} application is staged on the ${agencies(facts, awaitingApproval)} portal — review it, approve, then click its submit yourself.`
-          : `The ${trackList(awaitingApproval)} application is staged on the ${agencies(facts, awaitingApproval)} portal — review it (the project page checks the gate before approval).`,
+        `${what} — ${ask}${notStagedTail}`,
         [
+          // What is left to stage first: make() keeps three whys, and the per-track lines fill them.
+          ...notStagedWhy,
+          // One button, one draft: Approve & Submit acts on the NEWEST awaiting draft only.
+          ...(awaitingApproval.length > 1 && !approveRefused
+            ? [why(`Approve & Submit acts on the newest draft only — the ${TRACK_NAME[newest.track]}. Each other draft needs its own review and its own submit.`, "portalRunsPinned")]
+            : []),
           // The PINNED card: the staged draft renders there, not in the folded history (#portalRuns).
           ...awaitingApproval.map((t) => why(`${TRACK_NAME[t.track]} staged ${t.stagedRun!.startedAt.slice(0, 10)} — automation never clicks the final submit.`, "portalRunsPinned")),
           ...(approved.length ? [why(`Approval already recorded for the ${trackList(approved)} — file it and capture the confirmation.`, "confirmationForm")] : []),
@@ -641,8 +758,10 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
         awaitingApproval[0].stagedRun!.startedAt);
     }
     return make("approved_awaiting_filing", "me", "today",
-      `Approval recorded — the ${trackList(approved)} application is NOT filed yet: click its submit on the ${agencies(facts, approved)} portal, then capture the confirmation number.`,
-      [why("Until the confirmation is captured, nothing is tracking this filing.", "confirmationForm")], null,
+      approved.length === 1
+        ? `Approval recorded — the ${trackWithAgency(facts, approved[0])} application is NOT filed yet: click its submit on its portal, then capture the confirmation number.${notStagedTail}`
+        : `Approval recorded — the ${tracksWithAgency(facts, approved)} applications are NOT filed yet: click each one's submit on its own portal, then capture each confirmation number.${notStagedTail}`,
+      [...notStagedWhy, why("Until the confirmation is captured, nothing is tracking this filing.", "confirmationForm")], null,
       approved[0].stagedRun!.startedAt);
   }
 
@@ -650,7 +769,7 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
   const feeDue = facts.tracks.filter((t) => t.feeDue && !t.done);
   if (feeDue.length) {
     return make("fee_due", "me", "today",
-      `${agencies(facts, feeDue)} approved the ${trackList(feeDue)} — pay the issuance fee in the portal (automation never pays fees).`,
+      `${joinNames(feeDue.map((t) => `${agencyOf(facts, t)} approved the ${TRACK_NAME[t.track]}`))} — pay the issuance fee in the portal (automation never pays fees).`,
       [], null);
   }
 
@@ -704,7 +823,7 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
   if (facts.portalReadings > 0 && notDone.length) {
     return make("portal_readings", "me", "today",
       `Confirm ${facts.portalReadings} portal status reading(s) the monitor could not classify.`,
-      notDone.map((t) => why(`${TRACK_NAME[t.track]}: waiting on ${agencyFor(facts, t.track)}`, "permitTargets")), null);
+      notDone.map((t) => why(`${TRACK_NAME[t.track]}: waiting on ${agencyOf(facts, t)}`, "permitTargets")), null);
   }
 
   // 17. Filed; the agency has the ball.
@@ -712,7 +831,7 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
     const permitWaiting = notDone.some((t) => t.track !== "nem");
     const since = facts.tracks.map((t) => t.filedAt ?? "").filter(Boolean).sort().pop();
     return make("waiting_on_agency", permitWaiting ? "ahj" : "utility", "waiting",
-      `Filed — waiting on ${joinNames(notDone.map((t) => `${agencyFor(facts, t.track)} for the ${TRACK_NAME[t.track]}`))}.`,
+      `Filed — waiting on ${joinNames(notDone.map((t) => `${agencyOf(facts, t)} for the ${TRACK_NAME[t.track]}`))}.`,
       notDone.map((t) => why(`${TRACK_NAME[t.track]} filed${t.filedAt ? ` ${t.filedAt.slice(0, 10)}` : ""}; the monitor checks for changes.`, "permitTargets")),
       null, since);
   }
@@ -753,7 +872,7 @@ export function loadFullNextStepFacts(db: AppDb, projectId: string): NextStepFac
       ...facts,
       gate: {
         decision: gate.decision,
-        blockers: gate.checks.filter((c) => c.status === "blocker").map((c) => ({ id: c.id, title: c.title, nextAction: c.nextAction })),
+        blockers: gate.checks.filter((c) => c.status === "blocker").map((c) => ({ id: c.id, title: c.title, nextAction: c.nextAction, ...(c.holds ? { holds: c.holds } : {}) })),
       },
       reviewerBlockers: reviewerBlockerList(db, project),
     };

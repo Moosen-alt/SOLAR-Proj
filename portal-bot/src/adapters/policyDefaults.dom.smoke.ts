@@ -95,6 +95,46 @@ check("the recorded step still says which answer it gave", () => {
   assert.ok(notes.some((n) => /limit the export capacity.*No$/i.test(n)), `lost the human-readable answer: ${JSON.stringify(notes)}`);
 });
 
+// PERMIT PORTALS (operator ruling 2026-09-28, City of Corvallis): "I consent to drone inspection(s)
+// for this project" is Yes — the learn picked No and the operator corrected it mid-run. A permit
+// learn (profile permit_standard) applies ONLY permit-scope policies: the utility's export-capacity
+// question on the same page is left to the planner and project data.
+{
+  const permitAdapter = new AutoLearnAdapter("City permit portal", planner, { policyProfile: "permit_standard" });
+  const permitPage = await context.newPage();
+  await permitPage.setContent(`<!doctype html><html><body>
+    <div class="form-group">
+      <label for="drone">The City regularly uses drones to perform required inspections. I consent to drone inspection(s) for this project.</label>
+      <select id="drone" name="drone"><option value="">--Select--</option><option value="Yes">Yes</option><option value="No" selected>No</option></select>
+    </div>
+    <div class="form-group">
+      <label>Do you propose to limit the export capacity?</label>
+      <input type="radio" id="pExpYes" name="pexp"><label for="pExpYes">Yes</label>
+      <input type="radio" id="pExpNo" name="pexp"><label for="pExpNo">No</label>
+    </div>
+  </body></html>`);
+  (permitAdapter as unknown as { page: unknown }).page = permitPage;
+  const permitSteps = await (permitAdapter as unknown as typeof internals).applyPolicyDefaults([]);
+  const drone = await permitPage.locator("#drone").inputValue();
+  const expTouched = (await permitPage.locator("#pExpYes").isChecked()) || (await permitPage.locator("#pExpNo").isChecked());
+  check("PERMIT profile: the drone-inspection consent is corrected from No to Yes", () => {
+    assert.equal(drone, "Yes", `drone consent = ${drone}; steps ${JSON.stringify(permitSteps.map((p) => p.step.note))}`);
+  });
+  check("PERMIT profile: a utility (NEM) policy question is never answered on a permit portal", () => {
+    assert.equal(expTouched, false, "the export-capacity policy fired on a permit learn");
+  });
+  // ...and the NEM profile never answers the permit policy.
+  const nemPage = await context.newPage();
+  await nemPage.setContent(`<!doctype html><html><body><label for="d2">I consent to drone inspection(s) for this project.</label>
+    <select id="d2"><option value="">--Select--</option><option value="Yes">Yes</option><option value="No">No</option></select></body></html>`);
+  (adapter as unknown as { page: unknown }).page = nemPage;
+  await internals.applyPolicyDefaults([]);
+  const d2 = await nemPage.locator("#d2").inputValue();
+  check("NEM profile: the permit-scope drone policy never fires on a utility learn", () => {
+    assert.equal(d2, "", `drone consent answered on a NEM learn: ${d2}`);
+  });
+}
+
 await browser.close();
 server.close();
 

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Database, { type Database as DB, type Statement } from "better-sqlite3";
 import { baselineRuleDefinitions } from "./baselineRules";
-import { knowledgeProfileKey, seedInitialKnowledgeBase } from "./knowledgeBase";
+import { knowledgeProfileKey, purgeCredentialNoteSegments, purgeForeignKnownTenantPortals, seedInitialKnowledgeBase } from "./knowledgeBase";
 import { attachLlmCallStore } from "./llmAccounting";
 
 /**
@@ -830,6 +830,10 @@ function migrate(db: AppDb): void {
   // portal_platform is auto-detected from portal_url (accela, energov, projectdox, etc.)
   // and drives the public HTTP status-check strategy in publicPermitStatus.ts.
   addColumnIfMissing(db, "permit_check_targets", "portal_platform", "TEXT NOT NULL DEFAULT ''");
+  // WHAT A RUNNING JOB IS DOING RIGHT NOW (jobQueue.noteJobProgress): JSON {label, since} — the automatic
+  // chain names its step ("Checking the AHJ's required official forms…") so the project page shows it
+  // working rather than "blocked" while a six-minute form search runs (operator 2026-09-28).
+  addColumnIfMissing(db, "job_queue", "progress_note", "TEXT NOT NULL DEFAULT ''");
   // project-level user assignment
   addColumnIfMissing(db, "projects", "assigned_user_id", "TEXT");
   // link a project back to the customer/lead it came from
@@ -2346,6 +2350,67 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       // column; scripts/backfill-correction-text.ts re-extracts the old portal rows. The corrections
       // CREATE block runs in the base schema, so this addColumnIfMissing comes after it.
       addColumnIfMissing(db, "corrections", "source_text", "TEXT NOT NULL DEFAULT ''");
+    },
+  },
+  {
+    version: 40,
+    name: "signatures_client_scope",
+    up: (db) => {
+      // A LICENCE HOLDER'S SIGNATURE BELONGS TO THE COMPANY WHOSE LICENCE IT IS (leak sweep
+      // company-leak-1, 2026-09-28). Signatures were loaded per ORG, and one service-bureau org holds
+      // several companies — so one company's supervising electrician signed (image, printed name and
+      // today's date) another company's permit application. Operator ruling: the applicant / agent is
+      // whoever SUBMITS (org-level, client_id ''); a licence-holder role (electrician, contractor) is
+      // the job's COMPANY's (client_id = that client). The signatures CREATE block runs in the base
+      // schema, so this addColumnIfMissing comes after it.
+      addColumnIfMissing(db, "signatures", "client_id", "TEXT NOT NULL DEFAULT ''");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_signatures_org_client ON signatures(org_id, client_id, role);");
+      // An existing ELECTRICIAN signature goes to the ONE client in its org whose own supervising
+      // electrician it names; with no such client, or more than one, it stays unassigned — and an
+      // unassigned licence-holder signature is stamped on nobody's form. Contractor signatures are
+      // left unassigned: no client field names the person, so there is nothing to match on.
+      const sigs = db.query<{ id: string; name: string; org_id: string }>(
+        "SELECT id, name, org_id FROM signatures WHERE role = 'electrician' AND client_id = ''",
+      );
+      for (const sig of sigs) {
+        const name = String(sig.name ?? "").trim().toLowerCase();
+        if (!name) continue;
+        const owners = db.query<{ id: string }>(
+          "SELECT id FROM clients WHERE org_id = ? AND LOWER(TRIM(COALESCE(electrical_supervisor_name, ''))) = ?",
+          [String(sig.org_id || DEFAULT_ORG_ID), name],
+        );
+        if (owners.length === 1) db.run("UPDATE signatures SET client_id = ? WHERE id = ?", [owners[0].id, sig.id]);
+      }
+    },
+  },
+  {
+    version: 41,
+    name: "purge_foreign_known_tenant_portals",
+    up: (db) => {
+      // A KNOWN UTILITY'S POWERCLERK IS NOBODY ELSE'S PORTAL (leak sweep 2026-09-28). Bare /PACIFIC/
+      // and /PGE/ regexes wrote PacifiCorp's tenant as Pacific Gas & Electric's (and Pacific County
+      // PUD's) own portal, and Portland General's as a CA "PGE"'s, into the SHARED knowledge base;
+      // NEM staging then launched it. Clears only seeded/learned rows whose utility is provably not
+      // the tenant's owner (utilityIdentity) — never a human-verified row (rule 3), never a correct one.
+      const r = purgeForeignKnownTenantPortals(db);
+      if (r.cleared.length || r.docsTrimmed.length || r.keptVerified.length) {
+        console.log(`[db] v41: cleared ${r.cleared.length} foreign PowerClerk portal(s), trimmed ${r.docsTrimmed.length} row(s) of foreign utility documents, left ${r.keptVerified.length} verified row(s) alone`);
+      }
+    },
+  },
+  {
+    version: 42,
+    name: "purge_credential_note_segments",
+    up: (db) => {
+      // A PASSWORD NEVER SITS IN A SHARED NOTE (rule 2; forms skeptic K1, 2026-09-28). The write guard
+      // only runs on a write, so a row seeded before it kept a plaintext login pair every org could read
+      // on the knowledge-base page. Drops credential-shaped segments (knowledgeBase.looksLikeCredentialNote)
+      // from UNVERIFIED rows only — a human-verified row is never auto-rewritten (rule 3); its notes are
+      // filtered when served. Counts only in the log — never a segment. The password must still be rotated.
+      const r = purgeCredentialNoteSegments(db);
+      if (r.cleaned.length || r.keptVerified.length) {
+        console.log(`[db] v42: dropped credential-shaped note segment(s) from ${r.cleaned.length} unverified knowledge row(s); ${r.keptVerified.length} verified row(s) left for a person (filtered when served)`);
+      }
     },
   },
 ];

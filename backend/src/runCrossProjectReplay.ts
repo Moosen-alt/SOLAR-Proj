@@ -377,7 +377,7 @@ async function main(): Promise<void> {
     console.log(`\ncreated project ${variant.label}: ${pid} (${variant.homeownerName})`);
 
     const credPortalType = scopeType === "utility" ? "utility" : "AHJ";
-    const fieldValues = resolveRecipeFieldValues(db, project, credPortalType);
+    const fieldValues = resolveRecipeFieldValues(db, project, credPortalType, scopeType === "utility" ? "nem" : null);
     const expected = bExpected(variant, addr, state, utility, fieldValues);
 
     // Decrypted credential, resolved the way the replay benchmark (mirroring

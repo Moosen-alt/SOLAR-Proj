@@ -7,6 +7,120 @@ for the hard rules; this file is the running state.
 > items below are being re-verified against the current code and filed as issues (items
 > already done are dropped). The "open issues" / "next work" lists in this file are
 > history: don't start work from them. Start from an issue. See `CONSTITUTION.md` §3.
+## RELEASE #11.1 LIVE; FOUR NEW-AHJ INTAKES; THREE BUILDS IN FLIGHT (2026-09-29)
+
+Live = `6feaf534` (pinned via `.probe/repin/repin.mjs`, `.probe/release.txt` moved; `.r11` keeps
+cdc5c179). On top of #11: the stepper opens Submit when a ready-to-stage job's gate says "can stage"
+(`stepperStageIndex`, display only — the stage map is unchanged because `qcMayMoveStatus` reads it);
+flat forms fill INSIDE their rows (`formRowGeometry.rowSnapPlacement`, `resolvePlacementLabel`,
+`captionSourceRule`; kill switch `FLAT_FORM_ROW_SNAP=0`); the still-blank card lists one line per
+blank; portal/status headers use the Keel PNG; intake extraction starts at 32000 output tokens for
+text reads too (a live WA set needed 16,470; the 16000 start wasted a 155 s call).
+Verified live after the deploy: Durwood's page shows 3 · Submit CURRENT; his Yamhill building
+application re-filled with every value in its row; the client portal header shows the PNG.
+
+Four intake tests on never-seen AHJs (Monroe OR — the plan set prints "AHJ: CITY OF SMONROE" and it
+sailed to ready_to_stage; Albuquerque NM; Lynden WA; Prosper TX) exposed, in order of cost:
+  1. an AHJ name one letter off the address city is copied faithfully and nothing asks (→ workflow
+     `ahj-near-miss-check`, worktree ahjnm, branch ahj-near-miss: a QC review item on the ahj field);
+  2. flat-form fills on underscore-text lines (Lynden) still struck/overlapped — the signature block
+     drew over "OWNER / AUTHORIZED AGENT" (→ `flat-form-fill-audit`, worktree ffa, branch form-audit);
+  3. research path: a fee answer truncated at max_tokens was stored as found:false (job done, never
+     re-run); an in-flight lookup read as "NOT FOUND YET" for ten minutes; PNM/PSE PowerClerk URLs
+     dropped because their host was not in the search results though the URL was quoted from a
+     fetched page; a seeded profile with no portal suppressed the per-job lookup (Prosper,
+     Albuquerque); a memorised 2014 URL was fetched before search results; Find official form spun
+     four minutes then failed silently (→ `new-ahj-research-love`, worktree lkp, branch lookups-love).
+Queued after those: the plan-review gate for new AHJs (threshold stamp notes like "engineer letter if
+dead load > 5 psf" are evaluated, not read as hedged — `permitPath.HEDGED` treats "if"/"required" as
+hedges; documents on file are mined into cited code facts on SEEDED rows; an AHJ's own document's
+edition outranks the state floor; a review-basis panel), then fees from .xlsx calculators with a
+per-component basis (Albuquerque: $4/module, $4/inverter, $4/kVA, $23.50 admin, 2% tech fee) and
+"filed in the portal" satisfying the application slot. Reviewer reports for the four are the evidence
+(Lynden's gate caught snow 15 psf vs 25 required; Albuquerque's 5 PSF note was on file and ignored).
+Operator ask before the next deploy: `/code-review ultra` on the branch (rule 5 is touched).
+
+## THE STORAGE QUESTION IS ANSWERED, NOT REFUSED (2026-09-28, battery-question)
+
+Live PGE PowerClerk, two supervised learns on release #10, project hasBattery "No": the planner
+decided the REQUIRED select "Energy Storage" → "No" (right) and the learner's battery guard
+refused it as a battery SPEC — `battery_spec_refused label="Energy Storage"` ×4 per run, then
+`required_never_filled page 7 ["Energy Storage"]` on both runs. The yes/no question stayed blank
+(a required miss at review; the recipe could never auto-trust).
+- **One predicate, `shared/src/batteryControls.ts`** — `batteryControlKind(label, {control,
+  options})` → `spec` (asks for a VALUE of the battery: make/model/capacity/quantity/…, a
+  battery's upload) | `declaration` (asks WHETHER there is one: bare "Energy Storage", a Yes/No
+  select, "Will energy storage be installed?", a declaring checkbox) | `program` (Wattsmart —
+  never refused, never forced) | `mention` (an acknowledgment citing the battery requirements).
+  `batteryDeclarationAnswer` answers in the control's own vocabulary; `parseHasBattery` is the
+  one tri-state (backend, learner, replay).
+- **Learner:** `applyFillInner` refuses a spec on a no-battery job and gives a DECLARATION the
+  project's answer whatever the planner said (No / Yes; a declaring checkbox unchecked / checked;
+  a radio option never forced to Yes). `applyBatteryDeclaration` (d3c, after the policy pass)
+  answers a native labelled `<select>` the planner never reached, recorded as
+  `battery declaration: <label> → <answer>`. `collectUnfilledRequired` drops a battery SPEC
+  left blank on a no-battery job (`battery_spec_blank_by_design`) — a declaration or a programme
+  question left blank is still a miss.
+- **Replay:** `skipForNoBattery` / `isBatteryDeclaration` ask the same predicate; a recorded
+  `check` on the declaring checkbox is LEFT UNCHECKED on a no-battery job (it was being executed —
+  the Ivy tick replayed); `resolveValue` answers a declaration Yes on a battery job even when the
+  recipe recorded No (learned on a no-battery job).
+- **Tests:** `batteryGuard.test.ts` (imports the real predicate and drives the real adapters —
+  it used to copy the regexes and could not fail), `batteryQuestion.dom.smoke.ts` (learner, real
+  Chromium, PowerClerk-shaped section with the specs and a sibling Yes/No property question),
+  `batteryDeclaration.dom.smoke.ts` (replay mirror + the tick). Kills: 8 unit reds at integ-11,
+  the learner smoke at integ-11 reproduces the live line, the replay smoke at integ-11 ticks the box.
+- **Named gap (both sides):** a radio group whose options are the bare "Yes"/"No" carries the
+  question only in its group text; neither the fill guard nor replay reads that yet. The
+  declaration pass reads native `<select>`s only (an input-backed widget is the planner's fill
+  through `applyFillInner`, which covers both). Whether PGE's control is native is not recorded
+  in the bundle (`fieldsSeen` says `type:"select"`, which the extractor also uses for widgets).
+- **Verify live on the next PGE learn (no-battery job):** page 7 events show
+  `battery_declaration_answered label="Energy Storage" answer="No"` and no
+  `battery_spec_refused label="Energy Storage"`; `required_never_filled` does not name it.
+
+## ONE CONTACT, ONE IDENTITY + A SERVICE UPGRADE IS A SERVICE LINE (2026-09-28, corvallis-elec-fixes)
+
+Live City of Corvallis electrical learn: the Applicant dialog went in as the homeowner's name /
+mailing address / e-mail beside the company's business name and phone, and "Service 0-200 amps
+(qty)" stayed 0 on a job upgrading to a 200 A main (225 A bus).
+- **Contacts (learner):** the ACA pass reads each contact SECTION by its heading
+  (`shared/src/contactRoles.ts` — Applicant / Contractor / Licensed Professional / Inspection
+  Contact = the filing company on a permit; Owner / Site Contact = the owner; "Optional additional
+  …" and repeated headings left empty; a look-up section is the planner's) and fills Corvallis's
+  **Full Name / Name of Business** boxes (`ContactIdentity.fullName/companyName` ←
+  installerContactName / installerCompanyName). A dialog that refuses its save is reported as
+  refused (`contact_dialog_refused`), an account contact the portal attaches instead is EDITED to
+  the identity, and a **guard before any contact dialog's Continue** (`enforceContactDialogIdentity`)
+  makes every name/business/address/e-mail/phone box the section's identity (prefilled values
+  included), recording each correction bound. Re-open refusal is scoped to sections the pass
+  settled, so Step 4's own Inspection Contact stays the planner's/pass's to fill.
+- **Contacts (replay):** `recipeReplayBinding` **R10** rebinds a dialog step bound to the other
+  identity's key (Applicant dialog `homeownerName` → `installerContactName`; Owner dialog
+  `installerEmail` → `homeownerEmail`; an Owner's business box replays blank). And the replay's
+  own dialog guard (`recipeAdapter.trackContactBlock`) sets every contact box of a dialog opened
+  by a section's Add New / Select from Account / Edit to this project's section identity before
+  the dialog's Continue — the recipe saved from the live run opens the Applicant dialog through
+  Select from Account, whose account prefill is the homeowner, and records only the phone. A
+  framed step or a contact opener (`contactRoles.isContactOpener`, the one predicate) is no longer
+  held to "the page must move" (that recipe stopped at `advance: Select from Account`) — a
+  deliberate narrowing of the desync guard for those clicks; `pageEffect` now counts visible
+  iframes, so a dialog opening/saving reads as an in-page action. Look-up dialogs are never touched.
+- **Service lines:** one count (`batteryServiceFeeder.serviceLineQuantities`): an MPU
+  (`serviceScope.hasMpuScope`, now the ONE copy) adds a line in its main's tier (≤200 A / 201-400 A;
+  the MAIN, never the bus), plus the battery rule (battery + MPU-200 = 2 — a judgement call, see the
+  test). Portal keys `feeLineQuantity:servicesFeeders200A` / `…201to400A`, the PDF services row and
+  the fee sheet read it. Labels: `shared/src/serviceLineLabels.ts` ("Service 0-200 amps (qty)",
+  Marion's "Services 200 amps or less"). The learn types a known count into a service box the
+  planner left; a replay types it into a service box the recipe never recorded (same page as the
+  kVA tier).
+- **Verify live:** the next Corvallis electrical replay/learn — Applicant card = the company's
+  contact; Installation Specifics "Service 0-200 amps (qty)" = 1 on an MPU-to-200 A job.
+- Open: the fee sheet prices a 201-400 A line only when a schedule stores that row (else it is
+  listed unpriced and the total stays unresolved); a >400 A upgrade is always unpriced; the Coos
+  PDF's "400 AMP QTY" row is not mapped; `hasMpuScope` reads only the scope fields
+  (projectDescriptionText/description/scopeText/electricalCalcText/sitePlanNotesText/mpu/
+  serviceUpgrade) — an upgrade stated only on the SLD sheet text is not seen.
 
 ## FEES VERIFY THEMSELVES WHERE A MACHINE CAN, AND A PERSON CONFIRMS IN ONE CLICK (2026-09-27, fees-verify)
 

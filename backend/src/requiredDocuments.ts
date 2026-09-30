@@ -38,9 +38,9 @@ import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
 import { projectDocsByType } from "./projectDocuments";
 import { duplicateUploads, uploadedSubmissionDocuments } from "./submissionDocuments";
-import { filledFormsByDocType, applicationKindForPath, loadStoredTemplates, formAllowedForPath } from "./ahjForms";
+import { filledFormsByDocType, applicationKindForPath, loadStoredTemplates, formAllowedForPath, formContradictsPath } from "./ahjForms";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
-import { resolveEffectiveCodeContext } from "./codeProfiles";
+import { codeLimitProvenance, resolveEffectiveCodeContext } from "./codeProfiles";
 import { findAhjProcessProfile, ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
 import { findKnowledgeForLearn } from "./knowledgeBase";
 import { HttpError } from "./httpError";
@@ -48,10 +48,12 @@ import { applicationProfiles, findApplicationProfile, namedApplicationForm, perm
 import { normalizeAhjName, permitProcessFor, stateRulesFor } from "./permitProcess";
 import { namesPvWorksheet, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import {
-  agencyApplicationForms, issuingAgencyDocumentList, prerequisiteSettled, tracksIssuedByOther, TRACK_FORM_TYPES,
-  type AgencyApplicationForm, type FormTrack,
+  agencyApplicationForms, agencyListNamesDocument, agencyListReplacesLine, agencyRowAppliesToJob, anchorSitesOnce, issuingAgencyDocumentList, prerequisiteSettled, rowBelongsToAuthority, tracksIssuedByOther, TRACK_FORM_TYPES,
+  type AgencyApplicationForm, type AgencyLineStatus, type AgencyLineStatusOf, type FormTrack,
 } from "./applicationDocsAgency";
-import { heldUnfillableAgencyBlanks } from "./ahjForms";
+import { filledApplicationForms, heldUnfillableAgencyBlanks } from "./ahjForms";
+import { requirementSlots } from "./requirementSlots";
+import { stageAcquiresForm, stageAcquisitionFor, type StageAcquiredForm, type StageAcquisition } from "./formAcquisitionPlan";
 
 export interface RequiredDocItem {
   /** project_documents.doc_type this maps to (or a synthetic key for path docs). */
@@ -203,6 +205,10 @@ export interface DocumentInventory {
   presence: DocPresence[];
   missingBlocking: DocPresence[];
   missingAdvisory: DocPresence[];
+  /** Set when the application set is EMPTY because nothing is known about this AHJ (structure
+   *  unknown, no flags, no cited documents, no KB list, no issuing agency): the sentence the packet
+   *  and the gate show instead of an all-clear. Advisory — it never blocks (NO SIGNAL, NO DEMAND). */
+  applicationSetUnknown?: string;
 }
 
 function snap(project: ProjectRecord, key: string): string {
@@ -284,6 +290,9 @@ export function requiredDocuments(
   project: ProjectRecord,
   opts: {
     stampThresholdKwDc?: number | null;
+    /** permitPath.resolveStampRequirement: absent = not confirmed (an advisory, never a block). */
+    stampThresholdConfirmed?: boolean;
+    stampThresholdBasis?: string;
     jurisdictionLabel?: string;
     processProfileRequiresStamp?: boolean;
     /** Resolved by the caller (documentInventory / form acquisition), which has
@@ -311,6 +320,8 @@ export function requiredDocuments(
   // a block. A prescriptive project in a jurisdiction with no rule is never nagged.
   const stamp = resolveStampRequirement(project, {
     stampThresholdKwDc: opts.stampThresholdKwDc,
+    stampThresholdConfirmed: opts.stampThresholdConfirmed,
+    stampThresholdBasis: opts.stampThresholdBasis,
     jurisdictionLabel: opts.jurisdictionLabel,
     processProfileRequiresStamp: opts.processProfileRequiresStamp,
   });
@@ -685,11 +696,22 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
   // single global assumption. Never fatal — an unknown jurisdiction simply falls
   // back to the permit-path trigger.
   let stampThresholdKwDc: number | null = null;
+  let stampThresholdConfirmed = false;
+  let stampThresholdBasis = "";
   let jurisdictionLabel = "";
   try {
     const ctx = resolveEffectiveCodeContext(db, project.state || "", project.ahj || "");
     const t = ctx.prescriptive?.engineerStampOverKwDc;
-    if (typeof t === "number" && Number.isFinite(t)) stampThresholdKwDc = t;
+    if (typeof t === "number" && Number.isFinite(t)) {
+      stampThresholdKwDc = t;
+      // WHOSE NUMBER (codeLimitProvenance): only the AHJ's own cited row or a person-verified row is
+      // a requirement; a seeded state-level note is an advisory the operator confirms.
+      const prov = codeLimitProvenance(db, { state: project.state || "", ahj: project.ahj || "" }, "engineerStampOverKwDc");
+      stampThresholdConfirmed = prov.confirmed;
+      stampThresholdBasis = prov.layer === "state"
+        ? `the seeded ${prov.state || "state"} state-level reference note`
+        : `${project.ahj || "the AHJ"}'s seeded profile (no source cited)`;
+    }
     jurisdictionLabel = ctx.ahj || ctx.state || "";
   } catch { /* profile data optional */ }
   // The learned AHJ process profile can also flag a stamp (hearsay → advisory).
@@ -735,7 +757,7 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
       { ahjKnowledgeUnavailable: true },
     );
   }
-  const docOpts = { stampThresholdKwDc, jurisdictionLabel, processProfileRequiresStamp, application };
+  const docOpts = { stampThresholdKwDc, stampThresholdConfirmed, stampThresholdBasis, jurisdictionLabel, processProfileRequiresStamp, application };
   const baselineItems = requiredDocuments(project, docOpts);
   // A HELD BUT UNFILLABLE AGENCY APPLICATION IS STILL REQUIRED — AS A FILE TO ATTACH. The row
   // keeps blocking exactly as before; its words stop promising a fill that cannot happen.
@@ -767,6 +789,22 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
     }
   } catch { /* KB optional */ }
   const required = [...baselineItems, ...kbItems];
+  // NOTHING KNOWN IS NOT NOTHING OWED (leak sweep unknown-as-fact-unknown-ahj-green-all-clear). NO
+  // SIGNAL, NO DEMAND keeps an unnamed application from BLOCKING — but an empty application set
+  // because nobody knows this AHJ rendered the pass-green "Every required document is on file"
+  // (Waltham MA: building + wires, in person). Said here, once, for the packet and the gate.
+  let applicationSetUnknown: string | undefined;
+  try {
+    const flags = application.processFlags ?? {};
+    const anyFlag = Boolean(flags.requiresBuildingPermitApplication || flags.requiresElectricalPermitApplication || flags.requiresSolarChecklist);
+    const citedDocs = (permitProcessFor(project)?.permits ?? []).some((p) =>
+      Array.isArray(p.documents?.value) && p.documents!.value.length > 0 && /^https?:\/\//i.test(String(p.documents?.sourceUrl || "")));
+    if (!requiredApplicationDocs(project, application).length && (application.permitStructure ?? "unknown") === "unknown"
+      && !anyFlag && !citedDocs && !kbItems.length && !application.issuingAgencies) {
+      const where = (project.ahj || "").trim() || "this AHJ";
+      applicationSetUnknown = `Which permit application(s) ${where} requires is not known — no cited agency page, person-verified record, state rule or seeded process profile names them, so nothing here demands one and nothing here has checked. Find ${where}'s own application form(s) and attach them before submitting.`;
+    }
+  } catch { /* the lookups are optional; an error here leaves the verdict as it was */ }
   // A doc type whose upload was the SAME FILE as another's (submissionDocuments.duplicateUploads) is
   // attached once, under the first type. Its row is FLAGGED rather than silently satisfied or
   // silently blocking: one datasheet can legitimately cover both (an AC module's sheet includes its
@@ -806,6 +844,7 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
     presence,
     missingBlocking: presence.filter((p) => !p.present && p.blocking),
     missingAdvisory: presence.filter((p) => !p.present && !p.blocking),
+    ...(applicationSetUnknown ? { applicationSetUnknown } : {}),
   };
 }
 
@@ -841,30 +880,9 @@ export interface RequiredListCheck {
   missing: RequiredListItem[];
 }
 
-/** A requirement's prose -> the slot(s) that would hold it. Ordered specific-first; "" = none. */
-const REQUIREMENT_SLOT_PATTERNS: Array<{ re: RegExp; docTypes: string[] }> = [
-  { re: /electrical[\w\s/&()-]{0,40}application|renewable\s*energy[\w\s/&()-]{0,20}electrical|wires\s+(department\s+)?(permit\s+)?application/i, docTypes: ["electrical_application"] },
-  { re: /(building|structural)\s*(permit\s*)?application|solar application|building permit application/i, docTypes: ["building_application", "permit_application"] },
-  { re: /checklist|worksheet|eligibilit/i, docTypes: ["solar_checklist", "pv_worksheet"] },
-  { re: /(permit|completed|signed)\s*application|application\s*(form|packet)|^application\b/i, docTypes: ["permit_application", "building_application"] },
-  { re: /stamp|sealed|seal\b|engineer(ing|'s|ed)?\s+letter|structural\s+(letter|calc|analysis|certification|engineering)|pe\s+letter|letter\s+(stamped|from)\s+(by\s+)?an?\s+engineer/i, docTypes: ["structural_letter", "stamped_plans", "engineering_letter"] },
-  { re: /site\s*plan|plot\s*plan|roof\s*plan|site\/roof|fire\s*(access\s*)?pathway\s*plan|roof\s*layout/i, docTypes: ["site_plan"] },
-  { re: /single[-\s]?line|one[-\s]?line|three[-\s]?line|3[-\s]?line|\bsld\b|electrical\s+diagram|wiring\s+diagram/i, docTypes: ["sld"] },
-  { re: /inverter\s*(spec|data|cut|sheet)|micro-?inverter\s*(spec|data|sheet)/i, docTypes: ["inverter_spec"] },
-  { re: /module\s*(spec|data|cut|sheet)|panel\s*(spec|data|cut)\s*sheet|spec(ification)?\s*sheets?|data\s*sheets?|cut\s*sheets?|equipment\s+spec/i, docTypes: ["module_spec"] },
-  { re: /label|placard/i, docTypes: ["labels"] },
-  { re: /utility\s+bill|electric\s+bill|power\s+bill/i, docTypes: ["utility_bill"] },
-  { re: /meter\s+photo|photo\s+of\s+(the\s+)?meter/i, docTypes: ["meter_photo"] },
-  { re: /plan\s*set|construction\s+(documents|drawings|plans)|\bplans\b|drawings|full\s+set|set\s+of\s+plans|structural\s+plans/i, docTypes: ["plan_set", "combined_plan_set", "full_plan_set"] },
-];
-
-/** The slot(s) a requirement's prose would be held in — [] when this product holds no such slot. */
-export function requirementSlots(text: string): string[] {
-  const t = String(text || "").trim();
-  if (!t) return [];
-  const hit = REQUIREMENT_SLOT_PATTERNS.find((p) => p.re.test(t));
-  return hit ? hit.docTypes : [];
-}
+// requirementSlots lives in the leaf module ./requirementSlots (applicationDocs reads it too; this module
+// imports applicationDocs, so the vocabulary cannot live here without a cycle). Re-exported for callers.
+export { requirementSlots };
 
 function requirementSkipReason(text: string, path: "prescriptive" | "engineered" | "unknown", standardReview: boolean): string {
   const t = String(text || "").toLowerCase();
@@ -878,6 +896,102 @@ function requirementSkipReason(text: string, path: "prescriptive" | "engineered"
     if (prescriptiveOnly && !engineeredOnly && path === "engineered") return "prescriptive-path item; this project is engineered";
   }
   return "";
+}
+
+/**
+ * THE STATUS OF AN ISSUING-AGENCY LIST LINE (agency-apps-close MF3), read from the ONE inventory the
+ * fill and the gate already use — never from whether a form is known by name:
+ *   attached       — an upload holds the line's slot (present()'s first answer);
+ *   filled         — a filled file ON DISK for this path holds it (filledFormsByDocType: off-path
+ *                    and orphaned fills dropped — present()'s second answer);
+ *   on file        — the fill's own list (loadStoredTemplates) holds a template for the slot that
+ *                    the path does not contradict (formContradictsPath with the stored kind — the
+ *                    presence / packaging gate; on an unconfirmed path the fill waits for it);
+ *   held, not fillable — the issuing agency's blank is stored but nothing maps
+ *                    (heldUnfillableAgencyBlanks, the same list the fill reports needs_manual);
+ *   not yet on file — none of these.
+ * A step at another office (no slot) has no status here. Read by requiredListCheck (docs.complete)
+ * and by the packet door (repository.assembleApplicationDocumentPackage), so the manifest and the QC
+ * row print the same words the gate's presence rows mean.
+ *
+ * PER FORM (agency-apps-close2 rule 2 — the skeptic's M3: two Douglas County applications for one track,
+ * one held, and the SLOT's word printed on both). A line that names a specific form ("form") reads
+ * THAT form's template: the stored rows matched to it by source URL, then the blank's sha256 (a curated
+ * seed's hash), then its form name; "filled" only when a filled PDF of one of THOSE templates is on disk
+ * for this path (filledApplicationForms: off-path and orphaned fills dropped). An upload holds the whole
+ * slot and reads "attached" on every line of it — which form it is, only a person can say. The generic
+ * "<agency>'s application" line (no form named) keeps the slot's answer; so does the checklist line.
+ */
+export function agencyListStatusResolver(db: AppDb, project: ProjectRecord): AgencyLineStatusOf {
+  // Read on the FIRST line asked — a job whose lookup names no other agency (every QC run of every
+  // other project) never loads the template blobs for nothing.
+  let inventory: {
+    permitPath: "prescriptive" | "engineered" | "unknown";
+    uploads: Record<string, string>;
+    filled: Record<string, string>;
+    filledTemplateIds: Set<string>;
+    stored: ReturnType<typeof loadStoredTemplates>;
+    blanks: ReturnType<typeof heldUnfillableAgencyBlanks>;
+  } | null = null;
+  const read = () => {
+    if (inventory) return inventory;
+    const permitPath = resolvePermitPath(project).path;
+    let uploads: Record<string, string> = {};
+    try { uploads = uploadedSubmissionDocuments(db, project); } catch { uploads = {}; }
+    let filled: Record<string, string> = {};
+    try { filled = filledFormsByDocType(db, project.id, permitPath); } catch { filled = {}; }
+    const filledTemplateIds = new Set<string>();
+    try {
+      for (const f of filledApplicationForms(db, project.id, permitPath)) {
+        const id = f.filePath.replace(/^.*[\\/]/, "").replace(/\.pdf$/i, "");
+        if (id.startsWith("tmpl-")) filledTemplateIds.add(id.slice(5));
+      }
+    } catch { /* nothing filled yet */ }
+    let stored: ReturnType<typeof loadStoredTemplates> = [];
+    try { stored = loadStoredTemplates(db, project.ahj, project.state); } catch { stored = []; }
+    let blanks: ReturnType<typeof heldUnfillableAgencyBlanks> = [];
+    try { blanks = heldUnfillableAgencyBlanks(db, project); } catch { blanks = []; }
+    inventory = { permitPath, uploads, filled, filledTemplateIds, stored, blanks };
+    return inventory;
+  };
+  const norm = (s: unknown) => String(s ?? "").trim().toLowerCase();
+  // C1 (agency-contain): a NAME makes a stored row "this form" only when this job may use that row at all
+  // (agencyRowAppliesToJob) — one anchor-site read per agency, on first need.
+  const anchorsByAgency = new Map<string, () => ReadonlySet<string>>();
+  const anchorsFor = (agency: string) => {
+    if (!anchorsByAgency.has(agency)) anchorsByAgency.set(agency, anchorSitesOnce(project, agency));
+    return anchorsByAgency.get(agency)!;
+  };
+  return (item) => {
+    const types = item.docTypes;
+    if (!types.length) return null;
+    // RULE 1 (agency-apps-close2): a PDF the lookup cited that could not be confirmed as the agency's is
+    // never on file, never filled — whatever holds the slot, it is not this document.
+    if (item.form && !item.form.confirmed) return "cited_unconfirmed";
+    const { permitPath, uploads, filled, filledTemplateIds, stored, blanks } = read();
+    if (types.some((t) => uploads[t])) return "attached";
+    const form = item.form;
+    if (form) {
+      // THIS form's templates: URL first, then the blank's hash (both name the document itself, whoever
+      // it is stored under), then the form's own name — a name only among the AGENCY's own rows (the
+      // AHJ's own same-named application is not the agency's form).
+      const isThisForm = (t: { formType: string; sourceUrl: string; sourceHash: string; formName: string; owner: string; verified: boolean }): boolean =>
+        types.includes(t.formType || "permit_application")
+        && ((Boolean(form.sourceUrl) && t.sourceUrl === form.sourceUrl) || (Boolean(form.sha) && t.sourceHash === form.sha)
+          || (Boolean(norm(form.formName)) && norm(t.formName) === norm(form.formName) && Boolean(item.agency) && rowBelongsToAuthority(t.owner, String(item.agency))
+            && agencyRowAppliesToJob(project, String(item.agency), { sourceUrl: t.sourceUrl, sourceHash: t.sourceHash, verified: t.verified }, anchorsFor(String(item.agency)))));
+      const mine = stored.filter((t) => isThisForm({ formType: t.formType, sourceUrl: t.sourceUrl, sourceHash: t.sourceHash, formName: t.def.formName, owner: t.authority, verified: t.verified }));
+      const myBlanks = blanks.filter((b) => isThisForm({ ...b, owner: b.agency }));
+      if (mine.some((t) => filledTemplateIds.has(t.templateId))) return "filled";
+      if (mine.some((t) => !formContradictsPath(t.def.formName, permitPath, t.applicationKind))) return "on_file";
+      if (myBlanks.some((b) => !formContradictsPath(b.formName, permitPath, b.applicationKind))) return "held_not_fillable";
+      return "not_on_file";
+    }
+    if (types.some((t) => filled[t])) return "filled";
+    if (stored.some((t) => types.includes(t.formType || "permit_application") && !formContradictsPath(t.def.formName, permitPath, t.applicationKind))) return "on_file";
+    if (blanks.some((b) => types.includes(b.formType) && !formContradictsPath(b.formName, permitPath, b.applicationKind))) return "held_not_fillable";
+    return "not_on_file";
+  };
 }
 
 /** The per-job lookup's cited document list (every permit's, deduped), or []. */
@@ -912,39 +1026,66 @@ export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: 
   let texts: string[] = [];
   // Items with a KNOWN slot (the issuing agency's list names its own slots) or a step at another
   // office (a prerequisite, settled by the operator's zoning answer — not a file).
-  const structured = new Map<string, { docTypes: string[]; prerequisite: boolean }>();
+  const structured = new Map<string, { docTypes: string[]; prerequisite: boolean; unconfirmed?: { agency: string }; formStatus?: AgencyLineStatus }>();
   const found = lookupRequiredList(project);
   // THE ISSUING AGENCY'S LIST (applicationDocsAgency.issuingAgencyDocumentList): where the lookup
   // cites another agency as a permit's issuer, the job's list names THAT agency's applications, the
   // state checklist on the prescriptive path and the city's prerequisite step.
   let agencyList: ReturnType<typeof issuingAgencyDocumentList> = null;
-  try { agencyList = issuingAgencyDocumentList(project); } catch { agencyList = null; }
+  try { agencyList = issuingAgencyDocumentList(project, agencyListStatusResolver(db, project)); } catch { agencyList = null; }
   const addAgencyItems = (onlyUncovered: boolean): void => {
+    // "Uncovered" by the LOOKUP's own list — never by an agency line added a moment ago: each of the
+    // agency's forms for a track is its own line (two applications, two statuses — agency-apps-close2
+    // rule 2), and a cited-to-confirm PDF is named beside the agency's confirmed form (rule 1).
+    const lookupTexts = [...texts];
     for (const item of agencyList?.items ?? []) {
-      if (onlyUncovered && item.docTypes.length && texts.some((t) => requirementSlots(t).some((s) => item.docTypes.includes(s)))) continue;
+      if (onlyUncovered && item.docTypes.length && lookupTexts.some((t) => requirementSlots(t).some((s) => item.docTypes.includes(s)))) continue;
       texts.push(item.text);
-      structured.set(item.text, { docTypes: item.docTypes, prerequisite: item.role === "prerequisite" });
+      structured.set(item.text, {
+        docTypes: item.docTypes, prerequisite: item.role === "prerequisite",
+        ...(item.form && !item.form.confirmed ? { unconfirmed: { agency: String(item.agency || "") } } : {}),
+        // A line naming ONE form carries that form's own status (rule 2); docs.complete reads it.
+        ...(item.form?.confirmed && item.status ? { formStatus: item.status } : {}),
+      });
     }
+  };
+  // A KNOWN list only: a hand-written profile, or the seeded process profile's own lines. The
+  // generic fallback SYNTHESIZES a list for an AHJ nobody has looked up — that is not a list the
+  // AHJ published, and the row must say so rather than pass on it.
+  const knownProfile = (): { label: string; lines: string[] } | null => {
+    let profile: ReturnType<typeof findApplicationProfile> | null = null;
+    try { profile = findApplicationProfile(project); } catch { profile = null; }
+    if (!profile || !(profile.id.startsWith("process-") || (applicationProfiles.includes(profile) && profile.id !== "oregon-generic-epermitting"))) return null;
+    return {
+      label: profile.id.startsWith("process-") ? `the seeded ${project.ahj || "AHJ"} process profile (not confirmed on an agency page)` : `the ${profile.name} profile`,
+      lines: profile.requiredDocuments.filter((t) => String(t || "").trim()),
+    };
   };
   if (found.items.length) {
     source = "lookup";
     sourceLabel = `the per-job process lookup (cited: ${found.sourceUrl})`;
-    texts = found.items;
+    // A raw entry that IS one of the agency list's PDFs gives way to the agency's line for it.
+    texts = agencyList ? found.items.filter((t) => !agencyListNamesDocument(agencyList!, t)) : found.items;
     addAgencyItems(true);
   } else if (agencyList) {
     source = "lookup";
     sourceLabel = `the per-job process lookup's issuing agenc${agencyList.agencies.length > 1 ? "ies" : "y"} (${agencyList.agencies.join(", ")}${agencyList.sourceUrl ? `, cited: ${agencyList.sourceUrl}` : ""})`;
     addAgencyItems(false);
+    // SPLIT AGENCIES (agency-apps-close MF2): the agency's list replaces the AHJ's lines only for the
+    // TRACK that agency issues. The AHJ's own known lines for the tracks it issues itself stay — Coos
+    // Bay's building application where Coos County issues only the electrical permit.
+    const own = knownProfile();
+    const kept = own ? own.lines.filter((l) => !agencyListReplacesLine(agencyList!, l)) : [];
+    if (own && kept.length) {
+      sourceLabel += ` and ${own.label}`;
+      texts.push(...kept);
+    }
   } else {
-    let profile: ReturnType<typeof findApplicationProfile> | null = null;
-    try { profile = findApplicationProfile(project); } catch { profile = null; }
-    // A KNOWN list only: a hand-written profile, or the seeded process profile's own lines. The
-    // generic fallback SYNTHESIZES a list for an AHJ nobody has looked up — that is not a list the
-    // AHJ published, and the row must say so rather than pass on it.
-    if (profile && (profile.id.startsWith("process-") || (applicationProfiles.includes(profile) && profile.id !== "oregon-generic-epermitting"))) {
+    const own = knownProfile();
+    if (own) {
       source = "profile";
-      sourceLabel = profile.id.startsWith("process-") ? `the seeded ${project.ahj || "AHJ"} process profile (not confirmed on an agency page)` : `the ${profile.name} profile`;
-      texts = profile.requiredDocuments.filter((t) => String(t || "").trim());
+      sourceLabel = own.label;
+      texts = own.lines;
     }
   }
   if (source === "unknown") return { source, sourceLabel: "", items: [], missing: [] };
@@ -959,9 +1100,29 @@ export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: 
       const status = prerequisiteSettled(project.parserSnapshot);
       return { text, docTypes: [], present: status.settled, via: status.via || "not yet answered — asked on the project (zoning sign-off question)" };
     }
+    // A PDF CITED BUT NOT CONFIRMED AS THE AGENCY'S (agency-apps-close2 rule 1) is never present — it is
+    // not the document in any slot. It blocks only as OWED: while nothing holds the track's slot it is
+    // missing; once the slot holds the agency's application (a confirmed form filled, an upload), it is
+    // set aside with the reason.
+    if (known?.unconfirmed) {
+      const agency = known.unconfirmed.agency || "the issuing agency";
+      const holder = known.docTypes.map((t) => presenceByType.get(t)).find((p) => p?.present);
+      const uploaded = known.docTypes.find((t) => uploads[t]);
+      if (holder || uploaded) {
+        return { text, docTypes: known.docTypes, present: false, via: "", skipped: `cited, not confirmed as ${agency}'s form — ${agency}'s application for this track is already ${holder?.via || (uploaded ? "attached" : "on file")}` };
+      }
+      return { text, docTypes: known.docTypes, present: false, via: `cited, not confirmed as ${agency}'s form — confirm it (or attach ${agency}'s own) before it is used` };
+    }
     const skipped = requirementSkipReason(text, path, standardReview);
     const docTypes = known?.docTypes ?? requirementSlots(text);
     if (skipped) return { text, docTypes, present: false, via: "", skipped };
+    // ONE FORM, ITS OWN ANSWER (agency-apps-close2 rule 2): a line naming a specific agency form is
+    // present only when THAT form is filled for this path, or the slot holds an upload — never because
+    // the slot holds the agency's OTHER form of the same track.
+    if (known?.formStatus) {
+      const st = known.formStatus;
+      return { text, docTypes, present: st === "filled" || st === "attached", via: st === "filled" ? "filled form" : st === "attached" ? "attached file" : "" };
+    }
     for (const t of docTypes) {
       const p = presenceByType.get(t);
       if (p?.present) return { text, docTypes, present: true, via: p.via || "attached" };
@@ -1044,10 +1205,56 @@ export function missingFilledAtStaging(db: AppDb, project: ProjectRecord, missin
  * lane test pins that instead of trusting it. A row a person must supply (a PE letter, a plan
  * sheet, a NEM spec) is always owed.
  */
-export function owedMissingDocuments(db: AppDb, project: ProjectRecord, inventory: DocumentInventory): { owed: DocPresence[]; filledAtStaging: DocPresence[] } {
+export function owedMissingDocuments(db: AppDb, project: ProjectRecord, inventory: DocumentInventory): OwedDocuments {
   const produced = missingFilledAtStaging(db, project, inventory.missingBlocking);
   const filledAtStaging = inventory.missingBlocking.filter((d) => d.lane === "permit" && produced.has(d));
-  return { owed: inventory.missingBlocking.filter((d) => !filledAtStaging.includes(d)), filledAtStaging };
+  const rest = inventory.missingBlocking.filter((d) => !filledAtStaging.includes(d));
+  // THE THIRD BUCKET (gates-proper C1): a permit-lane application Stage DOWNLOADS and fills itself —
+  // the issuing agency's curated seed, a cited agency PDF the model may map, the AHJ's own curated
+  // seed / the BCD 5952, or paid research on an open cooldown (formAcquisitionPlan.stageAcquiresForm,
+  // the same plan the acquisition executes). Michael's Marion B-01S / E-01 held staging as "Attach or
+  // split out" while Stage fetched them in 1.5 s. prepareSubmission's post-fill count is still the hard
+  // line: a download that fails, or research that finds nothing, is refused there, in words.
+  const acquiredVia = new Map<DocPresence, StageAcquiredForm>();
+  let acq: StageAcquisition | null = null;
+  for (const d of rest) {
+    if (d.lane !== "permit" || !isApplicationFormRow(d)) continue;
+    acq ??= stageAcquisitionFor(db, project);
+    const got = stageAcquiresForm(db, project, d.docType, d.applicationKind, acq);
+    if (got) acquiredVia.set(d, got);
+  }
+  const acquiredAtStaging = rest.filter((d) => acquiredVia.has(d));
+  return { owed: rest.filter((d) => !acquiredVia.has(d)), filledAtStaging, acquiredAtStaging, acquiredVia };
+}
+
+export interface OwedDocuments {
+  /** What the operator must supply before Stage can succeed. */
+  owed: DocPresence[];
+  /** Missing now; the staging-time fill produces it from a stored template. */
+  filledAtStaging: DocPresence[];
+  /** Missing now; Stage downloads (or researches) the blank and fills it — prepareSubmission's
+   *  post-fill count still refuses if that comes back empty. */
+  acquiredAtStaging: DocPresence[];
+  acquiredVia: Map<DocPresence, StageAcquiredForm>;
+}
+
+/** An application-family row (a form the system acquires and fills), not a file a person supplies. */
+export function isApplicationFormRow(d: Pick<DocPresence, "docType" | "altDocTypes">): boolean {
+  return [d.docType, ...(d.altDocTypes || [])].some((k) => APPLICATION_DOC_TYPES.has(k));
+}
+
+/**
+ * WHAT THE OPERATOR DOES ABOUT AN OWED DOCUMENT — said on the row, so the gate, the Stage reason and
+ * the 409 say the same thing. A form the system acquires and fills, that no free source or research
+ * pass will get, is a form to FIND (App Docs → Find missing official forms) or a blank to upload — not
+ * something to "attach or split out" (the old wording sent the operator to split a plan set for the
+ * county's application). Anything else (a plan sheet, a PE letter, a spec, a bill) is attached or
+ * split out of the plan set.
+ */
+export function owedDocumentAction(d: Pick<DocPresence, "docType" | "altDocTypes" | "lane">): string {
+  return d.lane === "permit" && isApplicationFormRow(d)
+    ? "find the official form (App Docs → Find missing official forms) or upload the blank"
+    : "attach it or split it out of the plan set";
 }
 
 // ---------------------------------------------------------------------------

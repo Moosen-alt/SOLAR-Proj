@@ -1,18 +1,37 @@
 import type { ProjectRecord } from "../../shared/src/types";
-import { classifyRoofCovering, oregonRoofingRowQualifies } from "./roofCovering";
+import { assumedRoofLayersNote, classifyRoofCovering, oregonRoofingRow, oregonRoofingRowQualifies } from "./roofCovering";
+import { structureDescriptionOf } from "./applicationDocsAgency";
 type Answer = "Yes" | "No" | "";
 type Fact = boolean | null;
 const all = (...v: Fact[]): Fact => v.includes(false) ? false : v.includes(null) ? null : true;
 const any = (...v: Fact[]): Fact => v.includes(true) ? true : v.includes(null) ? null : false;
 
-/** BCD 5952 compound statements. A numeric fact alone does not establish a
- * separate code-compliance clause. Unknown remains blank, never a false No. */
-export function bcdChecklistAnswers(project: ProjectRecord): Record<string, Answer> {
-  const s = project.parserSnapshot ?? {};
+/** The snapshot readers every BCD 5952 row answers from (one set, so the answers and the named
+ *  failing clauses cannot read a fact two ways). */
+function snapshotReaders(project: Pick<ProjectRecord, "parserSnapshot">) {
+  const s = (project.parserSnapshot ?? {}) as Record<string, unknown>;
   const str = (k: string) => String(s[k] ?? "").trim().toLowerCase();
   const flag = (k: string): Fact => /^(yes|true)$/.test(str(k)) ? true : /^(no|false)$/.test(str(k)) ? false : null;
   const n = (k: string) => { const m = str(k).match(/^\s*(\d+(?:\.\d+)?)/); return m ? Number(m[1]) : null; };
   const max = (k: string, limit: number): Fact => n(k) == null ? null : n(k)! <= limit;
+  return { s, str, flag, n, max };
+}
+
+/** METHOD 2 IS THE STANDING-SEAM METAL CLAMP METHOD — a roof the classifier (roofCovering.ts, the one
+ *  predicate) recognises as any other covering answers it No, never "unknown" (dry-run 2026-09-28 B4:
+ *  on a composition-shingle roof it stayed null, so a failed Method 1 printed the attachment row
+ *  BLANK instead of No, and no question could ever fill it). Metal, or a covering the documents do not
+ *  name, keeps the stated standing-seam answer (null when nobody stated one). */
+function method2Fact(project: Pick<ProjectRecord, "parserSnapshot">): Fact {
+  const { s, flag } = snapshotReaders(project);
+  const family = classifyRoofCovering(s.roofMaterial, s.roofMaterialSubtype).family;
+  return family === "metal" || family === "unknown" ? flag("standingSeamMethod2Compliant") : false;
+}
+
+/** BCD 5952 compound statements. A numeric fact alone does not establish a
+ * separate code-compliance clause. Unknown remains blank, never a false No. */
+export function bcdChecklistAnswers(project: Pick<ProjectRecord, "parserSnapshot">): Record<string, Answer> {
+  const { s, str, flag, n, max } = snapshotReaders(project);
   const frame = str("framingType");
   const truss = all(frame ? /truss/.test(frame) : null, max("roofRafterSpacing", 24));
   const rafter = all(frame ? /rafter/.test(frame) : null, max("roofRafterSpacing", 24), flag("rafterExceptionCompliant"));
@@ -33,7 +52,7 @@ export function bcdChecklistAnswers(project: ProjectRecord): Record<string, Answ
     all(spaced <= 48, max("snow", 36),
       any(flag("attachmentsOutsideEdgeZone"), max("attachmentEdgeSpacingIn", 24)),
       exposure === "B" ? max("windSpeed", 120) : exposure === "C" ? max("windSpeed", 110) : null));
-  const method2 = flag("standingSeamMethod2Compliant");
+  const method2 = method2Fact(project);
   // The height row is ONE compound statement ("no more than 18 inches … per the figures"). The
   // operator's single answer to that statement (moduleHeightFiguresCompliant — an intake
   // question) settles it; otherwise both stated facts must.
@@ -58,24 +77,124 @@ export function bcdChecklistAnswers(project: ProjectRecord): Record<string, Answ
 // roof material WAS parsed ("Composition Shingle"); the operator read the blank row beside the
 // form's own metal/standing-seam wording as "it's filling in metal roofing". Name the one fact
 // that is missing, and where it will come from.
-export function bcd5952MissingFacts(project: ProjectRecord): Array<{ row: string; missing: string }> {
+export function bcd5952MissingFacts(project: Pick<ProjectRecord, "parserSnapshot">): Array<{ row: string; missing: string }> {
   const s = project.parserSnapshot ?? {};
   const has = (k: string) => String(s[k] ?? "").trim() !== "";
   const a = bcdChecklistAnswers(project);
   const out: Array<{ row: string; missing: string }> = [];
   if (!a.designInstallation) out.push({ row: "designInstallation", missing: "gravity/wind design and manufacturer-instructions statements" });
-  if (!a.framing) out.push({ row: "framing", missing: has("framingType") ? "framing spacing / rafter exception" : "framing type (truss or rafter) and spacing" });
-  if (!a.roofing) {
-    const roof = String(s.roofMaterial ?? "").trim();
+  if (!a.framing) {
     out.push({
-      row: "roofing",
-      missing: !roof ? "roof material"
-        : /compos|asphalt|wood|shake/i.test(roof) ? `roof layer count (the plan states a ${roof} roof but not how many layers — operator question)`
-        : `a roof covering the row admits (plan states ${roof})`,
+      row: "framing",
+      missing: rafterExceptionAsked(project) ? "rafter exception (ORSC R324.4.1 Exception 1.4-1.6) — operator question"
+        : has("framingType") ? "framing spacing / rafter exception" : "framing type (truss or rafter) and spacing",
     });
+  }
+  if (!a.roofing) {
+    // A composition / wood roof never lands here any more: its unstated layer count is assumed
+    // compliant (roofCovering.oregonRoofingRow, operator ruling 2026-09-28) and named by
+    // bcd5952AssumedFacts instead.
+    const roof = String(s.roofMaterial ?? "").trim();
+    out.push({ row: "roofing", missing: !roof ? "roof material" : `a roof covering the row admits (plan states ${roof})` });
   }
   if (!a.heightFigures) out.push({ row: "heightFigures", missing: "module height above the roof (18 in or less, per the figures) — operator question" });
   if (!a.attachments) out.push({ row: "attachments", missing: "attachment method compliance" });
+  return out;
+}
+
+// ── A ROW THAT PASSED ON A STANDING ASSUMPTION, SAID ────────────────────────────────────
+// A Yes printed on an operator default must be visible as one, beside the rows that still need
+// evidence and the rows that answer No — so a person reading the fill note can see what was
+// assumed and overrule it (answer the layer count on the project).
+export function bcd5952AssumedFacts(project: Pick<ProjectRecord, "parserSnapshot">): Array<{ row: string; assumed: string }> {
+  const s = project.parserSnapshot ?? {};
+  const out: Array<{ row: string; assumed: string }> = [];
+  const layers = bcdChecklistAnswers(project).roofing === "Yes" ? assumedRoofLayersNote(s.roofMaterial, s.roofMaterialSubtype, s.roofLayers) : "";
+  if (layers) out.push({ row: "roofing", assumed: `roofing row: Yes — ${layers}` });
+  return out;
+}
+
+/** The rafter branch of the framing row is waiting on ONE fact no document states: rafters at 24 in
+ *  or less whose R324.4.1 Exception 1.4-1.6 compliance nobody has answered (the parser is told to
+ *  omit it when unknown). Asked as a form-fact question (formFactQuestions), named in the fill note. */
+function rafterExceptionAsked(project: Pick<ProjectRecord, "parserSnapshot">): boolean {
+  const { str, flag, max } = snapshotReaders(project);
+  const frame = str("framingType");
+  return /rafter/.test(frame) && !/truss/.test(frame) && max("roofRafterSpacing", 24) === true && flag("rafterExceptionCompliant") === null;
+}
+
+// ── A ROW THAT ANSWERS "NO", WITH THE CLAUSE THAT FAILED ────────────────────────────────
+// The form says: "If No is selected for any of the above, the installation may not be submitted
+// using the prescriptive path." A No row used to go out SILENTLY (bcd5952MissingFacts names only
+// blank rows) — and the attachment row, whose Method 1 failed on a 48-in spacing at 120 mph
+// Exposure C, printed blank because Method 2 read "unknown" on a shingle roof (dry-run 2026-09-28
+// B4). One list, read by the fill note and by the submit gate's permit-path check (repository.ts),
+// which WARNS naming the clause when the path is prescriptive. Operator ruling pending: a 5952 No row
+// warns, it does not route engineered (permitPath.ts screens on the roofing row only).
+export interface Bcd5952FailedRow { row: "designInstallation" | "framing" | "roofing" | "heightFigures" | "attachments"; clause: string }
+export function bcd5952FailedRows(project: Pick<ProjectRecord, "parserSnapshot">): Bcd5952FailedRow[] {
+  const a = bcdChecklistAnswers(project);
+  const { s, str, flag, n } = snapshotReaders(project);
+  const out: Bcd5952FailedRow[] = [];
+  const num = (k: string) => { const v = n(k); return v == null ? "" : String(v); };
+  if (a.designInstallation === "No") {
+    const why = [
+      flag("gravityWindDesign") === false ? "the array is not stated as designed for the gravity and wind loads" : "",
+      flag("manufacturerInstallation") === false ? "the installation is not stated as following the manufacturer's instructions" : "",
+    ].filter(Boolean);
+    out.push({ row: "designInstallation", clause: `design/installation row: No — ${why.join("; ") || "a design or installation statement answers No"}` });
+  }
+  if (a.framing === "No") {
+    const frame = str("framingType");
+    const spacing = n("roofRafterSpacing");
+    const why = [
+      frame && !/truss|rafter/.test(frame) ? `framing "${String(s.framingType).trim()}" is neither trusses nor rafters` : "",
+      spacing != null && spacing > 24 ? `framing spaced ${spacing} in o.c. (the row admits 24 in or less)` : "",
+      /rafter/.test(frame) && flag("rafterExceptionCompliant") === false ? "the rafters do not meet ORSC R324.4.1 Exception 1.4-1.6" : "",
+    ].filter(Boolean);
+    out.push({ row: "framing", clause: `framing row: No — ${why.join("; ") || "the framing does not meet the row"}` });
+  }
+  if (a.roofing === "No") {
+    const roof = String(s.roofMaterial ?? "").trim();
+    const family = classifyRoofCovering(s.roofMaterial, s.roofMaterialSubtype).family;
+    const layers = num("roofLayers");
+    out.push({
+      row: "roofing",
+      clause: `roofing row: No — ${family === "composition" && layers ? `${layers} layers of composition (the row admits two)`
+        : family === "wood" && layers ? `${layers} layers of wood shingles/shakes (the row admits one)`
+        : `the roof covering ("${roof || family}") is not metal, wood shingles/shakes or composition`}`,
+    });
+  }
+  if (a.heightFigures === "No") {
+    const height = n("moduleHeightAboveRoof");
+    out.push({
+      row: "heightFigures",
+      clause: `module height row: No — ${height != null && height > 18 ? `modules ${height} in above the roof (the row admits 18 in)` : "the installation is stated as not following the figures"}`,
+    });
+  }
+  if (a.attachments === "No") {
+    const spaced = n("attachmentSpacingIn");
+    const exposure = str("wind").toUpperCase();
+    const speed = n("windSpeed");
+    const method1: string[] = [];
+    if (flag("attachmentToFraming") === false) method1.push("the attachments are not to the roof framing");
+    if (spaced != null && spaced > 48) method1.push(`attachments spaced ${spaced} in (the method admits 48 in)`);
+    if (spaced != null && spaced > 24 && spaced <= 48) {
+      const snow = n("snow");
+      if (snow != null && snow > 36) method1.push(`attachments spaced ${spaced} in need ground snow of 36 psf or less (plan ${snow} psf)`);
+      const edge = n("attachmentEdgeSpacingIn");
+      if (flag("attachmentsOutsideEdgeZone") === false && edge != null && edge > 24) method1.push(`attachments within 3 ft of roof edges, hips, eaves and ridges spaced ${edge} in (the method admits 24 in)`);
+      const cap = exposure === "B" ? 120 : exposure === "C" ? 110 : null;
+      if (cap != null && speed != null && speed > cap) method1.push(`attachments spaced ${spaced} in need an ultimate wind speed of ${cap} mph or less at Exposure ${exposure} (plan ${speed} mph); re-space the attachments to 24 in or less, or take the engineered path`);
+    }
+    const family = classifyRoofCovering(s.roofMaterial, s.roofMaterialSubtype).family;
+    const method2 = family !== "metal" && family !== "unknown"
+      ? `Method 2 is for standing-seam metal panels only (the roof is ${String(s.roofMaterial ?? "").trim() || family})`
+      : "the standing-seam attachment does not meet Method 2";
+    // The literal "attachment method compliance" is the key the App Docs mirror reads to stay silent
+    // on this row (dashboard.js bcd5952ClauseNotes).
+    out.push({ row: "attachments", clause: `attachment method compliance: No — Method 1: ${method1.join("; ") || "a Method 1 condition answers No"}; ${method2}` });
+  }
   return out;
 }
 
@@ -84,7 +203,9 @@ export function bcd5952MissingFacts(project: ProjectRecord): Array<{ row: string
 // figures, the structure description, a city's zoning sign-off) is ASKED on the project through
 // the existing intake / portal-question mechanism, stored on the project, and used by every form
 // — never a silent blank and never a guess. The BCD 5952 questions only where that checklist
-// applies; the zoning question whenever a COUNTY issues the permits for a CITY.
+// applies; the zoning question whenever a COUNTY issues the permits for a CITY. Later rulings
+// settled two of them by default instead of asking: the module height (2026-09-27, assumed Yes)
+// and the roof layer count (2026-09-28, assumed 1-2 layers) — each named where it is filled.
 export interface FormFactQuestion { key: string; label: string; options: string[]; kind: "form-fact" }
 export const STRUCTURE_DESCRIPTION_OPTIONS = [
   "Single-family dwelling", "Two-family dwelling (duplex)", "Townhouse", "Manufactured home", "Accessory building (garage/shed)",
@@ -102,12 +223,25 @@ export function formFactQuestions(
   if (opts.checklistApplies && planRead) {
     const roof = String(s.roofMaterial ?? "").trim();
     const family = classifyRoofCovering(s.roofMaterial, s.roofMaterialSubtype).family;
-    if ((family === "composition" || family === "wood") && !has("roofLayers")) {
+    // The layer count is asked only when THE ROW PREDICATE cannot answer without it — which, since
+    // the operator ruling of 2026-09-28 ("Assume 1-2 layers is good"), a composition or wood roof
+    // never is: an unstated count is assumed compliant and named in the fill note
+    // (bcd5952AssumedFacts). An answer already on file ("3 or more") still decides the row.
+    if ((family === "composition" || family === "wood")
+      && oregonRoofingRow(s.roofMaterial, s.roofMaterialSubtype, s.roofLayers).qualifies === null) {
       out.push({ key: "roofLayers", label: `How many layers of roofing are on the ${roof} roof?`, options: ["1", "2", "3 or more"], kind: "form-fact" });
+    }
+    // THE RAFTER EXCEPTION (dry-run 2026-09-28 B4): rafters at 24 in or less answer the framing row
+    // only with R324.4.1 Exception 1.4-1.6, which no plan set states — the row sat blank and nothing
+    // asked. Asked here, answered into rafterExceptionCompliant (bcdChecklistAnswers reads it).
+    if (rafterExceptionAsked(project)) {
+      out.push({ key: "rafterExceptionCompliant", label: `The plan set shows roof rafters at ${snapshotReaders(project).n("roofRafterSpacing")} in o.c. Does the rafter framing meet ORSC R324.4.1 Exception 1.4-1.6 (the BCD 5952 framing row)?`, options: ["Yes", "No"], kind: "form-fact" });
     }
     // The module-height row is assumed Yes when unknown (operator ruling 2026-09-27) — not asked.
     // An explicit answer stored under moduleHeightFiguresCompliant (from an earlier intake) still wins.
-    if (!has("structureDescription")) {
+    // THE STRUCTURE is asked only when neither a person nor the plan set answers it (operator ruling
+    // 2026-09-28 — applicationDocsAgency.structureDescriptionOf, the one structure answer).
+    if (!structureDescriptionOf(s).value) {
       out.push({ key: "structureDescription", label: "What structure is the array installed on?", options: STRUCTURE_DESCRIPTION_OPTIONS, kind: "form-fact" });
     }
   }

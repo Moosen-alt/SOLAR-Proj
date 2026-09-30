@@ -302,7 +302,8 @@ for (const [field, grade, why] of FIELDS) {
 // The overlay is the ground truth for what staging actually hands a portal: blanks are
 // dropped, so a missing key here IS a portal field that will be left empty.
 rule("CLIENT — WHAT STAGING WOULD ACTUALLY SUPPLY (clientStagingOverlay)");
-const overlay = clientStagingOverlay(db, client.id, "");
+// A job in the licence state (the named columns' state), track unknown — what a generic filing would carry.
+const overlay = clientStagingOverlay(db, client.id, "", { state: String(client.licenseState || "OR"), track: null });
 const OVERLAY_EXPECTED = [
   "installerCompanyName",
   "installerEmail",

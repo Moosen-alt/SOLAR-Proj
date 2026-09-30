@@ -60,7 +60,7 @@ try {
   assert.equal(answers({ ...complete, moduleFiguresCompliant: "" }).heightFigures, "Yes", "an unknown figure-compliance fact is assumed Yes (operator ruling 2026-09-27), never a blank row");
   assert.equal(answers({ ...complete, moduleFiguresCompliant: "no" }).heightFigures, "No", "an explicit No still answers No");
   assert.equal(answers({ ...complete, moduleHeightAboveRoof: 20 }).heightFigures, "No", "a stated height over 18 in still answers No");
-  assert.equal(answers({ ...complete, roofLayers: "" }).roofing, "");
+  assert.equal(answers({ ...complete, roofLayers: "" }).roofing, "Yes", "an unstated layer count is assumed 1-2 layers (operator ruling 2026-09-28)");
   assert.equal(answers({ ...complete, roofLayers: 3 }).roofing, "No");
   assert.notEqual(answers({ ...complete, windSpeed: 111 }).attachments, "Yes", "C exposure attachment cap is 110, not generic 120");
   assert.equal(answers({ ...complete, framingType: "rafter", rafterExceptionCompliant: "" }).framing, "");
@@ -112,11 +112,14 @@ try {
   }
   await fillLoadedForm(verified, bytes, ctx(passing), path.join(dir, "verified.pdf"));
   const verifiedText = await extractLabels(fs.readFileSync(path.join(dir, "verified.pdf")));
-  assert.equal(verifiedText.filter((i) => i.str === "X").length, 0, "verified map stays unchanged");
+  assert.equal(verifiedText.filter((i) => i.str === "X").length, 0, "a definition with recovery OFF (registry forms) draws no answers — the fill honours the flag");
+  // B6 (dry-run 2026-09-28): marking a stored 5952 VERIFIED no longer switches its answer recovery off
+  // — recovery only adds rows the map does not answer, so a verified map keeps every mapped field.
   for (const isVerified of [false, true]) {
     const fakeDb = { query: () => [{ id: "fixture", ahj_name: "Tigard", state: "OR", pdf_blob: bytes,
       field_map: JSON.stringify({ ...def, verified: isVerified }), original_filename: "5952.pdf" }] };
-    assert.equal(loadStoredTemplates(fakeDb as never, "Tigard", "OR")[0].def.recoverPrescriptiveCheckboxes, !isVerified);
+    assert.equal(loadStoredTemplates(fakeDb as never, "Tigard", "OR")[0].def.recoverPrescriptiveCheckboxes, true,
+      `a ${isVerified ? "verified" : "unverified"} stored 5952 still recovers its answers`);
   }
   console.log(`prescriptiveChecklist: all ${checks} answer cases, geometry, changed-threshold, and verified-map checks passed`);
 } finally {

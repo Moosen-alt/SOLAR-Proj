@@ -736,7 +736,8 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       // haystack — otherwise the structured scrape is empty and every field looks missing.
       const reviewFields = await scrapeReviewScreen(this.page).catch(() => []);
       const reviewBody = (await this.page.locator("body").innerText().catch(() => "")).slice(0, 20000);
-      const reviewMismatches = compareReviewFields(reviewFields, project, reviewBody);
+      // A permit application types no utility account or meter (B8): neither is looked for here.
+      const reviewMismatches = compareReviewFields(reviewFields, project, { accountNumber: false, meterNumber: false }, reviewBody);
 
       return ok(HUMAN_REVIEW_MESSAGE, {
         projectId: project.id,

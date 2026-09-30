@@ -1,5 +1,7 @@
 import type { ParserPayload, QcStatus, Severity } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
+import { knownPowerClerkUtility } from "./utilityIdentity";
+import { nemApplicantName } from "./accountHolders";
 
 export interface BaselineRuleDefinition {
   id: string;
@@ -180,6 +182,59 @@ function num(payload: ParserPayload, key: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+// THE AC DISCONNECT PART — ONE ANSWER FOR QC AND FOR THE PORTAL FILING (leak sweep 2026-09-28).
+//
+// The plan set's part (acDiscMakeModel, split into make + model; the legacy acDiscMake/acDiscModel
+// keys win when a snapshot carries them) beats the installer's standard part. The standard part is a
+// default for a plan set that leaves the part to the installer, and it is cross-checked against the
+// plan set's own rating and fusing — a disagreement is named for the operator, never filed.
+export interface PlanSetDisconnectPart { make: string; model: string; named: boolean }
+export function planSetDisconnectPart(payload: Record<string, unknown>): PlanSetDisconnectPart {
+  const s = (k: string): string => String(payload[k] ?? "").trim();
+  let make = s("acDiscMake");
+  let model = s("acDiscModel");
+  const combined = s("acDiscMakeModel").replace(/\s+/g, " ");
+  if (combined && !/^(n\/?a|none|unknown|not (specified|shown|listed))$/i.test(combined) && (!make || !model)) {
+    const tokens = combined.split(" ");
+    // The model is the first part-number-shaped token after the make ("Square D DU222RB",
+    // "Eaton DG222NRB 60A" -> DG222NRB): letters AND digits, 4+ characters, not a rating.
+    const idx = tokens.findIndex((t, i) => i > 0 && /[a-z]/i.test(t) && /\d/.test(t) && t.replace(/[^a-z0-9]/gi, "").length >= 4 && !/^\d+(a|v|amps?|volts?)$/i.test(t));
+    // No part number and the words describe a RATING ("60A NON-FUSIBLE AC DISCONNECT") — that is the
+    // schedule's rating line, not a manufacturer; it names no part.
+    const ratingText = idx <= 0 && /\bdisconnect\b|\bfus(?:ed|ible)\b|^\d+\s*a\b|\bamps?\b|\bvolts?\b|\b\d+\s*v\b/i.test(combined);
+    const splitMake = idx > 0 ? tokens.slice(0, idx).join(" ") : ratingText ? "" : combined;
+    const splitModel = idx > 0 ? tokens[idx] : "";
+    make = make || splitMake;
+    model = model || splitModel;
+  }
+  return { make, model, named: Boolean(make || model) };
+}
+export interface DisconnectConflict { ruleId: "xcheck-disconnect-fusing" | "xcheck-disconnect-rating"; ruleName: string; message: string; fieldName: string }
+/** Where the installer's standard part contradicts the plan set's rating or fusing. Asserts only what
+ *  the part number itself states (Eaton DG-series: "DG221URB" — "U" unfused, frame "221" = 30 A /
+ *  2-pole / 240 V); an unrecognised model asserts nothing. */
+export function standardDisconnectConflicts(stdModel: string, plan: { fused?: string | null; amps?: number | null }): DisconnectConflict[] {
+  const out: DisconnectConflict[] = [];
+  const model = String(stdModel ?? "").trim();
+  if (!model) return out;
+  const discFused = String(plan.fused ?? "").toLowerCase();
+  const modelIsNonFused = /dg\d{3}u/i.test(model);
+  const modelIs30A = /dg2\s*2\s*1/i.test(model.replace(/[^a-z0-9]/gi, ""));
+  if (modelIsNonFused && /fusible/.test(discFused) && !/non/.test(discFused)) {
+    out.push({
+      ruleId: "xcheck-disconnect-fusing", ruleName: "AC disconnect fusing vs the standard part", fieldName: "acDiscFused",
+      message: `The plan set specifies a FUSIBLE AC disconnect, but the installer's standard part (${model}) is non-fusible. Confirm which is actually being installed before the utility application is filed — the disconnect make/model is left blank on the utility application until then.`,
+    });
+  }
+  if (modelIs30A && plan.amps != null && plan.amps > 30) {
+    out.push({
+      ruleId: "xcheck-disconnect-rating", ruleName: "AC disconnect rating vs the standard part", fieldName: "acDiscAmps",
+      message: `The plan set calls for a ${plan.amps} A AC disconnect, but the installer's standard part (${model}) is rated 30 A. Confirm the disconnect size before filing — the disconnect make/model is left blank on the utility application until then.`,
+    });
+  }
+  return out;
+}
+
 function hasAny(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
@@ -267,8 +322,12 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
   const nonOregonState = !!state && state !== "OR";
   const isOregon = state === "OR" || (!nonOregonState && /oregon|portland|hillsboro|beaverton|gresham|clackamas|washington county/i.test(ahj));
   const isPortland = isOregon && /portland/i.test(ahj);
-  const isPacific = /pacific|pacificorp/i.test(utility);
-  const isPge = !nonOregonState && /\bPGE\b|portland general/i.test(utility);
+  // WHICH UTILITY, by the one anchored, state-gated identity (utilityIdentity) — a CA PG&E job
+  // ("Pacific Gas and Electric", "PGE") or WA's "Pacific County PUD" is neither Pacific Power nor
+  // Portland General, and must not be told a Pacific Power meter photo is missing.
+  const knownUtility = knownPowerClerkUtility({ state, utility });
+  const isPacific = knownUtility === "pacificorp";
+  const isPge = knownUtility === "portland_general";
 
   // PRESCRIPTIVE-PATH SCREENS — data-driven when a jurisdiction code context is
   // provided (the per-AHJ adopted-codes profile), so any state/county with limits
@@ -379,34 +438,13 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
   // application AND wrong on the roof. Surface the disagreement instead of letting the
   // default quietly win. Observed on real plan sets: two of four called for FUSIBLE while
   // the installer's standard part is non-fusible.
+  // The client's standard part reaches this payload from runQcForProject (qc.ts), read from the
+  // project's OWN client row; a plan set that names its own disconnect part is filed as named
+  // (portalRecipes), so the standard part is not in play and nothing is cross-checked.
   const stdModel = String((payload as Record<string, unknown>).standardDisconnectModel ?? "").trim();
-  if (stdModel) {
-    const discFused = String((payload as Record<string, unknown>).acDiscFused ?? "").toLowerCase();
-    const discAmps = num(payload, "acDiscAmps");
-    // Eaton DG-series part numbers state their own fusing and frame: "DG221URB" — the "U"
-    // means unfused, and the "221" frame is the 30 A / 2-pole / 240 V switch. Only assert
-    // what the part number itself says; an unrecognised model asserts nothing.
-    const modelIsNonFused = /dg\d{3}u/i.test(stdModel);
-    const modelIs30A = /dg2\s*2\s*1/i.test(stdModel.replace(/[^a-z0-9]/gi, ""));
-    if (modelIsNonFused && /fusible/.test(discFused) && !/non/.test(discFused)) {
-      out.push(result(
-        "xcheck-disconnect-fusing",
-        "AC disconnect fusing vs the standard part",
-        "warning",
-        "warning",
-        `The plan set specifies a FUSIBLE AC disconnect, but the installer's standard part (${stdModel}) is non-fusible. Confirm which is actually being installed before the utility application is filed.`,
-        "acDiscFused",
-      ));
-    }
-    if (modelIs30A && discAmps != null && discAmps > 30) {
-      out.push(result(
-        "xcheck-disconnect-rating",
-        "AC disconnect rating vs the standard part",
-        "warning",
-        "warning",
-        `The plan set calls for a ${discAmps} A AC disconnect, but the installer's standard part (${stdModel}) is rated 30 A. Confirm the disconnect size before filing.`,
-        "acDiscAmps",
-      ));
+  if (stdModel && !planSetDisconnectPart(payload).named) {
+    for (const c of standardDisconnectConflicts(stdModel, { fused: str(payload, "acDiscFused"), amps: num(payload, "acDiscAmps") })) {
+      out.push(result(c.ruleId, c.ruleName, "warning", "warning", c.message, c.fieldName));
     }
   }
 
@@ -436,7 +474,8 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
       `The application names ${applicantName}, but the utility bill's account holder is ${accountHolder}. ` +
         `An interconnection request from someone not listed on the account gets suspended. Before filing, either add ` +
         `the applicant to the account as a co-customer, put the service in their name, or name ${accountHolder} on the ` +
-        `application as the account holder.`,
+        `application as the account holder. As filed, the interconnection application names ${nemApplicantName(accountHolder, applicantName)} ` +
+        `(the bill's primary holder — operator ruling 2026-09-28); the permits keep ${applicantName}.`,
       "ubAccountHolder",
     ));
   }

@@ -386,11 +386,21 @@ async function main(): Promise<void> {
      VALUES ('fee-evidence-2', ?, 'Test Owner', 'OR', 'City of Corroborated', 'Pacific Power', 4.2, 3.072, 'ready_to_stage', '{}', ?, ?)`,
     [client.id, now, now],
   );
-  const corroboratedQuote = buildPaymentQuote(db, {
+  const quoteNow = () => buildPaymentQuote(db, {
     id: "fee-evidence-2", clientId: client.id, state: "OR", ahj: "City of Corroborated", utility: "Pacific Power",
     systemSizeDcKw: 4.2, systemSizeAcKw: 3.072, totalExportKw: null, parserSnapshot: {},
   } as never, "permit");
-  check("the quote screen says CORROBORATED, never 'verified', for a machine check",
+  // The "matches the published schedule" badge ships OFF (3dd1d7b; FEE_MATCH_BADGE=1 turns it on): by
+  // default the screen claims neither corroboration nor verification for a machine check.
+  delete process.env.FEE_MATCH_BADGE;
+  const badgeOff = quoteNow();
+  check("with the badge off (the default) the quote claims neither CORROBORATED nor 'verified' for a machine check",
+    !badgeOff.permitFeeBasis.includes("CORROBORATED") && !/\bhuman-verified\)/.test(badgeOff.permitFeeBasis.replace(/not (yet )?human-verified/g, "")) && badgeOff.permitFeeUsd === 135,
+    badgeOff.permitFeeBasis);
+  process.env.FEE_MATCH_BADGE = "1";
+  const corroboratedQuote = quoteNow();
+  delete process.env.FEE_MATCH_BADGE;
+  check("with FEE_MATCH_BADGE=1 the quote screen says CORROBORATED, never 'verified', for a machine check",
     corroboratedQuote.permitFeeBasis.includes("CORROBORATED")
     && !/\bhuman-verified\)/.test(corroboratedQuote.permitFeeBasis.replace("not human-verified", "")),
     corroboratedQuote.permitFeeBasis);

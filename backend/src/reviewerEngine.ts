@@ -7,7 +7,9 @@ import { findApplicationProfile } from "./applicationDocs";
 import { permitProcessFor } from "./permitProcess";
 import { evidenceForTopic, evidenceLines, fieldValue, requirementsForTopic, type EvidenceTopic, type ProjectEvidence } from "./projectEvidence";
 import { nowIso } from "./time";
+import { hasMpuScope } from "./serviceScope";
 import { resolveValuation } from "./valuation";
+import { knownPowerClerkUtility } from "./utilityIdentity";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
 import type { EffectiveCodeContext } from "./codeProfiles";
 
@@ -886,7 +888,10 @@ function addPlacementRuleFindings(project: ProjectRecord, ctx: EffectiveCodeCont
 
 function addUtilityFindings(project: ProjectRecord, findings: ReviewerFinding[]): void {
   const account = evidenceForTopic(project, "accountVerification");
-  if (/PGE|PORTLAND GENERAL/i.test(project.utility) && account.confidence !== "high") {
+  // WHICH UTILITY, by the one state-gated identity (utilityIdentity): a CA PG&E job ("Pacific Gas and
+  // Electric", or typed "PGE") is neither Portland General nor PacifiCorp, and was blocked on both.
+  const knownUtility = knownPowerClerkUtility(project);
+  if (knownUtility === "portland_general" && account.confidence !== "high") {
     findings.push(finding(
       "reviewer.utility.pge-account",
       account.present ? "warning" : "blocker",
@@ -905,7 +910,7 @@ function addUtilityFindings(project: ProjectRecord, findings: ReviewerFinding[])
       },
     ));
   }
-  if (/PACIFIC|PACIFICORP/i.test(project.utility)) {
+  if (knownUtility === "pacificorp") {
     const meterPhoto = evidenceForTopic(project, "meterPhoto");
     if (meterPhoto.confidence !== "high") {
       findings.push(finding(
@@ -1164,14 +1169,5 @@ function addInstallerCallouts(project: ProjectRecord, profile: AhjProcessProfile
   }
 }
 
-// Detect a main-panel / service upgrade in the parsed scope. Drives the MPU permit
-// callout above. Deliberately keyed on upgrade language (not "derate", which also
-// appears as a 120%-rule remedy that isn't itself an MPU).
-function hasMpuScope(project: ProjectRecord): boolean {
-  const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
-  const text = [
-    snap.projectDescriptionText, snap.description, snap.scopeText, snap.electricalCalcText,
-    snap.sitePlanNotesText, snap.mpu, snap.serviceUpgrade,
-  ].map((v) => (v == null ? "" : String(v))).join(" ").toLowerCase();
-  return /\bmpu\b|main panel upgrade|main service panel upgrade|service (panel )?upgrade|\bmsp upgrade\b|panel upgrade|meter.?main upgrade/.test(text);
-}
+// Main-panel / service-upgrade detection is the ONE predicate (serviceScope.hasMpuScope) —
+// the MPU permit track and the electrical fee lines read the same answer.

@@ -98,7 +98,8 @@ export function resolveValuation(
 
   // 1. Client-provided contract / installed cost — the authoritative INPUT. The valuation on
   //    the application is the operator's formula OF it, never the contract itself.
-  const contract = parseMoney(snap.jobValue);
+  // The contract is on either parser key (jobValue or contractAmount — the Coos Bay recipes bind both).
+  const contract = parseMoney(snap.jobValue) ?? parseMoney(snap.contractAmount);
   if (contract != null) {
     const value = Math.round((contract * factor + batteryUsd) * 100) / 100;
     return {
@@ -132,4 +133,48 @@ export function resolveValuation(
     perWattRate: rate,
     basis: "No contract value provided and system size unknown — cannot determine valuation.",
   };
+}
+
+/**
+ * THE VALUATION AS AN APPLICATION BOX TAKES IT — whole dollars, "" when there is nothing to
+ * compute from. The SAME number the PDF side files (ahjForms computed.declaredValuation /
+ * estimatedJobValue round resolveValuation's value exactly this way); the portal recipes resolve
+ * `declaredValuation` through here so a portal's Job Value box and the PDF application can never
+ * state two different valuations for one job.
+ */
+export function filingValuationText(
+  snapshot: ParserPayload | null | undefined,
+  systemSizeDcKw: number | string | null | undefined,
+): string {
+  const v = resolveValuation(snapshot, Number(systemSizeDcKw) || null);
+  return v.value != null && v.value > 0 ? String(Math.round(v.value)) : "";
+}
+
+// WHICH BOX WANTS THE VALUATION, AND WHICH WANTS THE CONTRACT (leak sweep 2026-09-28).
+//
+// The planner's only dollar figure used to be jobValue — the CONTRACT the client pays — so every
+// portal "Job Value" / "Valuation" / "Estimated Cost" box learned from it filed the contract, 2.5x
+// the valuation the PDF, the fee sheet and the invoice state (a 51,866.60 contract filed where the
+// application says 20,747). One label predicate, asked by the planner hint, the learn-time
+// correction and the replay rebind alike: a box that asks what the WORK is worth takes the
+// valuation; a box that says CONTRACT keeps the contract price.
+export const CONTRACT_PRICE_LABEL = /\bcontract(?:ed)?\s*(?:price|amount|value|sum|total|cost)\b/i;
+const MENTIONS_CONTRACT = /\bcontract(?:ed)?\b/i;
+export const VALUATION_BOX_LABEL = /\bjob\s*valu(?:e|ation)\b|\bvaluation\b|\bestimated\s*(?:project\s*|job\s*|construction\s*|total\s*)?(?:cost|value)\b|\bconstruction\s*(?:value|cost)\b|\bproject\s*(?:value|valuation|cost)\b|\bvalue\s*of\s*(?:the\s*)?(?:work|construction|improvements?|installation|project)\b|\bcost\s*of\s*(?:the\s*)?(?:work|construction|improvements?|installation|project)\b|\bdeclared\s*value\b/i;
+/** True when a portal box's label asks for the work's VALUATION. A label that names a CONTRACT
+ *  ("Contract Price", "Job Value (contract)") is never one — that box keeps the contract. */
+export function isValuationBoxLabel(label: string): boolean {
+  const l = String(label ?? "");
+  return VALUATION_BOX_LABEL.test(l) && !MENTIONS_CONTRACT.test(l);
+}
+/** The resolver key a valuation box binds to, and the contract keys it must never be. */
+export const DECLARED_VALUATION_FIELD = "declaredValuation";
+const CONTRACT_PRICE_KEYS = new Set(["jobValue", "contractAmount"]);
+/** Does a fill under `label`, bound to `field` ("" = an unbound literal), belong on the declared
+ *  valuation instead? True for a valuation box carrying the contract keys or a frozen literal
+ *  (the learn project's figure); false for any other binding and for a contract-price box. */
+export function rebindsToValuation(label: string, field: string | null | undefined): boolean {
+  if (!isValuationBoxLabel(label)) return false;
+  const f = String(field ?? "").trim();
+  return !f || CONTRACT_PRICE_KEYS.has(f);
 }

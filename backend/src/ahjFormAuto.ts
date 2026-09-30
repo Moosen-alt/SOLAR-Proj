@@ -2,12 +2,19 @@ import crypto from "node:crypto";
 import { PDFDocument } from "pdf-lib";
 import type { AppDb } from "./db";
 import type { AhjFormUrlResult, LLMProvider, ProjectRecord } from "../../shared/src/types";
-import { inspectFormFields, loadStoredTemplates, formApplicationKind, storedApplicationKind, applicationKindForPath, type OverlayField, type SignaturePlacement } from "./ahjForms";
+import { inspectFormFields, inspectPlacedFields, loadStoredTemplates, formApplicationKind, storedApplicationKind, applicationKindForPath, type InspectedField, type OverlayField, type SignaturePlacement } from "./ahjForms";
+import {
+  attestsAttachedDocument, OREGON_CCB_SOURCE, placementOnWidget, sanitizeAcroMap, STATE_LICENCE_SOURCE, typedLicenceSource, type OperatorItem,
+} from "./formFieldChecks";
+import { LICENCE_KINDS, licenceKindWords } from "../../shared/src/licenceKinds";
+import { parseJson } from "./json";
+import { HttpError } from "./httpError";
 import { describePermitType, findApplicationProfile, permitStructureAnswer } from "./applicationDocs";
 import { ensureUtilityFilingLookedUp } from "./utilityFilingLookup";
 import { fetchPublicDocument } from "./documentFetch";
 import { logger } from "./logger";
 import { saveResearchedAhjProfile, knowledgeResearchHint, findKnowledgeForLearn } from "./knowledgeBase";
+import { researchedUrlRefusal } from "./researchedPortalUrl";
 import { findAhjProcessProfile } from "./processProfiles";
 import { applicationDocContext, requiredApplicationDocs } from "./requiredDocuments";
 import { renderPdfPageToPng } from "./pageImages";
@@ -27,7 +34,21 @@ import { documentDateForPdf } from "./documentDate";
 import { bcd5952Template } from "./bcd5952Template";
 import { iowaPvWorksheetTemplate, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import { curatedFormSource, curatedFormMap } from "./curatedAhjForms";
-import { agencyApplicationForms, formAuthorityFor, rowBelongsToAuthority, TRACK_FORM_TYPES, type FormAuthority } from "./applicationDocsAgency";
+import { sanitizePlacements, signatureStandIns } from "./formFieldChecks";
+import type { LabelItem } from "./formTextLayer";
+import { agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, formAuthorityFor, rowBelongsToAuthority, TRACK_FORM_TYPES, type FormAuthority } from "./applicationDocsAgency";
+import {
+  acceptedFormTypes, acceptedFormTypesFor, acquisitionScopeKey, applicationKindForProject, clearFormFetchFailure, formResearchInFlight, hasStoredTemplateOfType, issuingAgencyFormPlan, noteFormFetchFailure,
+  ownFreeFormSource, recentFormFetchFailure, trackFormResearch, type EnsureFormResult,
+} from "./formAcquisitionPlan";
+// The acquisition's pre-fetch predicates live in formAcquisitionPlan.ts — the ONE answer the pre-Stage
+// gate reads too (gates-proper C1). Re-exported so every existing caller of this module keeps working.
+export { applicationKindForProject, hasStoredTemplateOfType, type EnsureFormResult } from "./formAcquisitionPlan";
+import { isRefusal, PAGE_READ_MIN_GAP_MS, type PageReader } from "./agencyPageReader";
+// Its own line (not beside the applicationDocs import above): forms-fill rewrites the ahjForms import next to it.
+import { permitStructureForProject } from "./applicationDocs";
+import { applicationFormLinks, classifyApplicationDocument, documentSlugWords, isAhjFormsSite, namesCombinedApplication, WIRING_PERMIT_PHRASE, DOCUMENT_URL, type ApplicationDiscipline } from "./permitPlatformCatalog";
+import { isUtilityPlatformUrl, portalHostOf, registrableDomain } from "./portalChannel";
 
 // ---------------------------------------------------------------------------
 // Auto-acquire an AHJ's official permit PDF form: web-research the URL, download
@@ -82,6 +103,14 @@ const EXISTING_SYSTEM_SOURCES: string[] = [
   "snapshot.combinedAcKw  (combined new + existing size, kW AC)",
 ];
 
+// The typed licence sources: THIS job's state's licence of each kind (number, expiry; the holder's
+// name for a person licence). Names only reach the mapper — never a number (hard rule 2).
+const TYPED_LICENCE_SOURCES: string[] = LICENCE_KINDS.filter((k) => k.kind !== "business_registration").flatMap((k) => [
+  `${typedLicenceSource(k.kind)}  (THIS job's state's ${licenceKindWords(k.kind)} NUMBER — for a slot that names it${k.kind === "construction_supervisor" ? ', e.g. "Construction Supervisor License", "CSL #"' : k.kind === "home_improvement_contractor" ? ', e.g. "HIC Registration Number"' : k.kind === "electrical_contractor" ? ', e.g. "Electrical Contractor License"' : k.kind === "master_electrician" ? ', e.g. "Supervising / Master Electrician License"' : ""})`,
+  `${typedLicenceSource(k.kind, "expires")}  (that licence's EXPIRATION date)`,
+  ...(k.person ? [`${typedLicenceSource(k.kind, "holder")}  (the NAME of the person who holds that licence — for a "Licensed ${k.kind === "construction_supervisor" ? "Construction Supervisor" : "Electrician"}" name blank)`] : []),
+]);
+
 // The project-data sources the field mapper may target. Mirrors resolveSource()
 // scopes in ahjForms.ts. Kept explicit so the LLM only maps to real fields.
 export const AVAILABLE_FIELD_SOURCES: string[] = [
@@ -115,7 +144,18 @@ export const AVAILABLE_FIELD_SOURCES: string[] = [
   "client.installerPhone",
   "client.installerStreet",
   "client.installerCityStateZip",
-  "client.ccbLicenseNumber",
+  // A LICENCE IS A STATE'S (City of Waltham, MA printed an Oregon CCB number in its construction-
+  // supervisor licence slot). The CCB source is Oregon's only — fieldSourcesForState drops it from
+  // any other state's mapping, and buildContext blanks it at fill time.
+  'client.ccbLicenseNumber  (OREGON CCB contractor licence number — Oregon forms ONLY)',
+  `${STATE_LICENCE_SOURCE}  (the contractor licence THIS job's permit takes in THIS job's state — for a licence / registration NUMBER slot that does NOT say which licence; blank when none is on file)`,
+  // LICENCES BY KIND (clients.licenceFor): a slot that NAMES its licence binds that kind's source.
+  ...TYPED_LICENCE_SOURCES,
+  // The operator valuation (resolveValuation, the 2026-09-21 ruling) and the plan set's parcel number
+  // existed in the fill path but were never OFFERED to the mapper, so Waltham's estimated-cost
+  // table and parcel blank stayed empty.
+  'computed.estimatedJobValue  (estimated construction cost / job valuation in whole dollars — for "Estimated cost", "Cost of construction", "Valuation", "Job value"; in a cost table the TOTAL row only)',
+  'snapshot.parcelNumber  (assessor parcel number / APN, as printed on the plan set — write it as printed)',
   "computed.fullAddress",
   "computed.cityStateZip",
   "computed.systemSize",
@@ -130,7 +170,16 @@ export const AVAILABLE_FIELD_SOURCES: string[] = [
   ...EXISTING_SYSTEM_SOURCES,
   ...PRESCRIPTIVE_SOURCES,
   'lit:X  (literal — use for fixed checkbox marks / constant text like "lit:Solar")',
+  'operator:<printed caption>  (NOT a value: marks a blank the applicant must fill by hand because no source above answers it — it is listed for the operator by that caption)',
 ];
+
+/** The sources offered for a form of this state: the Oregon CCB source only on an Oregon form (a
+ *  template with no stored state keeps it on offer; the FILL resolves it only on an Oregon job —
+ *  clients.licenceJobState reads a blank project state as unknown). */
+export function fieldSourcesForState(state: string): string[] {
+  const st = String(state || "").trim().toUpperCase();
+  return !st || st === "OR" ? AVAILABLE_FIELD_SOURCES : AVAILABLE_FIELD_SOURCES.filter((s) => !s.startsWith(OREGON_CCB_SOURCE));
+}
 
 export interface StoredFieldMap {
   requiredFields?: Record<string, string>;
@@ -167,6 +216,9 @@ export interface StoredFieldMap {
    *  false; a real submit is gated until the operator previews and verifies. */
   verified?: boolean;
   verifiedAt?: string;
+  /** Blanks no source can fill (zoning, setbacks, flood zone, a widget-less printed blank…), by
+   *  printed label, from the mappers and the post-map checks — listed on every fill result. */
+  operatorItems?: OperatorItem[];
 }
 
 export function sha256(bytes: Uint8Array): string {
@@ -187,32 +239,46 @@ export function sha256(bytes: Uint8Array): string {
 // ALWAYS carries a reason. Null still means "no usable PDF" to every caller; the reason is now
 // in the log instead of nowhere.
 export async function fetchPdf(url: string): Promise<Uint8Array | null> {
+  const failed = (): null => { noteFormFetchFailure(url); return null; };
   try {
     const got = await fetchPublicDocument(url);
     if (!got.ok || !got.bytes) {
       logger.warn("ahj-forms", "a blank form could not be downloaded", {
         url, status: got.status, via: got.via, reason: got.reason,
       });
-      return null;
+      return failed();
     }
     const buf = got.bytes;
     const type = got.contentType || "";
     // %PDF magic, or a pdf content-type. Guard against HTML error pages.
-    if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) return buf;
-    if (type.includes("pdf") && buf.length > 1000) return buf;
+    if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) { clearFormFetchFailure(url); return buf; }
+    if (type.includes("pdf") && buf.length > 1000) { clearFormFetchFailure(url); return buf; }
     // The link answered — with a login page, a "moved" notice or a CMS 200 error page. That is
     // a different repair from a wall (fix the link, not the browser), so it is said differently.
     logger.warn("ahj-forms", "a form link answered, but not with a PDF", {
       url, status: got.status, contentType: type || "(none)", bytes: buf.length, via: got.via,
     });
-    return null;
+    return failed();
   } catch (err) {
     // fetchPublicDocument reports rather than throws; this is the belt on the braces, so the
     // acquisition loop's contract (null, never an exception) holds whatever happens below it.
     logger.warn("ahj-forms", "a blank form download threw", { url, error: err instanceof Error ? err.message : String(err) });
-    return null;
+    return failed();
   }
 }
+
+// GO GENTLY ON A FORM URL THAT JUST FAILED (stage-forms-fee skeptic N2; operator rule "go gently on
+// Cloudflare sites"). Inside the 24h per-AHJ cooldown Stage runs the FREE acquisition pass on every
+// Stage — and a curated or cited URL that is walled or down was fetched again each time, and
+// fetchPublicDocument may open a HEADED browser for a walled one each time. So a per-URL memo of the
+// last failed download: the within-cooldown pass (skipRecentlyFailed, set only by
+// prepareOfficialDocuments) does not re-fetch a URL that failed in the last FORM_FETCH_RETRY_MS, and
+// says so ("tried <when>, retry after <when>"). Every other door — the full pass once the cooldown
+// opens, and the operator's explicit "Find missing official forms" — never consults it. Per URL, not
+// per AHJ: every city a county issues for fetches the county's one URL. In-process: a restart forgets
+// it, which costs at most one extra fetch. A success clears the URL. The map lives in
+// formAcquisitionPlan.ts (gates-proper C1), so the pre-Stage gate reads the same record.
+export { FORM_FETCH_RETRY_MS, recentFormFetchFailure } from "./formAcquisitionPlan";
 
 /** Record that this blank carried a fee table we harvested. Written by the
  *  fee-harvest side, which owns the reading; storage owns only the flag. */
@@ -220,11 +286,32 @@ export function markTemplateFeeTableFound(db: AppDb, templateId: string, found =
   db.run("UPDATE ahj_form_templates SET fee_table_found = ?, updated_at = ? WHERE id = ?", [found ? 1 : 0, nowIso(), templateId]);
 }
 
+/**
+ * A STORE THAT WOULD REPLACE A HUMAN-VERIFIED MAP, REFUSED (hard rule 3). storeAhjFormTemplate throws
+ * this instead of writing; `result` is the acquisition's answer ("exists", the HUMAN-VERIFIED
+ * message). An acquisition door returns it; a door that does not catch it fails loudly and writes
+ * nothing (409 at a route edge).
+ */
+export class VerifiedTemplateRefusal extends HttpError {
+  constructor(public readonly result: EnsureFormResult) { super(409, result.message); }
+}
+
 // Insert or replace a stored AHJ form template. Dedupes on (ahj_name, state, form_type).
+//
+// THE ONE CHOKEPOINT FOR RULE 3: the row this store would ACTUALLY replace (templateSlot, after the
+// form's own name re-types it) is checked here, by the same predicate every acquisition door asks
+// up front (verifiedSlotRefusal / verifiedStoreRefusal). A human-verified row is never overwritten:
+// the store throws VerifiedTemplateRefusal and touches nothing. The one waiver is the 60-day refresh
+// re-storing THAT SAME ROW from its own source URL (refreshOfRowId): the AHJ revised the PDF, so the
+// verified mapping is carried over and demoted to unverified (ahjFormRefresh).
 export function storeAhjFormTemplate(
   db: AppDb,
   input: {
     ahjName: string; state: string; formType: string; filename: string; bytes: Uint8Array; map: StoredFieldMap;
+    /** ONLY the 60-day refresh: the id of the row it re-fetched. A verified map in the slot is
+     *  replaced (carried over, demoted) only when the slot IS that row; any other verified row is
+     *  still refused. */
+    refreshOfRowId?: string;
     /** Which building-side application this blank is, when the caller KNOWS (it went
      *  looking for the prescriptive one). Stamped onto the field map, and part of the
      *  storage key for building_application so the two mutually-exclusive blanks do
@@ -241,8 +328,37 @@ export function storeAhjFormTemplate(
     feeTableFound?: boolean;
   },
 ): string {
+  const slot = templateSlot(db, input);
+  const refusal = verifiedRowRefusal(slot, { ahj: input.ahjName, formName: storeFormName(input), sourceUrl: String(input.map?.sourceUrl || "") });
+  if (refusal && !(input.refreshOfRowId && slot.existing?.id === input.refreshOfRowId)) throw new VerifiedTemplateRefusal(refusal);
   const now = nowIso();
   const blob = Buffer.from(input.bytes);
+  input.formType = slot.formType;
+  const existing = slot.existing;
+  const applicationKind = slot.applicationKind;
+  // Stamp the content hash + check time so the periodic refresh can tell when the
+  // AHJ has revised the form at its source URL. A fresh (re)mapping is always
+  // UNVERIFIED — the operator must preview and verify before a real submit.
+  input.map = {
+    ...input.map,
+    ...(applicationKind ? { applicationKind } : {}),
+    sourceHash: sha256(input.bytes), lastCheckedAt: now, verified: false, verifiedAt: undefined,
+  };
+  return writeTemplateRow(db, input, blob, existing, now);
+}
+
+type TemplateSlotRow = { id: string; original_filename?: string; field_map?: string; source_url?: string };
+
+/**
+ * WHICH STORED ROW A BLANK REPLACES — the one answer storeAhjFormTemplate writes by and
+ * verifiedSlotRefusal reads (so the refusal can never guard a different row than the store would
+ * overwrite). Returns the classified form type, the row in this blank's slot (null = a new row)
+ * and the building-side kind the row will carry.
+ */
+export function templateSlot(
+  db: AppDb,
+  input: { ahjName: string; state: string; formType: string; filename: string; map?: { formName?: string; sourceUrl?: string; applicationKind?: unknown }; applicationKind?: "prescriptive" | "structural" | null },
+): { formType: string; existing: TemplateSlotRow | null; applicationKind: "prescriptive" | "structural" | null } {
   // THE FORM'S OWN NAME DECIDES WHAT IT IS. Callers pass a formType they inferred from the
   // context that sent them looking, which is often the generic "permit_application" — so
   // Coos Bay's "Building Permit Application.pdf" was stored as permit_application. That
@@ -251,7 +367,7 @@ export function storeAhjFormTemplate(
   // finds nothing, and skips the slot in silence. The filled application existed on disk the
   // whole time. classifyFormType returns the caller's value when the name says nothing, so a
   // specific name wins and a generic caller is still respected.
-  input.formType = classifyFormType(input.filename || "", input.formType);
+  const formType = classifyFormType(input.filename || "", input.formType);
   // WHICH of the two building-side applications this blank is, stamped so nothing
   // downstream has to re-guess from a filename that may say nothing. The caller's
   // explicit answer wins (acquisition knows what it went looking for); then a stamp the
@@ -275,8 +391,8 @@ export function storeAhjFormTemplate(
   // Scoped to building_application deliberately: it is the only mutually-exclusive pair.
   // Widening the key to every form_type would turn a renamed re-upload of a checklist or
   // an electrical application into a duplicate row instead of an update.
-  const kindKeyed = input.formType === "building_application";
-  type ExistingRow = { id: string; original_filename?: string; field_map?: string; source_url?: string };
+  const kindKeyed = formType === "building_application";
+  type ExistingRow = TemplateSlotRow;
   let existing: ExistingRow | null = null;
   // A RE-STORE MUST NOT AMNESIA THE STAMP. The 60-day refresh (ahjFormRefresh.ts) re-fetches
   // a row's own sourceUrl and re-stores the new bytes with a freshly BUILT field map — it
@@ -291,7 +407,7 @@ export function storeAhjFormTemplate(
   if (kindKeyed) {
     const rows = db.query<ExistingRow>(
       "SELECT id, original_filename, field_map, source_url FROM ahj_form_templates WHERE lower(ahj_name) = lower(?) AND lower(state) = lower(?) AND form_type = ?",
-      [input.ahjName, input.state, input.formType],
+      [input.ahjName, input.state, formType],
     );
     if (claimedKind) {
       // Replace the row that is the SAME application.
@@ -310,19 +426,69 @@ export function storeAhjFormTemplate(
   } else {
     existing = db.get<ExistingRow>(
       "SELECT id, original_filename, field_map, source_url FROM ahj_form_templates WHERE lower(ahj_name) = lower(?) AND lower(state) = lower(?) AND form_type = ? LIMIT 1",
-      [input.ahjName, input.state, input.formType],
+      [input.ahjName, input.state, formType],
     ) ?? null;
     if (!claimedKind && existing) inheritedKind = storedApplicationKind(existing);
   }
-  const applicationKind = claimedKind ?? inheritedKind;
-  // Stamp the content hash + check time so the periodic refresh can tell when the
-  // AHJ has revised the form at its source URL. A fresh (re)mapping is always
-  // UNVERIFIED — the operator must preview and verify before a real submit.
-  input.map = {
-    ...input.map,
-    ...(applicationKind ? { applicationKind } : {}),
-    sourceHash: sha256(input.bytes), lastCheckedAt: now, verified: false, verifiedAt: undefined,
+  return { formType, existing, applicationKind: claimedKind ?? inheritedKind };
+}
+
+/** What a store input calls its blank, for a person: the map's form name, else the filename. */
+const storeFormName = (input: { filename: string; map?: { formName?: string } }): string =>
+  String(input.map?.formName || "").trim() || String(input.filename || "").replace(/\.pdf$/i, "");
+
+/**
+ * THE ONE PREDICATE (hard rule 3): does the row in this slot carry a HUMAN-VERIFIED map? Then the
+ * new blank is not stored over it, and the answer says why and what a person does instead. null
+ * when the slot is free or holds an unverified map.
+ */
+function verifiedRowRefusal(
+  slot: ReturnType<typeof templateSlot>,
+  who: { ahj: string; formName: string; sourceUrl: string },
+): EnsureFormResult | null {
+  const map = slot.existing ? parseJson<{ verified?: boolean; formName?: string }>(String(slot.existing.field_map || "{}"), {}) : null;
+  if (!map || map.verified !== true) return null;
+  const held = map.formName || String(slot.existing?.original_filename || "").replace(/\.pdf$/i, "") || `${who.ahj} ${slot.formType.replace(/_/g, " ")}`;
+  return {
+    status: "exists", formName: held, sourceUrl: who.sourceUrl, mappedFields: 0,
+    message: `${who.ahj}'s ${slot.formType.replace(/_/g, " ")} slot holds a HUMAN-VERIFIED field map ("${held}"), so ${who.formName} was not stored over it and was not mapped. The verified form is kept exactly as confirmed; to replace it, mark it unverified first, then upload again.`,
   };
+}
+
+/**
+ * Would storeAhjFormTemplate refuse THIS store input? Asked with the store's own input shape (its
+ * real filename, map.formName, map.sourceUrl, applicationKind), so it resolves the very row the
+ * store would replace. For a door that wants to skip work (a model call, a download) before storing.
+ */
+export function verifiedStoreRefusal(db: AppDb, input: Parameters<typeof templateSlot>[1]): EnsureFormResult | null {
+  return verifiedRowRefusal(templateSlot(db, input), { ahj: input.ahjName, formName: storeFormName(input), sourceUrl: String(input.map?.sourceUrl || "") });
+}
+
+/**
+ * A HUMAN-VERIFIED MAP IS NEVER OVERWRITTEN BY AN ACQUISITION (hard rule 3). The acquisition's shape
+ * of verifiedStoreRefusal: acquireFromBytes stores `${formName}.pdf` with this formName / sourceUrl /
+ * kind, so this is the slot its store would replace. (The 60-day refresh is a different door on
+ * purpose: an AHJ's revised PDF demotes a verified map to unverified and carries the mapping over —
+ * ahjFormRefresh, storeAhjFormTemplate's refreshOfRowId.)
+ */
+export function verifiedSlotRefusal(
+  db: AppDb,
+  input: { ahj: string; state: string; formType: string; formName: string; sourceUrl: string; applicationKind?: "prescriptive" | "structural" | null },
+): EnsureFormResult | null {
+  return verifiedStoreRefusal(db, {
+    ahjName: input.ahj, state: input.state, formType: input.formType, filename: `${input.formName}.pdf`,
+    map: { formName: input.formName, sourceUrl: input.sourceUrl }, applicationKind: input.applicationKind ?? null,
+  });
+}
+
+/** The row write for storeAhjFormTemplate: an UPDATE of the slot's row, else an INSERT. */
+function writeTemplateRow(
+  db: AppDb,
+  input: Parameters<typeof storeAhjFormTemplate>[1],
+  blob: Buffer,
+  existing: TemplateSlotRow | null,
+  now: string,
+): string {
   // PROVENANCE FOLLOWS THE BYTES. sourceUrl lives in the field map already and
   // every caller sets it, so the column mirrors it rather than inventing a
   // second answer; the column is what makes it selectable, sortable and
@@ -362,20 +528,42 @@ export function storeAhjFormTemplate(
 // Build the field map for a blank PDF's bytes using its AcroForm fields. Returns
 // null when the PDF has no fillable fields (flat/scanned/XFA) — those can't be
 // auto-filled without coordinate overlays and are routed to a human.
+//
+// THE MAPPER SEES WHAT THE APPLICANT SEES. It used to get widget NAMES only, and auto-generated
+// names are often shifted onto the neighbouring box: Waltham's "Telephone" widget is the agent's
+// Email Address box, so the homeowner's phone number was mapped into it. Each field now goes with
+// its page and the printed caption(s) around it (inspectPlacedFields) — the blank's own text,
+// never a field value and never project data (hard rule 2: the mapper gets names and captions).
+// What the model returns then passes the deterministic checks (formFieldChecks.sanitizeAcroMap).
 export async function buildFieldMapForPdf(
   llm: LLMProvider,
   input: { ahj: string; state: string; formName: string; bytes: Uint8Array },
-): Promise<{ textFields: Record<string, string>; checkboxes: Record<string, { source: string; equals?: string }>; notes: string; fieldCount: number } | null> {
-  const inspected = await inspectFormFields(input.bytes);
+): Promise<{ textFields: Record<string, string>; checkboxes: Record<string, { source: string; equals?: string }>; notes: string; fieldCount: number; fields: InspectedField[]; operatorItems: OperatorItem[]; labels: LabelItem[] } | null> {
+  const inspected = await inspectPlacedFields(input.bytes);
   if (inspected.isXfa || inspected.fields.length === 0) return null;
   const mapped = await llm.mapAcroFormFields({
     ahj: input.ahj,
     state: input.state,
     formName: input.formName,
-    fields: inspected.fields,
-    availableSources: AVAILABLE_FIELD_SOURCES,
+    fields: inspected.fields.map((f) => ({
+      name: f.name, type: f.type,
+      ...(f.page != null ? { page: f.page } : {}),
+      ...(f.caption ? { caption: f.caption } : {}),
+      ...(f.captions && Object.keys(f.captions).length ? { captions: f.captions } : {}),
+    })),
+    captionSide: inspected.captionSide,
+    availableSources: fieldSourcesForState(input.state),
   });
-  return { textFields: mapped.textFields, checkboxes: mapped.checkboxes, notes: mapped.notes, fieldCount: inspected.fields.length };
+  const checked = sanitizeAcroMap({
+    widgets: inspected.fields, items: inspected.labels, state: input.state,
+    textFields: mapped.textFields, checkboxes: mapped.checkboxes,
+  });
+  const notes = [mapped.notes, ...checked.notes].filter(Boolean).join(" ");
+  return {
+    textFields: checked.textFields, checkboxes: checked.checkboxes, notes, fieldCount: inspected.fields.length,
+    fields: inspected.fields, operatorItems: [...(mapped.operatorItems ?? []), ...checked.operatorItems],
+    labels: inspected.labels,
+  };
 }
 
 /** The tallest a signature box may be. Signature rules on real permit forms sit 9-20pt
@@ -415,7 +603,7 @@ export function visionSignatureBox(ny: number, heightFrac: number, pageHeight: n
 export async function buildOverlayMapForPdf(
   llm: LLMProvider,
   input: { ahj: string; state: string; formName: string; bytes: Uint8Array },
-): Promise<{ overlayFields: OverlayField[]; signatureFields: SignaturePlacement[]; notes: string } | null> {
+): Promise<{ overlayFields: OverlayField[]; signatureFields: SignaturePlacement[]; notes: string; operatorItems: OperatorItem[] } | null> {
   const os = await import("node:os");
   const fs = await import("node:fs");
   const path = await import("node:path");
@@ -453,11 +641,19 @@ export async function buildOverlayMapForPdf(
     state: input.state,
     formName: input.formName,
     pages,
-    availableSources: AVAILABLE_FIELD_SOURCES,
+    availableSources: fieldSourcesForState(input.state),
   });
-  if (!mapped.fields.length && !mapped.signatures.length) return null;
+  const operatorItems: OperatorItem[] = [...(mapped.operatorItems ?? [])];
+  // Never an attestation of an attached document (a workers'-comp affidavit "Yes" box): named for
+  // the operator, never drawn.
+  const placeable = mapped.fields.filter((f) => {
+    if (!attestsAttachedDocument(f.label)) return true;
+    operatorItems.push({ label: `${String(f.label).trim()} (an attestation — attach the document and tick by hand)` });
+    return false;
+  });
+  if (!placeable.length && !mapped.signatures.length) return operatorItems.length ? { overlayFields: [], signatureFields: [], notes: mapped.notes, operatorItems } : null;
 
-  const overlayFields: OverlayField[] = mapped.fields.map((f) => {
+  const overlayFields: OverlayField[] = placeable.map((f) => {
     const sz = pageSizes[f.page] || pageSizes[0];
     return {
       source: f.source,
@@ -486,17 +682,36 @@ export async function buildOverlayMapForPdf(
       ...(hasDate ? { dateX: Math.round(sg.dateNx! * sz.w), dateY: Math.round((1 - sg.dateNy!) * sz.h), dateSize: 9 } : {}),
     };
   });
-  return { overlayFields, signatureFields, notes: mapped.notes };
+  return { overlayFields, signatureFields, notes: mapped.notes, operatorItems };
 }
 
-export interface EnsureFormResult {
-  status: "exists" | "acquired" | "needs_manual" | "not_found";
-  message: string;
-  formName?: string;
-  sourceUrl?: string;
-  mappedFields?: number;
-  /** Human callout of the permit TYPE for this AHJ (combo vs separate BLD/ELE, submission method). */
-  permitType?: string;
+/** THE "ahj_form.find" AUDIT DETAILS (server find-ahj-form). THE WHY IS KEPT — Waltham's audit said
+ *  "not_found" and nothing else, so nobody could see what the search found, read or could not run.
+ *  The message carries the forms page read, the links tried and "the form search could not run":
+ *  AHJ facts, never project values. */
+export function formFindAuditDetails(
+  ahj: string,
+  ensure: Pick<EnsureFormResult, "status" | "message" | "formName" | "permitType" | "sourceUrl" | "lookupFailed">,
+  additional: Array<{ formType: string; status: string; message: string }>,
+): Record<string, unknown> {
+  return {
+    status: ensure.status, formName: ensure.formName || "", ahj, permitType: ensure.permitType || "",
+    message: String(ensure.message || "").slice(0, 2000),
+    lookupFailed: Boolean(ensure.lookupFailed),
+    sourceUrl: ensure.sourceUrl || "",
+    additional: additional.map((a) => `${a.formType}:${a.status}`),
+    additionalMessages: additional.map((a) => `${a.formType}: ${String(a.message || "").slice(0, 600)}`),
+  };
+}
+
+/** Where the forms page is read from, and how gently: the reader (default: the per-job lookup's
+ *  reader switches — defaultLookupReader — with a budget of two pages, shared by every form type of
+ *  one pass so a forms page is read once) and the gap before a download from a host we just asked
+ *  (default PAGE_READ_MIN_GAP_MS). Tests inject both. */
+export interface FormsPageOptions {
+  reader?: PageReader | null;
+  minGapMs?: number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 // Normalize the model's STRUCTURED platform answer + the portal URL to a canonical platform + method.
@@ -519,28 +734,172 @@ export function canonicalPortal(research: AhjFormUrlResult): { platform: string;
 
 // Persist the discovered submittal portal/platform/requirements so the record-portal
 // training step pre-fills the portal URL for a new AHJ and future projects reuse it.
-function learnAhjPortalFromResearch(db: AppDb, project: ProjectRecord, research: AhjFormUrlResult): void {
+export function learnAhjPortalFromResearch(db: AppDb, project: ProjectRecord, research: AhjFormUrlResult): void {
   if (!project.ahj || !project.state) return;
-  const { platform, method } = canonicalPortal(research);
-  if (!platform && !method && !research.submittalPortalUrl && !research.formsPageUrl) return;
+  // THE ONE RESEARCH WRITE DOOR (researchedPortalUrl.researchedUrlRefusal): this used to save the
+  // searched portal with no check at all, so the statewide portal an Oregon search leans toward was
+  // written into the row of an AHJ whose own evidence says it files elsewhere (Corvallis), and the
+  // next stage served it. A refused URL is not written — and names no platform from its host.
+  const refused = researchedUrlRefusal(db, "permit", { state: project.state, name: project.ahj }, research.submittalPortalUrl);
+  const portalUrl = refused ? "" : String(research.submittalPortalUrl || "");
+  const { platform, method } = canonicalPortal({ ...research, submittalPortalUrl: portalUrl });
+  // THE FORMS PAGE IS KEPT (Waltham: the search's "why" was dropped, so nobody could see where it
+  // looked). In ONE place — its own note segment (formsPageUrl below), never in the free-text notes —
+  // and only when it is on the AHJ's own site (isAhjFormsSite, the predicate the harvest reads it
+  // under): another town's forms page is never written into THIS AHJ's shared KB row, and a result
+  // carrying nothing else writes no row at all (forms-find skeptic F1). It steers the next search
+  // through knowledgeResearchHint.
+  const formsPageUrl = research.formsPageUrl && isAhjFormsSite(portalHostOf(research.formsPageUrl), [project.ahj], project.state) ? research.formsPageUrl : "";
+  if (!platform && !method && !portalUrl && !formsPageUrl) return;
   const notes = [
     research.submittalRequirements ? `Submittal requirements: ${research.submittalRequirements}` : "",
-    research.formsPageUrl ? `Forms page: ${research.formsPageUrl}` : "",
     research.notes || "",
   ].filter(Boolean).join(" · ");
   try {
     saveResearchedAhjProfile(db, { state: project.state, ahj: project.ahj }, {
       provider: "claude",
       portalName: platform || "",
-      portalUrl: research.submittalPortalUrl || "",
+      portalUrl: portalUrl,
       portalPlatform: platform || "",
       submissionMethod: method || "",
       requiredDocuments: [], commonCorrections: [], submissionSteps: [], tips: [],
       confidence: research.confidence,
       notes,
       needsHumanVerification: true,
+      formsPageUrl,
     });
   } catch { /* non-fatal */ }
+}
+
+// ── THE AHJ'S OWN APPLICATION, FOUND WITHOUT ANOTHER MODEL CALL (Waltham, 2026-09-28) ─────────────
+// The search named City of Waltham's forms page (/1289/Applications) and received its document
+// links in the raw results, but the only candidates were the model's own list — empty — so a public
+// "Residential Application" (/DocumentCenter/View/4313/…, application/pdf) was reported as no form.
+// Two deterministic widenings, no extra LLM spend, both through the catalog's document predicates
+// (permitPlatformCatalog.classifyApplicationDocument — DOCUMENT_URL, FEE_LINK, OTHER_FEE_KIND):
+//   (b) the forms page research returned, read ONCE through the lookup's polite page reader, when it
+//       is on the AHJ's own site (isAhjFormsSite) — its links on that site only (applicationFormLinks);
+//   (a) the search results the call received, on the AHJ's own site (isAhjFormsSite again — a search
+//       returns other towns' forms too). ONE predicate for "the AHJ's own site" at every door: the
+//       forms page's REDIRECT target is never a second admission (a page that lands off-site admitted
+//       every search result on the landing domain).
+// A utility host is never a candidate (rule 5), and fetchPdf still decides what is a PDF.
+export const APPLICATION_FORM_TYPES = ["permit_application", "building_application", "electrical_application"];
+const MAX_PAGE_CANDIDATES = 3;
+const MAX_SEARCH_CANDIDATES = 2;
+interface FormCandidate {
+  url: string;
+  /** The words that name it: the link's text or the search result's title ("" for the model's list). */
+  label: string;
+  origin: "research" | "forms-page" | "search-result" | "kb";
+  discipline?: ApplicationDiscipline;
+}
+/** May an application of this discipline be THIS slot's primary blank? An electrical-only
+ *  application is never the building-side / generic blank; the electrical slot takes only an
+ *  electrical one — a COMBINED building + electrical form is the building side's (classifyFormType
+ *  stores it as building_application, so taken for the electrical slot it would never fill it). */
+export function disciplineFitsSlot(discipline: ApplicationDiscipline, formType: string): boolean {
+  if (formType === "electrical_application") return discipline === "electrical";
+  return discipline !== "electrical";
+}
+/** A URL that is never this slot's application whoever proposed it: a utility host (rule 5), and —
+ *  for an application slot — a document whose own name says fee schedule / agenda / minutes /
+ *  newsletter (an opaque URL says nothing and is left to fetchPdf, as before). */
+export function neverTheApplication(url: string, formType: string): boolean {
+  if (isUtilityPlatformUrl(url)) return true;
+  if (!APPLICATION_FORM_TYPES.includes(formType)) return false;
+  const slug = documentSlugWords(url);
+  return Boolean(slug) && /fee schedule|schedule of fees|fee table|master fee|agenda|minutes|newsletter/i.test(slug);
+}
+/** The process-wide last request per host made by this module's harvest (go gently: >= the gap
+ *  between two requests to one host, after the forms page read too). */
+const formHostLastAt = new Map<string, number>();
+async function politeGap(url: string, fp: FormsPageOptions): Promise<void> {
+  const host = portalHostOf(url);
+  const gap = fp.minGapMs ?? PAGE_READ_MIN_GAP_MS;
+  const wait = (formHostLastAt.get(host) ?? 0) + gap - Date.now();
+  if (host && gap > 0 && wait > 0) await (fp.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(wait);
+}
+function noteHostHit(url: string): void {
+  const host = portalHostOf(url);
+  if (host) formHostLastAt.set(host, Date.now());
+}
+/** The reader for forms pages when none is injected: the per-job lookup's switches (a model key,
+ *  PERMIT_LOOKUP_PAGE_READ, DOCUMENT_FETCH), two pages. Null = no page is read. */
+export async function defaultFormsPageReader(): Promise<PageReader | null> {
+  try {
+    const { defaultLookupReader } = await import("./permitProcessLookup");
+    return defaultLookupReader(2);
+  } catch {
+    return null;
+  }
+}
+async function harvestApplicationCandidates(
+  project: ProjectRecord,
+  formType: string,
+  applicationKind: "prescriptive" | "structural" | null,
+  research: AhjFormUrlResult,
+  fp: FormsPageOptions,
+): Promise<{ candidates: FormCandidate[]; note: string; refusedDomains: Set<string> }> {
+  if (!APPLICATION_FORM_TYPES.includes(formType)) return { candidates: [], note: "", refusedDomains: new Set<string>() };
+  const names = [project.ahj].filter(Boolean);
+  // The other of the two building-side applications is not this one (the same test the KB links pass).
+  const kindOk = (label: string, url: string) => {
+    const k = formApplicationKind(`${url} ${label}`);
+    return !(k && applicationKind && k !== applicationKind);
+  };
+  const rank = (a: { discipline: ApplicationDiscipline; score: number }, b: { discipline: ApplicationDiscipline; score: number }) =>
+    Number(disciplineFitsSlot(b.discipline, formType)) - Number(disciplineFitsSlot(a.discipline, formType)) || b.score - a.score;
+  const notes: string[] = [];
+  const fromPage: FormCandidate[] = [];
+  /** Sites that REFUSED the forms page read (a challenge, a wall, 401/403/429 — isRefusal): nothing
+   *  this harvest found is requested from them (go gently — the reader has backed the host off). */
+  const refusedDomains = new Set<string>();
+  const page = String(research.formsPageUrl || "");
+  if (page) {
+    const host = portalHostOf(page);
+    if (!isAhjFormsSite(host, names, project.state)) {
+      notes.push(`The forms page the search named (${page}) is not on ${project.ahj}'s own site, so it was not read.`);
+    } else if (DOCUMENT_URL.test(page)) {
+      notes.push(`The search named a document (${page}) as the forms page; it was not read as a page.`);
+    } else {
+      const reader = fp.reader !== undefined ? fp.reader : await defaultFormsPageReader();
+      if (!reader) {
+        notes.push(`The forms page ${page} was not read (page reading is off on this installation), so its links were not checked.`);
+      } else {
+        await politeGap(page, fp);
+        const read = await reader.read(page);
+        noteHostHit(page);
+        if (read.finalUrl) noteHostHit(read.finalUrl);
+        if (!read.ok && isRefusal(read.status, read.reason)) {
+          // A REFUSAL IS NOT ASKED AGAIN IN THE SAME BREATH: the search results on that site are
+          // dropped too (they would be the next requests to a host that just refused us).
+          for (const h of [host, portalHostOf(read.finalUrl)]) if (h) refusedDomains.add(registrableDomain(h));
+          notes.push(`The forms page ${page} refused the read (${read.reason || `HTTP ${read.status}`}), so nothing else was requested from that site — not a finding about ${project.ahj}.`);
+        } else if (!read.ok || read.kind !== "html") {
+          notes.push(`The forms page ${page} could not be read (${read.reason || read.kind}), so its links were not checked — not a finding about ${project.ahj}.`);
+        } else {
+          const links = applicationFormLinks([read], names, project.state).filter((l) => kindOk(l.text, l.href)).sort(rank);
+          for (const l of links.slice(0, MAX_PAGE_CANDIDATES)) fromPage.push({ url: l.href, label: l.text, origin: "forms-page", discipline: l.discipline });
+          notes.push(links.length
+            ? `Read the forms page ${page}: ${links.length} permit application link(s) on ${project.ahj}'s site.`
+            : `Read the forms page ${page}: no permit application document is linked on it.`);
+        }
+      }
+    }
+  }
+  const fromSearch: Array<FormCandidate & { score: number; discipline: ApplicationDiscipline }> = [];
+  for (const r of research.searchResults ?? []) {
+    const host = portalHostOf(r.url);
+    if (!host || isUtilityPlatformUrl(r.url) || fromPage.some((c) => c.url === r.url)) continue;
+    if (!isAhjFormsSite(host, names, project.state) || refusedDomains.has(registrableDomain(host))) continue;
+    const doc = classifyApplicationDocument(r.title, r.url);
+    if (!doc || !kindOk(r.title, r.url)) continue;
+    fromSearch.push({ url: r.url, label: r.title, origin: "search-result", ...doc });
+  }
+  fromSearch.sort(rank);
+  if (fromSearch.length) notes.push(`${fromSearch.length} search result(s) on ${project.ahj}'s site name a permit application.`);
+  return { candidates: [...fromPage, ...fromSearch.slice(0, MAX_SEARCH_CANDIDATES).map(({ score: _s, ...c }) => c)], note: notes.join(" "), refusedDomains };
 }
 
 // Classify a downloaded PDF into a form_type from its name/URL, so one research
@@ -552,43 +911,41 @@ export function classifyFormType(nameOrUrl: string, fallback: string): string {
   // checklist: a caller that recognised it (by its anchors) keeps its own type.
   if (fallback === PV_WORKSHEET_DOC_TYPE) return fallback;
   if (/checklist|worksheet|eligibilit/.test(t)) return "solar_checklist";
-  if (/electrical|ele[-_ ]?permit/.test(t)) return "electrical_application";
+  // A COMBINED building + electrical application ("Building & Wiring", "Building/Electrical Permit
+  // Application") is the BUILDING side's — the one answer the harvest reads too
+  // (permitPlatformCatalog.headDiscipline). Filed as electrical, it replaced the AHJ's real electrical
+  // application and left the building / generic slot unsatisfied (a paid re-search on every pass).
+  if (namesCombinedApplication(t)) return "building_application";
+  // A WIRING permit is the electrical permit (Massachusetts towns' "Wiring Permit Application") — but
+  // only as a permit phrase (WIRING_PERMIT_PHRASE): a "Sample Wiring Diagram", a "wire transfer" or a
+  // "wire fraud" notice is not the AHJ's electrical application.
+  if (/electrical|ele[-_ ]?permit/.test(t) || WIRING_PERMIT_PHRASE.test(t)) return "electrical_application";
   if (/building|structural|bld[-_ ]?permit/.test(t)) return "building_application";
   return fallback;
 }
 
-// Does this AHJ already have a stored template of THIS form type? (Same fuzzy
-// name containment as loadStoredTemplates, narrowed by form_type.)
-//
-// `applicationKind` narrows further, and is what stops the two mutually-exclusive
-// building-side applications from being treated as one holding. Asking "do we have a
-// building_application?" answered YES off the STRUCTURAL blank for a project on the
-// PRESCRIPTIVE path — so acquisition of the prescriptive one was skipped forever and
-// the project went on believing its application was in hand. A row that makes no kind
-// claim still counts for either: a jurisdiction with one generic application genuinely
-// has what both paths need, and demanding a second blank there would be the
-// over-blocking mirror of the same mistake.
-export function hasStoredTemplateOfType(
-  db: AppDb,
-  ahj: string,
-  state: string,
-  formType: string,
-  applicationKind?: "prescriptive" | "structural" | null,
-): boolean {
-  const needle = (ahj || "").trim().toLowerCase();
-  if (!needle) return false;
-  const rows = db.query<{ ahj_name: string; state: string; original_filename?: string; field_map?: string }>(
-    "SELECT ahj_name, state, original_filename, field_map FROM ahj_form_templates WHERE pdf_blob IS NOT NULL AND form_type = ?",
-    [formType],
-  );
-  return rows.some((row) => {
-    const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
-    const stateOk = !row.state || !state || String(row.state).toLowerCase() === String(state).toLowerCase();
-    if (!rowAhj || !stateOk || !(rowAhj === needle || needle.includes(rowAhj) || rowAhj.includes(needle))) return false;
-    if (!applicationKind) return true;
-    const rowKind = storedApplicationKind(row);
-    return !rowKind || rowKind === applicationKind;
-  });
+// Does this AHJ already have a stored template of THIS form type? — formAcquisitionPlan
+// .hasStoredTemplateOfType (re-exported above). `applicationKind` narrows further, and is what stops
+// the two mutually-exclusive building-side applications from being treated as one holding: asking
+// "do we have a building_application?" answered YES off the STRUCTURAL blank for a project on the
+// PRESCRIPTIVE path, so acquisition of the prescriptive one was skipped forever.
+
+/**
+ * WHICH STORED FORM TYPES SATISFY THIS SLOT — the one answer the "already held?" check and the
+ * "usable?" check both read (ensureAhjFormTemplate).
+ *   - building_application: the building blank, or the generic application blank (a blank whose name
+ *     says neither is stored generic — requiredDocuments' altDocTypes, the same alias);
+ *   - permit_application (the generic / baseline slot) where the permit structure is ONE permit or not
+ *     known: the generic blank, or a BUILDING application. storeAhjFormTemplate re-types a blank by
+ *     its own name, so a "Building Permit Application" fetched for this slot is stored as
+ *     building_application — and a slot that accepted only permit_application re-searched (paid) and
+ *     re-downloaded it on EVERY pass (forms-find skeptic, the re-type loop). Where the permits are
+ *     SEPARATE the generic slot is not a building one, and it keeps its own type;
+ *   - anything else (electrical_application above all — one generic blank never satisfies both the
+ *     building side and the electrical one): its own type only.
+ */
+export function storedTypesForSlot(formType: string, structure: "separate" | "combo" | "unknown"): string[] {
+  return acceptedFormTypes(formType, structure);
 }
 
 /** The full set of forms this AHJ needs for a residential solar submission —
@@ -604,12 +961,56 @@ export interface NeededAhjForm {
   applicationKind: "prescriptive" | "structural" | null;
 }
 
+export interface AhjFormsPass {
+  neededTypes: string[];
+  needed: NeededAhjForm[];
+  results: Array<EnsureFormResult & { formType: string; applicationKind: "prescriptive" | "structural" | null }>;
+  /** Set when this call did not search: it JOINED the research pass already running for the same
+   *  AHJ/path (formAcquisitionPlan.formResearchInFlight) and took its result — a door that arrives
+   *  mid-search waits for that search instead of starting another. */
+  joined?: { since: string };
+}
+
 export async function ensureAhjFormsForProject(
   db: AppDb,
   llm: LLMProvider,
   project: ProjectRecord,
-  opts: { allowResearch?: boolean } = {},
-): Promise<{ neededTypes: string[]; needed: NeededAhjForm[]; results: Array<EnsureFormResult & { formType: string; applicationKind: "prescriptive" | "structural" | null }> }> {
+  /** allowMapping: may a CITED agency PDF be mapped by the model when research is off? Defaults to
+   *  allowResearch. Stage's no-research pass inside the cooldown sets it from the process's research
+   *  switch (prepareOfficialDocuments) — one mapping per cited form, never a search.
+   *  skipRecentlyFailed: do not re-fetch a curated/cited/checklist URL whose download failed within
+   *  FORM_FETCH_RETRY_MS (recentFormFetchFailure) — set ONLY by Stage's pass inside the cooldown; the
+   *  operator's "Find missing official forms" (server find-ahj-form) never sets it. */
+  opts: { allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean; formsPage?: FormsPageOptions } = {},
+): Promise<AhjFormsPass> {
+  // ONE SEARCH PER AHJ/PATH AT A TIME (formAcquisitionPlan's in-flight registry). Every door — the
+  // automatic chain, Stage, the operator's "Find missing official forms" — comes through here, and
+  // three of them ran the same six-search pass at once on the operator's first new AHJ (City of
+  // Beaverton, 2026-09-28: the gate said "find the official form" while the chain was finding it, so
+  // the operator clicked Find, twice). A pass that may research REGISTERS itself in the same tick the
+  // cooldown was claimed (no await before trackFormResearch — a gate read never sees "claimed but not
+  // in flight"); ANY pass arriving while one runs JOINS it: the same project takes that pass's result
+  // verbatim, another project with the same AHJ/path waits for it and then runs its own FREE pass,
+  // which answers "exists" off whatever the search just stored (never another project's needed set).
+  const key = acquisitionScopeKey(project, resolvePermitPath(project).path);
+  const running = formResearchInFlight(key);
+  if (running) {
+    const theirs = await (running.promise as Promise<AhjFormsPass>).then((r) => r, () => null);
+    if (theirs && running.projectId === project.id) return { ...theirs, joined: { since: running.since } };
+    const mine = await runAhjFormsPass(db, llm, project, { ...opts, allowResearch: false, allowMapping: opts.allowMapping ?? opts.allowResearch !== false });
+    return { ...mine, joined: { since: running.since } };
+  }
+  const pass = runAhjFormsPass(db, llm, project, opts);
+  if (opts.allowResearch !== false) trackFormResearch(key, project.id, pass);
+  return pass;
+}
+
+async function runAhjFormsPass(
+  db: AppDb,
+  llm: LLMProvider,
+  project: ProjectRecord,
+  opts: { allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean; formsPage?: FormsPageOptions },
+): Promise<AhjFormsPass> {
   // WHAT THIS PROJECT MUST FILE DECIDES WHAT WE GO AND FETCH.
   //
   // This used to be the constant ["permit_application"], which is why a
@@ -660,27 +1061,24 @@ export async function ensureAhjFormsForProject(
     if (resolvePermitPath(project).path !== "engineered" && (kb.ahj?.requiredDocuments || []).some((d) => /checklist|worksheet/i.test(d))) want("solar_checklist");
   } catch { /* KB optional */ }
   const results: Array<EnsureFormResult & { formType: string; applicationKind: "prescriptive" | "structural" | null }> = [];
+  // ONE reader for every form type of this pass (its cache reads a forms page once) — created only
+  // when research may run; with research off no forms page is ever named, so none is read.
+  let formsPage: FormsPageOptions | undefined = opts.formsPage;
+  if (opts.allowResearch !== false && formsPage?.reader === undefined) formsPage = { ...(formsPage ?? {}), reader: await defaultFormsPageReader() };
   for (const item of needed.values()) {
     results.push({
       formType: item.formType,
       applicationKind: item.applicationKind,
-      ...(await ensureAhjFormTemplate(db, llm, project, item.formType, { applicationKind: item.applicationKind, allowResearch: opts.allowResearch })),
+      ...(await ensureAhjFormTemplate(db, llm, project, item.formType, { applicationKind: item.applicationKind, allowResearch: opts.allowResearch, allowMapping: opts.allowMapping, skipRecentlyFailed: opts.skipRecentlyFailed, formsPage })),
     });
   }
   return { neededTypes: [...needed.keys()], needed: [...needed.values()], results };
 }
 
-/** WHICH of the two building-side applications a form search is for — and NONE where the split
- *  does not exist. Outside Oregon (or a jurisdiction whose own research names a prescriptive path)
- *  resolvePermitPath says standardReview: the AHJ publishes one building application, so the
- *  search must not be told "find the STRUCTURAL one, not the prescriptive one" — that directive
- *  told the Iowa City form finder its required Verification Form was "the PRESCRIPTIVE route — do
- *  not submit it" (e2e-gap close, 2026-09-26). */
-export function applicationKindForProject(project: ProjectRecord): "prescriptive" | "structural" | null {
-  const res = resolvePermitPath(project);
-  if (res.standardReview) return null;
-  return applicationKindForPath(res.path);
-}
+// WHICH of the two building-side applications a form search is for — and NONE where the split does
+// not exist — is formAcquisitionPlan.applicationKindForProject (re-exported above): outside Oregon
+// resolvePermitPath says standardReview, and the search must not be told "find the STRUCTURAL one,
+// not the prescriptive one" (the Iowa City form finder, e2e-gap close 2026-09-26).
 
 // Ensure the AHJ has a usable stored form. Research → download → map → store.
 export async function ensureAhjFormTemplate(
@@ -688,7 +1086,7 @@ export async function ensureAhjFormTemplate(
   llm: LLMProvider,
   project: ProjectRecord,
   formType = "permit_application",
-  opts: { applicationKind?: "prescriptive" | "structural" | null; allowResearch?: boolean } = {},
+  opts: { applicationKind?: "prescriptive" | "structural" | null; allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean; formsPage?: FormsPageOptions } = {},
 ): Promise<EnsureFormResult> {
   // THE UTILITY'S FILING LOCATION rides every per-project form-research pass — the pipeline's
   // (ensureAhjFormsForProject) and the operator's "Find official form" — fire-and-forget, once per
@@ -696,6 +1094,11 @@ export async function ensureAhjFormTemplate(
   // filed and what the program is. Nothing here waits on it; the tracks read the stored row.
   if (opts.allowResearch !== false) {
     try { ensureUtilityFilingLookedUp(db, project, llm); } catch { /* best-effort */ }
+    // AND THE AHJ'S OWN PROCESS (Waltham had no permit_process_lookups row: the lookup shipped after
+    // its one QC, and QC was its only trigger). The same trigger QC uses — enqueued once per AHJ with
+    // no lookup row and no process profile, deduped for 24h, a no-op without a model key or a running
+    // job worker. Fire-and-forget; nothing here waits on it.
+    void import("./permitProcessLookup").then((m) => m.ensurePermitProcessLookedUp(db, project)).catch(() => undefined);
   }
   // WHICH of the two building-side applications this call is for. Given by the caller
   // (the required set decided it from the permit path); otherwise resolved from the
@@ -709,7 +1112,7 @@ export async function ensureAhjFormTemplate(
   // acquired and stored under ITS name, from its own curated seed or the PDF the lookup cited —
   // never a paid search under the city's name, never a KB profile written for the agency.
   const authority = formAuthorityFor(project, formType);
-  if (authority.issuedByOther) return ensureIssuingAgencyForm(db, llm, project, formType, authority, applicationKind, { allowResearch: opts.allowResearch });
+  if (authority.issuedByOther) return ensureIssuingAgencyForm(db, llm, project, formType, authority, applicationKind, { allowResearch: opts.allowResearch, allowMapping: opts.allowMapping, skipRecentlyFailed: opts.skipRecentlyFailed });
   const kindWord = applicationKind === "structural" ? "structural (non-prescriptive)" : applicationKind === "prescriptive" ? "prescriptive" : "";
   // Already have a fillable stored template of THIS form type for this AHJ?
   // (Per-type, so acquiring the checklist isn't skipped just because the
@@ -720,7 +1123,8 @@ export async function ensureAhjFormTemplate(
   // The building-side row accepts the generic application blank (requiredDocuments' altDocTypes):
   // an AHJ whose one stored application is filed as "permit_application" has its building-side form
   // once its structure resolves SEPARATE (building + electrical) — the same alias the inventory uses.
-  const acceptedTypes = formType === "building_application" ? ["building_application", "permit_application"] : [formType];
+  // And the generic slot accepts the building blank it was re-typed to — the gate's own answer.
+  const acceptedTypes = acceptedFormTypesFor(project, formType);
   if (acceptedTypes.some((t) => hasStoredTemplateOfType(db, project.ahj, project.state, t, applicationKind))) {
     const usable = loadStoredTemplates(db, project.ahj, project.state, { ownOnly: true }).some(t => {
       const type = db.get<{ form_type: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [t.templateId])?.form_type;
@@ -734,11 +1138,14 @@ export async function ensureAhjFormTemplate(
 
   // Known public forms are free downloads; do not buy a search for a source we
   // already hold. An online application can still require a PDF attachment.
-  const curated = curatedFormSource(project, formType, applicationKind);
-  const checklistUrl = project.state.toUpperCase() === "OR" && formType === "solar_checklist"
-    && resolvePermitPath(project).path === "prescriptive" ? "https://www.oregon.gov/bcd/Formslibrary/5952.pdf" : "";
-  if (curated || checklistUrl) {
-    const url = curated?.url || checklistUrl;
+  // formAcquisitionPlan.ownFreeFormSource — the same answer the pre-Stage gate reads.
+  const free = ownFreeFormSource(project, formType, applicationKind);
+  const curated = free?.curated ?? null;
+  if (free) {
+    const url = free.url;
+    // Inside the cooldown, a URL that failed recently is not fetched again (recentFormFetchFailure).
+    const recent = opts.skipRecentlyFailed ? recentFormFetchFailure(url) : null;
+    if (recent) return { status: "not_found", sourceUrl: url, message: `The official form at ${url} was not fetched again: its download failed recently (${recent}) and Stage does not retry it inside the 24h cooldown. Find missing official forms retries it now; it has not been counted as present.` };
     const bytes = await fetchPdf(url);
     if (bytes) {
       if (!(curated ? curatedFormMap(bytes, url)?.source.hash === curated.hash : bcd5952Template(bytes, url))) {
@@ -813,20 +1220,51 @@ export async function ensureAhjFormTemplate(
     answer: permitStructureAnswer(project, { researched: research.permitStructure, researchedFrom: "the form search (uncited)" }),
   });
 
-  // Research candidates first (freshest), then any direct .pdf links carried by
-  // the imported KB row — a spreadsheet-provided application link can rescue an
-  // AHJ whose site the search couldn't crack (link may also just be stale).
-  const candidateUrls = [...new Set([...research.candidateUrls, ...(kbHint?.pdfUrls || [])])];
+  // Research candidates first (freshest), then the AHJ's own forms page and the search results
+  // (harvestApplicationCandidates — deterministic, no model call), then any direct .pdf links carried
+  // by the imported KB row — a spreadsheet-provided application link can rescue an AHJ whose site
+  // the search couldn't crack (link may also just be stale). A utility host is never a candidate
+  // (rule 5); a fee schedule / agenda named as such never an application.
+  const fp = opts.formsPage ?? {};
+  const harvest = await harvestApplicationCandidates(project, formType, applicationKind, research, fp);
+  const candidates: FormCandidate[] = [];
+  // ONE ANSWER TO "MAY THIS PASS ASK THAT HOST AGAIN": a site that REFUSED the forms page read is asked
+  // nothing more in this pass — whoever proposed the URL (the model's own list, the KB row, the harvest).
+  // The model's link on a host that just answered 403 was still requested, after a message saying
+  // nothing else was (forms-find skeptic, P6b).
+  let skippedOnRefused = 0;
+  const addCandidate = (c: FormCandidate) => {
+    if (neverTheApplication(c.url, formType) || candidates.some((x) => x.url === c.url)) return;
+    const host = portalHostOf(c.url);
+    if (host && harvest.refusedDomains.has(registrableDomain(host))) { skippedOnRefused++; return; }
+    candidates.push(c);
+  };
+  for (const url of research.candidateUrls) addCandidate({ url, label: "", origin: "research" });
+  for (const c of harvest.candidates) addCandidate(c);
+  for (const url of kbHint?.pdfUrls || []) addCandidate({ url, label: "", origin: "kb" });
+  const candidateUrls = candidates.map((c) => c.url);
+  const harvestNote = `${harvest.note ? ` ${harvest.note}` : ""}${skippedOnRefused ? ` ${skippedOnRefused} other link(s) on that site (the search's or the knowledge base's) were not requested either.` : ""}`;
+  // "WE COULD NOT LOOK" IS NOT "THERE IS NO FORM" (Waltham, 09-25: the search aborted at its 180s
+  // budget and Stage reported "No downloadable PDF form was found" — then held the 24h cooldown).
+  const couldNotRun = research.lookupFailed
+    ? `The form search could not run: ${research.lookupError || "the web-search call failed"} — not a finding about ${project.ahj}. Nothing has been counted as present; search again (Find official form) before concluding anything.`
+    : "";
 
   if (!candidateUrls.length) {
     const portalNote = research.submittalPortalUrl
       ? ` Submittal portal: ${research.submittalPortalUrl}${research.portalPlatform ? ` (${research.portalPlatform})` : ""} — it's pre-filled on the record/training step.`
       : "";
     const reqNote = research.submittalRequirements ? ` Requirements: ${research.submittalRequirements}` : "";
+    if (research.lookupFailed) {
+      return { status: "not_found", lookupFailed: true, permitType: permitType.callout, message: `${couldNotRun}${harvestNote}${portalNote}${reqNote} Permitting type: ${permitType.callout}` };
+    }
     return {
       status: "not_found",
       permitType: permitType.callout,
-      message: `Permitting type: ${permitType.callout}${research.notes ? ` ${research.notes}` : ` No downloadable PDF form was found for ${project.ahj} — submit through the method above.`}${portalNote}${reqNote}`,
+      // A refused site is not "no form": nothing was downloaded because nothing more was asked of it.
+      message: `Permitting type: ${permitType.callout}${research.notes ? ` ${research.notes}` : harvest.refusedDomains.size
+        ? ` No form was downloaded for ${project.ahj}: its site refused the read. Retry Find official form later, or upload the official blank.`
+        : ` No downloadable PDF form was found for ${project.ahj} — submit through the method above.`}${harvestNote}${portalNote}${reqNote}`,
     };
   }
 
@@ -835,24 +1273,45 @@ export async function ensureAhjFormTemplate(
   // classify each by name/URL, and store each under its own form_type slot.
   // Everything acquired is stored + learned, so the next project under this
   // AHJ skips the search entirely.
-  const downloads: Array<{ url: string; bytes: Uint8Array; type: string }> = [];
+  const downloads: Array<{ url: string; bytes: Uint8Array; type: string; label: string; found: boolean }> = [];
   const seenHashes = new Set<string>();
   const storedTypes = new Set<string>();
-  for (const url of candidateUrls) {
+  for (const c of candidates) {
     if (downloads.length >= 4) break;
+    const url = c.url;
+    // A document WE found (the forms page / a search result) is named by its own words: it is this
+    // slot's primary blank only when its discipline fits, and it is fetched as an extra only for a
+    // slot nothing downloaded yet fills — never a wasted request to the AHJ's host.
+    const found = c.origin === "forms-page" || c.origin === "search-result";
+    const words = found ? `${c.label} ${documentSlugWords(url)}` : "";
+    if (found) {
+      if (!downloads.length && c.discipline && !disciplineFitsSlot(c.discipline, formType)) continue;
+      if (downloads.length) {
+        const t = classifyFormType(`${url} ${words}`, formType);
+        if (t === formType || downloads.some((d) => d.type === t)) continue;
+      }
+    }
+    // AND GENTLY, whoever proposed the URL: a download from a host this module just asked (the forms
+    // page read, any earlier download) waits the gap — the model's own link on the forms page's host too.
+    // EVERY request is recorded on its host, whoever proposed it and whether or not it returned a PDF
+    // (skeptic F3: only a FOUND document was recorded, so a failed model link on the same host was
+    // followed at once by the next request — the gap was measured from the forms page read).
+    await politeGap(url, fp);
     const bytes = await fetchPdf(url);
+    noteHostHit(url);
     if (!bytes) continue;
     const hash = sha256(bytes);
     if (seenHashes.has(hash)) continue;
     seenHashes.add(hash);
-    const type = downloads.length === 0 ? formType : classifyFormType(`${url} ${research.formName || ""}`, formType);
-    downloads.push({ url, bytes, type });
+    const type = downloads.length === 0 ? formType : classifyFormType(`${url} ${found ? words : research.formName || ""}`, formType);
+    downloads.push({ url, bytes, type, label: found ? c.label : "", found });
   }
   if (!downloads.length) {
     return {
       status: "not_found",
       permitType: permitType.callout,
-      message: `Permitting type: ${permitType.callout} Found candidate links for ${project.ahj} but none returned a valid PDF (link rot or login-gated). Upload the blank PDF to proceed. Tried: ${candidateUrls.join(", ")}`,
+      ...(research.lookupFailed ? { lookupFailed: true } : {}),
+      message: `${couldNotRun ? `${couldNotRun} ` : ""}Permitting type: ${permitType.callout} Found candidate links for ${project.ahj} but none returned a valid PDF (link rot or login-gated). Upload the blank PDF to proceed. Tried: ${candidateUrls.join(", ")}${harvestNote}`,
     };
   }
 
@@ -868,15 +1327,19 @@ export async function ensureAhjFormTemplate(
     // The kind comes from the blank's OWN name/URL, never from what we went looking
     // for: a name that claims neither is a jurisdiction's single generic form, and
     // stamping our search intent on it would be inventing evidence.
-    const dlName = dl.type === formType && research.formName ? research.formName : "";
+    // A blank WE found is named by its own words (the AHJ's link text / the result's title), never
+    // by the model's formName for a different document.
+    const dlName = dl.found ? dl.label : dl.type === formType && research.formName ? research.formName : "";
     const dlKind = formApplicationKind(`${dl.url} ${dlName}`);
     const slot = `${dl.type}|${dlKind || ""}`;
     const type = storedTypes.has(slot) || (dl.type !== formType && hasStoredTemplateOfType(db, project.ahj, project.state, dl.type, dlKind)) ? "" : dl.type;
     if (!type) continue;
     storedTypes.add(slot);
-    const formName = type === formType && research.formName
-      ? research.formName
-      : `${project.ahj} ${type.replace(/_/g, " ")}`;
+    const formName = dl.found && dl.label.trim()
+      ? dl.label.trim().slice(0, 120)
+      : type === formType && research.formName
+        ? research.formName
+        : `${project.ahj} ${type.replace(/_/g, " ")}`;
     const acquired = await acquireFromBytes(db, llm, { ahj: project.ahj, state: project.state, formType: type, formName, bytes: dl.bytes, sourceUrl: dl.url, applicationKind: dlKind });
     if (!primary) primary = acquired;
     else extraMessages.push(`Also stored ${type.replace(/_/g, " ")}: ${acquired.message}`);
@@ -904,9 +1367,10 @@ const NO_MODEL_MAPPER = {
  * then finds it — with provenance (source URL, retrieved-at, the blank's sha256 in its map):
  *
  *   1. already held for the agency (kind-compatible) -> exists, or needs_manual when not fillable;
- *   2. the agency's curated public seed (hash-locked, model-free map) -> fetched once;
- *   3. an application PDF the lookup CITED on that permit (on the agency's own host, its file name
- *      naming this track's application) -> fetched once, mapped by the existing pipeline;
+ *   2. the agency's curated public seed (hash-locked, model-free map) -> fetched once; when it cannot
+ *      be fetched, a named failure to retry — no cited PDF is tried in its place (agency-contain C2);
+ *   3. an application PDF the lookup CITED on that permit (on one of the agency's anchor sites, its
+ *      file name naming this track's application) -> fetched once, mapped by the existing pipeline;
  *   4. otherwise not_found, naming the agency and the citation — never a paid web search under
  *      the city's name and never a KB profile written for the agency.
  * A human-verified map is never overwritten (acquireFromBytes' protected checks, hard rule 3).
@@ -918,32 +1382,28 @@ export async function ensureIssuingAgencyForm(
   formType: string,
   authority: FormAuthority,
   applicationKind: "prescriptive" | "structural" | null,
-  opts: { allowResearch?: boolean } = {},
+  opts: { allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean } = {},
 ): Promise<EnsureFormResult> {
-  const agency = authority.name;
-  const track = authority.track;
-  const want = track === "building" ? applicationKind : null;
-  const types = track ? TRACK_FORM_TYPES[track] : [formType];
-  const label = track === "electrical" ? "electrical permit application" : `${want === "prescriptive" ? "prescriptive solar " : want === "structural" ? "structural (non-prescriptive) " : ""}permit application`;
-  const cite = authority.fact?.sourceUrl ? ` (per-job lookup, cited: ${authority.fact.sourceUrl})` : "";
-  const whose = `${agency} issues this permit for ${project.ahj}${cite}`;
-  const held = db.query<{ id: string; ahj_name: string; state: string; form_type: string; original_filename?: string; field_map?: string }>(
-    "SELECT id, ahj_name, state, form_type, original_filename, field_map FROM ahj_form_templates WHERE pdf_blob IS NOT NULL",
-  ).filter((r) => types.includes(String(r.form_type)) && (!r.state || String(r.state).toLowerCase() === String(project.state).toLowerCase())
-    && rowBelongsToAuthority(r.ahj_name, agency) && (!want || !storedApplicationKind(r) || storedApplicationKind(r) === want));
-  if (held.length) {
-    const usable = loadStoredTemplates(db, agency, project.state, { ownOnly: true }).some((t) => held.some((h) => h.id === t.templateId));
-    return usable
-      ? { status: "exists", message: `${agency}'s own ${label} is stored — ${whose}.` }
-      : { status: "needs_manual", mappedFields: 0, message: `${agency}'s own ${label} is stored but is not fillable — ${whose}. Complete it by hand and attach it; it is required and has not been filled.` };
-  }
-  const candidates = agencyApplicationForms(project, formType, want);
-  if (!candidates.length) {
-    return { status: "not_found", message: `${whose}, but no ${label} of ${agency}'s is held, seeded or cited. Upload ${agency}'s blank (Find official form → upload); it has not been counted as present.` };
-  }
+  // THE STEPS BEFORE ANY DOWNLOAD are formAcquisitionPlan.issuingAgencyFormPlan — held for THIS job
+  // (agency-contain C1) / not fillable / nothing seeded or cited; per candidate, a cited PDF whose
+  // slot another row occupies (MF-1: a cited form never replaces a stored one), and a URL that failed
+  // recently (a curated seed stops — C2 no fallthrough; a cited one is skipped). The pre-Stage gate
+  // reads the same plan (gates-proper C1), so what it says Stage will download is what Stage does.
+  const plan = issuingAgencyFormPlan(db, project, formType, authority, applicationKind, { skipRecentlyFailed: opts.skipRecentlyFailed });
+  const { agency, label, whose, want } = plan;
+  if (plan.settled) return plan.settled;
   const tried: string[] = [];
-  for (const c of candidates) {
+  for (const step of plan.steps) {
+    if (step.stop) return step.stop;
+    if (step.skip) { tried.push(step.skip); continue; }
+    const c = step.c;
     const bytes = await fetchPdf(c.sourceUrl);
+    // C2 NO FALLTHROUGH (agency-contain): the agency's CURATED seed is its form. A failed fetch (a 404, the
+    // network) is a named failure to retry — never a reason to take the next cited PDF instead (the
+    // skeptic's S7: Marion County's E-01 404'd and Polk County's application was stored as Marion's).
+    if (!bytes && c.origin === "curated") {
+      return { status: "not_found", sourceUrl: c.sourceUrl, message: `${agency}'s ${c.formName} could not be downloaded from ${c.sourceUrl} - retry. ${whose}; no other PDF was tried in its place, and it has not been counted as present.` };
+    }
     if (!bytes) { tried.push(c.sourceUrl); continue; }
     if (c.origin === "curated") {
       const seed = curatedFormSource({ ahj: agency, state: project.state }, c.formType, want);
@@ -951,7 +1411,9 @@ export async function ensureIssuingAgencyForm(
         return { status: "needs_manual", sourceUrl: c.sourceUrl, message: `${agency}'s official PDF has changed since its field map was checked. Review and re-map the new revision before filling it.` };
       }
     }
-    const mapper = c.origin === "cited" && opts.allowResearch === false ? NO_MODEL_MAPPER : llm;
+    // A cited PDF is mapped by the model unless mapping is off (it follows research unless the caller
+    // says otherwise — Stage's no-research pass inside the cooldown still maps when research is allowed).
+    const mapper = c.origin === "cited" && !(opts.allowMapping ?? opts.allowResearch !== false) ? NO_MODEL_MAPPER : llm;
     const acquired = await acquireFromBytes(db, mapper, { ahj: agency, state: project.state, formType: c.formType, formName: c.formName, bytes, sourceUrl: c.sourceUrl, applicationKind: c.applicationKind });
     return { ...acquired, message: `${acquired.message} (${whose}.)` };
   }
@@ -976,6 +1438,13 @@ export async function acquireFromBytes(
   },
 ): Promise<EnsureFormResult> {
   const { ahj, state, formType, formName, bytes, sourceUrl, retrievedAt } = input;
+  // EVERY STORE BELOW GOES THROUGH THE ONE CHOKEPOINT: storeAhjFormTemplate refuses a slot a person
+  // verified, keyed on the row it would actually replace, and that refusal is this acquisition's
+  // answer ("exists", HUMAN-VERIFIED). Anything else it throws still throws.
+  const store = (args: Parameters<typeof storeAhjFormTemplate>[1]): EnsureFormResult | null => {
+    try { storeAhjFormTemplate(db, args); return null; }
+    catch (err) { if (err instanceof VerifiedTemplateRefusal) return err.result; throw err; }
+  };
   const curated = curatedFormMap(bytes, sourceUrl);
   if (curated) {
     if (!curatedFormSource({ahj, state}, curated.source.formType)) {
@@ -984,7 +1453,8 @@ export async function acquireFromBytes(
     const protectedRow = db.query<{field_map:string}>("SELECT field_map FROM ahj_form_templates WHERE lower(ahj_name)=lower(?) AND lower(state)=lower(?) AND form_type=?", [ahj,state,curated.source.formType])
       .some(row => { try { return JSON.parse(row.field_map).verified === true; } catch { return false; } });
     if (protectedRow) return {status:"exists",message:"The verified official form map was retained.",formName:curated.source.formName,sourceUrl};
-    storeAhjFormTemplate(db,{ahjName:ahj,state,formType:curated.source.formType,filename:curated.source.formName+".pdf",bytes,documentDate:curated.source.documentDate,retrievedAt,map:curated.map});
+    const refusedCurated = store({ahjName:ahj,state,formType:curated.source.formType,filename:curated.source.formName+".pdf",bytes,documentDate:curated.source.documentDate,retrievedAt,map:curated.map});
+    if (refusedCurated) return refusedCurated;
     return {status:"acquired",message:"Downloaded and mapped the exact official revision. Review missing details and signatures in the filled copy before filing.",formName:curated.source.formName,sourceUrl,mappedFields:Object.keys(curated.map.textFields).length+curated.map.overlayFields.length};
   }
   // The actual bytes outrank a research title claiming that this checklist
@@ -995,8 +1465,9 @@ export async function acquireFromBytes(
     const protectedTemplate = loadStoredTemplates(db, ahj, state, { ownOnly: true }).find(t => t.verified &&
       db.get<{ form_type: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [t.templateId])?.form_type === "solar_checklist");
     if (protectedTemplate) return { status: "exists", message: "The verified BCD checklist map was retained.", formName: bcd.formName, sourceUrl };
-    storeAhjFormTemplate(db, { ahjName: ahj, state, formType: "solar_checklist", filename: `${bcd.formName}.pdf`, bytes,
+    const refusedBcd = store({ ahjName: ahj, state, formType: "solar_checklist", filename: `${bcd.formName}.pdf`, bytes,
       applicationKind: "prescriptive", documentDate: "2024-05-01", retrievedAt, map: bcd });
+    if (refusedBcd) return refusedBcd;
     return { status: "acquired", message: "Stored the official BCD 5952 checklist with the exact-revision field map. It is a checklist only; separate applications remain separate requirements. Preview before filing.", formName: bcd.formName, sourceUrl, mappedFields: Object.keys(bcd.textFields).length };
   }
 
@@ -1011,8 +1482,9 @@ export async function acquireFromBytes(
     const protectedTemplate = loadStoredTemplates(db, ahj, state, { ownOnly: true }).find(t => t.verified &&
       db.get<{ form_type: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [t.templateId])?.form_type === PV_WORKSHEET_DOC_TYPE);
     if (protectedTemplate) return { status: "exists", message: "The verified PV worksheet map was retained.", formName: iaPv.formName, sourceUrl };
-    storeAhjFormTemplate(db, { ahjName: ahj, state, formType: PV_WORKSHEET_DOC_TYPE, filename: `${iaPv.formName}.pdf`, bytes,
+    const refusedIa = store({ ahjName: ahj, state, formType: PV_WORKSHEET_DOC_TYPE, filename: `${iaPv.formName}.pdf`, bytes,
       applicationKind: null, retrievedAt, map: iaPv });
+    if (refusedIa) return refusedIa;
     return { status: "acquired", message: "Stored the Iowa SFM PV worksheet (2020 NEC) with its label-anchored field map. Values come from the project's parsed fields and written-out calculations; unknowns stay blank and are listed. Preview before filing.", formName: iaPv.formName, sourceUrl, mappedFields: iaPv.overlayFields.length };
   }
 
@@ -1027,6 +1499,13 @@ export async function acquireFromBytes(
   const applicationKind = input.applicationKind ?? formApplicationKind(formName);
   const provenance = { documentDate, retrievedAt, applicationKind };
 
+  // A HUMAN-VERIFIED MAP IS NEVER OVERWRITTEN (hard rule 3). Every store below replaces the row in
+  // this blank's slot (storeAhjFormTemplate — one per agency/state/form type, building by kind); an
+  // upload or a download landing on a slot a person verified is refused before any model call, and
+  // the store itself refuses again (a person may verify while the model runs) — the same predicate.
+  const refusedUpFront = verifiedSlotRefusal(db, { ahj, state, formType, formName, sourceUrl, applicationKind });
+  if (refusedUpFront) return refusedUpFront;
+
   // A single vision pass locates signature lines (and, for flat forms, the data
   // placements). Reused across both branches so signatures are detected once.
   const overlay = await buildOverlayMapForPdf(llm, { ahj, state, formName, bytes });
@@ -1035,11 +1514,36 @@ export async function acquireFromBytes(
   const acro = await buildFieldMapForPdf(llm, { ahj, state, formName, bytes });
   const acroCount = acro ? Object.keys(acro.textFields).length + Object.keys(acro.checkboxes).length : 0;
   if (acro && acroCount > 0) {
-    storeAhjFormTemplate(db, {
+    // THE VISION PASS'S PLACEMENTS WHERE NO WIDGET IS. An AcroForm often prints blanks it never gave
+    // a widget (Waltham: Map/Parcel, Zoning, Lot area, Frontage, Flood zone). The vision pass places
+    // values on the page image; those that land on a widget duplicate the AcroForm fill and are
+    // dropped, the rest are kept as overlayFields — fillLoadedForm already draws overlayFields
+    // after flattening an AcroForm.
+    const mappedWidgets = new Set([...Object.keys(acro.textFields), ...Object.keys(acro.checkboxes)]);
+    const offWidget = (overlay?.overlayFields ?? []).filter((p) => !placementOnWidget(p, acro.fields)
+      // a value the AcroForm map already writes into a widget is not drawn a second time beside it
+      && !acro.fields.some((w) => mappedWidgets.has(w.name) && acro.textFields[w.name] === p.source && w.page === p.page && w.rect
+        && Math.abs(w.rect.y - p.y) <= 30 && Math.abs(w.rect.x - p.x) <= w.rect.width + 30));
+    // The kept placements pass the SAME map checks as the widgets, together with them (a placed
+    // "I, ___" and a Print Name widget under one signature are one signer; a placed cost row beside
+    // a Total widget is not the Total; a placed licence holder is not the applicant). The vision
+    // pass's signature lines ride along as stand-in signature widgets: they separate two blocks.
+    const joint = sanitizePlacements({ widgets: [...acro.fields, ...signatureStandIns(signatureFields)], items: acro.labels, state, textFields: acro.textFields, checkboxes: acro.checkboxes, placements: offWidget });
+    const hybrid = joint.placements;
+    const textFields = joint.textFields;
+    const operatorItems = [...acro.operatorItems, ...joint.operatorItems, ...(overlay?.operatorItems ?? [])];
+    const notes = [acro.notes, ...joint.notes].filter(Boolean).join(" ");
+    const refused = store({
       ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes, ...provenance,
-      map: { formName, sourceUrl, fillMode: "acroform", textFields: acro.textFields, checkboxes: acro.checkboxes, signatureFields, notes: acro.notes },
+      map: {
+        formName, sourceUrl, fillMode: "acroform", textFields, checkboxes: joint.checkboxes, signatureFields, notes,
+        ...(hybrid.length ? { overlayFields: hybrid } : {}),
+        ...(operatorItems.length ? { operatorItems } : {}),
+      },
     });
-    return { status: "acquired", message: `Acquired and mapped ${formName} (${acroCount} field(s) of ${acro.fieldCount}${signatureFields.length ? `, ${signatureFields.length} signature line(s)` : ""}). It will be auto-filled for ${ahj}.`, formName, sourceUrl, mappedFields: acroCount };
+    if (refused) return refused;
+    const mappedCount = Object.keys(textFields).length + Object.keys(joint.checkboxes).length;
+    return { status: "acquired", message: `Acquired and mapped ${formName} (${mappedCount} field(s) of ${acro.fieldCount}${hybrid.length ? ` + ${hybrid.length} printed blank(s) with no field` : ""}${signatureFields.length ? `, ${signatureFields.length} signature line(s)` : ""}). It will be auto-filled for ${ahj}.`, formName, sourceUrl, mappedFields: mappedCount + hybrid.length };
   }
   // AN ACROFORM WITH ZERO MAPPED FIELDS IS NOT "ACQUIRED AND AUTO-FILLED". With no LLM (the
   // stub provider maps nothing) this branch used to store an empty map and report "Acquired
@@ -1048,21 +1552,36 @@ export async function acquireFromBytes(
   // through to the branches below, which describe what was actually stored: vision
   // placements if there are any, signature lines if only those, else needs_manual.
 
-  // No AcroForm fields — flat/scanned. Use the vision overlay placements.
+  // No AcroForm fields — flat/scanned. Use the vision overlay placements, checked by the same map
+  // rules as widgets against the page's own text (signature lines, the cost table's Total). A SCANNED
+  // form has no text layer, so the signature lines the vision pass found stand in as signature
+  // widgets — without them nothing separates the owner's block from the contractor's below it.
   if (overlay && overlay.overlayFields.length) {
-    storeAhjFormTemplate(db, {
-      ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes, ...provenance,
-      map: { formName, sourceUrl, fillMode: "overlay", textFields: {}, checkboxes: {}, overlayFields: overlay.overlayFields, signatureFields, notes: `Vision-mapped flat form (${overlay.overlayFields.length} placements, ${signatureFields.length} signature line(s)). ${overlay.notes} VERIFY the filled PDF — coordinate placement is approximate; re-map if anything is off.` },
-    });
-    return { status: "acquired", message: `Acquired ${formName} (flat PDF) and vision-mapped ${overlay.overlayFields.length} placement(s)${signatureFields.length ? ` + ${signatureFields.length} signature line(s)` : ""}. Verify the filled output and re-map if needed.`, formName, sourceUrl, mappedFields: overlay.overlayFields.length };
+    let labels: LabelItem[] = [];
+    try { labels = await (await import("./formTextLayer")).extractLabels(bytes); } catch { labels = []; }
+    const flat = sanitizePlacements({ widgets: signatureStandIns(signatureFields), items: labels, state, textFields: {}, checkboxes: {}, placements: overlay.overlayFields });
+    const placed = flat.placements;
+    const operatorItems = [...flat.operatorItems, ...overlay.operatorItems];
+    if (placed.length) {
+      const refused = store({
+        ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes, ...provenance,
+        map: { formName, sourceUrl, fillMode: "overlay", textFields: {}, checkboxes: {}, overlayFields: placed, signatureFields, notes: `Vision-mapped flat form (${placed.length} placements, ${signatureFields.length} signature line(s)). ${[overlay.notes, ...flat.notes].filter(Boolean).join(" ")} VERIFY the filled PDF — coordinate placement is approximate; re-map if anything is off.`,
+          ...(operatorItems.length ? { operatorItems } : {}) },
+      });
+      if (refused) return refused;
+      return { status: "acquired", message: `Acquired ${formName} (flat PDF) and vision-mapped ${placed.length} placement(s)${signatureFields.length ? ` + ${signatureFields.length} signature line(s)` : ""}. Verify the filled output and re-map if needed.`, formName, sourceUrl, mappedFields: placed.length };
+    }
+    overlay.operatorItems = operatorItems;
   }
 
   // No data fields, but signatures alone are still useful (signs the blank).
   if (signatureFields.length) {
-    storeAhjFormTemplate(db, {
+    const refused = store({
       ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes, ...provenance,
-      map: { formName, sourceUrl, fillMode: "overlay", textFields: {}, checkboxes: {}, signatureFields, notes: `No fillable data fields, but ${signatureFields.length} signature line(s) detected. The blank is stored; your signature will be stamped. Fill the rest by hand.` },
+      map: { formName, sourceUrl, fillMode: "overlay", textFields: {}, checkboxes: {}, signatureFields, notes: `No fillable data fields, but ${signatureFields.length} signature line(s) detected. The blank is stored; your signature will be stamped. Fill the rest by hand.`,
+        ...(overlay?.operatorItems.length ? { operatorItems: overlay.operatorItems } : {}) },
     });
+    if (refused) return refused;
     return { status: "acquired", message: `Stored ${formName} with ${signatureFields.length} signature line(s) mapped. Data fields must be filled by hand.`, formName, sourceUrl, mappedFields: signatureFields.length };
   }
 
@@ -1072,10 +1591,11 @@ export async function acquireFromBytes(
   const unmappedWhy = acro
     ? `${acro.fieldCount} fillable field(s) found, but none could be mapped to project data${acro.notes ? ` (${acro.notes})` : ""}`
     : "Flat/scanned PDF — vision mapping found no placeable fields";
-  storeAhjFormTemplate(db, {
+  const refusedBlank = store({
     ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes, ...provenance,
     map: { formName, sourceUrl, fillMode: acro ? "acroform" : "overlay", textFields: {}, checkboxes: {}, notes: `${unmappedWhy}. Stored as the blank for manual completion.` },
   });
+  if (refusedBlank) return refusedBlank;
   return {
     status: "needs_manual",
     message: acro
@@ -1083,4 +1603,36 @@ export async function acquireFromBytes(
       : `Stored the official ${formName}, but it couldn't be auto-mapped. It's saved as the blank for manual completion.`,
     formName, sourceUrl, mappedFields: 0,
   };
+}
+
+/**
+ * RE-MAP A STORED TEMPLATE FROM ITS STORED BLOB — the Re-map button (POST
+ * /api/ahj-templates/:id/remap). An UNVERIFIED map (an AI map nobody has confirmed, like City of
+ * Waltham's residential application mapped before the mapper saw captions) is re-mapped through the
+ * current pipeline (captions, the post-map checks, the vision placements with no widget), keeping
+ * the row's retrieved_at: a re-map re-reads bytes we already had.
+ *
+ * A HUMAN-VERIFIED map is never re-mapped (hard rule 3): the model is not called and the row is not
+ * touched. A person who wants it re-mapped marks it unverified first — their decision, on record.
+ */
+export async function remapStoredTemplate(db: AppDb, llm: LLMProvider, templateId: string): Promise<EnsureFormResult> {
+  const row = db.get<{ id: string; ahj_name: string; state: string; form_type: string; pdf_blob: Buffer | null; field_map: string; retrieved_at: string }>(
+    "SELECT id, ahj_name, state, form_type, pdf_blob, field_map, retrieved_at FROM ahj_form_templates WHERE id = ?",
+    [templateId],
+  );
+  if (!row) throw new HttpError(404, "Template not found.");
+  if (!row.pdf_blob) throw new HttpError(410, "PDF blob has been wiped — re-upload the blank to re-map.");
+  const map = parseJson<{ formName?: string; sourceUrl?: string; verified?: boolean }>(row.field_map, {});
+  const formName = map.formName || `${row.ahj_name} ${row.form_type.replace(/_/g, " ")}`;
+  if (map.verified === true) {
+    return {
+      status: "exists", formName, sourceUrl: map.sourceUrl || "",
+      message: `${formName} has a HUMAN-VERIFIED field map, so it was not re-mapped. To re-map it, mark it unverified first (the verified map is otherwise kept exactly as confirmed).`,
+    };
+  }
+  return acquireFromBytes(db, llm, {
+    ahj: row.ahj_name, state: row.state, formType: row.form_type, formName,
+    bytes: new Uint8Array(row.pdf_blob), sourceUrl: map.sourceUrl || "",
+    retrievedAt: String(row.retrieved_at || ""),
+  });
 }

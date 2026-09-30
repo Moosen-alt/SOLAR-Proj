@@ -30,6 +30,7 @@
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import { findCompleteRecipeForProject, getPortalRecipe, resolveRecipeFieldValues } from "./portalRecipes";
+import { PER_JOB_ANSWER_KEYS, PER_JOB_QUESTION_RULES } from "../../shared/src/perJobQuestions";
 import { nowIso } from "./time";
 
 type Row = Record<string, unknown>;
@@ -96,41 +97,10 @@ export interface QuestionClassifierRule {
 
 export const QUESTION_CLASSIFIER_RULES: QuestionClassifierRule[] = [
   // ── per-job: the silent-wrong-answer hazards ─────────────────────────────
-  { id: "per-job:ownership", re: /customer.?owned|third.?party|owner\s?ship|financ|\bleas(e|ed|ing)\b|\bppa\b|power\s?purchase/i,
-    classification: "per-job", binding: "ownershipModel", why: "ownership/financing is a per-job fact" },
-  // Grown from the adversarial rewording sweep (2026-09-11): "System owner" /
-  // "Who owns the system?" / "Owner of generating facility" fell to unknown.
-  // NARROW on purpose: the owner must be OF THE SYSTEM/facility/generation —
-  // "Property Owner Name" is an identity field, not financing, and must not hit.
-  { id: "per-job:system-owner", re: /\bsystem\s?owner\b|who\s+owns\s+the\s+(system|generat|facility)|owner\s+of\s+(the\s+)?(system|generat\w*|facility)/i,
-    classification: "per-job", binding: "ownershipModel", why: "who owns the system is the same per-job financing fact" },
-  { id: "per-job:configuration", re: /community\s?solar|behind.?the.?meter|collectively\s?owned/i,
-    classification: "per-job", binding: "systemConfiguration", why: "program/configuration is a per-job fact" },
-  { id: "per-job:storage", re: /batter|energy\s?storage|\bess\b|powerwall|backup\s?power/i,
-    classification: "per-job", binding: "hasBattery", why: "storage presence varies by project" },
-  { id: "per-job:export-limit", re: /export\s?limit|non.?export|limited\s?export/i,
-    classification: "per-job", binding: "exportLimiting", why: "export mode varies by project" },
-  { id: "per-job:mounting", re: /mount(ing)?\s?(method|type)|ground.?mount/i,
-    classification: "per-job", binding: "mountType", why: "mounting varies by project" },
-  { id: "per-job:tilt", re: /\btilt\b/i,
-    classification: "per-job", binding: "tilt", why: "array tilt comes from the plan set" },
-  { id: "per-job:azimuth", re: /azimuth|\borientation\b/i,
-    classification: "per-job", binding: "azimuth", why: "array azimuth comes from the plan set" },
-  { id: "per-job:meter-location", re: /meter\s(located|location|access)|located inside/i,
-    classification: "per-job", binding: "meterLocation", why: "meter siting varies by site" },
-  { id: "per-job:meter-device", re: /meter.?(mounted.?device|collar)|\bmmd\b/i,
-    classification: "per-job", binding: null, why: "a meter collar / meter-mounted device is installed per job" },
-  // Per-job in principle, but the operator has a STANDING answer for it ("Yes" —
-  // the standard residential detail always places the lockable AC disconnect
-  // within the required distance). That standing answer lives as data in
-  // OPERATOR_POLICY_ANSWERS (intakeRequests.ts), which is what stops it being
-  // asked at intake; it stays per-job HERE so a project that genuinely differs
-  // can still record its own answer and win.
-  { id: "per-job:disconnect-10ft", re: /disconnect.{0,20}within\s?10|within\s?10.{0,12}(feet|ft)\b/i,
-    classification: "per-job", binding: "disconnectWithin10ft",
-    why: "disconnect placement is a site fact — settled for this operator by a standing policy answer, overridable per project" },
-  { id: "per-job:connection-side", re: /line\s(or|\/)\s?load.?side|(line|load).?side of the main/i,
-    classification: "per-job", binding: null, why: "point of connection comes from the electrical design" },
+  // ONE TABLE (shared/src/perJobQuestions.ts): the save-time binder, the replay binder, the learn
+  // planner and the stage gate read the SAME per-job rules this bank classifies with (dryrun-0928
+  // B2 — the bank knew ownership was per-job; nothing that files asked it).
+  ...PER_JOB_QUESTION_RULES.map((r): QuestionClassifierRule => ({ id: r.id, re: r.re, classification: "per-job", binding: r.binding, why: r.why })),
   // ── portal constants: the same answer on every filing this operator makes ─
   { id: "portal-constant:installer-role", re: /who will (install|be installing)|who is (installing|going to install)|installed by|self.?install/i,
     classification: "portal-constant", why: "this operator always files as the contractor" },
@@ -160,7 +130,7 @@ const consentRule = QUESTION_CLASSIFIER_RULES.find((r) => r.id === CONSENT_RULE_
 /** Fields recipes legitimately bind but the average project record leaves empty —
  *  the question was asked and bound, yet most filings would still replay a blank.
  *  These surface as per-job questions so intake can collect them up front. */
-export const OFTEN_EMPTY_BOUND_FIELDS = new Set(["ownershipModel", "systemConfiguration", "disconnectWithin10ft"]);
+export const OFTEN_EMPTY_BOUND_FIELDS = new Set<string>(PER_JOB_ANSWER_KEYS);
 
 /** Lowercase, collapse whitespace, strip trailing punctuation — the stable key a
  *  portal's question is remembered by (overrides store this, not the raw label). */
@@ -454,7 +424,7 @@ export function questionsForProject(db: AppDb, project: ProjectRecord): TrackPor
     // portalType here only feeds the client overlay's identity match inside the
     // resolver (falls back to the legal business name when it misses) — the
     // platform string is the closest honest value without re-running channel dispatch.
-    const fields = resolveRecipeFieldValues(db, project, recipe.portalPlatform || "");
+    const fields = resolveRecipeFieldValues(db, project, recipe.portalPlatform || "", track === "nem" ? "nem" : (project.permitType === "electrical" ? "electrical" : "building"));
     const perJob = extractPortalQuestions(db, recipe).filter((q) => q.classification === "per-job");
     const answered: TrackPortalQuestions["answered"] = [];
     const unanswered: PortalQuestion[] = [];

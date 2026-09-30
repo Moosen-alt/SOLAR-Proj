@@ -14,6 +14,8 @@
 // seedOutcomeToStageResult) live here too — they used to live in repository.ts and
 // are re-exported from there for backwards compatibility. Keeping them beside the
 // resolver avoids a circular import (repository imports this module, not vice versa).
+// (utilityIdentity is a leaf: it imports only permitPath's state parse.)
+import { foreignKnownTenant } from "./utilityIdentity";
 
 export type PortalChannel =
   | "api" // reserved — never selected in this build
@@ -539,6 +541,10 @@ export function registrableDomain(host: string): string {
   if (labels.length <= 2) return labels.join(".");
   const tld = labels[labels.length - 1];
   if (tld === "us" && labels.length >= 4 && /^[a-z]{2}$/.test(labels[labels.length - 2])) return labels.slice(-4).join(".");
+  // A three-label US locality (<town>.<st>.us: neighbortown.ma.us) is its own organisation — "<st>.us"
+  // is a public suffix, and reading it as the domain made every town in the state one site (a town's
+  // forms page "linked its own form" on another town's host; forms-find 2026-09-28).
+  if (tld === "us" && labels.length === 3 && /^[a-z]{2}$/.test(labels[1])) return labels.join(".");
   if (/^[a-z]{2}$/.test(tld) && /^(?:co|com|gov|org|net|ac|govt)$/.test(labels[labels.length - 2])) return labels.slice(-3).join(".");
   return labels.slice(-2).join(".");
 }
@@ -804,6 +810,21 @@ export function hostFitsTrackAndEntity(
       code: "platform_conflict",
       reason: `${host} is not the portal a person verified for ${who} (${entity.verifiedPortals.map(portalHostOf).filter(Boolean).join(", ")})`,
     };
+  }
+  // 2b. A KNOWN UTILITY'S OWN TENANT (leak sweep 2026-09-28). PacifiCorp's and Portland General's
+  //     PowerClerk tenants belong to those utilities and nobody else — whatever a learned or seeded
+  //     row claims. A bare-name regex once wrote PacifiCorp's tenant as Pacific Gas & Electric's
+  //     "own portal" and this step then accepted it. Refused unless a PERSON verified it for this
+  //     utility (rule 3: step 2 above already let a verified record through).
+  if (entity.scope === "utility" && !matches(entity.verifiedPortals)) {
+    const owner = foreignKnownTenant(host, { state: entity.state, utility: entity.name });
+    if (owner) {
+      return {
+        fits: false,
+        code: "foreign_entity",
+        reason: `${host} is ${owner}'s interconnection portal — ${who}${entity.state ? ` (${entity.state})` : ""} is not ${owner}`,
+      };
+    }
   }
   // 3. ANOTHER ENTITY'S PORTAL. Only when this entity has no claim on it at all.
   if (source !== "statewide" && !matches(entity.ownPortals) && !matches(entity.sharedPortals ?? [])) {

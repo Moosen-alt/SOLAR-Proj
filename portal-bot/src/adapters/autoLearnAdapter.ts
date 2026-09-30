@@ -2,12 +2,13 @@ import fs from "fs";
 import { preferredRowLabel, rankAddressVersions, type SiteIdentity } from "../addressVersion";
 import { imageToPdfBytes, pdfNameFor, shouldConvertToPdf } from "../imageToPdf";
 import path from "path";
-import type { Page, Frame } from "playwright";
+import type { Page, Frame, Locator } from "playwright";
 import type { ProjectRecord, RecipeSelector, RecipeStep, StepFingerprint } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { selectWithFallback, readClosedComboboxOptions } from "../comboboxFill";
-import { detectChallengeFrame, frameSelectorFor, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
+import { detectChallengeFrame, frameSelectorFor, maskId, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
+import { applyFormatHint } from "../formatHint";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin, lastRevealTrail, loginFormPresent, holdForPerson } from "./loginFlow";
 import { enterApplicationFlow, isExcludedEntryLabel, normalizeEntryLabel, chooseApplicationType } from "./applicationEntry";
@@ -19,9 +20,16 @@ import { parseStreetName, parseStreetNumber, parseStreetLine, correctTruncatedAd
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
-import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, isSignatureNameLabel, isTypeSignatureToggleLabel, reviewSignals as sharedReviewSignals, splitSignerName } from "../../../shared/src/portalSafety";
-import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, backstopFor, isStoppingAbort } from "../filingBackstop";
+import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, isSignatureNameLabel, isTypeSignatureToggleLabel, redactSecretValues, reviewSignals as sharedReviewSignals, splitSignerName } from "../../../shared/src/portalSafety";
+import { BATTERY_DECLARATION_QUESTION, batteryControlKind, batteryDeclarationAnswer } from "../../../shared/src/batteryControls";
+import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, backstopFor, isStoppingAbort, drainOwnWrites, unsavedAtReviewWarning, portalOwnCallsBlockedAtReview, reviewBlockedCallsLine } from "../filingBackstop";
 import { hostOfUrl, sameCredentialScope } from "../siteOf";
+import { attachmentTypeFor, isDocumentTypeList, isPlanSetDocType } from "./attachmentTypes";
+import {
+  contactFieldKind, contactKeyFor, contactKeyForRole, contactKeyRole, contactRoleOfStep, contactSectionRole, isContactOpener, planContactSections,
+  type ContactFieldKind, type ContactRole, type ContactTrack,
+} from "../../../shared/src/contactRoles";
+import { portalSaysNotServed } from "../../../shared/src/portalNotServed";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
 // having a human record it. Each page is scraped into a structured snapshot
@@ -55,6 +63,12 @@ export interface ContactIdentity {
   /** The PROPERTY's assessor parcel number (site contact only) — the ACA work-location pass
    *  searches by it, dashes removed, when the address search finds nothing (Lee County). */
   parcel?: string;
+  /** The contact's FULL name, for a dialog that asks for it in one box (Accela "Full Name:" —
+   *  City of Corvallis). Company: the client's contact (installerContactName); owner: homeownerName. */
+  fullName?: string;
+  /** The BUSINESS name ("Name of Business:") — the filing company's (installerCompanyName). An owner
+   *  identity carries none, and an owner block's business box stays blank. */
+  companyName?: string;
   firstName?: string;
   lastName?: string;
   email?: string;
@@ -178,6 +192,14 @@ export interface LearnResult {
    *  it advanced ("Property Address not found."). Distinct from validationBlocks, which
    *  only ever means "an advance was refused". */
   portalNotices?: string[];
+  /** The portal's own words saying this address / jurisdiction is NOT SERVED there ("No Building
+   *  services were returned for this address") — the walk stopped on them (stopReason
+   *  "not_served") and the backend keeps nothing learned here under the AHJ (portal-truth D5). */
+  notServed?: string;
+  /** REQUIRED secret boxes (account / meter number…) this learn left blank because the project
+   *  has no value on file — labels only. Not a trust blocker (the recipe binds them by name); a
+   *  person types them at review. Undefined when none. */
+  secretsLeftBlank?: string[];
   /** The FULL url (query string included) of the application this run worked on, captured
    *  where it stopped. Without it there is no way to audit the right application afterwards:
    *  a portal list can hold several drafts for the same customer, and auditing "the first" or
@@ -186,6 +208,11 @@ export interface LearnResult {
   /** Absolute path of this run's debug bundle (data/learn-runs/<runId>) — the folder the
    *  operator zips up for troubleshooting. Undefined when AUTOLEARN_RUN_DEBUG=0. */
   debugDir?: string;
+  /** The review page's OWN background calls the lockdown held back (origin + path) — B14. */
+  reviewPageBlockedCalls?: string[];
+  /** What the person taking the review page must know before submitting (unsaved answers, held
+   *  calls) — the same lines are appended to `message`. B3 / B14. */
+  reviewHandoffNotes?: string[];
 }
 
 // Live progress signal emitted while learning a portal, so the UI can show a real
@@ -288,7 +315,6 @@ const EXISTING_RECORD_ACTION = /\bresume\b|\bpay fees? due\b|\brenew\b|\bwithdra
 // ACA contact-section controls. Once the applicant is filled deterministically with the
 // FILING CONTRACTOR's identity, a planner click on one of these re-opens that contact and
 // overwrites it with the homeowner's details (live Coos Bay).
-const CONTACT_CONTROL = /add new|select from account/i;
 
 // Accela ACA's wizard-advance control: an <a> on some layouts, a button/submit-input on
 // others (live-verified union from the hand-coded OregonEPermittingAdapter).
@@ -366,7 +392,9 @@ const RECORD_TYPE_LABEL = /^\s*(residential|commercial)\s*[-–—]\s*\S/i;
 // always solar, so the specify box is always the same answer.
 const OTHER_SPECIFY_VALUE = "Solar";
 
-const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No"; enforce?: boolean }> = [
+// `scope`: "nem" (the default) applies on utility interconnection learns (profile residential_nem);
+// "permit" applies on AHJ/permit learns (profile permit_standard). A policy never crosses scopes.
+const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No"; enforce?: boolean; scope?: "nem" | "permit" }> = [
   { question: /do you propose to limit the export capacity/i, answer: "No" },
   // HYPHENS COUNT. Ameren Illinois asks "Is the inverter lab-certified as that term is
   // defined in the Illinois Distributed Generation Interconnection Standard?" — hyphenated,
@@ -408,6 +436,11 @@ const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No"; enf
   // means a human answer or project data always wins. If a job DOES use one, expect extra
   // required fields to appear and be reported by the required-field sweep.
   { question: /meter\s*collar\s*(adapter|adaptor)?/i, answer: "No" },
+  // PERMIT PORTALS. DRONE INSPECTION CONSENT (operator ruling 2026-09-28, City of Corvallis: "The City
+  // regularly uses drones to perform required inspections. I consent to drone inspection(s) for this
+  // project." — "can be yes"; the learn picked No and the operator corrected it mid-run). enforce: a
+  // planner's No is corrected.
+  { question: /consent\s+to\s+drone|drones?\b.{0,60}\binspections?\b|drone\s+inspection/i, answer: "Yes", enforce: true, scope: "permit" },
 ];
 
 // Sensitive field labels whose literal value must NEVER be stored in a recorded step.
@@ -1755,6 +1788,10 @@ interface AppliedFill {
   required: boolean;
   /** Radio-group identity of the filled field (see ExtractedField.group). */
   group?: string;
+  /** Set when this fill TYPED the project's own secret, read by name (accountNumber /
+   *  meterNumber): the read-back then checks the box is non-empty and re-types it by the same
+   *  name. The value itself is never held here. */
+  secretBinding?: string;
 }
 
 export interface UploadSlot {
@@ -1966,7 +2003,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   readonly debug: LearnRunDebug | null;
 
   // See constructor options.policyProfile.
-  private policyProfile: "residential_nem" | "none";
+  private policyProfile: "residential_nem" | "permit_standard" | "none";
   /** Field keys a replay can resolve; empty means "do not validate". */
   private bindableFields: Set<string>;
   // Who and where this project is, for choosing between versions of an address on a
@@ -1980,6 +2017,26 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   /** The permit discipline this run is filing ("electrical", "structural", …). Empty when
    *  the caller didn't say — the record-type guard then only checks label-vs-control. */
   private permitDiscipline = "";
+  /** Set when the review page's own save was still pending when the learn handed over (B3). */
+  private reviewUnsavedWarning = "";
+  /** THE PROJECT'S OWN SECRETS, READ BY NAME AT FILL TIME (hard rule 2). Live on PGE (2026-09-28):
+   *  the re-scan found the revealed "PGE Account Number for point of interconnection" and "Meter
+   *  Number" boxes, recorded each bound by name — and typed "" into both, because nothing read the
+   *  value; the portal's review page reported both as Missing Required Fields. A recorded step
+   *  types, on replay, fieldValues[binding]; the learn now types the same thing (secretFillValue).
+   *  Never a planner input, never a step's literal, never logged. */
+  private secretSource: Partial<Record<string, string>> = {};
+  /** Every secret value this run actually TYPED, in memory only, so each text and screenshot that
+   *  leaves the process (planner, review verifier, debug bundle) can be scrubbed / masked of it. */
+  private readonly typedSecrets = new Set<string>();
+  /** The controls this run typed a secret into — masked in every screenshot. */
+  private readonly secretControls: RecipeSelector[] = [];
+  /** Their labels (never values) — named when the run's trace is discarded for holding a secret. */
+  private readonly typedSecretLabels: string[] = [];
+  /** REQUIRED secret-looking boxes this run left blank (no value on file) — labels only. The
+   *  required-field sweep excludes secret boxes (a project with no account on file must not block
+   *  a recipe's promotion forever), so without this list the blank was silent. */
+  private readonly secretsLeftBlank: Array<{ label: string; bound: boolean }> = [];
   /** True once the delegated final submit actually went through. Read by the caller. */
   finalSubmitClicked = false;
   /** The completion/receipt page as text + URL, captured while standing on it. */
@@ -2000,6 +2057,19 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private attachedKeys = new Set<string>();
   // Set once the APPLICANT contact has been filled with the contractor identity.
   private acaApplicantFilled = false;
+  /** The contact sections the deterministic pass FILLED (their Add New / Select from Account /
+   *  Edit control ids, and their headings) and the ones it LEFT EMPTY on purpose (an optional
+   *  second Inspection Contact). A planner click that re-opens either is refused — scoped to those
+   *  sections, so a later page's own contact section (Corvallis Step 4) stays the planner's. */
+  private readonly acaFilledSectionControls = new Set<string>();
+  private readonly acaFilledSectionHeadings = new Set<string>();
+  private readonly acaEmptySectionControls = new Set<string>();
+  /** Add New control ids the pass has opened this run — never re-opened on a later visit. */
+  private readonly acaUsedAddNew: string[] = [];
+  /** Which identity the contact dialog open right now belongs to — set by the click that opened
+   *  it (the pass's Add New / Edit, or a planner's click on a section's opener), cleared by a
+   *  main-page advance. Read by the dialog identity guard (enforceContactDialogIdentity). */
+  private openContactRole: { role: ContactRole; heading: string } | null = null;
   /** Record-type categories already expanded this run, so a category that reveals nothing
    *  useful is not retried. */
   private readonly acaTypeCategoriesTried = new Set<string>();
@@ -2070,7 +2140,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //     decide. Right for AHJ/permit portals and non-standard projects.
       // Default "residential_nem" preserves prior behavior for direct constructor users;
       // the backend passes the scope-appropriate profile explicitly.
-      policyProfile?: "residential_nem" | "none";
+      policyProfile?: "residential_nem" | "permit_standard" | "none";
       // Equipment identity for the deterministic PV-spec pass: inverterMake,
       // inverterModel, moduleMake, moduleModel. Portals list equipment under
       // certified names ("AP Systems" → "Altenergy Power System"), so these are
@@ -2663,16 +2733,21 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       })).catch(() => null);
       const tooTall = !!dims && dims.h > MAX_EDGE;
       const tooWide = !!dims && dims.w > MAX_EDGE;
-      if (tooTall || tooWide) {
-        const buf = await this.page.screenshot({
-          type: "png",
-          clip: { x: 0, y: 0, width: Math.min(dims!.w, MAX_EDGE), height: Math.min(dims!.h, MAX_EDGE) },
-        });
-        this.debug?.event({ type: "plan_screenshot_clipped", pageSize: `${dims!.w}x${dims!.h}`, clippedTo: `${Math.min(dims!.w, MAX_EDGE)}x${Math.min(dims!.h, MAX_EDGE)}` });
+      // The planner's picture never shows a secret the run knows (hard rule 2): masked, or none.
+      const page = this.page;
+      return await this.withSecretMask("plan screenshot", async (mask) => {
+        if (tooTall || tooWide) {
+          const buf = await page.screenshot({
+            type: "png",
+            clip: { x: 0, y: 0, width: Math.min(dims!.w, MAX_EDGE), height: Math.min(dims!.h, MAX_EDGE) },
+            ...(mask ? { mask } : {}),
+          });
+          this.debug?.event({ type: "plan_screenshot_clipped", pageSize: `${dims!.w}x${dims!.h}`, clippedTo: `${Math.min(dims!.w, MAX_EDGE)}x${Math.min(dims!.h, MAX_EDGE)}` });
+          return Buffer.from(buf as Buffer).toString("base64");
+        }
+        const buf = await page.screenshot({ type: "png", fullPage: true, ...(mask ? { mask } : {}) });
         return Buffer.from(buf as Buffer).toString("base64");
-      }
-      const buf = await this.page.screenshot({ type: "png", fullPage: true });
-      return Buffer.from(buf as Buffer).toString("base64");
+      });
     } catch {
       return undefined;
     }
@@ -3257,9 +3332,31 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // What discipline this run is filing. Held on the instance so the fill guard can refuse
       // a record type that contradicts it — the planner sees one page at a time and does not.
       this.permitDiscipline = String(project.permitType ?? "");
+      // The secrets a recorded step binds by name, read from the SAME project fields the replay's
+      // value map uses (portalRecipes.resolveRecipeFieldValues: accountNumber / meterNumber).
+      this.secretSource = {
+        accountNumber: String(project.accountNumber ?? "").trim(),
+        meterNumber: String(project.meterNumber ?? "").trim(),
+      };
+      this.debug?.setScrubber((text) => this.scrubSecrets(text));
       result = await this.learnImpl(context, project);
+      // The message quotes the portal (validation errors, notices) — a portal can echo an account.
+      result = { ...result, message: this.scrubSecrets(result.message) };
       // Hand-off first (the route comes off), then every abort up to that moment is counted.
       await backstop?.dispose().catch(() => null);
+      // WHAT THE PERSON TAKING THE REVIEW PAGE MUST KNOW (dryrun-0928 B3 + B14), in the hand-off itself:
+      // answers the portal may not have saved, and the portal's own background calls the lockdown
+      // held back (a section may render incomplete). The learner cannot tell how the page was
+      // reached, so the advice is the portal's own navigation, never a reload.
+      if (result.reachedReview) {
+        const reviewUrl = (() => { try { return typeof this.page?.url === "function" ? String(this.page.url() || "") : ""; } catch { return ""; } })();
+        const blockedCalls = backstop ? portalOwnCallsBlockedAtReview(backstop.aborts, reviewUrl) : [];
+        const handoff = [this.reviewUnsavedWarning, reviewBlockedCallsLine(blockedCalls, null)].filter(Boolean);
+        if (handoff.length) {
+          result = { ...result, reviewPageBlockedCalls: blockedCalls, reviewHandoffNotes: handoff, message: `${result.message} ${handoff.join(" ")}` };
+          this.debug?.event({ type: "review_handoff_notes", notes: handoff.map((h) => h.slice(0, 200)) });
+        }
+      }
       // EVERY ABORT IS REPORTED, and a learn during which the page tried to file or pay (or post
       // from the review page) is not a clean learn: the recipe it recorded contains the step
       // that did it.
@@ -3286,7 +3383,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     } finally {
       await backstop?.dispose().catch(() => null);
       this.stopHeartbeat();
-      await this.debug?.stopTrace(this.page);
+      // A run that TYPED a secret has it in the trace raw (the fill's value, every DOM snapshot
+      // after it) — hard rule 2: that trace is discarded, not saved; the rest of the bundle stays.
+      await this.debug?.stopTrace(this.page, this.typedSecrets.size > 0
+        ? { discard: { event: "trace_discarded_secret_typed", labels: [...this.typedSecretLabels] } }
+        : undefined);
       this.debug?.finalize({
         outcome: result ? (result.pauseReason ? "paused" : result.ok ? "ok" : "failed") : "error",
         ok: result?.ok ?? false,
@@ -3876,30 +3977,268 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   }
 
   private hasContactIdentity(): boolean {
-    const any = (c: ContactIdentity) => Boolean(c.lastName || c.email);
+    const any = (c: ContactIdentity) => Boolean(c.lastName || c.email || c.fullName);
     return any(this.contactIdentity) || any(this.siteContactIdentity);
   }
 
-  // ACA renders the contact sections in a fixed order (Applicant, then Site Contact),
-  // each with its own "Select from Account" / "Add New" pair. Section 0 is the filing
-  // CONTRACTOR; section 1 is the PROPERTY OWNER.
-  private identityForSection(index: number): ContactIdentity {
-    return index === 0 ? this.contactIdentity : this.siteContactIdentity;
+  /** The identity a contact ROLE is filled from: the filing company (contactIdentity) or the
+   *  property owner (siteContactIdentity). */
+  private identityForRole(role: ContactRole): ContactIdentity {
+    return role === "company" ? this.contactIdentity : this.siteContactIdentity;
   }
 
-  // Click "Add New", then fill the contractor identity into the ACADialogFrame form
-  // (First/Last/Email/Phone by row-label; the dialog's own Continue commits it). Bails
-  // to the planner if Add New or the dialog can't be resolved.
-  private async accelaAddContactPass(steps: RecipeStep[], sectionIndex: number, usedAddNew: string[] = []): Promise<{ ok: boolean; usedId: string }> {
+  // POSITIONAL FALLBACK ONLY (no section heading could be read): section 0 is the filing
+  // CONTRACTOR, section 1 the PROPERTY OWNER. Where headings are readable the pass orders
+  // sections by HEADING (planContactSections) — Corvallis Step 4 prints Licensed Professional,
+  // Inspection Contact and an OPTIONAL second Inspection Contact, and position 1 would have put
+  // the homeowner into the optional box.
+  private identityForSection(index: number): ContactIdentity {
+    return this.identityForRole(index === 0 ? "company" : "owner");
+  }
+
+  /** Which way "Applicant" reads on this page: an ACA (Accela Citizen Access) or any permit
+   *  filing reads it as the filing company; a utility interconnection as the customer. */
+  private contactTrackFor(url: string): ContactTrack {
+    if (/accela|\/cap\/|citizenaccess/i.test(url)) return "permit";
+    return this.policyProfile === "residential_nem" ? "nem" : "permit";
+  }
+
+  /** EVERY CONTACT SECTION ON THE PAGE, READ BY ITS HEADING. One in-page pass over the visible
+   *  "Add New" / "Select from Account" / "Edit" controls: for each, the nearest heading above it
+   *  (h1-h4 / legend, walking out through ancestors' previous siblings), the section's instruction
+   *  text, the section's own text, and its control ids. Each section container, Add New and Edit
+   *  is stamped (data-al-csec / data-al-caddnew / data-al-cedit) so the pass can act on exactly
+   *  that section. null when the page cannot be read (a stub page) — the positional fallback. */
+  private async acaContactSectionsOnPage(): Promise<Array<{
+    key: number; heading: string; instruction: string; text: string;
+    addNewId: string; selectId: string; editId: string; hasAddNew: boolean; hasEdit: boolean;
+  }> | null> {
+    const page = this.page;
+    if (!page || typeof page.evaluate !== "function") return null;
+    const raw = await page.evaluate(() => {
+      // NO named functions in here: keepNames wraps them in __name, which the page may lack.
+      const out: Array<{ key: number; heading: string; instruction: string; text: string; addNewId: string; selectId: string; editId: string; hasAddNew: boolean; hasEdit: boolean }> = [];
+      const containers: Element[] = [];
+      const controls = Array.from(document.querySelectorAll("a, button, input[type='button'], input[type='submit']")) as HTMLElement[];
+      for (const el of controls) {
+        const own = el.tagName === "INPUT" ? String((el as HTMLInputElement).value || "") : String(el.innerText || el.textContent || el.getAttribute("title") || "");
+        const label = own.replace(/\s+/g, " ").trim();
+        // "Look Up" marks a LOOK-UP section (Corvallis's Licensed Professional: a CCB search, no
+        // Add New) — read so the pass knows the page is not all its own to settle.
+        const kind = /^add new$/i.test(label) ? "add" : /^select from account$/i.test(label) ? "select" : /^edit$/i.test(label) ? "edit" : /^look ?up$/i.test(label) ? "lookup" : "";
+        if (!kind) continue;
+        const r = el.getBoundingClientRect();
+        const st = window.getComputedStyle(el);
+        if (!(r.width > 0 && r.height > 0) || st.visibility === "hidden" || st.display === "none") continue;
+        let heading = "";
+        let instruction = "";
+        let container: Element | null = null;
+        let node: Element | null = el;
+        for (let hops = 0; node && hops < 10 && !container; hops++) {
+          let sib: Element | null = node.previousElementSibling;
+          while (sib && !container) {
+            const h = /^(H[1-4]|LEGEND)$/.test(sib.tagName) ? sib : sib.querySelector("h1, h2, h3, h4, legend");
+            const ht = h ? String((h as HTMLElement).innerText || h.textContent || "").replace(/\s+/g, " ").trim() : "";
+            if (ht) {
+              heading = ht.slice(0, 80);
+              const ins = sib.querySelector("[class*='Instruction'], [class*='instruction']") as HTMLElement | null;
+              instruction = String((ins && (ins.innerText || ins.textContent)) || "").replace(/\s+/g, " ").trim().slice(0, 300);
+              container = node.parentElement;
+            }
+            sib = sib.previousElementSibling;
+          }
+          if (!container) node = node.parentElement;
+        }
+        if (!container) continue;
+        let idx = containers.indexOf(container);
+        if (idx < 0) {
+          containers.push(container);
+          idx = containers.length - 1;
+          container.setAttribute("data-al-csec", String(idx));
+          out.push({ key: idx, heading, instruction, text: "", addNewId: "", selectId: "", editId: "", hasAddNew: false, hasEdit: false });
+        }
+        const rec = out[idx];
+        if (kind === "add" && !rec.hasAddNew) { rec.hasAddNew = true; rec.addNewId = el.id || ""; el.setAttribute("data-al-caddnew", String(idx)); }
+        if (kind === "select" && !rec.selectId) rec.selectId = el.id || "";
+        if (kind === "edit" && !rec.hasEdit) { rec.hasEdit = true; rec.editId = el.id || ""; el.setAttribute("data-al-cedit", String(idx)); }
+      }
+      for (let i = 0; i < out.length; i++) out[i].text = String((containers[i] as HTMLElement).innerText || "").replace(/\s+/g, " ").trim().slice(0, 800);
+      return out;
+    }).catch(() => null);
+    return Array.isArray(raw) ? raw : null;
+  }
+
+  /** The visible validation messages inside the contact dialog after its Continue — a save the
+   *  portal REFUSED (a required box left empty) keeps the dialog up with these, and the old
+   *  readback misread that as "ACA substituted an account contact". Labels and rule text only. */
+  private async acaDialogErrors(): Promise<string[]> {
+    const page = this.page;
+    if (!page) return [];
+    const frameEl = page.locator('iframe[name="ACADialogFrame"]').first();
+    if ((await frameEl.count().catch(() => 0)) === 0) return [];
+    if (typeof frameEl.isVisible !== "function" || !(await frameEl.isVisible().catch(() => false))) return [];
+    const frame = typeof page.frame === "function" ? page.frame({ name: "ACADialogFrame" }) : null;
+    if (!frame || typeof frame.evaluate !== "function") return [];
+    const errs = await frame.evaluate(() => {
+      const out: string[] = [];
+      const nodes = Array.from(document.querySelectorAll("[class*='rror'], [class*='alidat'], [role='alert'], .ACA_Error_Label, .ACA_Error_Indicator")) as HTMLElement[];
+      for (const n of nodes) {
+        const r = n.getBoundingClientRect();
+        if (!(r.width > 0 && r.height > 0)) continue;
+        const t = String(n.innerText || "").replace(/\s+/g, " ").trim();
+        if (t && t.length < 200 && !out.includes(t)) out.push(t);
+      }
+      return out.slice(0, 6);
+    }).catch(() => [] as string[]);
+    return Array.isArray(errs) ? errs : [];
+  }
+
+  /** Fill one identity into the open ACA contact dialog (Add New or Edit — every box is
+   *  OVERWRITTEN, so an Edit of an account contact becomes this identity, not a mix), recording
+   *  each fill BOUND to the identity's own key. Field-specific ASP.NET control ids/names — NOT
+   *  row-label scoping: ACA renders First and Last name in the SAME table row, so a row filter for
+   *  /last name/ also matches that row and .first() returns the FIRST-name box (review finding).
+   *  Several id tokens per field, tried in order (ACA's names vary by build: the street box is
+   *  `txtAppStreetAdd1`; City of Corvallis asks one `txtAppFullName` and a `txtAppOrganizationName`
+   *  where Oregon ePermitting asks First/Last). */
+  private async fillAcaContactDialog(steps: RecipeStep[], role: ContactRole, id: ContactIdentity, who: string): Promise<void> {
+    const page = this.page;
+    if (!page) return;
+    const dlg = page.frameLocator('iframe[name="ACADialogFrame"]');
+    // Each box binds to THIS identity's key (shared contactRoles.CONTACT_KEYS): the owner's
+    // address is the project's street/city/state/zip, never an invented homeownerStreet (which
+    // resolves to "" at replay and files the required address block BLANK with no error).
+    const keyOf = (kind: ContactFieldKind, fallback: string): string => contactKeyFor(role, kind) ?? fallback;
+    const fillField = async (idParts: string | string[], value: string | undefined, note: string, kind: ContactFieldKind): Promise<void> => {
+      if (!value) return;
+      const parts = Array.isArray(idParts) ? idParts : [idParts];
+      let loc: unknown = null;
+      let css = "";
+      for (const part of parts) {
+        css = `input[id*='${part}' i], input[name*='${part}' i]`;
+        loc = await this.firstVisible(dlg, css);
+        if (loc) break;
+      }
+      if (!loc) { this.debug?.event({ type: "contact_field_miss", field: kind, tried: parts }); return; }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (await (loc as any).fill(value, { timeout: 8000 }).then(() => true).catch(() => false)) {
+        steps.push({ action: "fill", phase: "fill", selector: { css, frame: "ACADialogFrame" }, field: keyOf(kind, kind), value, note: `${note} [${who}]` });
+      }
+    };
+    await fillField("FullName", id.fullName, "contact: full name", "fullName");
+    await fillField("FirstName", id.firstName, "contact: first name", "firstName");
+    await fillField("LastName", id.lastName, "contact: last name", "lastName");
+    // "Name of Business" — the company's; an owner identity carries none and the box is left.
+    if (role === "company") await fillField(["OrganizationName", "BusinessName", "CompanyName"], id.companyName, "contact: business name", "business");
+    await fillField("Email", id.email, "contact: email", "email");
+    // ACA's contact dialog also REQUIRES the address block (Address / City / State / Zip)
+    // and validates Zip as exactly ##### — a ZIP+4 or a stray space is rejected.
+    await fillField(["StreetAdd", "AddressLine", "Address", "Street"], id.street, "contact: address", "street");
+    await fillField("City", id.city, "contact: city", "city");
+    const zip5 = (id.zip || "").replace(/\D/g, "").slice(0, 5);
+    if (zip5) {
+      const zipLoc = await this.firstVisible(dlg, "input[id*='Zip' i], input[name*='Zip' i]");
+      if (zipLoc) {
+        // Keystrokes: ACA's zip validator ignores a programmatic value set.
+        await this.typeMasked(zipLoc, zip5);
+        steps.push({ action: "fill", phase: "fill", selector: { css: "input[id*='Zip' i]", frame: "ACADialogFrame" }, field: keyOf("zip", "zip"), value: zip5, note: `contact: zip [${who}]` });
+      }
+    }
+    // State is a dropdown keyed by the 2-letter code.
+    const stateCode = (id.state || "").trim().toUpperCase();
+    if (/^[A-Z]{2}$/.test(stateCode)) {
+      const stateSel = await this.firstVisible(dlg, "select[id*='State' i], select[name*='State' i]");
+      if (stateSel) {
+        const okState = await stateSel.selectOption(stateCode).then(() => true)
+          .catch(async () => stateSel.selectOption({ label: stateCode }).then(() => true).catch(() => false));
+        if (okState) steps.push({ action: "select", phase: "fill", selector: { css: "select[id*='State' i]", frame: "ACADialogFrame" }, field: keyOf("state", "state"), value: stateCode, note: `contact: state [${who}]` });
+      }
+    }
+    // PRIMARY PHONE is a SEGMENTED control on ACA: three boxes (area / prefix / line,
+    // rendered as ...$ChildControl0/1/2) whose validator reads KEYSTROKES, not an assigned
+    // value. Writing the whole formatted string into one box leaves the other two empty and
+    // the portal reports "Primary Phone: Invalid" (operator-observed).
+    const phoneKey = keyOf("phone", "phone");
+    const phoneDigits = (id.phone || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+    if (phoneDigits.length >= 10) {
+      const phoneCss = "input[id*='Phone' i]:not([id*='Secondary' i]):not([id*='Fax' i])";
+      const phoneMode = await this.fillPhoneSegments(page, id.phone || "", "ACADialogFrame");
+      const parts = [phoneDigits.slice(0, 3), phoneDigits.slice(3, 6), phoneDigits.slice(6, 10)];
+      if (phoneMode === "ok") {
+        for (let i = 0; i < 3; i++) {
+          // BOUND per segment, never frozen: a literal here replays the LEARN project's
+          // phone number for every future project. resolveRecipeFieldValues derives
+          // <base>Area/Prefix/Line via phoneSegmentKeys.
+          const segKey = `${phoneKey}${["Area", "Prefix", "Line"][i]}`;
+          steps.push({ action: "fill", phase: "fill", selector: { css: phoneCss, nth: i, frame: "ACADialogFrame" }, field: segKey, value: parts[i], note: `contact: phone (${["area", "prefix", "line"][i]}) [${who}]` });
+        }
+      } else if (phoneMode === "not-segmented") {
+        const single = dlg.locator(phoneCss).first();
+        if (await single.count().catch(() => 0)) {
+          const dashed = `${parts[0]}-${parts[1]}-${parts[2]}`;
+          await this.typeMasked(single, dashed);
+          steps.push({ action: "fill", phase: "fill", selector: { css: phoneCss, frame: "ACADialogFrame" }, field: phoneKey, value: dashed, note: `contact: phone [${who}]` });
+        }
+      }
+    } else if (id.phone) {
+      await fillField("Phone", id.phone, "contact: phone", "phone");
+    }
+  }
+
+  /** Click the open contact dialog's own Continue/Save (NOT "Continue Application"). */
+  private async submitAcaContactDialog(steps: RecipeStep[], who: string): Promise<void> {
+    const page = this.page;
+    if (!page) return;
+    const dlg = page.frameLocator('iframe[name="ACADialogFrame"]');
+    const dlgSubmit = dlg.getByRole("button", { name: /^(continue|save|submit|ok)$/i })
+      .or(dlg.locator('a:has-text("Continue"), input[type="submit"]')).first();
+    if (await dlgSubmit.count().catch(() => 0)) {
+      if (await dlgSubmit.click({ timeout: 8000 }).then(() => true).catch(() => false)) {
+        steps.push({ action: "click", phase: "fill", selector: { role: "button", name: "Continue", frame: "ACADialogFrame", fallbacks: [{ css: 'a:has-text("Continue")', frame: "ACADialogFrame" }] }, note: `contact(${who}): save new contact` });
+      }
+    }
+    await page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
+    await page.waitForTimeout?.(1500).catch(() => null);
+  }
+
+  /** The words a saved contact of this identity shows in its section: the PERSON first (an
+   *  account contact at the same company — the live "Permit Tech" — must not pass for ours), the
+   *  business name only when the identity names no person. */
+  private contactReadbackNames(id: ContactIdentity): string[] {
+    const person = [String(id.fullName ?? "").trim(), `${id.firstName ?? ""} ${id.lastName ?? ""}`.trim()].filter(Boolean);
+    return person.length ? person : [String(id.companyName ?? "").trim()].filter(Boolean);
+  }
+
+  // Click "Add New" in ONE contact section (chosen by its heading), fill the section's identity
+  // into the ACADialogFrame form, save it, and READ BACK the section. Three outcomes after the
+  // dialog's Continue, told apart instead of all read as "substituted":
+  //   - the dialog is still up with validation messages → the save was REFUSED (a required box
+  //     this identity could not fill): logged by name, rolled back;
+  //   - the section shows a contact that is NOT this identity → ACA attached an account contact:
+  //     it is EDITED to this identity (every box overwritten), then read back again;
+  //   - the section shows nothing → the save did not take: rolled back.
+  // A section that ALREADY holds a contact before we start is accepted when it IS this identity,
+  // and edited to it when it is not — never a second contact, never someone else's.
+  private async accelaAddContactPass(
+    steps: RecipeStep[],
+    target: number | { role: ContactRole; heading: string; addNewId: string; editId?: string; sectionKey?: number; holds?: string },
+    usedAddNew: string[] = [],
+  ): Promise<{ ok: boolean; usedId: string }> {
     const page = this.page;
     if (!page) return { ok: false, usedId: "" };
-    const id = this.identityForSection(sectionIndex);
-    const who = sectionIndex === 0 ? "applicant" : "site contact";
+    const t = typeof target === "number"
+      ? { role: (target === 0 ? "company" : "owner") as ContactRole, heading: "", addNewId: "", editId: "", sectionKey: undefined as number | undefined, holds: "" }
+      : { editId: "", holds: "", ...target };
+    const id = this.identityForRole(t.role);
+    const who = t.role === "company" ? (/inspection contact/i.test(t.heading) ? "inspection contact" : "applicant") : (/owner/i.test(t.heading) ? "owner" : "site contact");
+    const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const names = this.contactReadbackNames(id);
+    const isOurs = (text: string): boolean => names.some((n) => norm(n) && norm(text).includes(norm(n)));
     // Steps recorded from here belong to THIS section; if the portal turns out not to have
     // attached the contact, they are rolled back so the recipe never replays a save that
     // achieved nothing.
     const stepMark = steps.length;
-    if (!id.lastName && !id.email) { this.debug?.event({ type: "contact_add_bail", why: `no identity for section ${sectionIndex} (${who})` }); return { ok: false, usedId: "" }; }
+    if (!id.lastName && !id.email && !id.fullName) { this.debug?.event({ type: "contact_add_bail", why: `no identity for the ${who} section` }); return { ok: false, usedId: "" }; }
     const dlg = page.frameLocator('iframe[name="ACADialogFrame"]');
     // The planner may already have opened the ACCOUNT PICKER ("Select Contact from
     // Account"). Never pick from it: on a shared operator account that attaches another
@@ -3911,52 +4250,82 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       this.debug?.event({ type: "contact_account_picker_cancelled" });
       await page.waitForTimeout?.(1200).catch(() => null);
     }
-    const addNewAll = page.getByRole("button", { name: /add new/i })
-      .or(page.getByRole("link", { name: /add new/i }))
-      .or(page.locator('input[value*="Add New" i], button:has-text("Add New"), a:has-text("Add New")'));
-    const addNewCount = await addNewAll.count().catch(() => 0);
-    if (!addNewCount) { this.debug?.event({ type: "contact_add_bail", why: "no Add New control", section: sectionIndex }); return { ok: false, usedId: "" }; }
-    // Pick by ELEMENT IDENTITY, never by position. Once a section is saved ACA re-renders
-    // it with Edit/Remove and its Add New disappears, so indices shift; and if the save has
-    // not settled yet the applicant's button is still there, so "first visible" re-opened
-    // the SAME dialog and overwrote the applicant with the owner's details (live Coos Bay:
-    // Charles Bitton became Wynema Wright over the contractor's street). Skipping the ids
-    // we already used makes reusing a section structurally impossible.
+    // THE SECTION ALREADY HOLDS A CONTACT (ACA attached the account's own before we arrived):
+    // accept it only when it IS this identity; otherwise edit it to this identity below.
+    if (t.holds && t.sectionKey != null) {
+      if (isOurs(t.holds)) {
+        this.debug?.event({ type: "contact_already_ours", section: t.heading.slice(0, 40), who });
+        return { ok: true, usedId: t.editId || t.addNewId };
+      }
+      const edited = await this.editAcaSectionContact(steps, t, id, who);
+      if (edited) return { ok: true, usedId: t.editId || t.addNewId };
+      steps.length = stepMark;
+      return { ok: false, usedId: t.editId || t.addNewId };
+    }
+    // THE SECTION'S OWN Add New, by id (stamped by acaContactSectionsOnPage) — never "the first
+    // one": with two sections on a page the first is not necessarily this identity's.
     let addNew: any = null;
     let usedId = "";
-    for (let i = 0; i < addNewCount; i++) {
-      const candidate = addNewAll.nth(i);
-      // typeof guards, not `?.()`: optional chaining stops at the CALL, so `.catch()`
-      // would then run on undefined and throw. A stub locator (tests) counts as visible.
-      const visible = typeof candidate.isVisible === "function"
-        ? await candidate.isVisible().catch(() => false)
-        : true;
-      if (!visible) continue;
-      const cid = (typeof candidate.getAttribute === "function"
-        ? String((await candidate.getAttribute("id").catch(() => "")) ?? "")
-        : "") || `idx:${i}`;
-      if (usedAddNew.includes(cid)) continue;
-      addNew = candidate;
-      usedId = cid;
-      break;
+    if (t.sectionKey != null) {
+      const own = page.locator(`[data-al-caddnew="${t.sectionKey}"]`).first();
+      if (await own.count().catch(() => 0)) { addNew = own; usedId = t.addNewId || `sec:${t.sectionKey}`; }
     }
-    if (!addNew) { this.debug?.event({ type: "contact_add_bail", why: `no unused Add New control for section ${sectionIndex} (${who})`, sections: addNewCount }); return { ok: false, usedId: "" }; }
+    if (!addNew) {
+      const addNewAll = page.getByRole("button", { name: /add new/i })
+        .or(page.getByRole("link", { name: /add new/i }))
+        .or(page.locator('input[value*="Add New" i], button:has-text("Add New"), a:has-text("Add New")'));
+      const addNewCount = await addNewAll.count().catch(() => 0);
+      if (!addNewCount) { this.debug?.event({ type: "contact_add_bail", why: "no Add New control", who }); return { ok: false, usedId: "" }; }
+      // Pick by ELEMENT IDENTITY, never by position. Once a section is saved ACA re-renders
+      // it with Edit/Remove and its Add New disappears, so indices shift; and if the save has
+      // not settled yet the applicant's button is still there, so "first visible" re-opened
+      // the SAME dialog and overwrote the applicant with the owner's details (live Coos Bay: the
+      // contractor's contact became the homeowner over the contractor's street). Skipping the ids
+      // we already used makes reusing a section structurally impossible.
+      for (let i = 0; i < addNewCount; i++) {
+        const candidate = addNewAll.nth(i);
+        // typeof guards, not `?.()`: optional chaining stops at the CALL, so `.catch()`
+        // would then run on undefined and throw. A stub locator (tests) counts as visible.
+        const visible = typeof candidate.isVisible === "function"
+          ? await candidate.isVisible().catch(() => false)
+          : true;
+        if (!visible) continue;
+        const cid = (typeof candidate.getAttribute === "function"
+          ? String((await candidate.getAttribute("id").catch(() => "")) ?? "")
+          : "") || `idx:${i}`;
+        if (usedAddNew.includes(cid)) continue;
+        addNew = candidate;
+        usedId = cid;
+        break;
+      }
+      if (!addNew) { this.debug?.event({ type: "contact_add_bail", why: `no unused Add New control for the ${who} section`, sections: addNewCount }); return { ok: false, usedId: "" }; }
+    }
     if (!(await addNew.click({ timeout: 8000 }).then(() => true).catch(() => false))) {
       // Almost always the PREVIOUS section's dialog still overlaying the page: ACA leaves
       // the dialog iframe in the DOM after a save, and it intercepts the click.
-      this.debug?.event({ type: "contact_add_bail", why: `Add New click intercepted for section ${sectionIndex} (${who})`, control: usedId });
+      this.debug?.event({ type: "contact_add_bail", why: `Add New click intercepted for the ${who} section`, control: usedId });
       return { ok: false, usedId };
     }
+    this.openContactRole = { role: t.role, heading: t.heading };
     await page.waitForLoadState?.("networkidle", { timeout: 12000 }).catch(() => null);
     await page.waitForTimeout?.(1500).catch(() => null);
     // VERIFY the Add-New form actually opened before recording anything — an unopened
     // dialog would otherwise leave a recorded click that replays into nothing.
-    const anyInput = dlg.locator("input[type='text']").first();
+    const anyInput = dlg.locator("input[type='text'], input:not([type])").first();
     if (!(await anyInput.count().catch(() => 0))) {
       this.debug?.event({ type: "contact_add_bail", why: "Add New dialog did not open" });
       return { ok: false, usedId };
     }
-    steps.push({ action: "click", phase: "fill", selector: { role: "button", name: "Add New", fallbacks: [{ css: 'a:has-text("Add New")' }] }, note: `contact(${who}): add new` });
+    // The section's OWN control id first (a replay on a page with two contact sections must open
+    // THIS one), the role/name and text forms as fallbacks.
+    const realId = t.addNewId && !/^(idx|sec):/.test(t.addNewId) ? t.addNewId : (/^(idx|sec):/.test(usedId) ? "" : usedId);
+    steps.push({
+      action: "click", phase: "fill",
+      selector: realId
+        ? { css: `[id="${realId}"]`, fallbacks: [{ role: "link", name: "Add New" }, { css: 'a:has-text("Add New")' }] }
+        : { role: "button", name: "Add New", fallbacks: [{ css: 'a:has-text("Add New")' }] },
+      note: `contact(${who}): add new`,
+    });
     // GROUND TRUTH for the dialog's real control ids. The field locators are guesses from
     // one build's DOM; when one misses (live: the Address field), the pass fills a partial
     // contact and ACA quietly falls back to an ACCOUNT contact, which then shows on the
@@ -3965,136 +4334,235 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     try {
       const ids = await dlg.locator("input, select").evaluateAll((els: Element[]) =>
         els.slice(0, 40).map((el) => `${el.tagName.toLowerCase()}#${el.getAttribute("id") || ""}|${el.getAttribute("name") || ""}`));
-      this.debug?.event({ type: "contact_dialog_controls", section: sectionIndex, ids });
+      this.debug?.event({ type: "contact_dialog_controls", section: t.heading.slice(0, 40) || who, ids });
     } catch { /* diagnostics only */ }
-    // Field-specific ASP.NET control ids/names — NOT row-label scoping. ACA renders First
-    // and Last name in the SAME table row, so a row filter for /last name/ also matches
-    // that row and .first() returns the FIRST-name box: the last name would overwrite the
-    // first (review finding). Distinct selectors also keep each recorded step replayable
-    // into its own control instead of all four landing in one input.
-    // Section 1 (site contact) binds to the PROJECT's own keys. A blind
-    // installer→homeowner prefix swap invents homeownerStreet/City/State/Zip, which exist
-    // nowhere in resolveRecipeFieldValues — at replay those resolve to "" and the required
-    // address block goes in BLANK with no error. The site address lives under
-    // street/city/state/zip; only the person fields carry a homeowner* prefix.
-    const SITE_KEYS: Record<string, string> = {
-      installerFirstName: "homeownerFirstName",
-      installerLastName: "homeownerLastName",
-      installerEmail: "homeownerEmail",
-      installerPhone: "homeownerPhone",
-      installerStreet: "street",
-      installerCity: "city",
-      installerState: "state",
-      installerZip: "zip",
-    };
-    const bindKey = (installerKey: string): string =>
-      sectionIndex === 0 ? installerKey : (SITE_KEYS[installerKey] ?? installerKey);
-    // Accept SEVERAL id tokens per field, tried in order. ACA's control names vary by
-    // build and the guess only has to be wrong once to matter: the street box here is
-    // `txtAppStreetAdd1`, which contains neither "AddressLine1" nor "Address", so the fill
-    // missed, Playwright waited out its full timeout twice (30s each, measured), and the
-    // half-filled contact let ACA substitute one of the ACCOUNT's own contacts on the
-    // review screen. The hidden `hfIsForNewContactAddress` is skipped by firstVisible.
-    const fillField = async (idParts: string | string[], value: string | undefined, note: string, field: string): Promise<void> => {
-      if (!value) return;
-      const parts = Array.isArray(idParts) ? idParts : [idParts];
-      let loc: unknown = null;
-      let css = "";
-      for (const part of parts) {
-        css = `input[id*='${part}' i], input[name*='${part}' i]`;
-        loc = await this.firstVisible(dlg, css);
-        if (loc) break;
-      }
-      if (!loc) { this.debug?.event({ type: "contact_field_miss", field, tried: parts }); return; }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if (await (loc as any).fill(value, { timeout: 8000 }).then(() => true).catch(() => false)) {
-        steps.push({ action: "fill", phase: "fill", selector: { css, frame: "ACADialogFrame" }, field: bindKey(field), value, note: `${note} [${who}]` });
-      }
-    };
-    await fillField("FirstName", id.firstName, "contact: first name", "installerFirstName");
-    await fillField("LastName", id.lastName, "contact: last name", "installerLastName");
-    await fillField("Email", id.email, "contact: email", "installerEmail");
-    // ACA's contact dialog also REQUIRES the address block (Address / City / State / Zip)
-    // and validates Zip as exactly ##### — a ZIP+4 or a stray space is rejected.
-    // Address ids vary by build (AddressLine1 / addressLine1 / txtAddress) - the
-    // live Coos Bay dialog missed on "AddressLine1" alone.
-    await fillField(["StreetAdd", "AddressLine", "Address", "Street"], id.street, "contact: address", "installerStreet");
-    await fillField("City", id.city, "contact: city", "installerCity");
-    const zip5 = (id.zip || "").replace(/\D/g, "").slice(0, 5);
-    if (zip5) {
-      const zipLoc = await this.firstVisible(dlg, "input[id*='Zip' i], input[name*='Zip' i]");
-      if (zipLoc) {
-        // Keystrokes: ACA's zip validator ignores a programmatic value set.
-        await this.typeMasked(zipLoc, zip5);
-        steps.push({ action: "fill", phase: "fill", selector: { css: "input[id*='Zip' i]", frame: "ACADialogFrame" }, field: bindKey("installerZip"), value: zip5, note: `contact: zip [${who}]` });
-      }
+    await this.fillAcaContactDialog(steps, t.role, id, who);
+    await this.submitAcaContactDialog(steps, who);
+    // THE SAVE WAS REFUSED: the dialog is still up and says why (a required box). Live
+    // Corvallis 2026-09-28 was this — "Full Name" required, nothing typed — and the old read-back
+    // reported it as ACA substituting an account contact.
+    const refused = await this.acaDialogErrors();
+    if (refused.length) {
+      this.debug?.event({ type: "contact_dialog_refused", who, errors: refused.map((e) => e.slice(0, 120)) });
+      steps.length = stepMark;
+      await this.closeAcaDialog();
+      return { ok: false, usedId };
     }
-    // State is a dropdown keyed by the 2-letter code.
-    const stateCode = (id.state || "").trim().toUpperCase();
-    if (/^[A-Z]{2}$/.test(stateCode)) {
-      const stateSel = await this.firstVisible(dlg, "select[id*='State' i], select[name*='State' i]");
-      if (stateSel) {
-        const okState = await stateSel.selectOption(stateCode).then(() => true)
-          .catch(async () => stateSel.selectOption({ label: stateCode }).then(() => true).catch(() => false));
-        if (okState) steps.push({ action: "select", phase: "fill", selector: { css: "select[id*='State' i]", frame: "ACADialogFrame" }, field: bindKey("installerState"), value: stateCode, note: `contact: state [${who}]` });
-      }
-    }
-    // PRIMARY PHONE is a SEGMENTED control on ACA: three boxes (area / prefix / line,
-    // rendered as ...$ChildControl0/1/2) whose validator reads KEYSTROKES, not an assigned
-    // value. Writing the whole formatted string into one box leaves the other two empty and
-    // the portal reports "Primary Phone: Invalid" (operator-observed).
-    const phoneDigits = (id.phone || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
-    if (phoneDigits.length >= 10) {
-      const phoneCss = "input[id*='Phone' i]:not([id*='Secondary' i]):not([id*='Fax' i])";
-      const phoneMode = await this.fillPhoneSegments(page, id.phone || "", "ACADialogFrame");
-      const parts = [phoneDigits.slice(0, 3), phoneDigits.slice(3, 6), phoneDigits.slice(6, 10)];
-      if (phoneMode === "ok") {
-        for (let i = 0; i < 3; i++) {
-          // BOUND per segment, never frozen: a literal here replays the LEARN project's
-          // phone number for every future project. resolveRecipeFieldValues derives
-          // <base>Area/Prefix/Line via phoneSegmentKeys.
-          const segKey = `${bindKey("installerPhone")}${["Area", "Prefix", "Line"][i]}`;
-          steps.push({ action: "fill", phase: "fill", selector: { css: phoneCss, nth: i, frame: "ACADialogFrame" }, field: segKey, value: parts[i], note: `contact: phone (${["area", "prefix", "line"][i]}) [${who}]` });
-        }
-      } else if (phoneMode === "not-segmented") {
-        const single = dlg.locator(phoneCss).first();
-        if (await single.count().catch(() => 0)) {
-          const dashed = `${parts[0]}-${parts[1]}-${parts[2]}`;
-          await this.typeMasked(single, dashed);
-          steps.push({ action: "fill", phase: "fill", selector: { css: phoneCss, frame: "ACADialogFrame" }, field: bindKey("installerPhone"), value: dashed, note: `contact: phone [${who}]` });
-        }
-      }
-    } else if (id.phone) {
-      await fillField("Phone", id.phone, "contact: phone", "installerPhone");
-    }
-    // The dialog's Continue/Save/Submit commits the contact (NOT "Continue Application").
-    const dlgSubmit = dlg.getByRole("button", { name: /^(continue|save|submit|ok)$/i })
-      .or(dlg.locator('a:has-text("Continue"), input[type="submit"]')).first();
-    if (await dlgSubmit.count().catch(() => 0)) {
-      if (await dlgSubmit.click({ timeout: 8000 }).then(() => true).catch(() => false)) {
-        steps.push({ action: "click", phase: "fill", selector: { role: "button", name: "Continue", frame: "ACADialogFrame", fallbacks: [{ css: 'a:has-text("Continue")', frame: "ACADialogFrame" }] }, note: `contact(${who}): save new contact` });
-      }
-    }
-    await page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
-    await page.waitForTimeout?.(1500).catch(() => null);
     // READ BACK what the section now shows. A dialog save that silently does not commit
     // leaves ACA free to attach one of the ACCOUNT's own contacts instead, which reads as
     // success here but files the permit under the wrong person (live: the Applicant came
     // out as the account's "Permit Tech", not the contractor we typed). Claiming success
-    // without checking is how that reached the review screen unnoticed.
-    const expectName = `${id.firstName ?? ""} ${id.lastName ?? ""}`.trim();
-    if (expectName) {
-      const body = String((await page.locator("body").innerText().catch(() => "")) ?? "");
-      const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, "");
-      const committed = norm(body).includes(norm(expectName));
-      this.debug?.event({ type: "contact_readback", section: sectionIndex, who, committed });
-      if (!committed) {
-        this.debug?.event({ type: "contact_add_bail", why: `saved contact is not on the page - ACA may have substituted an account contact (${who})` });
-        steps.length = stepMark; // drop this section's steps: they did not take
-        return { ok: false, usedId };
-      }
+    // without checking is how that reached the review screen unnoticed. The SECTION's own
+    // text when it can be read (another section may carry the same name), else the page's.
+    if (!names.length) return { ok: true, usedId };
+    const after = t.sectionKey != null ? await this.acaSectionAfterSave(t) : null;
+    const text = after ? after.text : String((await page.locator("body").innerText().catch(() => "")) ?? "");
+    const committed = isOurs(text);
+    this.debug?.event({ type: "contact_readback", section: t.heading.slice(0, 40) || who, who, committed });
+    if (committed) return { ok: true, usedId };
+    if (after && after.hasEdit) {
+      // ACA ATTACHED SOMEONE ELSE (an account contact). Edit it to this identity.
+      this.debug?.event({ type: "contact_substituted", who, why: "the section shows a contact that is not this identity — editing it" });
+      const edited = await this.editAcaSectionContact(steps, { ...t, sectionKey: after.key, editId: after.editId }, id, who);
+      if (edited) return { ok: true, usedId };
     }
-    return { ok: true, usedId };
+    this.debug?.event({ type: "contact_add_bail", why: after && !after.hasEdit ? `the save did not attach a contact to the ${who} section` : `the ${who} section does not show this identity after the save` });
+    steps.length = stepMark; // drop this section's steps: they did not take
+    return { ok: false, usedId };
+  }
+
+  /** The section (same heading, same ordinal among equal headings) as it reads AFTER a save. */
+  private async acaSectionAfterSave(t: { heading: string; sectionKey?: number }): Promise<{ key: number; text: string; hasEdit: boolean; editId: string } | null> {
+    const sections = await this.acaContactSectionsOnPage();
+    if (!sections || !sections.length) return null;
+    const same = sections.filter((s) => s.heading.toLowerCase() === t.heading.toLowerCase());
+    const pick = same.find((s) => s.key === t.sectionKey) ?? same[0] ?? null;
+    return pick ? { key: pick.key, text: pick.text, hasEdit: pick.hasEdit, editId: pick.editId } : null;
+  }
+
+  /** EDIT the contact a section holds to this identity: its Edit control, every box overwritten,
+   *  the dialog's Continue, then read back again. Recorded optional (a replay whose portal did not
+   *  substitute edits our own contact to the same values — harmless). */
+  private async editAcaSectionContact(
+    steps: RecipeStep[],
+    t: { role: ContactRole; heading: string; sectionKey?: number; editId?: string },
+    id: ContactIdentity,
+    who: string,
+  ): Promise<boolean> {
+    const page = this.page;
+    if (!page || t.sectionKey == null) return false;
+    const edit = page.locator(`[data-al-cedit="${t.sectionKey}"]`).first();
+    if (!(await edit.count().catch(() => 0))) return false;
+    if (!(await edit.click({ timeout: 8000 }).then(() => true).catch(() => false))) return false;
+    this.openContactRole = { role: t.role, heading: t.heading };
+    await page.waitForLoadState?.("networkidle", { timeout: 12000 }).catch(() => null);
+    await page.waitForTimeout?.(1500).catch(() => null);
+    const dlg = page.frameLocator('iframe[name="ACADialogFrame"]');
+    if (!(await dlg.locator("input[type='text'], input:not([type])").first().count().catch(() => 0))) return false;
+    steps.push({
+      action: "click", phase: "fill", optional: true,
+      selector: t.editId ? { css: `[id="${t.editId}"]`, fallbacks: [{ role: "link", name: "Edit" }] } : { role: "link", name: "Edit" },
+      note: `contact(${who}): edit the section's contact to this identity`,
+    });
+    await this.fillAcaContactDialog(steps, t.role, id, who);
+    await this.submitAcaContactDialog(steps, who);
+    if ((await this.acaDialogErrors()).length) { await this.closeAcaDialog(); return false; }
+    const after = await this.acaSectionAfterSave(t);
+    const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const ok = !!after && this.contactReadbackNames(id).some((n) => norm(n) && norm(after.text).includes(norm(n)));
+    this.debug?.event({ type: "contact_edit_readback", who, committed: ok });
+    return ok;
+  }
+
+  /** A planner click that would RE-OPEN a contact section the pass settled — one it filled (the
+   *  planner overwrote the applicant's name with the homeowner's, live Coos Bay) or one it left
+   *  empty on purpose (the optional second Inspection Contact). SCOPED to those sections by their
+   *  control ids and headings: a later page's own contact section (Corvallis Step 4's Inspection
+   *  Contact) is the planner's to open. With nothing to tell sections apart (no id, no heading),
+   *  the old rule stands: once the applicant is filled, no Add New / Select from Account. */
+  private contactReopenRefused(field: ExtractedField): string | null {
+    const label = String(field.label ?? "");
+    const opener = isContactOpener(label);
+    if (!opener) return null;
+    const ids = [
+      field.fingerprint?.id,
+      String(field.selector?.css ?? "").replace(/^#/, ""),
+      ...(field.selector?.fallbacks ?? []).map((f) => String(f.css ?? "").replace(/^#/, "")),
+    ].map((v) => String(v ?? "").trim()).filter(Boolean);
+    if (ids.some((i) => this.acaEmptySectionControls.has(i))) return "the portal calls this section optional and the pass left it empty";
+    if (ids.some((i) => this.acaFilledSectionControls.has(i))) return "the pass already filled this section";
+    const heading = String(field.section ?? field.fingerprint?.section ?? "").trim().toLowerCase();
+    if (heading && this.acaFilledSectionHeadings.has(heading) && !ids.length) return "the pass already filled this section (by heading)";
+    if (!ids.length && !heading && this.acaApplicantFilled) return "the applicant is already filled";
+    return null;
+  }
+
+  /** A planner click on a contact section's opener tells the dialog guard whose dialog opens
+   *  next (the section heading, or the ACA control id); a main-page advance closes it. */
+  private noteContactClick(field: ExtractedField, url: string): void {
+    const label = String(field.label ?? "");
+    if (isContactOpener(label)) {
+      const track = this.contactTrackFor(url);
+      const role = contactSectionRole(field.section, { track })
+        ?? contactRoleOfStep({ selector: field.selector as { css?: string; fallbacks?: Array<{ css?: string }> }, fingerprint: field.fingerprint }, { track });
+      this.openContactRole = role ? { role, heading: String(field.section ?? "") } : null;
+      this.debug?.event({ type: "contact_dialog_opened", section: String(field.section ?? "").slice(0, 40), role });
+      return;
+    }
+    if (!field.selector?.frame) this.openContactRole = null;
+  }
+
+  /** THIS identity's value for one part of a contact. "" when the identity has none (an owner's
+   *  business name). */
+  private identityValue(id: ContactIdentity, role: ContactRole, kind: ContactFieldKind): string {
+    const v = (s: string | undefined) => String(s ?? "").trim();
+    switch (kind) {
+      case "fullName": return v(id.fullName) || `${v(id.firstName)} ${v(id.lastName)}`.trim();
+      case "firstName": return v(id.firstName);
+      case "lastName": return v(id.lastName);
+      case "business": return role === "company" ? v(id.companyName) : "";
+      case "street": return v(id.street);
+      case "city": return v(id.city);
+      case "state": return v(id.state).toUpperCase();
+      case "zip": return v(id.zip).replace(/\D/g, "").slice(0, 5);
+      case "email": return v(id.email);
+      case "phone": return v(id.phone);
+    }
+  }
+
+  /** Do two values of one contact part say the same thing (formatting aside)? */
+  private sameContactValue(kind: ContactFieldKind, a: string, b: string): boolean {
+    // A select reads back "text\u0007value".
+    const parts = String(a ?? "").split("\u0007").map((s) => s.trim()).filter(Boolean);
+    const want = String(b ?? "").trim();
+    if (!want) return parts.length === 0;
+    const n = (s: string) => kind === "phone" ? s.replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "")
+      : kind === "zip" ? s.replace(/\D/g, "").slice(0, 5)
+      : s.toLowerCase().replace(/[^a-z0-9@.]/g, "");
+    return parts.some((p) => n(p) === n(want));
+  }
+
+  // ONE CONTACT, ONE IDENTITY — THE GUARD BEFORE A CONTACT DIALOG'S CONTINUE.
+  //
+  // Live City of Corvallis electrical learn, 2026-09-28: the contact pass bailed, the planner
+  // opened "Select from Account", picked the account's saved contact, and continued — so the
+  // Applicant's Contact Information dialog went in with the HOMEOWNER's full name, mailing
+  // address and e-mail (prefilled by ACA from that account contact) beside the COMPANY's business
+  // name and the phone the planner typed. The planner filled one box; the mix was on the screen.
+  //
+  // So this reads the dialog's CURRENT values, not the planner's fills: every name / business /
+  // address / e-mail / phone box of one dialog is made to hold the SECTION's identity (the
+  // section whose Add New / Select from Account / Edit was clicked — never a look-up), and each
+  // correction is recorded BOUND to that identity's key, replacing the planner's step for that
+  // box. A part the identity does not have stays blank, and a box still holding the OTHER
+  // identity's value for it is cleared (a company name in an Owner dialog). A dialog whose
+  // section names no identity is left alone and said so — never guessed.
+  private async enforceContactDialogIdentity(fields: ExtractedField[], steps: RecipeStep[], pageCount: number, url: string, frame: string): Promise<number> {
+    const boxes = fields
+      .filter((f) => f.selector?.frame === frame && (f.fieldType === "text" || f.fieldType === "select" || f.fieldType === "other"))
+      .map((f) => ({ f, kind: contactFieldKind(f.label) }))
+      .filter((x): x is { f: ExtractedField; kind: ContactFieldKind } => x.kind !== null);
+    // A contact block asks for at least two parts of one identity (a name and an address/e-mail…).
+    if (new Set(boxes.map((b) => b.kind)).size < 2) return 0;
+    // ONLY A DIALOG A CONTACT SECTION'S OPENER OPENED (Add New / Select from Account / Edit —
+    // noteContactClick, or the pass). Not a guess from the page's headings: a LOOK-UP dialog
+    // (Corvallis's Licensed Professional CCB search asks "Name of Business" too) is a search, and
+    // typing the company's full legal name into it narrows the search to nothing.
+    const role = this.openContactRole?.role ?? null;
+    if (!role) {
+      this.debug?.event({ type: "contact_identity_unknown", page: pageCount, why: "no contact section's opener opened this dialog (or its section names no identity) — left as filled" });
+      return 0;
+    }
+    const id = this.identityForRole(role);
+    const otherRole: ContactRole = role === "company" ? "owner" : "company";
+    const other = this.identityForRole(otherRole);
+    const who = role === "company" ? (/inspection contact/i.test(this.openContactRole?.heading ?? "") ? "inspection contact" : "applicant") : "owner";
+    const sameSelector = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+    let corrected = 0;
+    for (const { f, kind } of boxes) {
+      const want = this.identityValue(id, role, kind);
+      const otherValue = this.identityValue(other, otherRole, kind);
+      const key = contactKeyFor(role, kind);
+      const current = String((await this.currentControlValue(f)) ?? "");
+      const at = (() => { for (let i = steps.length - 1; i >= 0; i--) if (sameSelector(steps[i].selector, f.selector)) return i; return -1; })();
+      const recorded = at >= 0 ? steps[at] : null;
+      const boundTo = recorded?.field ? contactKeyRole(recorded.field) : null;
+      const misbound = !!boundTo && boundTo.role !== role;
+      if (!want) {
+        // This identity has no such part. Clear the box only when it holds the OTHER identity's
+        // value (a mix); an unrelated value is not ours to judge.
+        if (f.fieldType !== "select" && otherValue && this.sameContactValue(kind, current, otherValue)) {
+          const step = await this.applyFill(f, { value: "", field: undefined }, false);
+          if (step) {
+            step.note = `${f.label || kind} [${who}] (cleared: not this identity's)`;
+            if (recorded) steps[at] = step; else steps.push(step);
+            corrected++;
+            this.debug?.event({ type: "contact_identity_corrected", page: pageCount, role, box: String(f.label ?? "").slice(0, 40), was: "the other identity's value", now: "blank" });
+          }
+        }
+        continue;
+      }
+      if (this.sameContactValue(kind, current, want) && !misbound) {
+        // Right value. Bind the planner's own step to this identity's key, and mark whose it is.
+        if (recorded && key && (!recorded.field || recorded.field !== key) && !recorded.sensitive && contactKeyForRole(recorded.field ?? key, role) !== undefined) {
+          recorded.field = key;
+          delete recorded.value;
+        }
+        if (recorded && !/\[(?:applicant|owner|inspection contact)\]/.test(String(recorded.note ?? ""))) recorded.note = `${recorded.note ?? f.label ?? kind} [${who}]`;
+        continue;
+      }
+      const was = !current.trim() ? "blank"
+        : otherValue && this.sameContactValue(kind, current, otherValue) ? "the other identity's value"
+        : misbound ? `bound to ${recorded?.field}` : "another value";
+      const step = await this.applyFill(f, { value: want, field: key ?? undefined }, false);
+      if (!step) continue;
+      step.note = `${f.label || kind} [${who}]`;
+      if (recorded) steps[at] = step; else steps.push(step);
+      corrected++;
+      this.debug?.event({ type: "contact_identity_corrected", page: pageCount, role, box: String(f.label ?? "").slice(0, 40), was, now: key ?? "this identity's value" });
+    }
+    if (corrected) this.debug?.event({ type: "contact_dialog_one_identity", page: pageCount, role, corrected });
+    return corrected;
   }
 
   // ACA ATTACHMENT step. Accela stages attachments in a pending list that is only
@@ -4113,10 +4581,23 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // Row layout differs across ACA builds (table rows on some, divs on others), so work
     // from the CONTROLS themselves rather than a row structure. The document-Type select
     // is the section's signature: it is the only select whose options are document types
-    // ("Plans - Structural", "Plans - Electrical", …).
-    const typePrefs = isElectrical
-      ? [/plans?\s*[-–—]?\s*electrical/i, /electrical/i, /plans?\b/i]
-      : [/plans?\s*[-–—]?\s*structural/i, /structural/i, /plans?\b/i];
+    // ("Plans - Structural", "Plans - Electrical", …; Corvallis numbers them: "01 Plans").
+    // WHICH select and WHICH option are attachmentTypes.ts's answers — the same ones the replay
+    // reads (typeOptionsOf / pendingAttachmentRow / the owed rows), so the two cannot disagree.
+    // A private regex here missed Corvallis's "01 Plans" (live 2026-09-28): no Type was chosen, the
+    // Save was refused, and a person picked it by hand.
+    const discipline = isElectrical ? "electrical" : "structural";
+    // The document this page's row carries: this page's upload (the plan set in combined mode).
+    const rowDoc = (() => {
+      const docs: string[] = [];
+      for (let i = steps.length - 1; i >= 0; i--) {
+        const s = steps[i];
+        if (s.action === "goto" || (s.action === "click" && /^advance\b/i.test(String(s.note ?? "")))) break;
+        if (s.action === "upload" && s.docType) docs.push(String(s.docType));
+      }
+      return docs.find(isPlanSetDocType) ? "plan_set" : (docs[0] ?? "plan_set");
+    })();
+    const collapse = (t: string) => String(t ?? "").replace(/\s+/g, " ").trim();
     const readOptions = async (sel: { evaluate?: unknown }): Promise<Array<{ v: string; t: string }>> => {
       // Best-effort: a locator with no .evaluate (older runtime / stub page) throws
       // SYNCHRONOUSLY, which .catch() cannot absorb — and this pass must never abort a run.
@@ -4135,13 +4616,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     for (let i = 0; i < selCount; i++) {
       const sel = allSelects.nth(i);
       const opts = await readOptions(sel);
-      const isDocType = opts.some((o) => /plans?\s*[-–—]/i.test(o.t)) || opts.some((o) => /^(plans|calculations|photos?|forms?)\b/i.test(o.t));
-      if (!isDocType) continue;
+      if (!isDocumentTypeList(opts.map((o) => o.t))) continue;
       sawTypeSelect = true;
       const current = String((await sel.inputValue().catch(() => "")) ?? "").trim();
       if (current) continue;
-      let pick: { v: string; t: string } | undefined;
-      for (const re of typePrefs) { pick = opts.find((o) => o.v && re.test(o.t)); if (pick) break; }
+      // The option's TEXT is the answer; its VALUE is what selectOption takes (Corvallis:
+      // "ACA USERS - DS BLD RES::01 Plans" for "01 Plans").
+      const want = attachmentTypeFor(rowDoc, opts.map((o) => o.t), { discipline });
+      const pick = want ? opts.find((o) => o.v && collapse(o.t) === want) : undefined;
       if (!pick) continue; // no sensible option — leave it for the human rather than guess
       if (await sel.selectOption(pick.v).then(() => true).catch(() => false)) {
         typeSet++;
@@ -4473,6 +4955,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // Record-type CATEGORY expansions used this run (ACA CapType tree). Two is enough for
     // Residential then Trades; more means the tree is not the blocker.
     const ACA_TYPE_EXPANSION_MAX = 2;
+    // Contact pages per run the deterministic pass may take (Step 2 Applicant, Step 4 Inspection
+    // Contact, one spare): bounded, and a section already opened is never re-opened.
+    const ACA_CONTACT_PASS_MAX = 3;
     let acaTypeExpansions = 0;
     let acaContactDialogPasses = 0;
     let acaAttachmentSaves = 0;
@@ -4565,7 +5050,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // exactly what the bot saw and what it changed without re-running blind. Best-effort only;
     // PNGs alone can be disabled with AUTOLEARN_DEBUG_SCREENSHOTS=0 (sidecars still written).
     const saveDebugShot = async (label: string) => {
-      await this.debug?.screenshot(this.page, label);
+      // Bundle PNGs mask a known secret too (the trace stays the documented raw render).
+      // Fails closed like the others: a secret typed and no mask buildable = no PNG this time.
+      if (this.debug && this.page && typeof this.page.screenshot === "function") {
+        await this.withSecretMask("bundle screenshot", (mask) => this.debug!.screenshot(this.page, label, { mask }));
+      }
       // And keep the page's own markup, blanked of the operator's data — this is what the
       // offline portal replica is built from (see learnDebug.capturePageHtml).
       await this.debug?.capturePageHtml(this.page, label);
@@ -4678,7 +5167,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         url = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
         try { visitedPaths.add(new URL(url).pathname.toLowerCase()); } catch { /* non-URL (test fakes) */ }
         const rawBody = await this.page.locator("body").innerText().catch(() => "");
-        bodyText = (redactStatusText(String(rawBody)) ?? "").slice(0, 2000);
+        // The planner's page text: every secret this run knows scrubbed first (a page that echoes
+        // an account typed earlier), then the long-digit-run mask.
+        bodyText = (redactStatusText(this.scrubSecrets(String(rawBody))) ?? "").slice(0, 2000);
       } catch (err) {
         return fail(steps, this.portalName, `Failed to scrape page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`, null, pageCount, portalNotices);
       }
@@ -4750,7 +5241,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         (/CapApplyDisclaimer/i.test(url) && acaDisclaimerPasses < 3) ||
         (!workLocationHandled && (/WorkLocation/i.test(url) || /enter work site location/i.test(bodyText))) ||
         (!acaRecordTypeHandled && this.acaRecordTypePageDetected(fields)) ||
-        (acaContactDialogPasses < 1 && this.acaContactPageDetected(fields, bodyText))
+        (acaContactDialogPasses < ACA_CONTACT_PASS_MAX && this.acaContactPageDetected(fields, bodyText))
       );
 
       // a0) STUCK / CYCLE GUARD with SELF-RECOVERY. Two failure shapes:
@@ -4913,34 +5404,89 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           this.debug?.event({ type: "work_location_pass", page: pageCount, advanced });
           if (advanced) continue; // next iteration re-extracts the page the Continue landed on
         }
-        // CONTACT step (CapEdit): "Add New" + fill the contractor identity (operator's
-        // guidance — the account has many pre-existing contacts). Appears once per
-        // contact section (Applicant, Site Contact), so allow a few.
-        if (acaContactDialogPasses < 1 && this.acaContactPageDetected(fields, bodyText)) {
+        // CONTACT step (CapEdit): "Add New" + fill each contact SECTION with the identity its
+        // HEADING names (operator's guidance — the account has many pre-existing contacts, so
+        // never pick from it). Runs on every contact page (Step 2 Applicant, Step 4 Inspection
+        // Contact), bounded; a section already filled this run is never re-opened.
+        if (acaContactDialogPasses < ACA_CONTACT_PASS_MAX && this.acaContactPageDetected(fields, bodyText)) {
           acaContactDialogPasses++;
-          // BOTH sections in ONE visit, then advance off the page ourselves. Handing the
+          // EVERY section in ONE visit, then advance off the page ourselves. Handing the
           // page back to the planner between sections let it re-open the contact we had
           // just filled and overwrite the applicant's NAME with the homeowner's, leaving
           // the contractor address underneath — a mixed contact on the review screen
           // (live Coos Bay). Owning the whole step closes that window.
           let anyFilled = false;
-          const usedAddNew: string[] = [];
-          // BOTH sections: Site Contact is a REQUIRED section, so the wizard cannot advance
-          // until it is filled (live: with only the applicant filled, Continue Application
-          // did nothing and the page came back to the planner, which then overwrote the
-          // applicant). Applicant = filing contractor, Site Contact = property owner.
-          for (const sectionIndex of [0, 1]) {
-            const idn = this.identityForSection(sectionIndex);
-            if (!idn.lastName && !idn.email) continue;
-            const res = await this.accelaAddContactPass(steps, sectionIndex, usedAddNew);
-            this.debug?.event({ type: "aca_contact_add_pass", page: pageCount, section: sectionIndex, advanced: res.ok, control: res.usedId });
+          // Whether this visit DID anything (recorded a step). A revisit that finds every section
+          // already settled falls straight through to the planner instead of burning a page.
+          const stepsAtStart = steps.length;
+          // Whether every section on this page is the pass's to settle. A look-up section (Corvallis
+          // Step 4's Licensed Professional: a CCB look-up, no Add New) or a section the pass could
+          // not fill is NOT — then "Continue Application" is left for after the planner's turn,
+          // because clicking it now only earns "This section is required".
+          let allHandled = true;
+          // Real control ids opened on EARLIER pages this run stay used; positional stand-ins
+          // (idx:N, a stub page) are per visit.
+          const usedAddNew = [...this.acaUsedAddNew];
+          // WHICH SECTION IS WHOSE — BY HEADING, never position (shared contactRoles
+          // .planContactSections). A page whose headings cannot be read falls back to the old
+          // positional order (section 0 = applicant = contractor, section 1 = site contact = owner).
+          const sections = await this.acaContactSectionsOnPage();
+          const planned = sections && sections.length
+            ? planContactSections(sections.map((s) => ({ heading: s.heading, text: s.instruction, canAdd: s.hasAddNew || s.hasEdit })), { track: "permit" })
+            : null;
+          this.debug?.event({
+            type: "aca_contact_sections", page: pageCount,
+            sections: planned ? planned.map((p) => ({ heading: p.heading.slice(0, 40), role: p.role, why: p.why })) : "positional (no section heading readable)",
+          });
+          type SectionTarget = { role: ContactRole; heading: string; addNewId: string; editId: string; selectId: string; sectionKey: number; holds: string };
+          const targets: Array<number | SectionTarget> = planned && sections
+            ? planned.filter((p) => p.role).map((p) => {
+              const s = sections[p.index];
+              return { role: p.role as ContactRole, heading: s.heading, addNewId: s.addNewId, editId: s.editId, selectId: s.selectId, sectionKey: s.key, holds: s.hasEdit ? s.text : "" };
+            })
+            : [0, 1];
+          if (planned && sections) {
+            for (const p of planned) {
+              if (p.role) continue;
+              const s = sections[p.index];
+              // LEFT EMPTY ON PURPOSE (an optional / repeated section): the planner may not open it
+              // either — the building learn left Corvallis's optional Inspection Contact empty.
+              if (/optional|repeat/.test(p.why)) for (const cid of [s.addNewId, s.selectId]) { if (cid) this.acaEmptySectionControls.add(cid); }
+              else if (/look-up/.test(p.why)) allHandled = false;
+            }
+          }
+          for (const target of targets) {
+            const role: ContactRole = typeof target === "number" ? (target === 0 ? "company" : "owner") : target.role;
+            const idn = this.identityForRole(role);
+            if (!idn.lastName && !idn.email && !idn.fullName) { if (typeof target !== "number") allHandled = false; continue; }
+            // A section this run already opened is never re-opened (its own Add New id).
+            if (typeof target !== "number" && target.addNewId && usedAddNew.includes(target.addNewId)) continue;
+            const res = await this.accelaAddContactPass(steps, target, usedAddNew);
+            this.debug?.event({ type: "aca_contact_add_pass", page: pageCount, section: typeof target === "number" ? target : target.heading.slice(0, 40), role, advanced: res.ok, control: res.usedId });
             if (res.usedId) usedAddNew.push(res.usedId);
-            if (res.ok) { anyFilled = true; if (sectionIndex === 0) this.acaApplicantFilled = true; }
+            if (res.usedId && !/^(idx|sec):/.test(res.usedId)) this.acaUsedAddNew.push(res.usedId);
+            if (res.ok) {
+              anyFilled = true;
+              if (role === "company") this.acaApplicantFilled = true;
+              if (typeof target !== "number") {
+                for (const cid of [target.addNewId, target.editId, target.selectId, res.usedId]) if (cid && !/^(idx|sec):/.test(cid)) this.acaFilledSectionControls.add(cid);
+                if (target.heading) this.acaFilledSectionHeadings.add(target.heading.toLowerCase());
+              }
+            } else if (typeof target !== "number") {
+              allHandled = false;
+            }
             // Close the saved dialog before the next section — an overlay that is still up
             // swallows the next Add New click.
             await this.closeAcaDialog();
           }
-          if (anyFilled) {
+          this.openContactRole = null;
+          if (anyFilled && !allHandled && steps.length > stepsAtStart) {
+            // The planner takes the rest of this page (the look-up); the sections the pass filled
+            // are refused to it (acaFilledSectionControls), the optional ones too.
+            this.debug?.event({ type: "aca_contacts_left_to_planner", page: pageCount, why: "a section on this page is not the pass's to fill (a look-up, or one it could not fill)" });
+            continue;
+          }
+          if (anyFilled && (allHandled || steps.length > stepsAtStart)) {
             // CLEAR THE LINGERING MODAL FIRST. ACA leaves the saved dialog's iframe in the
             // DOM and its overlay swallows the next click — that is how the Continue below
             // silently missed, handing the page back to the planner mid-modal to overwrite
@@ -5189,7 +5735,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const visibleIdx = fields.map((_f, i) => i).filter((i) => !signatureFieldIdx.has(i));
       const plannerFields = visibleIdx.length === fields.length ? fields : visibleIdx.map((i) => fields[i]);
       try {
-        plan = await this.planner({ url, pageTitle, fields: plannerFields, bodyText, alreadyFilledLabels, isDashboard, recoveryHint: recoveryHint || undefined, screenshotBase64: planShot });
+        plan = await this.askPlanner({ url, pageTitle, fields: plannerFields, bodyText, alreadyFilledLabels, isDashboard, recoveryHint: recoveryHint || undefined, screenshotBase64: planShot });
       } catch (err) {
         this.debug?.event({ type: "planner_error", page: pageCount, message: err instanceof Error ? err.message : String(err) });
         return fail(steps, this.portalName, `Planner failed on page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`, null, pageCount, portalNotices);
@@ -5355,11 +5901,27 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // WHAT DID THE PORTAL SAY? Read it here, on every page, before deciding anything —
         // this is the only place that sees a page which advanced INTO an error.
         {
-          const notices = await collectPortalNoticesFrom(this.page);
+          // Scrubbed before they are kept: a portal repeats a typed account back ("Account number …
+          // could not be found"), and these leave the process (result.portalNotices, messages).
+          const notices = (await collectPortalNoticesFrom(this.page)).map((n) => this.scrubSecrets(n));
           const fresh = notices.filter((n) => !portalNotices.includes(n));
           if (fresh.length) {
             for (const n of fresh) portalNotices.push(n);
             this.debug?.event({ type: "portal_notice", page: pageCount, notices: fresh.slice(0, 5) });
+          }
+          // THE PORTAL SAYS THIS ADDRESS IS NOT SERVED HERE (portal-truth D5; Corvallis on Oregon
+          // ePermitting: "No Building services were returned for this address", after which the walk
+          // recorded four more pages). The one predicate (shared portalNotServed), asked of the notices
+          // and of the page's VISIBLE text: stop now, named, with the portal's own words — nothing
+          // more is learned on a portal that does not take this address.
+          const said = portalSaysNotServed(notices.join(" \n ")) ?? portalSaysNotServed(await visibleBodyText(this.page));
+          if (said) {
+            this.debug?.event({ type: "not_served", page: pageCount, quote: said.slice(0, 200) });
+            return {
+              ...fail(steps, this.portalName, `Stopped: ${hostPath.split("/")[0] || "the portal"} says this address is not served there — "${said}". This is not where this job's permit is filed; nothing learned here is kept for it.`, null, pageCount, portalNotices),
+              notServed: said,
+              stopReason: "not_served",
+            };
           }
         }
 
@@ -5554,11 +6116,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // the planner clicked a "Select" and replaced them with the county's electrical-only
           // list. The grid belongs to the chooser; the planner never re-picks it.
           this.debug?.event({ type: "address_reselect_refused", page: pageCount, label: (navField.label || "").slice(0, 40) });
-        } else if (navField && this.acaApplicantFilled && CONTACT_CONTROL.test(navField.label || "")) {
-          // The applicant contact is already filled with the FILING CONTRACTOR's identity.
-          // Re-opening that section is how the planner overwrote it with the homeowner's
+        } else if (navField && this.contactReopenRefused(navField)) {
+          // A contact section the pass settled (filled with its identity, or left empty on
+          // purpose). Re-opening a filled one is how the planner overwrote it with the homeowner's
           // details (live Coos Bay), so refuse the click and let the advance path move on.
-          this.debug?.event({ type: "contact_reopen_refused", label: (navField.label || "").slice(0, 60) });
+          this.debug?.event({ type: "contact_reopen_refused", label: (navField.label || "").slice(0, 60), why: this.contactReopenRefused(navField) });
         } else if (navField && (isDashboard ? this.isOffLimitsDashboardTarget(navField) : this.isOffLimitsButton(navField))) {
           // The planner picked a control that reaches into the operator's existing records
           // (or, on a dashboard, anything that isn't starting a new application). Refuse and
@@ -5582,6 +6144,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           });
           navCount++;
           if (navLoopKey) this.navClicksByPath.add(navLoopKey);
+          // A contact section's opener tells the dialog guard whose dialog opens next.
+          this.noteContactClick(navField, url);
           steps.push({
             action: "click",
             phase: "open",
@@ -5926,6 +6490,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             sensitive,
             required: !!field.required,
             group: field.group,
+            secretBinding: this.typedSecretBinding(step),
           });
         }
       }
@@ -5961,6 +6526,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             expected: "",
             sensitive: true,
             required: !!field.required,
+            secretBinding: this.typedSecretBinding(step),
           });
         }
       }
@@ -5992,6 +6558,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const MAX_RESCAN_PASSES = 7;
         let computedThisPage = false;
         let lateEquipTried = false;
+        let lastRevealSig = "";
         for (let rescanPass = 0; rescanPass < MAX_RESCAN_PASSES; rescanPass++) {
           let revealedThisPass = 0;
           try {
@@ -6026,6 +6593,24 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                 !alreadyFilledLabels.includes(f.label) &&
                 !inFilledGroup(f),
             );
+            // WHAT THE FILLS REVEALED, NAMED (labels only). newFillable above is "not filled yet",
+            // which includes every optional box that was there from the start; the operator's
+            // question after a live miss (PGE 2026-09-28, the account/meter boxes a choice
+            // revealed) is which controls APPEARED. Identity = section + label + type against the
+            // page's entry scrape. Diagnostic only — it changes nothing that is planned or filled.
+            {
+              const idOf = (f: ExtractedField): string => `${String(f.section ?? "").trim()}\u0000${String(f.label ?? "").trim()}\u0000${f.fieldType}`;
+              const atEntry = new Set(fields.map(idOf));
+              const appeared = postFields.filter((f) => f.label && f.fieldType !== "button" && !atEntry.has(idOf(f)));
+              const sig = appeared.map(idOf).join("\u0001");
+              if (appeared.length && sig !== lastRevealSig) {
+                lastRevealSig = sig;
+                this.debug?.event({
+                  type: "revealed_controls", page: pageCount, pass: rescanPass + 1,
+                  labels: appeared.slice(0, 12).map((f) => `${(f.label || "").slice(0, 60)}${f.required ? " *" : ""}`),
+                });
+              }
+            }
             if (newFillable.length === 0) {
               // A cascade can reveal a SECOND section reusing bare labels the first
               // section already "filled" ("Manufacturer"/"Model") — those are invisible
@@ -6052,7 +6637,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             let postBodyText = bodyText;
             try {
               const rawBody2 = await this.page.evaluate(() => (document.body?.innerText ?? "")).catch(() => "");
-              postBodyText = (redactStatusText(String(rawBody2)) ?? "").slice(0, 2000);
+              postBodyText = (redactStatusText(this.scrubSecrets(String(rawBody2))) ?? "").slice(0, 2000);
             } catch { /* keep the original snippet */ }
 
             // Ask the planner to fill the newly-visible NON-sensitive fields. Pass the full
@@ -6060,7 +6645,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             // skip fields already handled this page.
             let postPlan: LearnPlanResponse = { fills: [], atReview: false };
             try {
-              postPlan = await this.planner({
+              postPlan = await this.askPlanner({
                 url,
                 pageTitle,
                 fields: postFields,
@@ -6125,6 +6710,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                   expected: "",
                   sensitive: true,
                   required: !!nf.required,
+                  secretBinding: this.typedSecretBinding(step),
                 });
               }
             }
@@ -6183,6 +6769,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           pageFillCount++;
           appliedThisPage.push(ps.applied);
         }
+        // d3c) BATTERY-DECLARATION PASS — the storage question answered from project data when
+        //      the planner left it at its placeholder (see applyBatteryDeclaration). Before the
+        //      required sweep (d4b), so an answered question is not swept as a miss.
+        for (const bd of await this.applyBatteryDeclaration(alreadyFilledLabels)) {
+          steps.push(bd.step);
+          pageFillCount++;
+          appliedThisPage.push(bd.applied);
+        }
       }
 
       // d1) PERSIST SETTLE (ADAPTIVE). Portals like PowerClerk autosave each page's fields via
@@ -6199,7 +6793,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           }
         };
         await settleNetwork(8000);
-        await this.waitForAutosaveIndicator(4000);
+        if (plan.atReview) {
+          // AT REVIEW THE PORTAL'S SAVE OF THESE ANSWERS MUST BE LET THROUGH, NOT OUTWAITED (dryrun-0928
+          // B3): PowerClerk batches the last page's answers into one save ~5 s after the first change,
+          // after every per-write window has closed, and the review lockdown aborted it. The drain
+          // keeps the run's own same-origin save open while the page reads "Saving…".
+          const d = await drainOwnWrites(this.page, { why: "learner answers on the review page" });
+          if (d.stillSaving) this.reviewUnsavedWarning = unsavedAtReviewWarning("the review page");
+        } else {
+          await this.waitForAutosaveIndicator(4000);
+        }
         const settleMs = Number(process.env.AUTOLEARN_SAVE_SETTLE_MS) || 800;
         await sleep(settleMs);
 
@@ -6308,9 +6911,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
               // The completion page is the receipt: it carries the number the portal just
               // issued, and it is the only place that number appears before the record list
               // catches up. Grab it while we are standing on it.
-              this.finalSubmitPageText = String(
+              this.finalSubmitPageText = this.scrubSecrets(String(
                 (await this.page!.locator("body").innerText().catch(() => "")) ?? "",
-              ).replace(/\s+/g, " ").trim().slice(0, 4000);
+              ).replace(/\s+/g, " ").trim()).slice(0, 4000);
               this.finalSubmitUrl = (() => { try { return String(this.page!.url?.() ?? ""); } catch { return ""; } })();
               this.debug?.event({ type: "final_submit_done", url: this.finalSubmitUrl.slice(0, 120) });
             } else {
@@ -6332,6 +6935,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // re-applies whatever is lost.
         await this.verifyFillsLanded(appliedThisPage, { budgetMs: 25_000, requiredOnly: true }).catch(() => [] as string[]);
         reachedReview = true;
+        // ...AND THE PORTAL HAS SAVED IT (B3): the re-apply above may have written again, and the lock
+        // below aborts everything, own writes included — so the run's own pending save drains first.
+        {
+          const d = await drainOwnWrites(this.page, { why: "learner answers on the review page" });
+          this.reviewUnsavedWarning = d.drained && d.stillSaving ? unsavedAtReviewWarning("the review page") : (d.drained ? "" : this.reviewUnsavedWarning);
+        }
         // THE REVIEW-PAGE LOCKDOWN (filingBackstop.ts): the learn's last write is done; nothing
         // legitimate posts from here until the page is handed to a person.
         backstopFor(this.page)?.lockReview("learner at review");
@@ -6362,6 +6971,18 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             // nothing. Looping is bounded already — the repeat-page stop, the recovery cap
             // and the page budget all still apply.
             this.debug?.event({ type: "dead_advance_replan", page: pageCount, label });
+            continue;
+          }
+        }
+        // A CONTACT SECTION THE PASS SETTLED is not re-opened through the advance door either
+        // (the planner used "Add New" / "Select from Account" as its advance on Corvallis) —
+        // the same scoped rule as the navigate door.
+        {
+          const why = this.contactReopenRefused(advanceField);
+          if (why) {
+            this.debug?.event({ type: "contact_reopen_refused", label: String(advanceField.label ?? "").slice(0, 60), why, door: "advance" });
+            pendingHint = `"${String(advanceField.label ?? "").slice(0, 40)}" re-opens a contact section that is already settled (${why}). Do not open it — continue the application with the page's own Continue.`;
+            if (await this.clickFallbackAdvance(steps, fields)) continue;
             continue;
           }
         }
@@ -6409,6 +7030,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           await this.waitForAutosaveIndicator(3000);
           await sleep(400);
         }
+        // ONE CONTACT, ONE IDENTITY: the advance is a DIALOG's own Continue — every name /
+        // business / address / e-mail / phone box in that dialog is made the section's identity
+        // before the portal saves it (enforceContactDialogIdentity; live Corvallis 2026-09-28).
+        if (advanceField.selector?.frame) {
+          const fixed = await this.enforceContactDialogIdentity(fields, steps, pageCount, url, advanceField.selector.frame).catch(() => 0);
+          if (fixed) await sleep(300);
+        }
+        // Whose dialog the next page opens (a section opener), or none (a main-page advance).
+        this.noteContactClick(advanceField, url);
         // Record the advance click, then perform it.
         steps.push({
           action: "click",
@@ -6511,8 +7141,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             const blockers = await this.collectValidationErrors();
             if (blockers.length > 0) {
               this.debug?.event({ type: "validation_blocked", page: pageCount, errors: blockers.slice(0, 10) });
+              // Raw here on purpose: its one reader is the recovery hint, which reaches the planner
+              // only through askPlanner (the scrub door). validationBlocks LEAVES the process
+              // (result → backend verification.issues + trust-gate blockers), so it is kept scrubbed
+              // — a portal repeats a typed account back in its error.
               lastValidationErrors = blockers;
-              for (const b of blockers) if (!validationBlocks.includes(b)) validationBlocks.push(b);
+              for (const raw of blockers) {
+                const b = this.scrubSecrets(raw);
+                if (!validationBlocks.includes(b)) validationBlocks.push(b);
+              }
               // Remove the advance step we just recorded — it didn't actually work.
               if (steps.length && steps[steps.length - 1].note?.startsWith("advance:")) steps.pop();
             }
@@ -6676,11 +7313,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const noticeWarning = portalNotices.length > 0
       ? ` 📣 The portal reported: ${portalNotices.slice(0, 5).join(" | ")}`
       : "";
+    // Its own channel, not verifyWarning: a secret box left blank for want of a value on file is
+    // a person's job at review (and the recipe's binding fills it on replay), not a recipe fault.
+    const boundBlank = this.secretsLeftBlank.filter((s) => s.bound).map((s) => s.label);
+    const unboundBlank = this.secretsLeftBlank.filter((s) => !s.bound).map((s) => s.label);
+    const secretWarning =
+      (boundBlank.length
+        ? ` 🔒 Left blank for you — no value on file for: ${boundBlank.slice(0, 6).join(", ")}. Type it at review before submit (the recipe binds it by name, so a replay fills it once the project carries it).`
+        : "")
+      + (unboundBlank.length
+        ? ` 🔒 Left blank for you — required, and no binding a replay can resolve: ${unboundBlank.slice(0, 6).join(", ")}. A person types it on every filing until a project field exists for it.`
+        : "");
     const message = reachedReview
-      ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.${validationWarning}${docsWarning}${verifyWarning}${noticeWarning}${choiceWarning}`
+      ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.${validationWarning}${docsWarning}${verifyWarning}${secretWarning}${noticeWarning}${choiceWarning}`
       : filledSomething
-        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}${noticeWarning}${choiceWarning}`
-        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}${noticeWarning}${choiceWarning}`;
+        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}${secretWarning}${noticeWarning}${choiceWarning}`
+        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}${secretWarning}${noticeWarning}${choiceWarning}`;
 
     // Capture the review page screenshot when we've reached the review screen. fullPage:true so
     // the vision verifier sees the WHOLE review — a viewport-only shot would let an off-screen
@@ -6694,8 +7342,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         if (typeof this.page.waitForLoadState === "function") {
           await this.page.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => {});
         }
-        const buf = await this.page.screenshot({ type: "png", fullPage: true });
-        reviewScreenshotBase64 = buf.toString("base64");
+        // Sent to the vision verifier (a model) and saved to data/screenshots: every secret the run
+        // knows is masked, or no picture is sent (withSecretMask fails closed after a typed secret).
+        const buf = await this.withSecretMask("review screenshot", (mask) =>
+          this.page!.screenshot({ type: "png", fullPage: true, ...(mask ? { mask } : {}) }));
+        if (!buf) break;
+        reviewScreenshotBase64 = Buffer.from(buf as Buffer).toString("base64");
       } catch (err) {
         if (attempt === 1) {
           console.error(`[auto-learn] ${this.portalName}: review screenshot capture failed — ${(err as Error)?.message || err}`);
@@ -6726,6 +7378,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       missingRequiredDocs,
       validationBlocks,
       portalNotices: portalNotices.length ? portalNotices.slice(0, 5) : undefined,
+      secretsLeftBlank: this.secretsLeftBlank.length ? this.secretsLeftBlank.map((s) => s.label) : undefined,
     };
   }
 
@@ -6846,12 +7499,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
    * "Select..." placeholder), so a portal that already carries an answer is left alone.
    */
   private async applyPolicySelect(
-    policy: { question: RegExp; answer: "Yes" | "No" },
+    // `kind` names the pass in the recorded note ("policy default" unless told otherwise): replay
+    // reads a "policy default:" note as a conditional question it may skip when not asked, so a
+    // pass answering PROJECT DATA (the battery declaration) records under its own name.
+    policy: { question: RegExp; answer: "Yes" | "No"; enforce?: boolean; kind?: string },
     alreadyFilledLabels: string[],
   ): Promise<{ step: RecipeStep; applied: AppliedFill } | null> {
     if (!this.page || typeof this.page.evaluate !== "function") return null;
     const found = await this.page.evaluate(
-      (args: { qSource: string; answer: string }) => {
+      (args: { qSource: string; answer: string; enforce: boolean }) => {
         const norm = (s: string | null | undefined) => (s || "").trim().replace(/\s+/g, " ");
         const question = new RegExp(args.qSource, "i");
         const wanted = args.answer.trim().toLowerCase();
@@ -6864,19 +7520,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           if (!question.test(own) && !question.test(norm(grp?.textContent || ""))) continue;
           const current = norm(sel.options[sel.selectedIndex]?.textContent || "");
           const placeholder = !current || /^(please\s+)?select\.{0,3}$/i.test(current);
-          if (!placeholder) return { answered: true as const };
+          // ENFORCE (as on the radio path): a planner's other pick is corrected to the policy answer
+          // (the Corvallis drone-consent select was left at "No"); a matching value is answered.
+          if (!placeholder && (!args.enforce || current.toLowerCase() === wanted)) return { answered: true as const };
           const match = Array.from(sel.options).find((o) => norm(o.textContent).toLowerCase() === wanted);
           if (!match || !id) return null;
           return { id, optionText: norm(match.textContent), label: own || norm(grp?.textContent || "").slice(0, 80) };
         }
         return null;
       },
-      { qSource: policy.question.source, answer: policy.answer },
+      { qSource: policy.question.source, answer: policy.answer, enforce: !!policy.enforce },
     ).catch(() => null) as { answered?: true; id?: string; optionText?: string; label?: string } | null;
 
     if (!found || found.answered || !found.id || !found.optionText) return null;
     const groupLabel = (found.label || `policy:${policy.answer}`).slice(0, 80);
-    if (alreadyFilledLabels.includes(groupLabel)) return null;
+    // An enforced policy corrects a control the planner already filled this page.
+    if (!policy.enforce && alreadyFilledLabels.includes(groupLabel)) return null;
     const selector: RecipeSelector = { css: `#${found.id}` };
     const loc = await this.locator(selector);
     if (!loc) return null;
@@ -6893,7 +7552,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         phase: "fill",
         selector,
         value: found.optionText,
-        note: `policy default: ${groupLabel} → ${policy.answer}`,
+        note: `${policy.kind ?? "policy default"}: ${groupLabel} → ${policy.answer}`,
       },
       applied: {
         selector,
@@ -6904,6 +7563,33 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         required: true,
       },
     };
+  }
+
+  /** THE STORAGE QUESTION IS PROJECT DATA, ANSWERED WHETHER OR NOT THE PLANNER GOT TO IT.
+   *
+   *  The fill-pass guard (applyFillInner) corrects a planner's answer to the declaration; this
+   *  answers it when the planner offered nothing — a required "Energy Storage" [Select…, Yes, No]
+   *  left at its placeholder is the PGE required miss by another route. Same mechanics as a
+   *  policy select (unanswered or contradicting → the answer; enforce, because a planner's other
+   *  pick is exactly what the project data overrules), recorded under its own name so replay
+   *  treats it as the declaration it is, not as a skippable policy question. Only when the
+   *  project SAYS (hasBattery true/false) — silence stays the planner's. Native, labelled
+   *  <select>s only. The question regex is anchored to the WHOLE label (a section titled
+   *  "Energy Storage" holds the specs and their Yes/No siblings too, and the policy walk also
+   *  reads section text — batteryQuestion.dom.smoke pins that the first Yes/No select in such a
+   *  section is never taken). A radio group whose options are the bare "Yes"/"No" carries the
+   *  question in its group text, not on the option, and an input-backed widget is not a
+   *  <select> — neither is read here (named gap); the planner's fill through applyFillInner
+   *  covers those. */
+  private async applyBatteryDeclaration(alreadyFilledLabels: string[]): Promise<Array<{ step: RecipeStep; applied: AppliedFill }>> {
+    if (this.hasBattery === undefined) return [];
+    const picked = await this.applyPolicySelect(
+      { question: BATTERY_DECLARATION_QUESTION, answer: this.hasBattery ? "Yes" : "No", enforce: true, kind: "battery declaration" },
+      alreadyFilledLabels,
+    ).catch(() => null);
+    if (!picked) return [];
+    this.debug?.event({ type: "battery_declaration_answered", label: picked.applied.label.slice(0, 70), answer: picked.applied.expected, planner: "none" });
+    return [picked];
   }
 
   // A DISAMBIGUATION GRID IS A CHOICE ABOUT WHOSE PROPERTY WE ARE FILING ON.
@@ -7064,24 +7750,27 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     }).catch(() => [] as Array<{ key: string; heading: string; label: string }>);
 
     let filled = 0;
+    // WHOSE SECTION: the ONE predicate (shared contactRoles.contactSectionRole) the contact pass,
+    // the dialog guard and the replay binder ask. Customer / account holder and property owner
+    // are the homeowner's; installer / contractor the filing company's; "Applicant" is the
+    // customer on a utility interconnection and the filing COMPANY on a permit filing (the
+    // operator's Accela recipes). A bare "site …" heading keeps its old reading (the owner's).
+    const track = this.contactTrackFor(typeof this.page.url === "function" ? String(this.page.url() ?? "") : "");
     for (const t of (Array.isArray(targets) ? targets : [])) {
       if (!t || typeof t.key !== "string") continue;
       const h = String(t.heading || "");
-      // Customer / account holder and property owner are both the homeowner's address on a
-      // residential job; installer is the filing contractor. An unrecognised heading is left
-      // alone — a wrong email on an interconnection is worse than a blank one a human fills.
-      const value = /installer|contractor/i.test(h) ? installer
-        : /customer|property owner|applicant|generation system owner|site/i.test(h) ? owner
-        : "";
+      const role: ContactRole | null = contactSectionRole(h, { track }) ?? (/\bsite\b/i.test(h) ? "owner" : null);
+      // An unrecognised heading is left alone — a wrong email on an interconnection is worse
+      // than a blank one a human fills.
+      const value = role === "company" ? installer : role === "owner" ? owner : "";
       if (!value) {
         // Say WHICH absence this is: a recognised section whose identity carries no email is
         // a data gap upstream, not a heading-matching miss — the first live skip event
         // blamed the heading and sent the diagnosis the wrong way.
-        const recognised = /installer|contractor|customer|property owner|applicant|generation system owner|site/i.test(h);
         this.debug?.event({
           type: "section_email_skipped",
           heading: h.slice(0, 60),
-          why: !h ? "no section heading found" : recognised ? "identity carries no email for this section" : "heading not recognised",
+          why: !h ? "no section heading found" : role ? "identity carries no email for this section" : "heading not recognised",
         });
         continue;
       }
@@ -7091,13 +7780,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       await this.page.locator(css).first().blur?.().catch(() => null);
       filled++;
       alreadyFilledLabels.push(t.label);
-      this.debug?.event({ type: "section_email_filled", heading: h.slice(0, 60), role: /installer|contractor/i.test(h) ? "installer" : "owner" });
+      this.debug?.event({ type: "section_email_filled", heading: h.slice(0, 60), role: role === "company" ? "installer" : "owner" });
       steps.push({
         action: "fill",
         phase: "fill",
         selector: { css, fallbacks: [{ role: "textbox", name: t.label }] },
         // BOUND, never literal: recipes are shared, so a replay must use ITS project's email.
-        field: /installer|contractor/i.test(h) ? "installerEmail" : "homeownerEmail",
+        field: role === "company" ? "installerEmail" : "homeownerEmail",
         note: `section email: ${h.slice(0, 40) || "contact"}`,
       });
     }
@@ -7171,9 +7860,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // Policy answers are DOMAIN policy (standard residential NEM), not universal truths —
     // never force them on a portal the caller didn't opt into (AHJ/permit portals,
     // non-standard projects). The planner + project data answer instead.
-    if (this.policyProfile !== "residential_nem") return out;
+    if (this.policyProfile === "none") return out;
     if (!this.page || typeof this.page.evaluate !== "function") return out;
-    for (const policy of POLICY_RADIO_DEFAULTS) {
+    const wantScope = this.policyProfile === "permit_standard" ? "permit" : "nem";
+    for (const policy of POLICY_RADIO_DEFAULTS.filter((p) => (p.scope ?? "nem") === wantScope)) {
       try {
         const target = await this.page.evaluate(
           (args: { qSource: string; answer: string; enforce: boolean }) => {
@@ -7363,6 +8053,166 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     } catch { return "not-segmented"; }
   }
 
+  // ---------------------------------------------------------------------------
+  // SECRETS BY NAME (hard rule 2). A recorded step for an account/meter box carries no literal,
+  // only its binding; the replay types fieldValues[binding] (applyFormatHint'd to the label's
+  // printed format). The learn types the SAME value from the SAME project fields, at fill time,
+  // so a learn completes the page a replay would. The value is never a planner input, never a
+  // step's literal, never an event; every text and picture that leaves the process afterwards
+  // is scrubbed or masked of it.
+  // ---------------------------------------------------------------------------
+
+  /** What a step bound to `binding` types for this project — "" for anything but an identifier
+   *  binding, or when the project has no value on file. */
+  private secretFillValue(binding: string | undefined, label: string): string {
+    if (!binding || !IDENTIFIER_FIELDS.has(binding)) return "";
+    const raw = String(this.secretSource[binding] ?? "").trim();
+    return raw ? applyFormatHint(raw, label) : "";
+  }
+
+  /** The binding a recorded step TYPED a secret for (undefined when it typed none). */
+  private typedSecretBinding(step: RecipeStep | null | undefined): string | undefined {
+    const b = step?.sensitive ? String(step.field ?? "") : "";
+    return b && IDENTIFIER_FIELDS.has(b) && String(this.secretSource[b] ?? "").trim() ? b : undefined;
+  }
+
+  /** Every secret the run knows of: the project's own values plus the formatted forms it typed. */
+  private knownSecrets(): string[] {
+    const out = new Set<string>(this.typedSecrets);
+    for (const v of Object.values(this.secretSource)) if (v && v.trim()) out.add(v.trim());
+    return Array.from(out);
+  }
+
+  /** Text leaving the process (a planner prompt, the review verifier, the debug bundle) never
+   *  carries a secret the run knows: the ONE scrub (shared redactSecretValues), keeping a last-4 the
+   *  way redactStatusText already does for long digit runs — the review check (B8) reads a last-4. */
+  private scrubSecrets(text: string, secrets: string[] = this.knownSecrets()): string {
+    if (!secrets.length || !text) return text;
+    return redactSecretValues(text, secrets, (hit) => maskId(hit.replace(/[^0-9A-Za-z]/g, "")));
+  }
+
+  /** THE ONE PLANNER DOOR (hard rule 2). Every planner call in this adapter goes through here —
+   *  nothing else may call `this.planner` — and EVERY string of the request passes the run's secret
+   *  scrub first: url, page title, body text, the recovery hint (it quotes the portal's validation
+   *  errors, and a portal repeats a typed account back: "Account number … could not be found"),
+   *  filled labels, and each field's label / options / section / href / selector / fingerprint (a
+   *  portal can list "Service account 7734009155" as an option or a button name). A copy: same
+   *  length and order, so the planner's indices still mean the caller's list. The screenshot is
+   *  not text — it is masked where it is taken (capturePlanScreenshot). */
+  private askPlanner(req: LearnPlanRequest): Promise<LearnPlanResponse> {
+    return this.planner(this.scrubPlanRequest(req));
+  }
+
+  private scrubPlanRequest(req: LearnPlanRequest): LearnPlanRequest {
+    // Always a fresh copy (the caller's lists keep growing after the call); a no-op scrub when the
+    // run knows no secret.
+    const secrets = this.knownSecrets();
+    const walk = (v: unknown): unknown => {
+      if (typeof v === "string") return this.scrubSecrets(v, secrets);
+      if (Array.isArray(v)) return v.map(walk);
+      if (v && typeof v === "object") {
+        const out: Record<string, unknown> = {};
+        for (const [k, x] of Object.entries(v as Record<string, unknown>)) out[k] = walk(x);
+        return out;
+      }
+      return v;
+    };
+    const { screenshotBase64, ...text } = req;
+    return { ...(walk(text) as Omit<LearnPlanRequest, "screenshotBase64">), screenshotBase64 };
+  }
+
+  /** A screenshot that may leave the process (vision planner, review verifier, bundle PNG) with
+   *  every rendering of a known secret MASKED: the boxes this run typed one into, plus any element
+   *  whose value or text carries one (a review page echoes it). `take` receives the mask. When the
+   *  run TYPED a secret and the mask cannot be built, no picture is taken at all (undefined) —
+   *  fail closed, and say so. With no secret known the screenshot is exactly the old one. */
+  private async withSecretMask<T>(why: string, take: (mask: Locator[] | undefined) => Promise<T>): Promise<T | undefined> {
+    const secrets = this.knownSecrets();
+    if (!secrets.length || !this.page || typeof this.page.evaluate !== "function") return take(undefined);
+    const pats = secrets.map((s) => {
+      const digits = s.replace(/\D/g, "");
+      return digits.length >= 5 ? { digits, literal: "" } : { digits: "", literal: s.toLowerCase() };
+    }).filter((p) => p.digits || p.literal.length >= 4);
+    let tagged = 0;
+    let tagOk = true;
+    try {
+      // Plain loops only: a function DECLARED inside an evaluated body needs the __name shim.
+      tagged = Number(await this.page.evaluate((ps: Array<{ digits: string; literal: string }>) => {
+        let n = 0;
+        // A box holding one (typed here, or pre-filled by the portal).
+        for (const el of Array.from(document.querySelectorAll("input, textarea"))) {
+          const v = String((el as HTMLInputElement).value || "");
+          if (!v) continue;
+          const vd = v.replace(/\D/g, "");
+          const vl = v.toLowerCase();
+          for (const p of ps) {
+            if ((p.digits && vd.indexOf(p.digits) >= 0) || (p.literal && vl.indexOf(p.literal) >= 0)) { el.setAttribute("data-al-secret", "1"); n++; break; }
+          }
+        }
+        // Text rendering one (a review page's "Account: 7734009155"). Most pages carry none, so
+        // the whole-body check keeps the element walk off the common path.
+        const bt = String(document.body ? document.body.textContent || "" : "");
+        const btd = bt.replace(/\D/g, "");
+        const btl = bt.toLowerCase();
+        let textHas = false;
+        for (const p of ps) {
+          if ((p.digits && btd.indexOf(p.digits) >= 0) || (p.literal && btl.indexOf(p.literal) >= 0)) { textHas = true; break; }
+        }
+        if (!textHas) return n;
+        for (const el of Array.from(document.querySelectorAll("body *"))) {
+          const tag = el.tagName;
+          if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT" || tag === "INPUT" || tag === "TEXTAREA") continue;
+          const text = String(el.textContent || "");
+          if (!text) continue;
+          const td = text.replace(/\D/g, "");
+          const tl = text.toLowerCase();
+          let hit = false;
+          for (const p of ps) {
+            if ((p.digits && td.indexOf(p.digits) >= 0) || (p.literal && tl.indexOf(p.literal) >= 0)) { hit = true; break; }
+          }
+          if (!hit) continue;
+          // The SMALLEST element carrying the whole secret: skip an ancestor when a child element
+          // carries it too (masking <body> would blank the whole picture).
+          let childCarries = false;
+          for (const c of Array.from(el.children)) {
+            const ct = String(c.textContent || "");
+            const cd = ct.replace(/\D/g, "");
+            const cl = ct.toLowerCase();
+            for (const p of ps) {
+              if ((p.digits && cd.indexOf(p.digits) >= 0) || (p.literal && cl.indexOf(p.literal) >= 0)) { childCarries = true; break; }
+            }
+            if (childCarries) break;
+          }
+          if (childCarries) continue;
+          el.setAttribute("data-al-secret", "1");
+          n++;
+        }
+        return n;
+      }, pats));
+    } catch {
+      tagOk = false;
+    }
+    const controls: Locator[] = [];
+    for (const sel of this.secretControls) {
+      const loc = await this.locator(sel).catch(() => null);
+      if (loc) controls.push(loc as Locator);
+    }
+    if (!tagOk && this.typedSecrets.size > 0) {
+      this.debug?.event({ type: "secret_mask_unavailable", why: why.slice(0, 60), controls: controls.length });
+      return undefined;
+    }
+    const mask = [...(tagged > 0 ? [this.page.locator("[data-al-secret]")] : []), ...controls];
+    try {
+      return await take(mask.length ? mask : undefined);
+    } finally {
+      if (tagged > 0) {
+        await this.page.evaluate(() => {
+          for (const el of Array.from(document.querySelectorAll("[data-al-secret]"))) el.removeAttribute("data-al-secret");
+        }).catch(() => null);
+      }
+    }
+  }
+
   /** Every planned field write. It runs inside an own-write window on the network backstop
    *  (autosubmit-close item 7): the write's own per-field autosave on a page that reads as review
    *  (a Terms checkbox the planner checks at review, before lockReview) is the write's commit, not
@@ -7381,7 +8231,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     fillReq: { value: string; field?: string },
     sensitive: boolean,
   ): Promise<RecipeStep | null> {
-    const value = fillReq.value ?? "";
+    // `let`: the battery-declaration guard below may correct the planner's answer from project
+    // data, and the correction is written back to fillReq so the caller's AppliedFill.expected
+    // (read from fillReq.value after this returns) verifies the value that actually went in.
+    const answerComesFromFixedOptions = field.fieldType === "select" || field.fieldType === "radio" || field.fieldType === "checkbox";
+    // A SECRET BOUND BY NAME TYPES THE PROJECT'S OWN VALUE — the one the recorded step will type
+    // on every replay — never the planner's (it holds no secret, so anything it offers for an
+    // account box is invented), and never "" when the project has one (live PGE 2026-09-28: both
+    // revealed boxes typed "", and the portal's review listed them as Missing Required Fields).
+    const secretByName = sensitive && !answerComesFromFixedOptions && IDENTIFIER_FIELDS.has(String(fillReq.field ?? ""));
+    let value = secretByName ? this.secretFillValue(String(fillReq.field), field.label || "") : (fillReq.value ?? "");
     const isCheckable = field.fieldType === "checkbox" || field.fieldType === "radio";
     const action: RecipeStep["action"] =
       field.fieldType === "select" ? "select" : isCheckable ? "check" : "fill";
@@ -7457,29 +8316,58 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     //
     // The planner is given hasBattery and still got it wrong, so this cannot be a prompt: a
     // declaration about what EXISTS on the roof is project data, never a judgement call.
-    // Guarded only when the project explicitly says No — unknown stays the planner's call.
-    if (this.hasBattery === false) {
+    // Guarded only when the project says No or Yes — unknown stays the planner's call.
+    //
+    // LIVE ON PGE (2026-09-28, two supervised learns, hasBattery "No"): the planner decided the
+    // REQUIRED select "Energy Storage" → "No" — the right answer — and this guard refused it as a
+    // battery SPEC, four times per run (battery_spec_refused label="Energy Storage"), so page 7
+    // ended with required_never_filled ["Energy Storage"]: a required miss at review, and a
+    // recipe that could never be trusted. The guard's regex knew the storage WORDS and not what
+    // the control ASKS. THE ONE PREDICATE (shared batteryControls — replay asks it too):
+    //   SPEC        asks for a value OF the battery (make/model/capacity/quantity/…): on a
+    //               no-battery job REFUSED — never invented; on a battery job the planner fills
+    //               it from the project's battery fields.
+    //   DECLARATION asks WHETHER there is one (bare "Energy Storage", a Yes/No select, "Will
+    //               energy storage be installed?", a declaring checkbox): takes the PROJECT's
+    //               answer — No here, Yes on a battery job — whatever the planner said.
+    //   PROGRAM     "Will you be participating in the Wattsmart Battery Program?" is required of
+    //               every applicant, battery or not — never refused (PacifiCorp rejected a
+    //               filing by name when it was left blank), never forced.
+    if (this.hasBattery !== undefined) {
       const label = field.label || "";
-      const declaresBattery = /\b(includes?|has|with)\b[^.]{0,40}\b(batter(y|ies)|energy storage|\bess\b|storage system)\b/i.test(label)
-        || /^\s*(battery|energy)\s*storage\b/i.test(label);
-      if (field.fieldType === "checkbox" && declaresBattery) {
-        this.debug?.event({ type: "battery_declaration_refused", label: label.slice(0, 70) });
-        return null;
-      }
-      // And never invent the specifications of equipment that is not there. If the box got
-      // ticked some other way, the fields it reveals still go unanswered rather than fabricated.
-      //
-      // A PROGRAM question is not a specification. "Will you be participating in the Wattsmart
-      // Battery Program?" asks about a utility programme and is REQUIRED of every applicant,
-      // battery or not — refusing it left it blank and PacifiCorp rejected the submission for
-      // it by name. The replay guard already carried this exemption; this one did not, which
-      // is how a guard against inventing data became a guard against answering a question.
-      const isProgramQuestion = /\bprogram\b/i.test(label);
-      const isBatterySpec = !isProgramQuestion
-        && /\bbatter(y|ies)\b|\benergy storage\b|\bess\b|round-?trip|state of charge/i.test(label);
-      if (isBatterySpec && field.fieldType !== "checkbox") {
+      const kind = batteryControlKind(label, { control: field.fieldType, options: field.options });
+      if (kind === "spec" && this.hasBattery === false) {
+        // Never invent the specifications of equipment that is not there. If the declaration got
+        // answered Yes some other way, the fields it reveals still go blank rather than fabricated.
         this.debug?.event({ type: "battery_spec_refused", label: label.slice(0, 70) });
         return null;
+      }
+      if (kind === "declaration") {
+        if (isCheckable) {
+          // A declaring checkbox / radio option on a no-battery job stays unselected — that IS the
+          // No answer (the Ivy tick, refused). On a battery job a declaring CHECKBOX is ticked; a
+          // radio OPTION's own label is not the question (p006 offers "Addition of energy storage
+          // ONLY to an existing net metering system" as an application type), so a radio is never
+          // forced to Yes — the planner's pick stands.
+          if (this.hasBattery === false) {
+            this.debug?.event({ type: "battery_declaration_refused", label: label.slice(0, 70) });
+            return null;
+          }
+          if (field.fieldType === "checkbox" && !/^(true|yes|on|1|checked)$/i.test(value.trim())) {
+            this.debug?.event({ type: "battery_declaration_answered", label: label.slice(0, 70), answer: "checked", planner: value.trim() ? "corrected" : "none" });
+            value = "true";
+            fillReq.value = value;
+          }
+        } else {
+          const answer = batteryDeclarationAnswer(this.hasBattery, field.options, value);
+          if (answer !== null && answer !== value) {
+            this.debug?.event({ type: "battery_declaration_answered", label: label.slice(0, 70), answer, planner: value.trim() ? "corrected" : "none" });
+            value = answer;
+            fillReq.value = value;
+          } else if (answer !== null) {
+            this.debug?.event({ type: "battery_declaration_answered", label: label.slice(0, 70), answer, planner: "agreed" });
+          }
+        }
       }
     }
 
@@ -7641,8 +8529,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // Narrowed for RECORDING only. Redaction of what we SEND the planner is unchanged and
     // stays deliberately broad, because under-redacting an account number is the worse
     // failure. An account number is not a dropdown, so keeping a select/radio/checkbox
-    // answer leaks nothing.
-    const answerComesFromFixedOptions = field.fieldType === "select" || field.fieldType === "radio" || field.fieldType === "checkbox";
+    // answer leaks nothing. (answerComesFromFixedOptions is computed at the top.)
     if (sensitive && !answerComesFromFixedOptions) {
       // Password fields are login credentials handled by the login step — never record as
       // a form fill step (the planner may send one but we drop it here to avoid replaying
@@ -7652,6 +8539,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       step.sensitive = true;
       step.value = "";
       step.field = fillReq.field || undefined;
+      if (secretByName && value) {
+        // Held in memory only, so every later text/picture leaving the process is scrubbed of it.
+        this.typedSecrets.add(value);
+        this.secretControls.push(field.selector);
+        const typedLabel = String(field.label ?? "").slice(0, 80);
+        if (typedLabel && !this.typedSecretLabels.includes(typedLabel)) this.typedSecretLabels.push(typedLabel);
+      }
+      if (!value.trim() && field.required) {
+        // A REQUIRED secret box this learn left blank — the project has no value on file, or the
+        // box has no binding a replay can resolve (a "Tax ID"-shaped box the deterministic pass
+        // records with no field). Not a trust blocker. But never silent again, and the hand-off
+        // says which of the two it is: only a bound one is filled by a later replay.
+        const label = String(field.label ?? "").slice(0, 80);
+        if (label && !this.secretsLeftBlank.some((s) => s.label === label)) this.secretsLeftBlank.push({ label, bound: !!step.field });
+        this.debug?.event({ type: "required_secret_unfilled", labels: [label], binding: step.field ?? null });
+      }
     } else if (fillReq.field && (!this.bindableFields.size || this.bindableFields.has(fillReq.field))
       && !(answerComesFromFixedOptions && IDENTIFIER_FIELDS.has(String(fillReq.field)))) {
       // Data-bound to a project/client field — resolved at replay time.
@@ -7785,7 +8688,18 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       }
       return Array.from(out).slice(0, 20);
     }).catch(() => [] as string[]);
-    return Array.isArray(labels) ? labels : [];
+    const all = Array.isArray(labels) ? labels : [];
+    // A BATTERY SPEC ON A NO-BATTERY JOB IS BLANK BY DESIGN, like a sensitive field: the fill
+    // guard refuses to invent it, so counting it as a required miss would block the trust gate on
+    // every no-battery job forever, over boxes a portal only enforces once storage is declared.
+    // The same predicate the guard uses — a DECLARATION ("Energy Storage") left blank is still a
+    // miss, and so is a programme question; only the specs of a battery that does not exist drop.
+    if (this.hasBattery !== false) return all;
+    const kept = all.filter((l) => batteryControlKind(l, { control: "text" }) !== "spec");
+    if (kept.length !== all.length) {
+      this.debug?.event({ type: "battery_spec_blank_by_design", labels: all.filter((l) => !kept.includes(l)).slice(0, 8) });
+    }
+    return kept;
   }
 
   // Read each applied fill back; re-apply once if it didn't hold; return the labels of REQUIRED
@@ -7811,16 +8725,25 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // make hasHardBlockers true → trusted=false → the recipe is stuck in "recording" forever
       // and staging re-runs autolearn instead of replaying. Skip them here (collectUnfilledRequired
       // and the deterministic trust check already exclude sensitive fields for the same reason).
-      if (a.sensitive) continue;
+      // ...UNLESS THIS RUN TYPED THE PROJECT'S OWN VALUE BY NAME (secretBinding): then a blank
+      // read-back is the portal dropping a real fill, exactly like any other field, and it is
+      // re-typed by the same name (the value is re-read, never held on the fill record).
+      if (a.sensitive && !a.secretBinding) continue;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const loc = (await this.locator(a.selector)) as any;
       if (!loc) continue;
       if (await this.fieldHoldsValue(loc, a)) continue;
 
-      // One re-apply attempt. Sensitive fields are never retyped here (we don't keep the
-      // literal); select fields go back through the combobox fallback.
+      // One re-apply attempt. A sensitive field is re-typed only by its binding; select fields
+      // go back through the combobox fallback.
       try {
-        if (a.sensitive || !a.expected) {
+        if (a.secretBinding) {
+          const again = this.secretFillValue(a.secretBinding, a.label);
+          if (again && typeof loc.fill === "function") {
+            await loc.fill(again, { timeout: 5000 });
+            if (typeof loc.blur === "function") await loc.blur().catch(() => {});
+          }
+        } else if (a.sensitive || !a.expected) {
           // nothing to retype — fall through to the re-check
         } else if (a.fieldType === "select") {
           await selectWithFallback(this.page!, loc, a.expected);
@@ -8187,7 +9110,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const rawBody = await this.page.locator("body").innerText().catch(() => "");
       bodyText = (redactStatusText(String(rawBody)) ?? "").slice(0, 2000);
     } catch { bodyText = ""; }
-    const validationErrors = await this.collectValidationErrors().catch(() => [] as string[]);
+    // Scrubbed: the verdict's reason quotes the first error into an event and a console line.
+    const validationErrors = (await this.collectValidationErrors().catch(() => [] as string[])).map((v) => this.scrubSecrets(v));
     const verdict = classifyTerminalSubmitPage({ fields, bodyText, validationErrors });
     if (!verdict.terminal) {
       // A DISTINCT REASON, NAMED. "The walk stopped" and "the walk stopped because this page
@@ -8232,9 +9156,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // utility in reviewScreenScraper.ts so the same logic serves all adapters.
   private async scrapeReviewScreen(): Promise<LearnResult["reviewScreen"]> {
     if (!this.page) return { fields: [], bodyTextSnippet: "" };
-    const fields = await scrapeReviewScreenShared(this.page);
+    // Both halves go to the backend's review verifier (a model) — scrubbed of every secret this
+    // run knows, keeping a last-4 so the deterministic account/meter check (B8) still reads.
+    const fields = (await scrapeReviewScreenShared(this.page)).map((f) => ({ ...f, value: this.scrubSecrets(String(f.value ?? "")) }));
     const rawBody = await this.page.locator("body").innerText().catch(() => "");
-    const bodyTextSnippet = (redactStatusText(String(rawBody)) ?? "").slice(0, 2000);
+    const bodyTextSnippet = (redactStatusText(this.scrubSecrets(String(rawBody))) ?? "").slice(0, 2000);
     return { fields, bodyTextSnippet };
   }
 
@@ -9259,5 +10185,19 @@ export async function collectPortalNoticesFrom(page: any): Promise<string[]> {
     return Array.isArray(raw) ? raw.filter((n) => typeof n === "string" && n.length > 0).slice(0, 5) : [];
   } catch {
     return [];
+  }
+}
+
+/** The page's VISIBLE text (innerText — hidden elements excluded), capped; "" when it cannot be
+ *  read. A stubbed page answering every evaluate with a canned value yields "" unless it is text.
+ *  Read by the not-served check (portal-truth D5) — the learner's and the replay's one question. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function visibleBodyText(page: any, cap = 20000): Promise<string> {
+  if (!page || typeof page.evaluate !== "function") return "";
+  try {
+    const raw = await page.evaluate((n: number) => (document.body ? document.body.innerText || "" : "").slice(0, n), cap);
+    return typeof raw === "string" ? raw : "";
+  } catch {
+    return "";
   }
 }

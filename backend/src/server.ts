@@ -84,12 +84,14 @@ import { getKpiReport } from "./kpi";
 import {
   ahjFormRegistry,
   buildFilledFormsForProject,
+  effectiveStoredFieldMap,
   fetchFormTemplate,
+  setStoredTemplateVerified,
   filledFormPath,
   inspectFormFields,
   matchingForms,
 } from "./ahjForms";
-import { acquireFromBytes, ensureAhjFormTemplate, templateProvenance } from "./ahjFormAuto";
+import { acquireFromBytes, ensureAhjFormTemplate, formFindAuditDetails, templateProvenance } from "./ahjFormAuto";
 import { createSignature, deleteSignature, getSignatureImage, listSignatures, setDefaultSignature } from "./signatures";
 import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
@@ -154,9 +156,11 @@ import {
   finalSubmitJobPayload,
 } from "./repository";
 import { getSubmittalTracks, markTrackSubmitted } from "./submittalTracks";
+import { projectForTrack } from "./permitProcess";
 import { ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
 import { enqueueStageSteps } from "./autoStageSteps";
 import type { ClientResolution, ParserExtractionResponse, SubmittalTrackType } from "../../shared/src/types";
+import { FINAL_SUBMIT_GATE_SENTENCE } from "../../shared/src/portalSafety";
 
 const app = express();
 
@@ -592,7 +596,9 @@ app.delete("/api/clients/:id/portal-credentials/:credId", (req, res) => {
 // --- AHJ PDF forms (fetch official form, fill, attach) ---
 app.get("/api/ahj-forms", (req, res) => {
   const ahj = String(req.query.ahj || "").trim();
-  const matches = ahj ? matchingForms(ahj) : ahjFormRegistry;
+  // A registry form belongs to ONE state: asking by AHJ name needs the state too (a blank state
+  // matches nothing — "Portland" alone does not say which Portland).
+  const matches = ahj ? matchingForms({ ahj, state: String(req.query.state || "") }) : ahjFormRegistry;
   res.json({
     forms: matches.map((def) => ({
       id: def.id,
@@ -632,7 +638,7 @@ app.post("/api/ahj-forms/:formId/detect-signatures", asyncHandler(async (req, re
 app.post("/api/ahj-forms/inspect", asyncHandler(async (req, res) => {
   const url = String(req.body?.url || "").trim();
   if (!url) throw new HttpError(400, "url is required.");
-  const def = { id: "inspect", formName: "inspect", matchJurisdictions: [], sourceUrl: url, version: "", status: "verified" as const, textFields: {} };
+  const def = { id: "inspect", formName: "inspect", state: "", matchJurisdictions: [], sourceUrl: url, version: "", status: "verified" as const, textFields: {} };
   const bytes = await fetchFormTemplate(def);
   const result = await inspectFormFields(bytes);
   res.json(result);
@@ -667,7 +673,14 @@ app.get("/api/projects/:id/filled-forms/:formId", (req, res) => {
     } catch { /* fall through to the generic name */ }
   }
   base = (base || "permit-application").replace(/\.pdf$/i, "");
-  const safeName = `${base} - filled.pdf`.replace(/[^A-Za-z0-9 ()._-]+/g, "_");
+  // The homeowner's name in the file name (operator 2026-09-28: "save it with the HO name in it") —
+  // several jobs' "Residential Application - filled.pdf" otherwise collide in one Downloads folder.
+  let homeowner = "";
+  try {
+    const row = db.get<{ homeowner_name?: string }>("SELECT homeowner_name FROM projects WHERE id = ?", [String(req.params.id)]);
+    homeowner = String(row?.homeowner_name ?? "").normalize("NFKD").replace(/\p{M}/gu, "").replace(/['’]/g, "").replace(/[^A-Za-z0-9 .-]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
+  } catch { /* the name is a convenience, never the download */ }
+  const safeName = `${base} - filled${homeowner ? ` - ${homeowner}` : ""}.pdf`.replace(/[^A-Za-z0-9 ()._-]+/g, "_");
   res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
   res.type("application/pdf").sendFile(file);
 });
@@ -683,6 +696,7 @@ app.post("/api/projects/:id/find-ahj-form", asyncHandler(async (req, res) => {
   const llm = createLLMProvider();
   let ensure;
   let additional: Array<{ formType: string; status: string; message: string }> = [];
+  let joined: { since: string } | undefined;
   try {
     if (explicitType) {
       // Operator asked for one specific form type — honor it exactly.
@@ -690,15 +704,20 @@ app.post("/api/projects/:id/find-ahj-form", asyncHandler(async (req, res) => {
     } else {
       // Default: acquire the AHJ's FULL needed set (application(s) + any
       // required checklist, per process profile + KB required docs).
+      // A click while the chain's own search is running JOINS that search (ahjFormAuto's in-flight
+      // registry) instead of paying for a second one; the audit says so.
       const { ensureAhjFormsForProject } = await import("./ahjFormAuto");
       const all = await ensureAhjFormsForProject(db, llm, detail.project);
       ensure = all.results[0] ?? { status: "not_found" as const, message: "No forms needed/found." };
       additional = all.results.slice(1).map((r) => ({ formType: r.formType, status: r.status, message: r.message }));
+      joined = all.joined;
     }
   } catch (err) {
     throw normalizeLlmError(err);
   }
-  addAuditLog(db, String(req.params.id), "system", "ahj form acquisition", "ahj_form.find", { status: ensure.status, formName: ensure.formName || "", ahj: detail.project.ahj, permitType: ensure.permitType || "", additional: additional.map((a) => `${a.formType}:${a.status}`) });
+  addAuditLog(db, String(req.params.id), "system", "ahj form acquisition", "ahj_form.find", {
+    ...formFindAuditDetails(detail.project.ahj, ensure, additional), via: "find-button", ...(joined ? { joinedPassStartedAt: joined.since } : {}),
+  });
   const filled = await buildFilledFormsForProject(db, detail.project);
   res.json({ ensure, additional, filled });
 }));
@@ -1757,8 +1776,7 @@ app.put("/api/portal-recipes/:id/auto-submit", (req, res) => {
   const enabled = req.body?.enabled === true || String(req.body?.enabled) === "true";
   if (enabled) {
     throw new HttpError(409,
-      "Recipes are no longer armed for auto-submit. A final submit happens only in a run a named person approves: "
-      + "use Approve & Submit on the filing (with PORTAL_ALLOW_FINAL_SUBMIT=1 on the server). Nothing was changed.",
+      `Recipes are no longer armed for auto-submit. ${FINAL_SUBMIT_GATE_SENTENCE} Nothing was changed.`,
       { noStandingArm: true, recipeId: recipe.id });
   }
   db.run("UPDATE portal_recipes SET auto_submit_enabled = 0, updated_at = ? WHERE id = ?", [new Date().toISOString(), recipe.id]);
@@ -1804,7 +1822,9 @@ app.delete("/api/portal-pauses/:id", (req, res) => {
 app.get("/api/projects/:id/staging-field-values", (req, res) => {
   const detail = getProjectDetail(db, String(req.params.id));
   const portalType = String(req.query.portalType || "");
-  res.json({ fieldValues: resolveRecipeFieldValues(db, detail.project, portalType) });
+  // The filing being recorded (the licence keys are that permit's): ?track=building|electrical|combo|nem.
+  const track = typeof req.query.track === "string" && req.query.track.trim() ? req.query.track.trim() : null;
+  res.json({ fieldValues: resolveRecipeFieldValues(db, detail.project, portalType, track) });
 });
 // Launch a headed portal-record session on this machine. The recorder
 // (portal-bot/src/recordRecipe.ts) opens a Playwright browser AND blocks on
@@ -1815,9 +1835,11 @@ app.get("/api/projects/:id/staging-field-values", (req, res) => {
 // the server runs on the operator's own machine.
 app.post("/api/projects/:id/launch-record", (req, res) => {
   const detail = getProjectDetail(db, String(req.params.id));
-  const p = detail.project;
   const b = (req.body || {}) as Record<string, string>;
   const scope = String(b.scope || "ahj") === "utility" ? "utility" : "ahj";
+  // The track card says which permit it records (optional `track`): a permit recording is keyed on
+  // the agency that issues THAT permit (split issuer — permitProcess.projectForTrack).
+  const p = scope === "ahj" && typeof b.track === "string" ? projectForTrack(detail.project, b.track) : detail.project;
   const name = scope === "utility" ? (p.utility || "") : (p.ahj || "");
   // The recorder opens THIS URL in a live browser: judged before any window opens.
   if (b.portalUrl) {
@@ -1892,7 +1914,13 @@ app.post("/api/projects/:id/auto-learn", (req, res) => {
   // autoLearnPortal asks the same question again at its own door). The project's own recipe for
   // this key is not evidence for the URL being judged.
   {
-    const lp = getProjectDetail(db, projectId).project;
+    // A permit learn is judged against the agency that issues THAT permit (split issuer) — the same
+    // view the learn's own door and its recipe key use (permitProcess.projectForTrack), so a city's
+    // portal is not refused here for a building learn the learn itself would accept.
+    const loaded = getProjectDetail(db, projectId).project;
+    const lp = scope === "ahj"
+      ? projectForTrack(loaded, b.permitType === "electrical" ? "electrical" : b.permitType === "structural" ? "building" : null)
+      : loaded;
     const own = findAnyRecipeForProject(db, { scopeType: scope, state: lp.state, ahj: lp.ahj, utility: lp.utility });
     assertOperatorPortalUrlFits(db, {
       track: scope === "utility" ? "nem" : "permit", state: lp.state,
@@ -1921,7 +1949,8 @@ app.post("/api/portal-recipes/:id/suggest-bindings", asyncHandler(async (req, re
     try {
       const detail = getProjectDetail(db, projectId);
       const portalType = String(req.body?.portalType || "");
-      fieldValues = resolveRecipeFieldValues(db, detail.project, portalType);
+      const track = typeof req.body?.track === "string" && req.body.track.trim() ? String(req.body.track).trim() : null;
+      fieldValues = resolveRecipeFieldValues(db, detail.project, portalType, track);
     } catch { /* proceed with empty map; all suggestions will be null */ }
   }
   const unbound = steps
@@ -2128,7 +2157,11 @@ app.get("/api/projects/:id/documents/:docId", (req, res) => {
   res.sendFile(file.path);
 });
 app.delete("/api/projects/:id/documents/:docId", (req, res) => {
-  res.json(deleteProjectDocument(db, String(req.params.id), String(req.params.docId)));
+  const out = deleteProjectDocument(db, String(req.params.id), String(req.params.docId));
+  // A removal changes the documents QC judged, like an upload does — re-drive the chain so its
+  // "every document is attached" row is re-judged (guarded inside: chain-owned statuses only).
+  try { enqueueStageSteps(db, String(req.params.id)); } catch { /* convenience, never the delete */ }
+  res.json(out);
 });
 // Split the plan set and assemble the upload package. SLD splitting is ONLY needed for
 // utility NEM submittals and ProjectDox AHJ portals — standard Accela/EnerGov portals
@@ -2256,7 +2289,10 @@ app.post(
     const name = String(req.query.name || "").trim();
     const isDefault = String(req.query.default || "") === "1" || String(req.query.default || "") === "true";
     const mime = String(req.headers["content-type"] || "image/png");
-    const view = await createSignature(db, { role, name, bytes: new Uint8Array(req.body), mime, isDefault, orgId: requestScope(db, req).orgId });
+    // A licence-holder signature (electrician, contractor) names its company; createSignature checks
+    // that the company is one of THIS org's clients (404 otherwise) and ignores it for other roles.
+    const clientId = String(req.query.clientId || "").trim();
+    const view = await createSignature(db, { role, name, bytes: new Uint8Array(req.body), mime, isDefault, orgId: requestScope(db, req).orgId, clientId });
     res.status(201).json(view);
   }),
 );
@@ -2458,36 +2494,31 @@ app.get("/api/ahj-templates", (req, res) => {
   const rows = state
     ? db.query(`SELECT ${cols} FROM ahj_form_templates WHERE state = ? ORDER BY ahj_name`, [state])
     : db.query(`SELECT ${cols} FROM ahj_form_templates ORDER BY state, ahj_name`);
-  res.json(rows.map((r) => ({
-    ...r,
-    fieldMap: parseJson<Record<string, unknown>>(String(r.field_map ?? ""), {}),
-    provenance: templateProvenance(r as Record<string, unknown>),
-  })));
+  res.json(rows.map((r) => {
+    // The map the fill USES (ahjForms.effectiveStoredFieldMap): a built-in map for an exact blank
+    // shows as such, never the stale copy stamped into the row.
+    const effective = effectiveStoredFieldMap(r as { ahj_name: string; state: string; field_map: string; source_url?: string });
+    return {
+      ...r,
+      fieldMap: effective.map,
+      builtInMap: effective.builtInMap,
+      provenance: templateProvenance(r as Record<string, unknown>),
+    };
+  }));
 });
 
 // Re-map a stored template's fields from its stored blob (AcroForm first, then
-// vision overlay) — used after a bad auto-map or to refresh the mapping.
+// vision overlay) — used after a bad auto-map or to refresh the mapping. A
+// HUMAN-VERIFIED map is never re-mapped (hard rule 3) — ahjFormAuto.remapStoredTemplate.
+// A re-map re-reads bytes we already had, so the row's retrieved_at is kept.
 app.post("/api/ahj-templates/:id/remap", asyncHandler(async (req, res) => {
-  const row = db.get<{ id: string; ahj_name: string; state: string; form_type: string; pdf_blob: Buffer | null; field_map: string; retrieved_at: string }>(
-    "SELECT id, ahj_name, state, form_type, pdf_blob, field_map, retrieved_at FROM ahj_form_templates WHERE id = ?",
-    [String(req.params.id)],
-  );
-  if (!row) throw new HttpError(404, "Template not found.");
-  if (!row.pdf_blob) throw new HttpError(410, "PDF blob has been wiped — re-upload the blank to re-map.");
-  const map = parseJson<{ formName?: string; sourceUrl?: string }>(row.field_map, {});
-  const formName = map.formName || `${row.ahj_name} ${row.form_type.replace(/_/g, " ")}`;
+  const { remapStoredTemplate } = await import("./ahjFormAuto");
   const { createLLMProvider } = await import("./llm");
   let result;
   try {
-    result = await acquireFromBytes(db, createLLMProvider(), {
-      ahj: row.ahj_name, state: row.state, formType: row.form_type, formName,
-      bytes: new Uint8Array(row.pdf_blob), sourceUrl: map.sourceUrl || "",
-      // A re-map re-reads bytes we already had. Stamping "retrieved now" would
-      // make a purely local operation look like a fresh trip to the AHJ's site,
-      // which is the one claim retrieved_at exists to make honestly.
-      retrievedAt: String(row.retrieved_at || ""),
-    });
+    result = await remapStoredTemplate(db, createLLMProvider(), String(req.params.id));
   } catch (err) {
+    if (err instanceof HttpError) throw err;
     throw normalizeLlmError(err);
   }
   res.json(result);
@@ -2496,13 +2527,9 @@ app.post("/api/ahj-templates/:id/remap", asyncHandler(async (req, res) => {
 // Mark a stored form's mapping verified (or not) — gates real submit. The
 // operator does this after previewing the filled PDF.
 app.patch("/api/ahj-templates/:id/verify", (req, res) => {
-  const row = db.get<{ field_map: string }>("SELECT field_map FROM ahj_form_templates WHERE id = ?", [String(req.params.id)]);
-  if (!row) throw new HttpError(404, "Template not found.");
-  const map = parseJson<Record<string, unknown>>(row.field_map, {});
   const verified = req.body?.verified !== false; // default true
-  map.verified = verified;
-  map.verifiedAt = verified ? new Date().toISOString() : undefined;
-  db.run("UPDATE ahj_form_templates SET field_map = ?, updated_at = ? WHERE id = ?", [JSON.stringify(map), new Date().toISOString(), String(req.params.id)]);
+  // A person verifies WHAT THEY PREVIEWED (ahjForms.setStoredTemplateVerified).
+  if (!setStoredTemplateVerified(db, String(req.params.id), verified)) throw new HttpError(404, "Template not found.");
   res.json({ id: String(req.params.id), verified });
 });
 

@@ -14,8 +14,10 @@
 //      deterministically (fast, no LLM cost) via the existing RecipeAdapter.
 //
 // Safety: the learner never clicks final submit / resubmit / fee payment / CAPTCHA /
-// MFA. The final-submit button is recorded (isFinalSubmit) for the allowlist but only
-// ever executed later under the explicit per-portal trusted-auto-submit opt-in. A
+// MFA. The final-submit button is recorded (isFinalSubmit) so a replay knows where the
+// filing click is; it is clicked only under the one gate (portalSafety.mayClickFinalSubmit /
+// FINAL_SUBMIT_GATE_SENTENCE — a named person's approval of that run AND
+// PORTAL_ALLOW_FINAL_SUBMIT=1); there is no per-portal opt-in. A
 // low-confidence or unverified pass is left as a draft for human review, never trusted.
 // ---------------------------------------------------------------------------
 
@@ -23,14 +25,18 @@ import path from "node:path";
 import fs from "node:fs";
 import type { AppDb } from "./db";
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../shared/src/types";
+import { FINAL_SUBMIT_GATE_SENTENCE, redactSecretValues } from "../../shared/src/portalSafety";
+import { perJobAnswerKeyFor, perJobControlOfField } from "../../shared/src/perJobQuestions";
+import { parseHasBattery } from "../../shared/src/batteryControls";
 import { learnPortal, browserLimiter } from "../../portal-bot/src/index";
 import { resolveHeadless } from "../../portal-bot/src/browser";
-import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
+import { compareReviewFields, utilityIdentifiersEnteredBySteps } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
 import { getDecryptedCredentialForPortal, getDecryptedCredentialByUrl, listPortalCredentials, nearestStoredLogins, recordLoginOutcome } from "./portalCredentials";
 import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics";
-import { RECIPE_FIELD_DESCRIPTIONS, deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey, portalEntityEvidence } from "./portalRecipes";
+import { RECIPE_FIELD_DESCRIPTIONS, deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey, portalEntityEvidence, stampCompanyAttestations, withholdClientLicenceLiteralsFor, recordPortalNotServed } from "./portalRecipes";
+import { notServedInResult } from "../../shared/src/portalNotServed";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
 import { projectDocsByType } from "./projectDocuments";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
@@ -41,12 +47,16 @@ import { HttpError } from "./httpError";
 import { formPurposeMismatch } from "./formPurpose";
 import { looksBotBlocked } from "./runAbort";
 import { id } from "./ids";
-import { knowledgeProfileKey, findKnowledgeForLearn, isVerifiedKnowledge } from "./knowledgeBase";
+import { knowledgeProfileKey, findKnowledgeForLearn, isVerifiedKnowledge, learnSafeNotes } from "./knowledgeBase";
 import { hostFitsTrackAndEntity, trackSafeUrl, type PortalUrlSource } from "./portalChannel";
 import { getCodeProfile } from "./codeProfiles";
 import { certifiedNamesForMake } from "./cecEquipment";
-import { recordDraftTouch, type DraftTouch } from "./draftLedger";
-import { issuingAgencyFor } from "./permitProcess";
+import { annotateDraft, buildDraftTouch, recordDraftTouch, type DraftTouch } from "./draftLedger";
+import { draftReferenceFromUrl } from "../../portal-bot/src/adapters/submissionLedger";
+import { issuingAgencyFor, projectForTrack } from "./permitProcess";
+import { DECLARED_VALUATION_FIELD, rebindsToValuation } from "./valuation";
+import { feeBracketFieldForLabel } from "./feeBracketFields";
+import { SERVICE_FEEDER_200A_FIELD, SERVICE_FEEDER_400A_FIELD } from "./batteryServiceFeeder";
 
 /** The submittal track an AHJ learn files, from the recipe discipline it will be keyed under
  *  (authoritative — the value the recipe lookup asks for), else the requested permit type.
@@ -59,6 +69,21 @@ function learnTrackFor(discipline: string | undefined, permitType: "structural" 
   if (permitType === "electrical") return "electrical";
   if (permitType === "structural") return "building";
   return null;
+}
+
+/** THE TRACK WHOSE ISSUER AN AHJ LEARN KEYS ON (split issuer). A STAGE names its own track — the
+ *  staging self-seed and the stale-recipe re-learn pass `track`, null included — and the learn then
+ *  keys on EXACTLY the view that stage resolved (permitProcess.projectForTrack(project, track)): a
+ *  trackless stage (null) on the project AHJ itself, an MPU stage on the MPU issuer. It is never
+ *  re-derived from the discipline / permit type, which name the LICENCE and the documents a filing
+ *  takes, not whose portal the stage launched: a trackless stage's "structural" permit type used to
+ *  swap to the building issuer and save the project AHJ's portal under the CITY's key, where it
+ *  outranked the city's own portal on every later building stage (round-1 skeptic, 2026-09-28).
+ *  Omitted (the operator's /auto-learn, a supervised or benchmark learn): the permit the discipline /
+ *  permit type names, as before. */
+function learnIssuerTrack(input: { track?: string | null; discipline?: string; permitType?: "structural" | "electrical" }): string | null {
+  if (input.track !== undefined) return input.track === null ? null : String(input.track).trim() || null;
+  return learnTrackFor(input.discipline, input.permitType);
 }
 
 export interface AutoLearnResult {
@@ -134,23 +159,10 @@ export function projectSecretValues(project: ProjectRecord): string[] {
  *  2026-09-25): the site-plan line "...tied to exterior utility meter #77 902 323, new PV AC
  *  disconnect ... within 10' of the utility meter" matched the disconnect topic, went into the
  *  design digest, and carried the meter number to the model on every planner call.
- *  Identifier-shaped secrets (5+ digits) are matched digit-for-digit with separators ignored
- *  (spaces, dashes, dots, '#', '/'), never inside a longer digit run; other secrets only when
- *  they carry a digit and are 6+ chars (a meter-keyed word like "exterior" is not an identifier
- *  and must not erase that word from the notes). */
-export function redactSecretValues(text: string, secrets: Iterable<string>): string {
-  let out = text;
-  for (const secret of secrets) {
-    const digits = secret.replace(/\D/g, "");
-    if (digits.length >= 5) {
-      const pattern = digits.split("").join("[\\s\\-\\u2013.#/]*");
-      out = out.replace(new RegExp(`(?<!\\d)${pattern}(?!\\d)`, "g"), "[redacted]");
-    } else if (secret.length >= 6 && /\d/.test(secret)) {
-      out = out.replace(new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "[redacted]");
-    }
-  }
-  return out;
-}
+ *  The ONE scrub lives in shared/src/portalSafety.ts — the learner scrubs its page text with it
+ *  too, once it has typed the project's account/meter into a portal. Re-exported here for the
+ *  backend's callers and the kbLearnLookup test. */
+export { redactSecretValues };
 
 function digestLines(project: ProjectRecord, maxChars: number, matches: (line: string) => boolean, secrets: string[] = []): string {
   const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
@@ -218,8 +230,10 @@ export function buildLearnKbContext(
         `${label}: ${name}${profile.state ? ` (${profile.state})` : ""} [KB confidence: ${profile.confidence}]`,
         isPrimary && portalFits && (profile.portalName || profile.portalUrl) ? `Portal: ${clip(profile.portalName, 80)} ${clip(profile.portalUrl, 120)}`.trim() : "",
         profile.requiredDocuments.length ? `Required docs: ${clip(profile.requiredDocuments.join("; "), 300)}` : "",
-        // The primary scope's notes carry the judgment answers — give them the bigger cap.
-        profile.notes ? `Notes: ${clip(profile.notes, label === (opts.scopeType === "ahj" ? "AHJ" : "Utility") ? 900 : 400)}` : "",
+        // The primary scope's notes carry the judgment answers — give them the bigger cap. SHARED notes
+        // were written from one company's sheets: its logins, "credential stored" lines and licence
+        // numbers never reach another company's planner (knowledgeBase.learnSafeNotes; rule 2).
+        learnSafeNotes(profile.notes) ? `Notes: ${clip(learnSafeNotes(profile.notes), label === (opts.scopeType === "ahj" ? "AHJ" : "Utility") ? 900 : 400)}` : "",
       ].filter(Boolean);
       if (lines.length > 1) sections.push(lines.join("\n"));
     }
@@ -381,6 +395,40 @@ export function evaluateTrustGate(sig: TrustGateSignals): { trusted: boolean; bl
  * typed-signature step (operator ruling 2026-09-26: a typed e-signature on the draft is fine,
  * the review step is where it stops).
  */
+/**
+ * WHAT A TRUSTED LEARN SAYS IT CHECKED — WITH THE DENOMINATOR (dryrun-0928 B10).
+ *
+ * The learn's result message and its recipe note used to read "verified (high confidence)" and
+ * end with an invitation to "opt this portal into trusted auto-submit". Both were false:
+ *   - the per-portal opt-in no longer exists (operator rulings 2026-09-24 / 2026-09-26 — the arm
+ *     route refuses with 409), so the words contradicted hard rule 1; the ONE sentence that
+ *     describes the real gate (portalSafety.FINAL_SUBMIT_GATE_SENTENCE) replaces them;
+ *   - the verifiers read only the page the run ended on. On PowerClerk that is the last wizard
+ *     page, so "high confidence" was about 3 attestation fields out of 101 recorded fills across
+ *     10 pages. The words now say how many fields were checked, of how many, on how many pages.
+ * The note keeps its leading "Auto-learned and verified (<confidence> confidence) on N page(s)."
+ * EXACTLY — it is a matching key (scripts/rekey-recipe.ts notesSayVerified and its tests).
+ * Pure, exported for the unit test.
+ */
+export function trustedLearnWording(input: {
+  confidence: string;
+  /** Fields the verifier compared (verification.matches.length) and how many of them matched. */
+  fieldsChecked: number;
+  fieldsMatched: number;
+  /** Recorded fill / select / check steps across the whole walk. */
+  recordedFills: number;
+  pageCount: number;
+  scopeType: "ahj" | "utility";
+  bindingNote: string;
+}): { note: string; message: string; done: string } {
+  const checked = `${input.fieldsChecked} field(s) checked on the final page (${input.fieldsMatched} matched) of ${input.recordedFills} recorded fill(s) across ${input.pageCount} page(s)`;
+  return {
+    note: `Auto-learned and verified (${input.confidence} confidence) on ${input.pageCount} page(s).${input.bindingNote} The verifier read the final page only: ${checked}. ${FINAL_SUBMIT_GATE_SENTENCE}`,
+    message: `Portal learned: ${checked} (verifier confidence: ${input.confidence}) — the earlier pages were not re-read, so review them before submitting. The recipe is trusted and will replay on future ${input.scopeType === "utility" ? "utility" : "AHJ"} projects. ${FINAL_SUBMIT_GATE_SENTENCE}`,
+    done: `Learning complete — recipe trusted (${input.fieldsChecked} field(s) checked on the final page of ${input.pageCount}).`,
+  };
+}
+
 export function learnSignerName(db: AppDb, project: Pick<ProjectRecord, "clientId">): string {
   if (!project.clientId) return "";
   try {
@@ -394,9 +442,22 @@ export function learnSignerName(db: AppDb, project: Pick<ProjectRecord, "clientI
 export function buildPortalPlanner(
   db: AppDb,
   project: ProjectRecord,
-  opts: { portalType: string; scopeType?: "ahj" | "utility"; permitType?: "structural" | "electrical" },
+  opts: {
+    portalType: string; scopeType?: "ahj" | "utility"; permitType?: "structural" | "electrical"; track?: string | null;
+    /** The track whose ISSUER the planner's target jurisdiction names, when a caller keys on a view
+     *  other than the licence track's (a learn keyed on its stage's own view — learnIssuerTrack).
+     *  Omitted: `track`. */
+    issuerTrack?: string | null;
+  },
 ): { planner: (req: LearnPlanRequest) => Promise<LearnPlanResponse>; projectFields: Record<string, string> } {
-  const fieldValues = resolveRecipeFieldValues(db, project, opts.portalType);
+  // The filing this planner fills — the licence keys answer "the licence THIS permit takes".
+  const track = opts.track !== undefined ? opts.track
+    : opts.scopeType === "utility" ? "nem" : learnTrackFor(undefined, opts.permitType);
+  const issuerTrack = opts.issuerTrack !== undefined ? opts.issuerTrack : track;
+  // The planner's target jurisdiction and KB lookup are THIS track's issuer (projectForTrack — the
+  // same object when that is the project AHJ, and a view passed in stays itself).
+  project = projectForTrack(project, issuerTrack);
+  const fieldValues = resolveRecipeFieldValues(db, project, opts.portalType, track, issuerTrack);
   const projectFields: Record<string, string> = {};
   // SAFETY RULE 2: secrets never reach the LLM. Two layers:
   // (a) KEY filter — broad, not exact-name: parser-snapshot alias keys spread into
@@ -504,8 +565,56 @@ export function buildPortalPlanner(
       recoveryHint: req.recoveryHint,
       screenshotBase64: req.screenshotBase64,
     });
+    // A JOB VALUE BOX TAKES THE VALUATION, NOT THE CONTRACT (leak sweep 2026-09-28): whatever the
+    // planner chose for a box whose label asks for the work's valuation (the contract keys, or a
+    // typed figure), the learn draft files — and the recipe records — the declared valuation.
+    const fills = plan.fills.map((f) => {
+      const target = req.fields[f.index];
+      // A free-text box only: a valuation RANGE select ("$10,001 – $25,000") keeps its option.
+      if (target && (target.fieldType === "text" || target.fieldType === "other") && rebindsToValuation(String(target.label ?? ""), f.field)) {
+        return { selectorIndex: f.index, value: projectFields[DECLARED_VALUATION_FIELD] ?? "", field: DECLARED_VALUATION_FIELD };
+      }
+        // A PER-JOB QUESTION IS NEVER THE PLANNER'S PICK (dryrun-0928 B2). The prompt tells it every
+        // required dropdown MUST be answered, so with the job's ownership unanswered it chose
+        // "Customer-Owned" — and the learn froze that guess into a shared recipe. The one predicate
+        // (shared/src/perJobQuestions, the question bank's rule) decides the question from the
+        // control's own words and the portal's options; the job's answer is filed (the resolver's
+        // value, which renders the portal wording), or nothing — the box is left for a person and the
+        // run reports it as a required miss, which keeps the recipe from auto-trust. Same planner
+        // feeds replay gap-fill, so neither door guesses.
+        if (target && (target.fieldType === "select" || target.fieldType === "text" || target.fieldType === "other")) {
+          const hasOptions = Array.isArray(target.options) && target.options.length > 0;
+          // The control's own label — the text the save-time binder reads back off the recorded step.
+          // Decided from the CONTROL (its kind and the portal's options), never the planner's pick; a
+          // text box's own answer is the only evidence it has (and it never carries the ownership model).
+          const perJobKey = perJobAnswerKeyFor(String(target.label ?? ""), hasOptions
+            ? { control: perJobControlOfField(target), options: target.options }
+            : { control: perJobControlOfField(target), answer: f.value });
+          if (perJobKey) return { selectorIndex: f.index, value: String(fieldValues[perJobKey] ?? "").trim(), field: perJobKey };
+        }
+      return { selectorIndex: f.index, value: f.value, field: f.field };
+    });
+    // A SERVICE-LINE QUANTITY BOX IS ANSWERED BY THE ONE COUNT, NEVER LEFT TO THE PAGE.
+    // Live City of Corvallis electrical, 2026-09-28: "Service 0-200 amps (qty)" kept the page's
+    // own 0 on a job whose plan set upgrades the service to a 200 A main — the planner filled
+    // the kVA row beside it and left this one, so the recipe carries no step for it and every
+    // replay would leave it 0 too. The label names the key (batteryServiceFeeder's recogniser,
+    // through feeBracketFieldForLabel); the count is batteryServiceFeeder.serviceLineQuantities.
+    // A known count ("0" included) is typed and recorded BOUND, so a replay types ITS project's
+    // count; an unknown count ("") is left to the planner and bound by label after the learn.
+    for (let i = 0; i < req.fields.length; i++) {
+      const target = req.fields[i];
+      if (!target || (target.fieldType !== "text" && target.fieldType !== "other")) continue;
+      const key = feeBracketFieldForLabel(String(target.label ?? ""));
+      if (key !== SERVICE_FEEDER_200A_FIELD && key !== SERVICE_FEEDER_400A_FIELD) continue;
+      const value = projectFields[key];
+      if (value == null || value === "") continue;
+      const at = fills.findIndex((f) => f.selectorIndex === i);
+      if (at >= 0) fills[at] = { selectorIndex: i, value, field: key };
+      else fills.push({ selectorIndex: i, value, field: key });
+    }
     return {
-      fills: plan.fills.map((f) => ({ selectorIndex: f.index, value: f.value, field: f.field })),
+      fills,
       advanceSelectorIndex: plan.advanceIndex,
       navigateSelectorIndex: plan.navigateIndex,
       finalSubmitSelectorIndex: plan.finalSubmitIndex,
@@ -584,27 +693,16 @@ export function buildLearnDraftTouch(input: {
   credentials: Array<{ portalUrl: string; usernameReference: string }>;
 }): DraftTouch | null {
   if ((input.createdBy || "") === "learn-benchmark") return null;
-  let host = "";
-  try { host = new URL(input.portalUrl).hostname.toLowerCase(); } catch { host = ""; }
-  const hit = input.credentials.find((c) => {
-    try { return new URL(c.portalUrl).hostname.toLowerCase() === host; } catch { return false; }
-  });
-  // A host miss with exactly ONE stored login mirrors getDecryptedCredentialAny: when a
-  // single credential is all the client has, it is unambiguous which account the draft
-  // will sit under. More than one and no host match means we honestly don't know — an
-  // empty account beats a guessed one in a cleanup ledger.
-  const account = hit?.usernameReference ?? (input.credentials.length === 1 ? input.credentials[0].usernameReference : "");
-  return {
-    at: new Date().toISOString(),
-    host,
+  // The one row builder (draftLedger.buildDraftTouch) — staging launches write through it too.
+  return buildDraftTouch({
     portalUrl: input.portalUrl,
-    account: String(account ?? ""),
     projectId: input.projectId,
+    credentials: input.credentials,
     // The replay self-test re-runs the LIVE portal in a fresh session, so one learn can
     // mint a SECOND draft — the purpose says so up front, mirroring the benchmark's.
     purpose: input.selfTestEnabled ? "auto-learn +selftest (up to 2 drafts)" : "auto-learn",
     note: `learn walks to the review screen and stops; never submitted (createdBy: ${input.createdBy || "unknown"})`,
-  };
+  });
 }
 
 // ── Test seams (AUTOPILOT_TEST_SEAMS=1 only): the browser learn and the LLM provider ──────────
@@ -692,6 +790,11 @@ export async function autoLearnPortal(
     /** Recipe discipline for THIS stage's track (recipeDisciplineForTrack). Authoritative
      *  over permitType — it is the same value the recipe lookup keys on. */
     discipline?: string;
+    /** THE STAGE'S OWN TRACK (split issuer — see learnIssuerTrack). A stage passes it, null for a
+     *  trackless stage; the learn then keys on exactly projectForTrack(project, track) — the view
+     *  that stage resolved and launched — never a view derived from discipline / permitType.
+     *  Omitted: derived from them (an operator's learn names the permit it is for). */
+    track?: string | null;
     /** Operator delegation: click the recorded final submit at review rather than leaving it.
      *  Honoured only alongside PORTAL_ALLOW_FINAL_SUBMIT=1, checked at the click itself. The
      *  self-seed IS the staging run for a portal with no trusted recipe yet, so without this a
@@ -722,7 +825,20 @@ export async function autoLearnPortal(
   // getProjectDetail is the canonical mapper; import lazily to avoid a cycle. A caller may pass
   // a pre-overlaid project (staging self-seed); otherwise load the canonical record.
   const { getProjectDetail } = await import("./repository");
-  const baseProject: ProjectRecord = input.project ?? getProjectDetail(db, projectId).project;
+  const loadedProject: ProjectRecord = input.project ?? getProjectDetail(db, projectId).project;
+  const scopeType = input.scope === "utility" ? "utility" : "ahj";
+  // A PERMIT LEARN IS THE ISSUER'S (split issuer): the recipe key, the KB row it writes back, the
+  // entity the host door judges and the planner's target jurisdiction are the agency that issues
+  // THIS track's permit (permitProcess.projectForTrack) — so a building learn on a county-AHJ project
+  // whose city issues building permits is saved under the CITY's key, where the next city job finds
+  // it. The same object when the issuer is the project AHJ; the staging self-seed already passes
+  // the view (a view of a view is itself). WHICH track's issuer: the STAGE's own when a stage called
+  // (learnIssuerTrack — a trackless stage keys on the project AHJ whose portal it launched, an MPU
+  // stage on the MPU issuer), else the permit the discipline / permit type names. A utility (NEM)
+  // learn: the project, untouched.
+  const baseProject: ProjectRecord = scopeType === "ahj"
+    ? projectForTrack(loadedProject, learnIssuerTrack(input))
+    : loadedProject;
   // Thread the requested permit discipline onto the project the LEARNER sees — the
   // deterministic ACA passes key jurisdiction-row (CITY=structural / COUNTY=electrical)
   // and record-type selection off project.permitType, which the stored record rarely
@@ -731,7 +847,6 @@ export async function autoLearnPortal(
     ? { ...baseProject, permitType: input.permitType }
     : baseProject;
 
-  const scopeType = input.scope === "utility" ? "utility" : "ahj";
   const portalUrl = (input.portalUrl || "").trim();
   if (!portalUrl) throw new HttpError(400, "portalUrl is required to learn a portal.");
   // RULE 5, BOTH WAYS, AND THE ENTITY — AT THE LEARN'S OWN DOOR, BEFORE ANYTHING ELSE. Every
@@ -811,12 +926,21 @@ async function autoLearnPortalInner(
   if (scopeType === "utility" && !(project.utility || "").trim()) throw new HttpError(400, "Project has no utility to key the recipe on.");
 
   const portalType = scopeType === "utility" ? "utility" : "AHJ";
+  // The filing this learn records: NEM, or the permit its discipline / permit type names (null =
+  // not named). Every value map below is resolved for it — the licence keys depend on it.
+  const learnTrack = scopeType === "utility" ? "nem" : learnTrackFor(input.discipline, input.permitType);
+  // WHOSE PERMIT this learn keys on (learnIssuerTrack): the view `project` already is. Every value
+  // map and the agency below read THIS track's issuer, so none of them re-derives a different view
+  // from the licence track (a trackless stage's "structural" permit type is not the building issuer).
+  const issuerTrack = scopeType === "utility" ? "nem" : learnIssuerTrack(input);
   // Secrets are stripped inside buildPortalPlanner — they never reach the LLM; the adapter
   // binds account/meter deterministically from the encrypted credential store.
   const { planner, projectFields } = buildPortalPlanner(db, project, {
     portalType,
     scopeType,
     permitType: input.permitType,
+    track: learnTrack,
+    issuerTrack,
   });
 
   // Credential lookup (B11): the portal's URL decides FIRST (host + first path segment), then
@@ -898,7 +1022,7 @@ async function autoLearnPortalInner(
       if (humanPatch.count === 1) {
         addAuditLog(db, projectId, "human", "operator", "portal.recipe_human_patch_started", { scope: scopeType });
       }
-      if (humanPatch.recipeId) appendHumanPatchSteps(db, humanPatch.recipeId, [step], projectFields);
+      if (humanPatch.recipeId) appendHumanPatchSteps(db, humanPatch.recipeId, [step], projectFields, project.clientId);
       else humanPatch.buffer.push(step);
     } catch { /* capture merge is best-effort — never disturb the operator's session */ }
   };
@@ -958,6 +1082,8 @@ async function autoLearnPortalInner(
         // The property's parcel (parser snapshot) — the ACA work-location pass searches by it,
         // by the panel's Search button, when the address finds nothing (Lee County).
         parcel: projectFields.parcelNumber || "",
+        // A dialog that asks ONE "Full Name" box (City of Corvallis) takes the owner's whole name.
+        fullName: projectFields.homeownerName || "",
         firstName: projectFields.homeownerFirstName || "",
         lastName: projectFields.homeownerLastName || "",
         email: projectFields.homeownerEmail || "",
@@ -972,6 +1098,12 @@ async function autoLearnPortalInner(
         // here from the row, not from projectFields (which layers the plan-set snapshot under the
         // client overlay). No signer = the typed signature step pauses for the operator.
         signerName: learnSignerName(db, project),
+        // "Full Name" / "Name of Business" (City of Corvallis's Applicant dialog) — the SAME keys
+        // the operator-approved building recipe binds that dialog to (installerContactName /
+        // installerCompanyName). Without them the pass typed no name, the dialog refused its
+        // save, and the planner filled the dialog with a mix of the homeowner and the company.
+        fullName: projectFields.installerContactName || "",
+        companyName: projectFields.installerCompanyName || "",
         firstName: projectFields.installerFirstName || "",
         lastName: projectFields.installerLastName || projectFields.installerCompanyName || "",
         email: projectFields.installerEmail || "",
@@ -1039,7 +1171,7 @@ async function autoLearnPortalInner(
       policyProfile:
         process.env.PORTAL_POLICY_DEFAULTS === "off" || process.env.PORTAL_POLICY_DEFAULTS === "0"
           ? "none"
-          : scopeType === "utility" ? "residential_nem" : "none",
+          : scopeType === "utility" ? "residential_nem" : "permit_standard",
       // The keys a REPLAY can resolve. The planner picks the field each fill binds to, and
       // a key that exists only in the planner's richer map (or one it invents outright)
       // fills "" forever. Handing the adapter the replay map stops a dead binding being
@@ -1059,7 +1191,7 @@ async function autoLearnPortalInner(
       // but empty TODAY still binds — replay fills it for the project that has it, and the
       // required-field sweep reports the blank rather than the recipe hiding it.
       bindableFields: Array.from(new Set([
-        ...Object.keys(resolveRecipeFieldValues(db, project, portalType)),
+        ...Object.keys(resolveRecipeFieldValues(db, project, portalType, learnTrack, issuerTrack)),
         ...Object.keys(RECIPE_FIELD_DESCRIPTIONS),
       ])),
       // Identity for the address-disambiguation grid: which city/ZIP this project is in, whose
@@ -1068,12 +1200,8 @@ async function autoLearnPortalInner(
       allowFinalSubmit: input.allowFinalSubmit === true, allowConsentAccept: input.allowConsentAccept,
       // Only an explicit "no battery" arms the guard. An unknown stays the planner's call —
       // silence about a battery is not the same as the project stating there isn't one.
-      hasBattery: (() => {
-        const raw = String((project.parserSnapshot as Record<string, unknown> | undefined)?.hasBattery ?? "").trim();
-        if (/^(no|false|none|n)$/i.test(raw)) return false;
-        if (/^(yes|true|y)$/i.test(raw)) return true;
-        return undefined;
-      })(),
+      // The one tri-state parse (shared batteryControls) the learner and replay read too.
+      hasBattery: parseHasBattery((project.parserSnapshot as Record<string, unknown> | undefined)?.hasBattery),
       siteIdentity: {
         city: project.city,
         zip: project.zip,
@@ -1084,7 +1212,11 @@ async function autoLearnPortalInner(
         // city-structural / county-electrical convention. Production 2026-09-27: City of
         // Jefferson's permits are Marion County's. AHJ scope only — an interconnection portal
         // has no permit agency. null = unknown, and the learner keeps the convention.
-        issuingAgency: scopeType === "utility" ? null : (issuingAgencyFor(project, learnTrackFor(input.discipline, input.permitType))?.value ?? null),
+        // The issuer track's answer. A TRACKLESS stage (issuerTrack null) still asks about the permit
+        // its permit type names while that permit's view IS this project (no split: the answer it
+        // always got — the lookup's own words for that permit), never another agency's.
+        issuingAgency: scopeType === "utility" ? null : (issuingAgencyFor(project,
+          issuerTrack === null && learnTrack && projectForTrack(project, learnTrack) === project ? learnTrack : issuerTrack)?.value ?? null),
       },
       onProgress: input.onProgress,
       onHumanStep,
@@ -1126,6 +1258,8 @@ async function autoLearnPortalInner(
     }
     if (!headlessForAttempt) {
     logger.info("auto-learn", "portal refused a headless browser — retrying with a real window", { portal: portalUrl });
+    // A SECOND BROWSER IS A SECOND POSSIBLE DRAFT (dryrun-0928 B11): its own ledger row, before it opens.
+    if (draftTouch) recordDraftTouch({ ...draftTouch, at: new Date().toISOString(), purpose: `${draftTouch.purpose} (headed retry — a second browser; may leave a second draft)` });
     try {
       const retried = await browserLimiter(runLearn);
       // Keep the retry only if it actually got further; a second refusal should not erase
@@ -1136,6 +1270,15 @@ async function autoLearnPortalInner(
       }
     } catch { /* the headless result stands */ }
     }
+  }
+  // THE LEARN'S DRAFT, NAMED (dryrun-0928 B11). The ledger row above says a draft may exist; the page
+  // the learn stopped on names it when its URL carries the portal's key (PowerClerk's ProjectId).
+  // Read through the one identifier filter; an Accela wizard URL names none and nothing claims one.
+  if (draftTouch && learn?.applicationUrl) {
+    try {
+      const ref = draftReferenceFromUrl(String(learn.applicationUrl));
+      if (ref.id || ref.link) annotateDraft(projectId, ref.id || ref.link, ref.id ? "auto-learn draft — the portal's own reference, read off the page the learn stopped on" : "auto-learn draft — the page the learn stopped on (its URL carries no record key)");
+    } catch { /* the ledger row stands without a reference */ }
   }
 
   // NEAR-MISS credential diagnosis. "No stored credential was found" is technically
@@ -1184,8 +1327,15 @@ async function autoLearnPortalInner(
   // every planner/verifier Claude call this run: latency, tokens, cache hits, stop_reason) and
   // result.json (the outcome + verification signals). Diagnostics only — never fails the learn.
   const debugDir = learn.debugDir ?? null;
+  // WHAT THE PERSON AT THE REVIEW PAGE MUST KNOW (dryrun-0928 B3 / B14): answers the portal may not
+  // have saved, and the portal's own background calls the lockdown held back — carried into EVERY
+  // outcome's message, since the learn's own message is not what the operator reads.
+  const handoffNotes = (learn.reviewHandoffNotes ?? []).filter(Boolean);
   const finalize = (r: Omit<AutoLearnResult, "debugDir">): AutoLearnResult => {
-    const result: AutoLearnResult = { ...r, debugDir };
+    const withNotes = handoffNotes.length && !handoffNotes.every((n) => String(r.message ?? "").includes(n))
+      ? { ...r, message: `${r.message} ${handoffNotes.join(" ")}` }
+      : r;
+    const result: AutoLearnResult = { ...withNotes, debugDir };
     if (debugDir) {
       try {
         fs.writeFileSync(path.join(debugDir, "llm-calls.json"), JSON.stringify({
@@ -1283,7 +1433,42 @@ async function autoLearnPortalInner(
     createdBy: input.createdBy || "auto-learn",
     // Claims this discipline's own row instead of resetting the AHJ's other one.
     discipline: learnDiscipline,
+    // THE ROW THIS LEARN PROTECTS IS THE ROW IT WRITES (dry run 2026-09-28, B9): findAnyRecipeForProject
+    // above resolved this entity's recipe (exact key, else the name/identity alias). Without this the
+    // recorder's own exact-key lookup missed a "Pacific Power" recipe for a "PacifiCorp" project and
+    // inserted a duplicate shared recipe beside it.
+    existingRecipeId: existingRecipe?.id ?? null,
   });
+
+  // THE PORTAL SAID THIS ADDRESS IS NOT SERVED THERE (portal-truth D5, Corvallis 2026-09-28: Oregon
+  // ePermitting answered "No Building services were returned for this address", and the learner
+  // walked four more pages and saved a recipe keyed to Corvallis on that host). The learner stops
+  // on the portal's own words (learn.notServed — its own field, never sniffed from the message);
+  // here NOTHING learned on that host is kept under this AHJ: the key's row is saved as REFUSED
+  // (no steps, flagged with the words), or its existing row on that host is flagged — never a
+  // complete recipe on another host touched. The next stage then neither lends this host as a
+  // draft nor takes the statewide fallback onto it (statewideEvidence reads the flag).
+  const notServedWords = notServedInResult(learn);
+  if (notServedWords) {
+    const where = scopeType === "utility" ? (project.utility || "this utility") : (project.ahj || "this AHJ");
+    let host = portalUrl;
+    try { host = new URL(portalUrl).hostname.replace(/^www\./, ""); } catch { /* keep the URL */ }
+    const refusal = recordPortalNotServed(db, {
+      scopeType, state: project.state, ahj: project.ahj, utility: project.utility, discipline: learnDiscipline,
+      portalUrl, quote: notServedWords, projectId, createdBy: input.createdBy || "auto-learn",
+    });
+    const kept = refusal.action === "saved_refused"
+      ? " A refused record was saved for it, so the next stage cannot reuse this host."
+      : refusal.action === "flagged" ? ` Its recipe on ${host} was refused.` : ` Its recipe for another portal was left as it was.`;
+    const msg = `${host} says this address is not served there ("${notServedWords}") — this is not where ${where} files. Nothing learned on ${host} was kept for ${where}.${kept} A person confirms ${where}'s own portal (save it on the knowledge-base profile) and re-stages.`;
+    addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_not_served", { scope: scopeType, portalHost: host, action: refusal.action, recipeId: refusal.recipeId });
+    emitDone(msg);
+    return finalize({
+      recipe: refusal.recipeId ? getPortalRecipe(db, refusal.recipeId) : existingRecipe!,
+      status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: false, pageTrace: learn.pageTrace ?? [],
+      verification: { accurate: false, confidence: "low", matches: [], issues: [msg] }, message: msg,
+    });
+  }
 
   if (learn.pauseReason) {
     // What the operator reads. An MFA/CAPTCHA is a "challenge"; the e-signature pauses
@@ -1307,7 +1492,7 @@ async function autoLearnPortalInner(
         `Learning paused ${pauseWhat} Kept the existing draft, which got further (${existingDepth} field(s) vs ${substantive(learn.steps as Array<{ action?: unknown }>)}).`);
     }
     const stub = mkStub();
-    savePortalRecipeSteps(db, stub.id, learn.steps, { status: "recording", notes: `Auto-learn paused: ${learn.pauseReason}. Resume manually.` });
+    savePortalRecipeSteps(db, stub.id, withholdClientLicenceLiteralsFor(db, learn.steps, project.clientId), { status: "recording", notes: `Auto-learn paused: ${learn.pauseReason}. Resume manually.` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_paused", { scope: scopeType, pauseReason: learn.pauseReason });
     emitDone(`Learning paused ${pauseWhat}`);
     return finalize({ recipe: getPortalRecipe(db, stub.id), status: "paused", pauseReason: learn.pauseReason, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [], verification: { accurate: false, confidence: "low", matches: [], issues: [] }, message: `Learning paused ${pauseWhat} The partial recipe was saved as a draft.` });
@@ -1322,7 +1507,7 @@ async function autoLearnPortalInner(
         `Could not learn the portal automatically: ${learn.message} Kept the existing draft, which got further (${existingDepth} field(s) vs ${substantive(learn.steps as Array<{ action?: unknown }>)}).`);
     }
     const stub = mkStub();
-    savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn could not complete: ${learn.message}` });
+    savePortalRecipeSteps(db, stub.id, withholdClientLicenceLiteralsFor(db, learn.steps, project.clientId), { status: "needs_rerecord", notes: `Auto-learn could not complete: ${learn.message}` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType });
     emitDone("Learning failed — the portal could not be learned automatically.");
     return finalize({ recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [], verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Could not learn the portal automatically: ${learn.message}. Record it manually instead.` });
@@ -1353,7 +1538,7 @@ async function autoLearnPortalInner(
     }
     const stub = mkStub();
     emitDone(`Learning failed — ${why}.`);
-    savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn did not stage cleanly: ${why}. ${learn.message}` });
+    savePortalRecipeSteps(db, stub.id, withholdClientLicenceLiteralsFor(db, learn.steps, project.clientId), { status: "needs_rerecord", notes: `Auto-learn did not stage cleanly: ${why}. ${learn.message}` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType, reason: !reachedReview ? "no_review" : "premature_review" });
     return finalize({ recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [], verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Nothing was staged — ${why}. ${learn.message}` });
   }
@@ -1385,9 +1570,11 @@ async function autoLearnPortalInner(
     bodyText: reviewBody,
   });
   // Vision verification can be disabled (PORTAL_VISION_VERIFY=0). NOTE: the review screenshot
-  // is a RAW render and may contain portal-rendered PII (account/meter numbers shown as text)
-  // that the DOM/text path masks — it is sent to the model and written to data/screenshots, so
-  // treat it as sensitive.
+  // is a render of the portal and may contain portal-rendered PII — it is sent to the model and
+  // written to data/screenshots, so treat it as sensitive. The PROJECT's own account/meter
+  // numbers (which a learn now types, by name) are masked in it by the learner (withSecretMask:
+  // the boxes it typed plus any element echoing one; no picture at all if the mask cannot be
+  // built) — the vision prompt is told the pink boxes are deliberate.
   let visionVerification: typeof textVerification | null = null;
   if (learn.reviewScreenshotBase64 && process.env.PORTAL_VISION_VERIFY !== "0") {
     try {
@@ -1395,8 +1582,8 @@ async function autoLearnPortalInner(
         screenshotBase64: learn.reviewScreenshotBase64,
         mimeType: "image/png",
         // The SAME filtered list the text verifier gets (it used to receive every scraped field,
-        // account and meter numbers included). The screenshot itself is still a raw render —
-        // masking it is the L2 work, recorded as open.
+        // account and meter numbers included). The screenshot masks the project's own secrets
+        // (learner withSecretMask); any OTHER portal-rendered PII in it is still a raw render.
         reviewFields: nonSensitiveReviewFields,
         projectFields,
         bodyText: reviewBody,
@@ -1407,7 +1594,8 @@ async function autoLearnPortalInner(
   // The deterministic check returns a single "reviewScreen" SENTINEL when it could read
   // nothing — that is an honest "couldn't read", NOT a per-field mismatch, so don't let it
   // masquerade as one or veto trust.
-  const allDetMismatches = compareReviewFields(learn.reviewScreen.fields, project, reviewBody);
+  // A utility identifier is checked only when this learn typed it (B8): the learn's own bindings.
+  const allDetMismatches = compareReviewFields(learn.reviewScreen.fields, project, utilityIdentifiersEnteredBySteps(learn.steps), reviewBody);
   const isUnreadableSentinel = allDetMismatches.length === 1 && allDetMismatches[0].field === "reviewScreen";
   // Exclude sensitive fields (accountNumber, meterNumber) from trust-gating: they're bound at
   // replay from the credential store, so a portal that masks them on the review screen must
@@ -1470,8 +1658,14 @@ async function autoLearnPortalInner(
   // every future project. Convert such literals into reusable field bindings; a literal that
   // matches project data AMBIGUOUSLY (>1 field) can't be safely auto-bound, so treat it as a hard
   // blocker — never promote a contaminated recipe to trusted.
-  const { steps: boundSteps, bound: boundLiterals, ambiguous: ambiguousLiterals, portalConstants } =
-    convertLiteralsToBoundFields(learn.steps, projectFields);
+  const { steps: boundLiteralSteps, bound: boundLiterals, ambiguous: ambiguousLiterals, portalConstants } =
+    // Company attestations are stamped with THIS job's client first (recipeReplayBinding R8 answers
+    // them only for that client; any other company's job leaves them for a person).
+    convertLiteralsToBoundFields(stampCompanyAttestations(learn.steps, project.clientId), projectFields);
+  // THE LEARN COMPANY'S LICENCE NEVER STAYS A LITERAL (withholdClientLicenceLiterals, licences skeptic L1):
+  // a recorded value equal to ANY licence this job's client holds, still unbound after the pass above,
+  // is withheld for a person — never replayed on another company's job.
+  const boundSteps = withholdClientLicenceLiteralsFor(db, boundLiteralSteps, project.clientId);
   if (ambiguousLiterals.length) {
     verification.issues.push(
       `Recorded literal value(s) match this project's data but could not be uniquely bound to a field (${ambiguousLiterals.slice(0, 6).map((a) => `"${a.value}"→${a.candidates.join("/")}`).join(", ")}). These would replay verbatim onto other projects — review before trusting.`,
@@ -1504,7 +1698,7 @@ async function autoLearnPortalInner(
   // model) and used to inject `exportLimiting`. A step bound to a learn-only key passes a
   // check against this map and still resolves to "" on every replay — the precise hole that
   // makes a recipe trusted and non-functional. resolveRecipeFieldValues IS the replay map.
-  const replayFields = resolveRecipeFieldValues(db, project, portalType);
+  const replayFields = resolveRecipeFieldValues(db, project, portalType, learnTrack, issuerTrack);
   const deadBindings = deadFieldBindings(boundSteps, replayFields);
   if (deadBindings.length) {
     verification.issues.push(
@@ -1605,7 +1799,7 @@ async function autoLearnPortalInner(
       // replay recipe in memory (same steps/url) without touching the DB.
       const baseRecipe: PortalRecipe = stub ? getPortalRecipe(db, stub.id) : { ...existingRecipe!, portalUrl: portalUrl || existingRecipe!.portalUrl };
       const recipeForReplay: PortalRecipe = { ...baseRecipe, steps: boundSteps };
-      const replayFieldValues = resolveRecipeFieldValues(db, project, portalType);
+      const replayFieldValues = resolveRecipeFieldValues(db, project, portalType, learnTrack, issuerTrack);
       // A REPLAY THAT CANNOT LOG IN IS NOT A TEST OF THE RECIPE.
       //
       // This call passed neither the credential, nor the browser profile, nor the portal's
@@ -1679,6 +1873,16 @@ async function autoLearnPortalInner(
     }, `Portal was filled and staged, but this pass did not verify cleanly (${verification.issues.slice(0, 2).join("; ") || "low confidence"}).`);
   }
   stub = stub ?? mkStub();
+  // What this learn checked, with its denominator, and the one sentence for the submit gate (B10).
+  const trustedWords = trustedLearnWording({
+    confidence: String(verification.overallConfidence),
+    fieldsChecked: verification.matches.length,
+    fieldsMatched: verification.matches.filter((m) => m.ok).length,
+    recordedFills: substantiveSteps,
+    pageCount: learn.pageCount ?? 0,
+    scopeType,
+    bindingNote,
+  });
   // DEPTH ON THIS PATH IS GUARDED IN THE WRITER, NOT HERE. This is the third and last place
   // that can bury a deeper draft — a run that reached review, filled four fields and failed
   // the trust gate lands here as "recording" and used to overwrite a 60-step draft — but the
@@ -1689,7 +1893,7 @@ async function autoLearnPortalInner(
   savePortalRecipeSteps(db, stub.id, boundSteps, {
     status: trusted ? "complete" : "recording",
     notes: trusted
-      ? `Auto-learned and verified (${verification.overallConfidence} confidence) on ${learn.pageCount} page(s).${bindingNote} Final submit recorded for the trusted-submit allowlist; never auto-clicked unless the operator opts in.`
+      ? trustedWords.note
       : `Auto-learned but NOT verified — review the captured fill and confirm before trusting.${bindingNote} Issues: ${verification.issues.join("; ") || "low confidence"}.`,
   });
   // The recipe row + steps now exist — route captured human fixes into it, and flush any
@@ -1697,7 +1901,7 @@ async function autoLearnPortalInner(
   // baseline steps can't overwrite them).
   humanPatch.recipeId = stub.id;
   if (humanPatch.buffer.length) {
-    try { appendHumanPatchSteps(db, stub.id, humanPatch.buffer.splice(0), projectFields); } catch { /* best-effort */ }
+    try { appendHumanPatchSteps(db, stub.id, humanPatch.buffer.splice(0), projectFields, project.clientId); } catch { /* best-effort */ }
   }
   // Submit observed in the pre-flush window (human corrected + submitted before the
   // recipe row landed) — apply the promotion now that the row exists.
@@ -1811,7 +2015,7 @@ async function autoLearnPortalInner(
     scope: scopeType, pageCount: learn.pageCount, confidence: verification.overallConfidence, finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [],
   });
 
-  emitDone(trusted ? "Learning complete — recipe verified and trusted." : "Learning complete — recipe saved as a draft pending your verification.");
+  emitDone(trusted ? trustedWords.done : "Learning complete — recipe saved as a draft pending your verification.");
   return finalize({
     recipe: getPortalRecipe(db, stub.id),
     status: trusted ? "trusted" : "draft",
@@ -1825,7 +2029,7 @@ async function autoLearnPortalInner(
       issues: verification.issues,
     },
     message: (trusted
-      ? `Portal learned and verified (${verification.overallConfidence} confidence). The recipe is trusted and will replay on future ${scopeType === "utility" ? "utility" : "AHJ"} projects. Final submit stays manual unless you opt this portal into trusted auto-submit.`
+      ? trustedWords.message
       : `Portal learned but needs your verification — open the captured fill and confirm it's correct before it's trusted. ${verification.issues.length ? "Flags: " + verification.issues.slice(0, 3).join("; ") : ""}`)
       + (learn.reachedReview && !resolveHeadless(input.headless)
         ? " The browser is open at the review screen — any field you fill or fix by hand there is recorded into the recipe automatically (patch-by-demonstration)."

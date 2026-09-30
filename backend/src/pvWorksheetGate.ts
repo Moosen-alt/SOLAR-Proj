@@ -216,19 +216,40 @@ export function pvWorksheetFindings(project: ProjectRecord, input: PvWorksheetGa
 // 200 A main is ordinary. More than one distinct value of the SAME kind is a finding. A statement
 // marked new ("(N)", "NEW") is not the existing gear, and a set that upgrades the service (MPU)
 // legitimately carries two panel ratings, so it is not checked. Applies in any state.
-export interface RatingStatement { amps: number; quote: string }
+//
+// NEW OR EXISTING IS THE STATEMENT'S OWN WORD (gates-proper C3). The guard used to look 14
+// characters back and needed NEW immediately before the amps, so a one-line's "N NEW 240V/125A
+// BUS BAR RATING ... (BACKUP LOAD PANEL)" — a voltage between the word and the amps — read as a
+// second EXISTING busbar beside "EXISTING 240V/200A BUS BAR RATING, MAIN SERVICE PANEL", and the
+// finding held every track of Brittany Reavis (6a1c2127) and Randal Rowland (b0ab5169). The
+// status now comes from the NEAREST status word inside the statement (back to the previous
+// comma / semicolon / sentence end, at most 60 characters): NEW / (N) -> not the existing gear;
+// EXISTING / (E) -> explicitly the existing gear; neither -> unmarked.
+export interface RatingStatement { amps: number; quote: string; /** The statement's own nearest status word said EXISTING / (E). */ explicitExisting?: boolean }
+const STATUS_WORD = /\(N\)|\bNEW\b|\(E\)|\bEXISTING\b|\bEXIST\b/gi;
+/** The nearest status word inside the statement that ends at `i`: "new" / "existing" / null. */
+export function statementStatusBefore(t: string, i: number): "new" | "existing" | null {
+  const back = t.slice(Math.max(0, i - 60), i);
+  // The statement starts after the last delimiter (",", ";", or a sentence-ending ". ").
+  const cut = Math.max(back.lastIndexOf(","), back.lastIndexOf(";"), back.lastIndexOf(". "));
+  const window = cut >= 0 ? back.slice(cut + 1) : back;
+  let last: string | null = null;
+  for (const m of window.matchAll(STATUS_WORD)) last = m[0];
+  if (!last) return null;
+  return /^\(N\)$|^NEW$/i.test(last) ? "new" : "existing";
+}
 export function serviceRatingStatements(text: string): { panel: RatingStatement[]; bus: RatingStatement[]; main: RatingStatement[] } {
   const t = String(text ?? "").replace(/\s+/g, " ");
   const out = { panel: [] as RatingStatement[], bus: [] as RatingStatement[], main: [] as RatingStatement[] };
   const take = (kind: keyof typeof out, re: RegExp) => {
     for (const m of t.matchAll(re)) {
       const i = m.index ?? 0;
-      const before = t.slice(Math.max(0, i - 14), i);
-      if (/\(N\)\s*$|\bNEW\s*$/i.test(before) || /^\(N\)|\bNEW\b/i.test(m[0])) continue;
+      const status = statementStatusBefore(t, i);
+      if (status === "new" || /^\(N\)|\bNEW\b/i.test(m[0])) continue;
       // A combiner / sub-panel / load centre has its own bus: it is not the service's.
       if (/\b(?:COMBINER|SUB[-\s]?PANEL|LOAD\s+CENT(?:ER|RE)|PV\s+PANEL|AC\s+PANEL|BACKUP|GATEWAY)\b/i.test(t.slice(Math.max(0, i - 40), i + m[0].length))) continue;
       const amps = Number(m.slice(1).find((g) => g) ?? NaN);
-      if (amps >= 60 && amps <= 800) out[kind].push({ amps, quote: t.slice(Math.max(0, i - 25), i + m[0].length + 25).trim() });
+      if (amps >= 60 && amps <= 800) out[kind].push({ amps, quote: t.slice(Math.max(0, i - 25), i + m[0].length + 25).trim(), explicitExisting: status === "existing" || /^\(E\)/i.test(m[0]) });
     }
   };
   take("panel", /\b(?:MSP|MAIN SERVICE PANEL|MAIN PANEL(?:BOARD)?)\s*(?:RATING)?\s*[:=]?\s*(?:\(E\)\s*)?(\d{2,3})\s*A(?:MPS?)?\b|\b(?:\(E\)\s*)?(\d{2,3})\s*A(?:MPS?)?\s+(?:\(E\)\s*)?(?:MSP|MAIN SERVICE PANEL)\b/gi);
@@ -239,6 +260,30 @@ export function serviceRatingStatements(text: string): { panel: RatingStatement[
 
 const SERVICE_UPGRADE = /\bMPU\b|\b(?:MAIN\s+)?(?:PANEL|SERVICE|MSP)\s+UPGRADE|\bUPGRADE(?:D)?\s+(?:THE\s+)?(?:EXISTING\s+)?(?:MSP|MAIN|SERVICE|PANEL)|\bREPLAC\w*\s+(?:THE\s+)?(?:EXISTING\s+|\(E\)\s*)?(?:MSP|MAIN SERVICE PANEL|MAIN PANEL)/i;
 
+/** The 705.12 reference for the JOB's own state — never the Iowa worksheet's (gates-proper C3: an
+ *  Oregon job's service-rating finding cited "NEC 2020 (as adopted by the State of Iowa)"). */
+function serviceRatingRef(project: ProjectRecord): CodeReference {
+  const st = String(project.state ?? "").trim().toUpperCase();
+  return {
+    code: st ? `NEC (as adopted by ${st})` : "NEC",
+    section: "705.12(B)",
+    title: "Load-side source connection — busbar and main breaker ratings",
+    adoptionScope: st ? `${st} electrical inspection, on the NEC edition ${st} adopts.` : "The NEC edition the jurisdiction adopts.",
+    sourceUrl: "",
+    note: "The 120% busbar calculation uses the EXISTING panel's bus and main breaker ratings.",
+  };
+}
+
+/**
+ * A BLOCKER ONLY ON AN UNAMBIGUOUS READING (gates-proper C3; uncertain-reading-must-not-block). The
+ * statements are regex readings of a merged text; a conflict holds the filing only when EVERY
+ * distinct value has a statement that itself says it is the existing gear ("(E)" / "EXISTING") —
+ * Roesler's "(E) 100A MSP" on the one-line against "(E) 200A MSP" on the site plan. Anything less
+ * (an unmarked statement: a new panel, a backup panel, a spec-sheet line whose status word the
+ * reader cannot see) is a WARNING naming both readings, for a person to verify — the final human
+ * review and the 705.12 QC still see it. The finding carries its own quotes as evidence, so it no
+ * longer borrows the SLD topic's "the one-line exists" as if that verified the conflict.
+ */
 export function serviceRatingConsistencyFindings(project: ProjectRecord, planText: string): ReviewerFinding[] {
   const out: ReviewerFinding[] = [];
   if (SERVICE_UPGRADE.test(planText)) return out;
@@ -247,10 +292,29 @@ export function serviceRatingConsistencyFindings(project: ProjectRecord, planTex
     const distinct = [...new Set(list.map((x) => x.amps))];
     if (distinct.length < 2) continue;
     const s = (project.parserSnapshot ?? {}) as Record<string, unknown>;
-    out.push(finding("city.elec.service-rating-mismatch", "blocker", `The set states more than one ${what}`,
-      `The plan set states the existing ${what} as ${distinct.map((a) => `${a} A ("${list.find((x) => x.amps === a)!.quote}")`).join(" and ")}. The one-line reads bus ${String(s.busRating ?? "?")} / main ${String(s.mainBreaker ?? "?")}; the 705.12 busbar math depends on the real existing gear.`,
+    const quoteFor = (a: number) => (list.find((x) => x.amps === a && x.explicitExisting) ?? list.find((x) => x.amps === a)!);
+    const unambiguous = distinct.every((a) => list.some((x) => x.amps === a && x.explicitExisting));
+    const f = finding("city.elec.service-rating-mismatch", unambiguous ? "blocker" : "warning", `The set states more than one ${what}`,
+      `The plan set states the existing ${what} as ${distinct.map((a) => `${a} A ("${quoteFor(a).quote}")`).join(" and ")}. The one-line reads bus ${String(s.busRating ?? "?")} / main ${String(s.mainBreaker ?? "?")}; the 705.12 busbar math depends on the real existing gear.`
+        + (unambiguous ? "" : " Not every one of these statements marks itself as the EXISTING gear (it may be new or backup equipment) — confirm which is the existing panel before filing."),
       "Make the one-line's service ratings match the existing equipment and the rest of the set, then re-run the busbar calculation.",
-      ["Photo or label of the existing service panel rating", "One-line service ratings", "705.12 calculation"]));
+      ["Photo or label of the existing service panel rating", "One-line service ratings", "705.12 calculation"]);
+    out.push({
+      ...f,
+      codeReferences: [serviceRatingRef(project)],
+      evidenceStatus: unambiguous ? "verified" : "weak",
+      evidenceFound: distinct.map((a) => ({
+        kind: "source_excerpt" as const,
+        label: `${what}: ${a} A${quoteFor(a).explicitExisting ? " (marked existing)" : " (not marked existing)"}`,
+        source: "plan set text",
+        excerpt: quoteFor(a).quote,
+        confidence: quoteFor(a).explicitExisting ? "high" as const : "low" as const,
+        pageHint: "",
+        screenshotPath: "",
+        verifier: "rule_engine" as const,
+        note: quoteFor(a).explicitExisting ? "The statement itself says it is the existing gear." : "The statement does not say whether this is the existing gear — a person should verify it.",
+      })),
+    });
   }
   return out;
 }

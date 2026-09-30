@@ -4,7 +4,33 @@ import type {OverlayField, SignaturePlacement} from "./ahjForms";
 
 // Public sources checked against the authority's forms pages. Exact byte hashes
 // prevent a revised PDF from silently inheriting old coordinates. No customer
-// data, signatures, or printed historical fee amounts belong in these maps.
+// data or signatures belong in these maps, and no fee amount goes into a MAP.
+//
+// THE ONE FEE EXCEPTION IS A SEED'S OWN PRINTED LADDER (`printedFees`, Marion E-01 — operator finding
+// 2026-09-27: Michael's E-01 printed Qty 1 and a blank Total, Subtotal, surcharge and TOTAL because no
+// county schedule is on file). It is the fee table printed on THAT hash's blank, read off the form
+// itself; the fill falls back to it only where no saved jurisdiction fee line is on file, only up to
+// the size the form prices without per-kVA math or plan review, and says so on the fill result. It is
+// never written to the fee store and never "verified" (hard rule 3) — a saved line always wins. A seed
+// whose printed table is known to be stale (Coos County, 1.70x under the adopted schedule) carries none.
+export interface PrintedFeeLadder {
+  discipline: "electrical";
+  /** The form's solar rows: inclusive upper bound in kVA (the same bounds as ahjForms.feeBracket), ascending. */
+  tiers: ReadonlyArray<{ readonly maxKva: number; readonly feeUsd: number }>;
+  /** Above this the form's own figures need per-kVA math and plan review: never computed. */
+  autoMaxKva: number;
+  /** "State surcharge (12% of permit fee)", as printed. */
+  stateSurchargePercent: number;
+  /** The seed's own authority ("marion county"), set by curatedPrintedFees. */
+  authority?: string;
+  /** Said on the fill result whenever the ladder priced the form — one sentence (the generic
+   *  CURATED_SAVED_FEE_NOTE is dropped from that fill's message, never said beside it). */
+  note: string;
+}
+/** The generic fee sentence every curated map's notes carry — unchanged since it was written, so a
+ *  stored row carries these exact words. ahjForms.fillLoadedForm drops this exact literal from the
+ *  fill message when the form's printed ladder priced it (the two would contradict each other). */
+export const CURATED_SAVED_FEE_NOTE = "Fee entries use the current saved jurisdiction lookup; printed rates may be historical.";
 export const CURATED_AHJ_FORMS = [
   {ahj:"tigard",state:"OR",formType:"building_application",formName:"City of Tigard Residential Building Permit Application",url:"https://www.tigard-or.gov/home/showpublisheddocument/42/639007759919470000",hash:"af2a97754e8300ce5341c316b4739a3e68df7da31688a4b993910f6894c784c7",documentDate:"01/25/2023 (printed footer)"},
   {ahj:"tigard",state:"OR",formType:"electrical_application",formName:"City of Tigard Electrical Permit Application",url:"https://www.tigard-or.gov/home/showpublisheddocument/44/637615268530600000",hash:"631bc73563f644c600b363c0f5f058b7a3d4eb8684551ac1e4a57a1a50fcb1b6",documentDate:"Rev 06/17/2015"},
@@ -17,7 +43,13 @@ export const CURATED_AHJ_FORMS = [
   // B-01S is the URL the lookup cited, E-01 was found on the county's forms listing. The B-01S
   // prints no revision date; the E-01 footer prints only "06/20" — do not invent a day.
   {ahj:"marion county",state:"OR",formType:"building_application",applicationKind:"prescriptive",formName:"Marion County Prescriptive Solar Photovoltaic Installation Permit Application (B-01S)",url:"https://www.co.marion.or.us/PW/BuildingInspection/Documents/B-01S%20Solar%20Prescriptive%20Installation%20Application%20Filleable.pdf",hash:"8c8daff4239868c9a156bcabf6e6690eb3677541b24c34ca7eec59bb8bd0a732",documentDate:""},
-  {ahj:"marion county",state:"OR",formType:"electrical_application",formName:"Marion County Renewable Electrical Energy Permit Application (E-01)",url:"https://www.co.marion.or.us/PW/BuildingInspection/Documents/E-01%20Renewable%20Energy%20Permit%20Application.pdf",hash:"bd723dfa527a18990d40ce9871ae20a8a31e5d9e85a383db610d69ed027948a4",documentDate:"06/20 (printed footer)"},
+  // Its FEE SCHEDULE block, as printed on this revision (backend/test/fixtures/marion-e-01.pdf): SOLAR
+  // 5 kva or less $79.00; 5.01 to 15 kva $94.00; 15.01 to 25 kva $156.00; in excess of 25 kva $156.00
+  // plus $6.25 per additional kva up to 100; over 100 kva $624.75; plan review 25% when the system
+  // exceeds 25 kva; state surcharge 12% of permit fee. Only the flat rows are carried (<= 25 kVA).
+  {ahj:"marion county",state:"OR",formType:"electrical_application",formName:"Marion County Renewable Electrical Energy Permit Application (E-01)",url:"https://www.co.marion.or.us/PW/BuildingInspection/Documents/E-01%20Renewable%20Energy%20Permit%20Application.pdf",hash:"bd723dfa527a18990d40ce9871ae20a8a31e5d9e85a383db610d69ed027948a4",documentDate:"06/20 (printed footer)",
+   printedFees:{discipline:"electrical",tiers:[{maxKva:5,feeUsd:79},{maxKva:15,feeUsd:94},{maxKva:25,feeUsd:156}],autoMaxKva:25,stateSurchargePercent:12,
+    note:"Fees are the schedule printed on this form (Marion County E-01, footer 06/20) because no saved Marion County electrical fee schedule is on file, so confirm the county's current fees before filing."}},
 ] as const;
 type CuratedSource = (typeof CURATED_AHJ_FORMS)[number];
 const curatedKey = (ahj: string) => String(ahj ?? "").trim().toLowerCase().replace(/^city of\s+/,"");
@@ -35,8 +67,22 @@ export function curatedFormSourcesFor(authority: string, state: string): Curated
 export function curatedFormSource(project: Pick<ProjectRecord,"ahj"|"state">,formType:string,kind?:"prescriptive"|"structural"|null){
  return curatedFormSourcesFor(project.ahj, project.state).find(f=>f.formType===formType&&(!kind||!curatedApplicationKind(f)||curatedApplicationKind(f)===kind));
 }
+/** The fee ladder PRINTED on this exact blank (by its sha256), else null. Keyed by the bytes, not by a
+ *  stored map, so a row stored before the ladder existed (Michael's E-01) reads it too. */
+export function curatedPrintedFees(bytes:Uint8Array):PrintedFeeLadder|null{
+ const hash=createHash("sha256").update(bytes).digest("hex");
+ const source=CURATED_AHJ_FORMS.find(f=>f.hash===hash);
+ // The ladder is the printed schedule of THIS seed's authority ("marion county"): ahjForms declines it
+ // when that authority's own undifferentiated schedule is on file (skeptic stage-forms-fee-2).
+ return source&&"printedFees" in source?{...(source.printedFees as PrintedFeeLadder),authority:source.ahj}:null;
+}
 export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
- const source=CURATED_AHJ_FORMS.find(f=>f.hash===createHash("sha256").update(bytes).digest("hex"));
+ return curatedFormMapForHash(createHash("sha256").update(bytes).digest("hex"),sourceUrl);
+}
+/** The same map, keyed by the blank's sha256 (a stored row's field_map.sourceHash) — so a stored row
+ *  reads the CURRENT map without re-hashing its blob (ahjForms.codeTemplateMapFor). */
+export function curatedFormMapForHash(sha256:string,sourceUrl:string){
+ const source=CURATED_AHJ_FORMS.find(f=>f.hash===sha256);
  if(!source)return null;
  const fields:OverlayField[]=[];
  const signatureFields:SignaturePlacement[]=[];
@@ -53,7 +99,7 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
  };
  if(source.formType==='electrical_application') requiredFields['owner email']='snapshot.homeownerEmail';
  const radioGroups:Record<string,{source:string;equals?:string;option:string}>={};
- let notes="Review listed missing details and obtain required signatures before filing. Mapped operator signing dates are filled only when the matching saved signature is applied. Owner-installation signatures are not auto-filled. Fee entries use the current saved jurisdiction lookup; printed rates may be historical. Owner mailing/contact details require actual owner information.";
+ let notes=`Review listed missing details and obtain required signatures before filing. Mapped operator signing dates are filled only when the matching saved signature is applied. Owner-installation signatures are not auto-filled. ${CURATED_SAVED_FEE_NOTE} Owner mailing/contact details require actual owner information.`;
  if(source.ahj==='marion county'){
   // Field names read off each blank's AcroForm (backend/test/fixtures/marion-*.pdf). Every text
   // field prints at 9 pt: the blanks declare auto-size (0 Tf), which set a 13-pt box's value at
@@ -96,7 +142,8 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
     Phone_2:'client.installerPhone',Email_2:'client.installerEmail','CCB License no':'client.ccbLicenseNumber','Electrical License no':'client.electricalLicenseNumber',
     'Supervising Electrician License no':'client.electricianLicenseNumber','Print name of signing supervisor':'client.electricalSupervisorName',
     // Solar rows only (the wind rows below them are another system). Qty is the kVA bracket the
-    // system's AC size falls in; the Total is the saved jurisdiction fee line, blank without one.
+    // system's AC size falls in; the Total is the saved jurisdiction fee line, else (<= 25 kVA) the
+    // ladder printed on this blank (curatedPrintedFees), else blank.
     '5 kva or less':'computed.kvaTier5Qty','7900':'computed.electricalTier5Total',
     '501 to 15 kva':'computed.kvaTier15Qty','9400':'computed.electricalTier15Total',
     '1501 to 25 kva':'computed.kvaTier25Qty','15600':'computed.electricalTier25Total',
@@ -108,7 +155,7 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
    requiredFields['supervising electrician license']='client.electricianLicenseNumber';
    requiredFields['electrical permit fee (the county schedule, when not on file)']='computed.electricalTotalFee';
    signatureFields.push({role:'electrician',page:0,x:99,y:134,width:200,height:18,label:'Signature of signing supervisor'});
-   notes="Marion County's own renewable-energy electrical application (the county issues the permit). The property-owner installation signature/date is never auto-filled. Systems over 25 kVA need the per-kVA line and plans review — not filled. "+notes;
+   notes="Marion County's own renewable-energy electrical application (the county issues the permit). The property-owner installation signature/date is never auto-filled. Fees: a saved Marion County fee schedule when one is on file, else the schedule printed on this form (systems up to 25 kVA; the fill says which). Systems over 25 kVA need the per-kVA line and plans review — not filled. "+notes;
   }
   for (const key of Object.keys(textFields)) fieldFontSizes[key]=/Tier|electrical(Subtotal|State|Total)/.test(textFields[key])?8:9;
  }else if(source.ahj==='coos bay'){

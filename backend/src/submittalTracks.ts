@@ -25,15 +25,23 @@ import type {
 } from "../../shared/src/types";
 import { findApplicationProfile, describePermitType, permitStructureAnswer, permitStructureIsCitedOrVerified, type PermitPrerequisiteStep, type PermitStructureAnswer } from "./applicationDocs";
 import { findAhjProcessProfile, jurisdictionKind, jurisdictionKindsCompatible } from "./processProfiles";
-import { recipeProfileKey } from "./portalRecipes";
+import { findAnyRecipeForProject, findCompleteRecipeForProject } from "./portalRecipes";
 import { detectPlatform } from "./publicPermitStatus";
 import { NEM_APPROVAL_OUTCOME, isNemApprovalOutcome, trackKind } from "./permitMonitor";
 import { HttpError } from "./httpError";
-import { isInformationalPageUrl, isUtilityPlatformUrl, portalHostOf, trackSafeUrl } from "./portalChannel";
-import { permitAnswerForTrack, permitProcessFor } from "./permitProcess";
+import { isInformationalPageUrl, isUtilityPlatformUrl, portalHostOf, recipeDisciplineForTrack, trackSafeUrl } from "./portalChannel";
+import { classifyChannelWords, normalizeAhjName, permitAnswerForTrack, permitChannelLabel, permitProcessFor, projectForTrack, trackIssuer } from "./permitProcess";
+import { statewideDecisionFor, statewideUrlRefusal } from "./statewideEvidence";
 import { utilityTrackPresentation } from "./utilityFilingLookup";
 import { nowIso } from "./time";
+import { hasMpuScope } from "./serviceScope";
 import { randomUUID } from "node:crypto";
+
+/** Words that claim the statewide portal ("Oregon ePermitting", "OR E-permitting") with no URL —
+ *  on a learned row, often the generic fallback's own words laundered in (portal-truth D2/D4). */
+function isStatewideClaimWithoutUrl(state: string | null | undefined, words: string): boolean {
+  return Boolean(words) && classifyChannelWords(state, words) === "statewide";
+}
 
 interface Row { [key: string]: unknown }
 const s = (v: unknown): string => (v == null ? "" : String(v));
@@ -82,24 +90,32 @@ export interface SubmittalTrackView extends SubmittalTrack {
  *  permit_type column) narrow through this. */
 export const SUBMITTAL_TRACK_TYPES = Object.keys(TRACK_LABELS) as SubmittalTrackType[];
 
-// Main-panel / service-upgrade scope detection — mirrors the reviewer's MPU callout.
-// Keyed on upgrade language (not "derate", a 705.12 remedy that isn't itself an MPU).
-function hasMpuScope(project: ProjectRecord): boolean {
-  const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
-  const text = [
-    snap.projectDescriptionText, snap.description, snap.scopeText, snap.electricalCalcText,
-    snap.sitePlanNotesText, snap.mpu, snap.serviceUpgrade,
-  ].map((v) => (v == null ? "" : String(v))).join(" ").toLowerCase();
-  return /\bmpu\b|main panel upgrade|main service panel upgrade|service (panel )?upgrade|\bmsp upgrade\b|panel upgrade|meter.?main upgrade/.test(text);
-}
+// Main-panel / service-upgrade scope detection: the ONE predicate (serviceScope.ts), which the
+// reviewer's MPU callout and the electrical fee lines read too.
 
-// Some AHJs fold the MPU into the electrical/combination permit (e.g. Beaverton:
-// "alteration (MPU, et cetera) can go under one electric trade permit"). When the AHJ
-// note says so, the MPU does NOT get its own track. Otherwise it does, so it's tracked.
-function mpuFoldedIntoElectrical(project: ProjectRecord): boolean {
+// THE MPU RIDES ON THE ELECTRICAL PERMIT (operator ruling 2026-09-28, City of Corvallis: the main
+// panel upgrade went on the electrical permit as its "Service 0-200 amps" line — "not a separate
+// permit"). The upgrade is filed with the job's electrical (or combination) permit unless the AHJ's
+// own process notes say it needs a permit of its own:
+//   - a separate / second / additional / another electrical permit or application for it (Wasco Co
+//     "mpu need to fill out separate epa", Hillsboro "two epas if you have an mpu");
+//   - or an electrical permit "required for" / "pulled for" the MPU where this job files ONE
+//     combination permit (Santa Fe "mpu requires electrical permit to be pulled", Wylie "if mpu pull
+//     an electrical") — a job that already files its own electrical permit carries it there.
+// A note that says it goes "under one electric trade permit" (Beaverton), or that negates the
+// separate permit, keeps it on the electrical permit. Read per note segment, so a negation or an MPU
+// mention in another sentence never borrows this one's words.
+const MPU_WORDS = /\bmpu\b|panel upgrade|service upgrade|service change/;
+function mpuNeedsOwnPermit(project: ProjectRecord, electricalFiledSeparately: boolean): boolean {
   const ahj = findAhjProcessProfile(project);
-  const notes = `${ahj?.reviewerNotes || ""} ${ahj?.otherRequirements || ""}`.toLowerCase();
-  return /\bmpu\b|panel upgrade|alteration/.test(notes) && /under one (electric|combination)|one electric trade permit|on (the )?electric(al)? (trade )?(permit|form)/.test(notes);
+  const notes = `${ahj?.reviewerNotes || ""} | ${ahj?.otherRequirements || ""}`.toLowerCase();
+  return notes.split(/[.;|\n]+/).some((segment) => {
+    if (!MPU_WORDS.test(segment)) return false;
+    if (/under one (electric|combination)|one electric trade permit/.test(segment)) return false;
+    if (/\b(?:not|no|never|without|doesn'?t|don'?t)\b[^,]{0,30}\b(?:separate|second|additional|another|own)\b/.test(segment)) return false;
+    if (/\b(?:separate|second|additional|another|two|its own)\s+(?:electric(?:al)?\s+)?(?:permits?|applications?|apps?|epas?)\b/.test(segment)) return true;
+    return !electricalFiledSeparately && /\b(?:requires?|required|need(?:s|ed)?|pull(?:ed)?)\b[^,]{0,30}\belectric(?:al)?\b/.test(segment);
+  });
 }
 
 /** Map a permit track to the permit_check_targets.target_type used by the poller. */
@@ -126,16 +142,16 @@ export function requiredTracks(project: ProjectRecord): SubmittalTrackType[] {
   // two permit tracks instead of one mislabelled "combo".
   // THE ONE ANSWER (permitStructureAnswer): "separate" only when a cited page, a person, a
   // hand-written profile, the operator's own unhedged note or a cited state rule says so.
-  if (permitStructureAnswer(project).structure === "separate") {
+  const separate = permitStructureAnswer(project).structure === "separate";
+  if (separate) {
     tracks.push("building", "electrical");
   } else {
     tracks.push("combo");
   }
 
-  // A main panel / service upgrade gets its OWN tracked permit when it's in scope and
-  // the AHJ doesn't fold it into the electrical/combination permit. Not every project
-  // has one — it only appears when the bot detects MPU scope.
-  if (hasMpuScope(project) && !mpuFoldedIntoElectrical(project)) {
+  // A main panel / service upgrade in scope is filed on the electrical/combination permit; it
+  // gets its OWN tracked permit only when the AHJ says it needs one (mpuNeedsOwnPermit).
+  if (hasMpuScope(project) && mpuNeedsOwnPermit(project, separate)) {
     tracks.push("mpu");
   }
   return tracks;
@@ -146,9 +162,11 @@ export function requiredTracks(project: ProjectRecord): SubmittalTrackType[] {
  *  that is a utility portal (rule 5) or an information page is never a permit channel. */
 function lookedUpPermitPortal(project: ProjectRecord, track: SubmittalTrackType): { url: string; sourceUrl: string; recordType: string } | null {
   const lk = permitProcessFor(project);
-  if (!lk?.permits?.length) return null;
+  // On a track view (projectForTrack) the permit's cited answer can come from the PROJECT's own
+  // lookup while the issuer has none of its own — ask for it before giving up on an empty lookup.
   const own = permitAnswerForTrack(project, track);
-  const pool = own ? [own] : track === "combo" || track === "permit" ? lk.permits : [];
+  if (!own && !lk?.permits?.length) return null;
+  const pool = own ? [own] : track === "combo" || track === "permit" ? (lk?.permits ?? []) : [];
   const found = pool
     .map((p) => ({ p, url: typeof p.portalUrl?.value === "string" ? p.portalUrl.value.trim() : "" }))
     .filter(({ p, url }) => url && /^https?:\/\//i.test(p.portalUrl.sourceUrl || "") && trackSafeUrl(track, url) && !isInformationalPageUrl(url));
@@ -174,6 +192,29 @@ function kbAhjRow(db: AppDb | null, project: ProjectRecord): Row | null {
   }
 }
 
+/** A PERSON'S VERIFIED PORTAL for this AHJ (same state, the AHJ's exact normalized name, ANY utility
+ *  column — the verified Corvallis row is keyed "or|city of corvallis|pacificorp", and a utility filter
+ *  hid it from the card while the stage's own KB read found it), when it fits this track and is not
+ *  an information page. "" otherwise. */
+function verifiedAhjPortalUrl(db: AppDb | null, project: ProjectRecord, track: SubmittalTrackType): string {
+  if (!db || !(project.ahj || "").trim()) return "";
+  try {
+    const key = normalizeAhjName(project.ahj);
+    const rows = db.query<Row>(
+      `SELECT ahj, portal_url, portal_name FROM permit_utility_knowledge
+        WHERE ahj IS NOT NULL AND ahj != '' AND verified_at IS NOT NULL AND verified_at != ''
+          AND (state = '' OR UPPER(state) = UPPER(?)) ORDER BY updated_at DESC`,
+      [project.state || ""],
+    ).filter((r) => normalizeAhjName(s(r.ahj)) === key);
+    for (const r of rows) {
+      for (const u of [s(r.portal_url).trim(), s(r.portal_name).trim()]) {
+        if (/^https?:\/\/\S+$/i.test(u) && trackSafeUrl(track, u) && !isInformationalPageUrl(u)) return u;
+      }
+    }
+  } catch { /* table missing on an old schema */ }
+  return "";
+}
+
 /**
  * WHERE THIS TRACK IS FILED, and how that is known. A portal / "no portal, paper" / record type
  * the per-job lookup FOUND reaches the card (new-AHJ e2e: Iowa City's EnerGov URL and Waltham's
@@ -186,10 +227,21 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
     const u = utilityTrackPresentation(db, project);
     return { channel: u.channel, basis: u.basis, portalUrl: u.portalUrl };
   }
+  // THE LABEL IS THE RESOLVED PORTAL'S HOST (portal-truth D4, permitProcess.permitChannelLabel):
+  // "Oregon ePermitting (Accela)" only on the statewide host; an AHJ's own Accela tenant is
+  // "Accela Citizen Access (<AHJ>'s own portal)"; anything else keeps "Online portal".
+  const labelFor = (url: string) => permitChannelLabel(project.state, project.ahj, url) ?? "Online portal";
+  // A PERSON'S VERIFIED PORTAL FOR THIS AHJ OUTRANKS every derived answer (hard rule 3 — the same
+  // precedence the stage's fitUrl gives it). Corvallis's card read "Oregon ePermitting (Accela)"
+  // beside a verified row naming the city's own tenant.
+  const verifiedUrl = verifiedAhjPortalUrl(db, project, track);
+  if (verifiedUrl) {
+    return { channel: `${labelFor(verifiedUrl)}: ${verifiedUrl} (verified by a person)`, basis: "verified", portalUrl: verifiedUrl };
+  }
   const found = lookedUpPermitPortal(project, track);
   if (found) {
     return {
-      channel: `Online portal: ${found.url}${found.recordType ? ` — record type "${found.recordType}"` : ""} (per-job lookup, cited: ${found.sourceUrl})`,
+      channel: `${labelFor(found.url)}: ${found.url}${found.recordType ? ` — record type "${found.recordType}"` : ""} (per-job lookup, cited: ${found.sourceUrl})`,
       basis: "cited",
       portalUrl: found.url,
     };
@@ -204,6 +256,17 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
   if (noPortal) {
     return { channel: `No online application portal found — ${noPortal.slice(0, 200)} (per-job lookup; verify on the AHJ site)`, basis: "researched", portalUrl: "" };
   }
+  // THE STATEWIDE PORTAL, ONLY ON EVIDENCE (portal-truth D1) — the same decision the stage makes, so
+  // the card and the stage can never disagree. Withheld → the card falls through to what is known.
+  const statewide = statewideDecisionFor(db, project, track);
+  if (statewide && statewide.url !== null && trackSafeUrl(track, statewide.url)) {
+    const cited = statewide.basis.origin === "lookup";
+    return {
+      channel: `${labelFor(statewide.url)}: ${statewide.url} (${cited ? `per-job lookup, cited: ${statewide.basis.sourceUrl}` : `${String(statewide.basis.quote).slice(0, 160)} — verify`})`,
+      basis: cited ? "cited" : "profile",
+      portalUrl: statewide.url,
+    };
+  }
   const profile = findApplicationProfile(project);
   const method = describePermitType(profile).submissionMethod || "";
   if (method && !/^\s*unknown/i.test(method)) {
@@ -214,8 +277,15 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
   if (kb) {
     const verified = s(kb.verified_at).trim() !== "";
     const url = s(kb.portal_url).trim();
-    const safeUrl = url && trackSafeUrl(track, url) && !isInformationalPageUrl(url) ? url : "";
-    const how = s(kb.submission_method).trim() || s(kb.portal_name).trim();
+    // A statewide URL on a row, for an AHJ whose evidence says it files elsewhere, is not shown as
+    // its portal — the stage refuses it too (statewideUrlRefusal, the one predicate; D1).
+    const safeUrl = url && trackSafeUrl(track, url) && !isInformationalPageUrl(url)
+      && (verified || !statewideUrlRefusal(db, project, track, url, statewide)) ? url : "";
+    // A resolved URL is labelled by its host; the row's own words (which, on a learned row, can be
+    // the generic fallback's "Oregon ePermitting") never earn the statewide label (D4).
+    const words = s(kb.submission_method).trim() || s(kb.portal_name).trim();
+    const how = safeUrl ? (permitChannelLabel(project.state, project.ahj, safeUrl) ?? (words || "Online portal"))
+      : isStatewideClaimWithoutUrl(project.state, words) ? "" : words;
     if (safeUrl || how) {
       return {
         channel: `${how || "Online portal"}${safeUrl ? `: ${safeUrl}` : ""} (${verified ? "verified by a person" : "researched — verify on the AHJ site"})`,
@@ -225,6 +295,43 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
     }
   }
   return { channel: "Unknown — verify on the AHJ site", basis: "unknown", portalUrl: "" };
+}
+
+/** HOW THIS TRACK IS FILED, AS A KIND (operator 09-28: "City of Waltham only does in-person permit
+ *  submission ... ensure they're bold enough to know, same with email submissions as it will require
+ *  us to go outside of the submission tool"). ONE answer, read from the channel resolution: a portal
+ *  URL on file is a portal; otherwise the channel's own words decide in-person / email / mail; else
+ *  unknown. "offTool" = a person must deliver the packet outside this tool. */
+export type TrackChannelKind = "portal" | "in_person" | "email" | "mail" | "unknown";
+export function channelKindOf(res: { channel: string; portalUrl: string }): TrackChannelKind {
+  if (res.portalUrl) return "portal";
+  const t = String(res.channel || "");
+  // A guess is not a finding: "unknown — likely in-person ..." / "not yet identified" stay unknown.
+  if (/^\s*unknown\b/i.test(t) || /\bnot yet identified\b/i.test(t)) return "unknown";
+  // A portal named or linked (a URL, a platform name, "portal", "online") and not negated is a portal —
+  // "Oregon ePermitting (Accela)", "PowerClerk", a Tyler EnerGov self-service link, "Portland DevHub".
+  const negated = /\bno online\b|\bno (?:application )?portal\b|\bnot (?:online|through a portal)\b/i.test(t);
+  // AN IN-PERSON CLAUSE WINS (leak sweep, 2026-09-28): Bernalillo County's seeded method reads "BPA: In
+  // person EPA: Bernalillo County accela" — the building permit is filed at the counter, and the
+  // platform word further along made the whole track read "portal", so no in-person banner showed.
+  // Tested before the platform words; a negated clause ("no in-person submittals") is not one.
+  const inPerson = /\bin[\s-]?person\b|\bdrop(?:ped)?[\s-]?off\b|\bover[\s-]the[\s-]counter\b|\bat the counter\b|\bwalk[\s-]?in\b|\bpaper (?:application|submi\w*|drop)/i;
+  // READ CLAUSE BY CLAUSE (forms skeptic note 1): an in-person clause that REFUSES in-person ("In-person
+  // submittals are not accepted; apply online", "Paper applications are no longer accepted — apply
+  // online", "the permit counter is closed") is not an in-person channel at all; one that ALLOWS it
+  // beside another channel ("Apply online; in-person drop off also accepted") does not outrank the
+  // portal — it is only the fallback when no portal is named.
+  const clauses = t.split(/[;.\n|]+|\s[—–-]\s/).map((c) => c.trim()).filter(Boolean);
+  const refusesInPerson = (c: string): boolean => /\bnot\s+(?:be\s+)?accepted\b|\bno\s+longer\b|\bclosed\b|\b(?:no|not)\s+(?:accepted\s+)?(?:in[\s-]?person|walk[\s-]?in|drop[\s-]?off)\b/i.test(c);
+  const inPersonClauses = clauses.filter((c) => inPerson.test(c) && !refusesInPerson(c));
+  if (inPersonClauses.some((c) => !/\balso\s+accepted\b/i.test(c))) return "in_person";
+  // "online" only as FILING online — Waltham's "permit fees payable online" is paying, not filing.
+  if (!negated && (/https?:\/\//i.test(t) || /\b(?:portal|accela|e-?\s?permitting|energov|powerclerk|devhub|iworq|citizenserve|etrakit|opengov|self[\s-]?service)\b/i.test(t)
+    || /\bonline (?:application|submi\w*|filing|permit(?:ting)? (?:system|application))\b|\b(?:apply|submit(?:ted)?|file[ds]?) online\b/i.test(t))) return "portal";
+  if (inPersonClauses.length) return "in_person";
+  if (/\be-?mail(?:ed|ing)?\b|\b[\w.+-]+@[\w-]+\.[\w.-]+\b/i.test(t)) return "email";
+  if (/\b(?:by|via|through the) (?:us )?(?:postal )?mail\b|\bmail(?:ed)? to\b|\bpostal\b/i.test(t)) return "mail";
+  return "unknown";
 }
 
 /** A tracking target's portal_name: the found portal's host, else the channel without its
@@ -357,6 +464,13 @@ export function isTrackDone(db: AppDb, projectId: string, track: SubmittalTrackT
   if (own) return targetFinishedTrack(db, track, own);
   if (pool.length === 0 || pool.length < poolDemand) return false;
   return pool.every((r) => targetFinishedTrack(db, track, r));
+}
+
+/** Does this track have a TRACKED filing — its own tagged target, or pool targets it draws on?
+ *  (A required track with none is unknown, not "in review": nobody has told us it was filed.) */
+export function trackHasFiling(db: AppDb, projectId: string, track: SubmittalTrackType, required: readonly SubmittalTrackType[]): boolean {
+  const { own, pool } = trackTargets(db, projectId, track, required);
+  return Boolean(own) || pool.length > 0;
 }
 
 // PermitCheckOutcome → track status. Issued-family wins; corrections surface next.
@@ -577,19 +691,62 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
     const state = readTrackState(db, project.id, type, required);
     const status = deriveStatus(state);
     const category = categoryFor(type);
-    const resolved = channelResolution(db, type, project);
+    // A PERMIT CARD IS ITS ISSUER'S (split issuer): channel, recipe and portal on file are the agency
+    // that issues THIS track's permit — the same view staging stages with (projectForTrack; the
+    // project itself when that is the project AHJ). The utility card: the project.
+    const issuerProject = category === "permit" ? projectForTrack(project, type) : project;
+    const issuer = category === "permit" ? trackIssuer(project, type) : undefined;
+    const resolved = channelResolution(db, type, issuerProject);
     const channel = resolved.channel;
     // Prerequisites precede the building-side filing (the one that goes to the other office's
     // stamp first); on a single-permit project, that one permit.
     const prerequisites = category === "permit" && type !== "electrical" && type !== "mpu" ? answer.prerequisites : [];
 
-    // Look up recipe for this track so the UI can show the linear record-portal flow.
+    // WHICH RECIPE THIS TRACK USES — ONE QUESTION, ONE PREDICATE (dry run 2026-09-28, B9: "they just
+    // look blank"). The card used to ask its own raw `profile_key = ?` query: no name-alias fallback
+    // (a project spelling its utility "PacifiCorp" missed every "Pacific Power" AHJ recipe that
+    // staging replayed) and no discipline (the electrical card showed the structural recipe). It now
+    // answers what staging would replay NEXT, then what the last run used:
+    //   1. a COMPLETE recipe from the resolver staging itself uses (findCompleteRecipeForProject —
+    //      exact key, then the name/identity alias, discipline-scoped exactly as prepareSubmission
+    //      asks): with one on file, that is what the next stage replays;
+    //   2. else what THIS project's newest staging run of this track used — a BORROWED recipe
+    //      (result_json.borrowedRecipe, portalRecipes.findBorrowableRecipe) or its recipe_id;
+    //   3. else any draft the resolver finds (findAnyRecipeForProject — staging's own fallback).
     const scopeType = category === "utility" ? "utility" : "ahj";
-    const profileKey = recipeProfileKey({ scopeType, state: project.state, ahj: project.ahj, utility: project.utility });
-    const recipeRow = db.get<Row>(
-      "SELECT id, status, portal_url FROM portal_recipes WHERE profile_key = ? ORDER BY version DESC LIMIT 1",
-      [profileKey],
-    );
+    const family = trackPermitTypes(type);
+    const resolverInput = {
+      scopeType, state: project.state, ahj: issuerProject.ahj, utility: project.utility,
+      ...(scopeType === "ahj" ? { discipline: recipeDisciplineForTrack(type) } : {}),
+    } as const;
+    type CardRecipe = { id: string; status: string; portal_url: string };
+    const cardRecipe = (r: { id: string; status?: unknown; portalUrl?: unknown } | null): CardRecipe | null =>
+      r ? { id: r.id, status: s(r.status), portal_url: s(r.portalUrl) } : null;
+    let recipeRow: CardRecipe | null = cardRecipe(findCompleteRecipeForProject(db, resolverInput));
+    // NO RECIPE OF ITS OWN IS NOT "NOTHING RAN" (operator 09-28: "if we're using the Coos Bay recipe can
+    // we make it say that somewhere? They just look blank"). Stage borrows a recipe learned for another
+    // entity on the same portal (portalRecipes.findBorrowableRecipe) and records it on the run
+    // (result_json.borrowedRecipe). The card says which one THIS project's last run of this track used.
+    let borrowedRecipe: SubmittalTrackView["borrowedRecipe"] = null;
+    if (!recipeRow) for (const r of db.query<Row>(
+      `SELECT recipe_id, result_json, started_at FROM portal_runs
+        WHERE project_id = ? AND permit_type IN (${family.map(() => "?").join(",")}) AND run_type = 'prepare_submit'
+        ORDER BY started_at DESC, rowid DESC LIMIT 5`,
+      [project.id, ...family],
+    )) {
+      let b: Record<string, unknown> | undefined;
+      try { b = (JSON.parse(s(r.result_json) || "{}") as { borrowedRecipe?: Record<string, unknown> }).borrowedRecipe; } catch { /* an unreadable result is simply not evidence */ }
+      if (b && typeof b.recipeId === "string" && b.recipeId) {
+        borrowedRecipe = {
+          recipeId: String(b.recipeId), recipeVersion: Number(b.recipeVersion) || null, learnedFor: String(b.learnedFor ?? ""),
+          recordType: String(b.recordType ?? ""), portalHost: String(b.portalHost ?? ""), lastUsedAt: s(r.started_at),
+        };
+        break;
+      }
+      const used = s(r.recipe_id) ? db.get<Row>("SELECT id, status, portal_url FROM portal_recipes WHERE id = ?", [s(r.recipe_id)]) : undefined;
+      if (used) { recipeRow = { id: s(used.id), status: s(used.status), portal_url: s(used.portal_url) }; break; }
+    }
+    if (!recipeRow && !borrowedRecipe) recipeRow = cardRecipe(findAnyRecipeForProject(db, resolverInput));
 
     // Fallback portal URL when no recipe exists yet — used by the credential-matching
     // chip so the operator can store a login before recording. Try in order:
@@ -605,7 +762,7 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
     if (!recipeRow || !s(recipeRow.portal_url)) {
       if (fitsHere(resolved.portalUrl)) kbPortalUrl = resolved.portalUrl;
       const kbField = scopeType === "utility" ? "utility" : "ahj";
-      const kbVal = scopeType === "utility" ? project.utility : project.ahj;
+      const kbVal = scopeType === "utility" ? project.utility : issuerProject.ahj;
       const kbRow = !kbPortalUrl && kbVal
         ? db.get<Row>(`SELECT portal_url FROM permit_utility_knowledge WHERE ${kbField} = ? AND portal_url IS NOT NULL AND portal_url != '' LIMIT 1`, [kbVal])
         : null;
@@ -613,7 +770,7 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
         kbPortalUrl = s(kbRow.portal_url);
       } else if (!kbPortalUrl) {
         // Fall back to applicationDocs profile sourceUrl (built-in AHJ/utility definitions).
-        const appProfile = findApplicationProfile(project);
+        const appProfile = findApplicationProfile(issuerProject);
         if (appProfile?.sourceUrl && fitsHere(appProfile.sourceUrl)) kbPortalUrl = appProfile.sourceUrl;
       }
     }
@@ -624,6 +781,7 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
       category,
       channel,
       channelBasis: resolved.basis,
+      channelKind: channelKindOf(resolved),
       ...(category === "permit" ? { structureBasis: answer.basis, prerequisites } : {}),
       status,
       // The portal's own words — unless they say "issued" of a track isTrackDone did not accept
@@ -644,6 +802,8 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
       recipePortalUrl: (recipeRow ? s(recipeRow.portal_url) : undefined) || kbPortalUrl,
       recipeId: recipeRow ? s(recipeRow.id) : undefined,
       recipeScopeType: scopeType,
+      borrowedRecipe,
+      ...(issuer ? { issuer } : {}),
     };
   });
 }
@@ -954,6 +1114,10 @@ export function ensureCheckTarget(
 
   const frequency = Math.max(1, Math.floor(Number(input.checkFrequencyDays || 7)));
   const targetId = randomUUID();
+  // A PERMIT FILING IS TRACKED AT THE AGENCY THAT ISSUES IT (split issuer): the building permit a city
+  // issues on a county-AHJ project is followed on the city's portal, under the city's name
+  // (permitProcess.projectForTrack — the project itself when the issuer is the project AHJ).
+  const trackedAt = targetType === "nem" ? project : projectForTrack(project, track ?? permitType);
   db.run(
     `INSERT INTO permit_check_targets
       (id, project_id, jurisdiction, portal_name, portal_url, application_number, permit_number,
@@ -963,8 +1127,8 @@ export function ensureCheckTarget(
     [
       targetId,
       project.id,
-      input.jurisdiction ?? (targetType === "nem" ? project.utility || "" : project.ahj || ""),
-      input.portalName ?? (track ? targetPortalName(track, project, db) : ""),
+      input.jurisdiction ?? (targetType === "nem" ? project.utility || "" : trackedAt.ahj || ""),
+      input.portalName ?? (track ? targetPortalName(track, trackedAt, db) : ""),
       portalUrl,
       applicationNumber,
       permitNumber,

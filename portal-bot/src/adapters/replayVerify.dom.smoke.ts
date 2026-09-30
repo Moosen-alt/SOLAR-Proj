@@ -91,7 +91,9 @@ const verifyOn = async (key: string) => {
   await page.waitForTimeout(100);
   const fields = await scrapeReviewScreen(page);
   const body = String(await page.locator("body").innerText().catch(() => ""));
-  return { fields, mismatches: compareReviewFields(fields, PROJECT, body) };
+  // The filing argument is explicit (B8); this project carries no account or meter, so both flags
+  // on reproduce exactly the checks the smoke always ran.
+  return { fields, mismatches: compareReviewFields(fields, PROJECT, { accountNumber: true, meterNumber: true }, body) };
 };
 
 // ---------------------------------------------------------------------------

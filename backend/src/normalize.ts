@@ -1,5 +1,29 @@
-import type { ExistingSystemInfo, ParserPayload, ProjectRecord, ProjectStatus } from "../../shared/src/types";
+import type { ExistingSystemInfo, IssuerTrackKey, ParserPayload, ProjectRecord, ProjectStatus, TrackIssuerOverrides } from "../../shared/src/types";
 import { nowIso } from "./time";
+
+/** THE OPERATOR'S PER-TRACK ISSUER, as it is stored: flat parser-snapshot keys, written by
+ *  PUT /api/projects/:id exactly like permitPathOverride / structureTypeOverride (updateProject merges
+ *  them into parser_json), so no new column and no new route. "" clears one. Read back only through
+ *  trackIssuersFromSnapshot (mapProject / normalizeProject) and permitProcess.trackIssuer. */
+export const TRACK_ISSUER_SNAPSHOT_KEYS: Record<IssuerTrackKey, string> = {
+  building: "trackIssuerBuilding",
+  electrical: "trackIssuerElectrical",
+  combo: "trackIssuerCombo",
+  mpu: "trackIssuerMpu",
+};
+
+/** The operator's per-track issuers on file, or undefined when none is set (so a record without one
+ *  carries no key at all — nothing about such a project changes shape). */
+export function trackIssuersFromSnapshot(snapshot: ParserPayload | null | undefined): TrackIssuerOverrides | undefined {
+  if (!snapshot || typeof snapshot !== "object") return undefined;
+  const out: TrackIssuerOverrides = {};
+  for (const [track, key] of Object.entries(TRACK_ISSUER_SNAPSHOT_KEYS) as Array<[IssuerTrackKey, string]>) {
+    const raw = (snapshot as Record<string, unknown>)[key];
+    const value = typeof raw === "string" ? raw.replace(/\s+/g, " ").trim() : "";
+    if (value) out[track] = value;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
 
 function str(payload: ParserPayload, key: string): string {
   const value = payload[key];
@@ -188,9 +212,16 @@ export function normalizeProject(
     parserConfidenceSummary: confidenceSummary(payload),
     parserSnapshot: canonicalizeSnapshot(payload),
     existingSystem: existingSystemFromSnapshot(payload),
+    ...withTrackIssuers(payload),
     createdAt,
     updatedAt,
   };
+}
+
+/** `{ trackIssuers }` when the snapshot carries any, else nothing (see trackIssuersFromSnapshot). */
+export function withTrackIssuers(snapshot: ParserPayload | null | undefined): { trackIssuers?: TrackIssuerOverrides } {
+  const issuers = trackIssuersFromSnapshot(snapshot);
+  return issuers ? { trackIssuers: issuers } : {};
 }
 
 export function parserField(payload: ParserPayload, fieldName: string): string {

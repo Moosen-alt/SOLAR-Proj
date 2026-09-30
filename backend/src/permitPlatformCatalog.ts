@@ -22,7 +22,7 @@
 //   4. PREREQUISITES AND CODES FROM THE WORDS ON A PAGE WE READ — each a sentence quoted verbatim.
 import type { PermitProcessDiscipline } from "../../shared/src/types";
 import type { PageLink, PageReader, ReadPage } from "./agencyPageReader";
-import { hostFitsTrackAndEntity, isPathTenantedHost, isPermitPlatformUrl, isVendorRootOrMarketing, portalHostOf, portalTenantKey, portalTenantOf, registrableDomain } from "./portalChannel";
+import { hostFitsTrackAndEntity, isPathTenantedHost, isPermitPlatformUrl, isUtilityPlatformUrl, isVendorRootOrMarketing, portalHostOf, portalTenantKey, portalTenantOf, registrableDomain } from "./portalChannel";
 // registrableDomain and isVendorRootOrMarketing live in portalChannel (lookup-close-6 MF4: the
 // lookup's portal door asks "is this the vendor's own site?" too, so the ONE predicate sits beside
 // the host lists); re-exported here for the callers that import them from the catalog.
@@ -82,6 +82,76 @@ function namesTheState(names: string[], st2: string): boolean {
     return !/^(?:city|county|town|township|twp|village|borough|boro|parish)\b/.test(s.slice(full.length).trim());
   });
 }
+/** A domain label that IS a state's own ("oregon", "wa", "newyork") — the state code, or "". */
+function stateCodeOfLabel(label: string): string {
+  const l = String(label ?? "").toLowerCase().replace(/-/g, "");
+  return Object.keys(STATE_NAMES).find((c) => l === c || l === STATE_NAMES[c].replace(/ /g, "")) ?? "";
+}
+/** A `.us` locality domain's labels before `.<st>.us` name the STATE itself (bcd.state.or.us). */
+const isStateLocalityLabel = (label: string): boolean => label === "state" || label.endsWith("state");
+
+// ── WHICH STATE A HOST / AN AGENCY NAMES (agency-contain C3) ──────────────────────────────────────
+// Read ONLY to REMOVE an anchor site (applicationDocsAgency.agencyAnchorSites) — a name never creates one.
+const STATE_NAMES_LONGEST_FIRST: Array<[string, string]> = Object.entries(STATE_NAMES)
+  .map(([c, n]) => [c, n.replace(/ /g, "")] as [string, string]).sort((a, b) => b[1].length - a[1].length);
+/** What may precede a state's name in a label that is a PLACE named for the state, not the state: the
+ *  City of Washington (cityofwashington), Port Washington, Fort / Mount / Lake / New / North … */
+const PLACE_PREFIX = /(?:of|port|fort|ft|mount|mt|lake|new|north|south|east|west)$/;
+/**
+ * WHICH STATE A HOST NAMES — read from the host's STRUCTURE, never from a guess about a place — and
+ * whether it is that state's OWN site:
+ *   - a US locality domain `<…>.<st>.us` (co.jefferson.or.us, douglas.co.us); the state's own site when
+ *     the label before the state is "state" (bcd.state.or.us);
+ *   - a .gov / .mil whose registrable label IS a state (oregon.gov; lni.wa.gov and dli.mn.gov by their
+ *     registrable wa.gov / mn.gov): the state's own site;
+ *   - a .gov label ending in a hyphenated state code (tigard-or, elbertcounty-co), a jurisdiction type +
+ *     a state code (harriscountytx, washingtoncountyor), or a state's full name after a place name
+ *     (bendoregon, polkcountyiowa) — never after "…of" or a place prefix (cityofwashington,
+ *     portwashington: places named for a state).
+ * null when the host names no state (bouldercounty.gov, pbcgov.org, houstontx.gov, deschutes.org,
+ * jeffco.us) — the safe answer, since this only ever removes.
+ */
+export function hostStateOf(host: string): { state: string; stateSite: boolean } | null {
+  const h = String(host ?? "").toLowerCase().replace(/^www\./, "");
+  if (!h) return null;
+  const us = /\.([a-z]{2})\.us$/.exec(h);
+  if (us && US_STATES.has(us[1])) {
+    return { state: us[1], stateSite: isStateLocalityLabel(h.slice(0, h.length - us[0].length).split(".").slice(-2).join("")) };
+  }
+  if (!/\.(?:gov|mil)$/.test(h)) return null;
+  const raw = registrableDomain(h).split(".")[0];
+  const label = raw.replace(/-/g, "");
+  const own = stateCodeOfLabel(label);
+  if (own) return { state: own, stateSite: true };
+  const hyphen = /-([a-z]{2})$/.exec(raw);
+  if (hyphen && US_STATES.has(hyphen[1])) return { state: hyphen[1], stateSite: false };
+  const typed = /(?:county|city|parish|township|twp|town|borough|boro|village)([a-z]{2})$/.exec(label);
+  if (typed && US_STATES.has(typed[1])) return { state: typed[1], stateSite: false };
+  for (const [code, name] of STATE_NAMES_LONGEST_FIRST) {
+    if (label.length > name.length && label.endsWith(name) && !PLACE_PREFIX.test(label.slice(0, label.length - name.length))) return { state: code, stateSite: false };
+  }
+  return null;
+}
+/** What follows a state's name when the name is a PLACE named for the state (Colorado Springs, Virginia
+ *  Beach, Iowa Falls), not the state's agency. */
+const PLACE_CONTINUATION = /^(?:springs?|beach|falls|heights|park|hills?|valley|lakes?|junction|center|centre|grove|harbou?r|point|rapids|creek|gap|bluffs?|mills?|landing|ridge|shores?)\b/;
+/**
+ * The state an agency's name IS — its own agency ("Oregon Building Codes Division", "Washington State
+ * Department of Labor & Industries", "State of Minnesota") — as a state code, or "" (namesTheState over
+ * every state). Never a jurisdiction (a type word anywhere: "Iowa City", "Nevada County") nor a place
+ * named for the state ("Colorado Springs Development Services", "Virginia Beach Permits").
+ */
+export function stateAgencyOf(name: string): string {
+  const n = String(name ?? "");
+  if (!n.trim() || jurisdictionTypes([n]).size) return "";
+  const s = n.toLowerCase().replace(/[^a-z\s]+/g, " ").replace(/\s+/g, " ").trim().replace(/^the /, "").replace(/^(?:state|commonwealth) of /, "");
+  for (const code of Object.keys(STATE_NAMES)) {
+    if (!namesTheState([s], code)) continue;
+    if (PLACE_CONTINUATION.test(s.slice(STATE_NAMES[code].length).trim())) continue;
+    return code;
+  }
+  return "";
+}
 /**
  * THE AGENCY'S OWN DOMAIN (lookup-close-7 R1) — whose page it is, never merely "a government page":
  * the organisation's domain label, once its official affixes are removed (cityof / townof / countyof /
@@ -95,8 +165,10 @@ function namesTheState(names: string[], st2: string): boolean {
  *   cityofevanston.org, clarkcountynv.gov, leegov.com (lee + gov), icgov.org, cityofgp.com,
  *   tigard-or.gov, camdenmaine.gov, austintexas.gov. A same-named place in another state
  *   (leecova.org for Lee County, FL) is not.
+ * `keys` narrows the distinctive keys the label may equal (isAhjFormsSite: a place-prefixed name's
+ * single words never stand alone); the initials test is unchanged.
  */
-export function isAgencyOwnDomain(host: string, names: string[], state?: string): boolean {
+export function isAgencyOwnDomain(host: string, names: string[], state?: string, keys: string[] = nameKeys(names)): boolean {
   const h = String(host ?? "").toLowerCase().replace(/^www\./, "");
   if (!h || isPermitPlatformUrl(`https://${h}/`)) return false;
   const st2 = String(state ?? "").toLowerCase();
@@ -107,15 +179,14 @@ export function isAgencyOwnDomain(host: string, names: string[], state?: string)
     if (st2 && us[1] !== st2) return false;
     // <affix>.<name>.<st>.us: the labels before the state ("ci.waltham" -> "ciwaltham", "state").
     label = h.slice(0, h.length - us[0].length).split(".").slice(-2).join("");
-    if (label === "state" || label.endsWith("state")) return namesTheState(names, us[1]);
+    if (isStateLocalityLabel(label)) return namesTheState(names, us[1]);
   } else {
     label = registrableDomain(h).split(".")[0];
   }
   label = label.replace(/-/g, "");
   // A state's own label: only the state, only on a government host.
-  const stateCode = Object.keys(STATE_NAMES).find((c) => label === c || label === STATE_NAMES[c].replace(/ /g, ""));
+  const stateCode = stateCodeOfLabel(label);
   if (stateCode) return gov && (!st2 || st2 === stateCode) && namesTheState(names, stateCode);
-  const keys = nameKeys(names);
   const initials = names.map(initialsOf).filter(Boolean);
   // A state's letters / name are stripped only when they are THIS job's state (leecova.org is Lee
   // County, Virginia — not Lee County, Florida); with no state known, any state's.
@@ -274,6 +345,19 @@ export function portalNameToken(href: string): string {
   const dom = registrableDomain(host);
   const sub = host.slice(0, Math.max(0, host.length - dom.length - 1)).split(".").filter((l) => l && !GENERIC_TENANT_LABEL.test(l));
   return [...sub, dom.split(".")[0]].join("").replace(/[^a-z]/gi, "").toLowerCase();
+}
+/**
+ * THE AGENCY'S OWN PAGE OR DOCUMENT — whose URL it is, asked ONE way (agency-apps-close MF1): its
+ * host is the agency's own domain by name (isAgencyOwnDomain — any .gov / .<st>.us is not enough)
+ * AND its domain / tenant names no other TYPE of jurisdiction (tenantContradictsAgency:
+ * cityofmarion.org carries Marion County's name key but is the City of Marion's). Read by the lookup's
+ * record-type door (permitProcessLookup.recordTypeBelongsToPortal). NOT by the issuing agency's cited
+ * application PDFs: a name cannot tell deschutes.org from pbcgov.org, so those are confirmed only on a
+ * site where the lookup cited a page for the agency (applicationDocsAgency.agencyAnchorSites).
+ */
+export function isAgencyOwnUrl(url: string, names: string[], state?: string, typeNames: string[] = names): boolean {
+  const host = portalHostOf(url);
+  return Boolean(host) && isAgencyOwnDomain(host, names, state) && !tenantContradictsAgency(url, names, typeNames);
 }
 export function tenantContradictsAgency(href: string, names: string[], typeNames: string[] = names): boolean {
   let t = portalNameToken(href);
@@ -747,6 +831,288 @@ export function documentLinks(pages: ReadPage[], names: string[], state?: string
     }
   }
   return out.sort((a, b) => Number(b.kind === "fees") - Number(a.kind === "fees") || (a.kind === "fees" ? feeRank(b.text, b.href) - feeRank(a.text, a.href) : 0));
+}
+
+// ── The AHJ's own blank PERMIT APPLICATION on a page we read (form acquisition, 2026-09-28) ─────
+// The sibling of classifyDocument / documentLinks for one more question: "which document the AHJ's
+// own forms page links (or a search result on its own site) is the blank permit APPLICATION?" City
+// of Waltham, MA: research named https://www.city.waltham.ma.us/1289/Applications, the page links
+// "Residential Application" -> /DocumentCenter/View/4313/Residential-Application (application/pdf),
+// and nothing read the page — the model's own list was empty, so Stage reported "no form found".
+// The same predicates as the fee / checklist door: DOCUMENT_URL (a document, not a page), FEE_LINK
+// (a fee schedule), OTHER_FEE_KIND (another permit kind) — but an application must also NAME this
+// job's work (JOB_APP_WORDS), another department's word is never rescued, and "solar" never rescues
+// another trade (skeptic F2). Words are the link's (or result title's) words plus the document's own
+// slug (its last path segment) — never the folders above it.
+const APPLICATION_WORDS = /\bapplications?\b|\bpermit\s+(?:form|request)\b/i;
+/** A document ABOUT applying (a checklist, a guide, instructions, a handout) or a publication —
+ *  never the blank form itself. A checklist that names an application is still a checklist. */
+const NOT_A_FORM = /checklist|guide|handout|brochure|\bfaqs?\b|instruction|how[- ]to|bulletin|newsletter|agenda|minutes|annual report|press release|polic(?:y|ies)|flyer|presentation|\bnotice\b|\bsample\b|\bexample\b/i;
+/** An application, but not for a permit to build: tax / assessor forms ("Residential Exemption
+ *  Application"), employment, boards and commissions, licences and registrations, rentals, bids. */
+const NOT_A_BUILD_PERMIT = /assessor|abatement|exemption|\btax(?:es)?\b|excise|employment|\bjobs?\b|appointment|\bboards?\b|committee|commission|public records|records request|rental|vendor|\bbids?\b|\bgrants?\b|voter|raffle|yard sale|block party|hawker|peddler|\blicen[cs](?:e|es|ing)\b|registration|certificat|scholarship|volunteer/i;
+/** A utility's interconnection / net-metering application (rule 5: never on a permit track) — read on
+ *  the WHOLE name, scope included: a missed permit form is recoverable, a utility's form on a permit
+ *  track is not. */
+const UTILITY_APPLICATION = /interconnect|net[- ]?meter|\butility\b/i;
+/** A SUBJECT that is not this job's permit (forms-find close, 2026-09-28): an application whose HEAD
+ *  names one of these is another permit or program, whatever job word stands beside it — "Solar Rebate
+ *  Application", "Right-of-Way Construction Permit Application", "Sewer Building Permit Application",
+ *  "Building Demolition / Occupancy Permit Application", "Electric Service Application" (a municipal
+ *  utility's), "EV Charging Station Permit Application", a utility's / the town's solar PROGRAM,
+ *  enrollment or credit application. Never rescued by solar / residential /
+ *  construction / building / electrical. A word that is also a common PLACE name is read only in its
+ *  subject sense ("Beach Sticker", never "Palm Beach"; "Parking", never "Oak Park"): the head can carry
+ *  the town's own name. "service" is singular (an electric / water service), never a department's
+ *  "Inspectional Services". */
+const OTHER_SUBJECT = /rebate|incentive|\bprograms?\b|enroll|\bcredits?\b|\bsrecs?\b|\bloans?\b|waiver|subscription|\baccess\b|accessory|easement|sewer|\bwater\b|stormwater|drainage|\bservice\b|\bstations?\b|right[- ]of[- ]way|\brow\b|encroach|\bstreets?\b|sidewalk|\bcurb|driveway|grading|excavat|trench|demolition|\bdemo\b|occupancy|\bsigns?\b|\bfences?\b|\bpools?\b|\btrees?\b|mooring|\bbeach\s+(?:stickers?|pass(?:es)?|permits?|parking|access)|sticker|parking|\btrash\b|recycl|snow ?plow|snow removal|\bplowing\b|low[- ]voltage|\bevents?\b|\bfood\b|liquor|alcohol|\balarms?\b|animal|\bdogs?\b|kennel|cemetery|library|recreation|subdivision|land use|flood|\bdocks?\b|\bpiers?\b|shellfish|\bfilm|noise|parade|solicit/i;
+// WHICH PERMIT AN APPLICATION IS FOR — a POSITIVE test first (forms-find skeptic F2, 2026-09-28).
+// Rejecting only KNOWN-bad names let ANY "<X> Permit Application" through as the generic blank
+// (Burn, HVAC, Roofing, Deck, Well, Blasting, Oil Burner, Fire Protection, Wood Stove, Septic,
+// Title 5, Elevator, Hot Work, Tank Removal, Moving, Earth Removal, Home Occupation …), and a
+// town's forms page lists dozens. A harvested application must NAME this job's work; an unnamed
+// "<X>" is a missed form, never a wrong one.
+/** A WIRING permit is the electrical permit (Massachusetts towns' "Wiring Permit Application") — but
+ *  "wire" / "wiring" counts ONLY in a permit phrase: "wiring permit", "wiring application", "electrical
+ *  wiring". A "Sample Wiring Diagram", a "wire transfer" or a "wire fraud" notice is no application
+ *  (forms-find close: a bare \bwir(e|ing)\b stored a wiring DIAGRAM as the AHJ's electrical application). */
+export const WIRING_PERMIT_PHRASE = /\bwir(?:e|ing)[\s_-]+(?:permits?|applications?)\b|\belectrical[\s_-]+wiring\b/i;
+/** The electrical permit's words — "Wiring Permit Application" is an ELECTRICAL application. */
+const ELECTRICAL_APP_WORDS = new RegExp(`electric|\\bele\\b|${WIRING_PERMIT_PHRASE.source}`, "i");
+/** The building permit's words. */
+const BUILDING_APP_WORDS = /building|structural|\bbld\b/i;
+/** THIS job's work — a residential building / electrical / solar permit. Every harvested
+ *  application carries one of these words, or it is not taken. */
+const JOB_APP_WORDS = new RegExp(`residential|dwelling|construction|solar|photo-?voltaic|\\bpv\\b|${BUILDING_APP_WORDS.source}|${ELECTRICAL_APP_WORDS.source}`, "i");
+/** ANOTHER DEPARTMENT's, or one single activity's, permit — never rescued by any other word ("solar"
+ *  never overrides it: "Solar Fire Department Permit Application" is the fire department's form,
+ *  "Residential Well Permit Application" the board of health's, "Deck Building Permit Application"
+ *  a deck's). A WELL is a water well by its neighbour word (the Town of Wells is not one). */
+const OTHER_DEPARTMENT = /\bfire\b|\bburn(?:ing)?\b|blasting|explosive|hot work|oil burner|\btanks?\b|propane|\blp ?gas\b|health|septic|title\s*(?:5|v)\b|sewage|\bwells?\s+(?:permit|application|drilling|construction|abandon)|\b(?:water|private|drinking|irrigation|geothermal)\s+wells?\b|wood ?stove|solid fuel|\bchimney|elevator|escalator|\bmov(?:e|ing)\b|earth removal|home occupation|conservation|wetland|historic|\bclerk\b|police|\bdpw\b|public works|highway|curb cut|\bpools?\b|\bspas?\b|hot tub|\bsheds?\b|\bdecks?\b|\bporch|roofing|re-?roof|\bsiding\b|\braz(?:e|ing)\b|\btents?\b|dumpster|\bfences?\b|\bsigns?\b|irrigation|lawn sprinkler|\bsprinklers?\b/i;
+/** Another TRADE a combined multi-trade application may carry beside the building / electrical permit
+ *  — rescued only by the building / electrical words themselves, NEVER by solar / PV / residential:
+ *  "Building, Plumbing & Gas Permit Application" is this job's form; "Plumbing Permit Application",
+ *  "Residential HVAC Permit Application" and "Solar Plumbing Permit Application" are not. The fee
+ *  door's activities (street, driveway, sewer, grading …) are SUBJECTS, never rescued (OTHER_SUBJECT:
+ *  "construction" rescued every "<Street> Construction Permit Application"). */
+const OTHER_TRADE = /plumbing|\bgas\b|mechanical|\bhvac\b|heating|air condition|refrigerat|sheet ?metal|variance|special permit|site plan|zoning/i;
+const TRADE_RESCUE = new RegExp(`construction|${BUILDING_APP_WORDS.source}|${ELECTRICAL_APP_WORDS.source}`, "i");
+export type ApplicationDiscipline = "electrical" | "building" | "combined" | "general";
+// ── THE HEAD PHRASE (forms-find close, 2026-09-28) ─────────────────────────────────────────────────
+// WHICH PERMIT an application is for is said by its HEAD — the words qualifying "(permit) application"
+// — never by the scope text after it. Every exclusion (another department / trade / subject) and the
+// positive job-word test read the head, so a real application whose title lists its scope ("Residential
+// Building Permit Application (includes solar, roofing, decks)", "Electrical Permit Application for Solar
+// and Fire Alarm") is taken, and a subject in the head ("Deck Building", "Solar Rebate", "Sewer
+// Building") is refused whatever else the title says. The document-TYPE tests (fee schedule, checklist,
+// guide, agenda, instructions — FEE_LINK / NOT_A_FORM) and rule 5's utility words still read the whole
+// name: those words come AFTER the anchor.
+/** "(permit) application" — the words that end a permit's head phrase (or "permit form / request"). */
+const APPLICATION_ANCHOR = /\b(?:permits?\s+)?applications?\b|\bpermits?\s+(?:form|request)\b/i;
+/** Where a title's scope text begins: "(", "[", " - " (any dash), ":", "|", " for ", " incl…". */
+const SCOPE_CUT = /\(|\[|\s[-–—]\s|:|\||\bfor\b|\bincl/i;
+/**
+ * The head phrase of ONE name (a link's words, a result's title, a document's slug), WITH its anchor
+ * ("Residential Well Permit Application" — the anchor keeps "well permit" readable as a water well's):
+ *   - "<head> (Permit) Application <scope>" -> "<head> (Permit) Application": everything before the
+ *     anchor (a town's name or a section prefix before it stays in the head — it can only exclude);
+ *   - "Application for <head> Permit <scope>" -> "<head> Permit Application", cut at the first scope mark;
+ *   - no anchor at all -> null (the name does not say it is an application).
+ */
+export function applicationHeadPhrase(name: string): string | null {
+  const s = String(name ?? "").replace(/\s+/g, " ").trim();
+  const m = APPLICATION_ANCHOR.exec(s);
+  if (!m) return null;
+  const before = s.slice(0, m.index).trim();
+  if (before) return `${before} ${m[0]}`;
+  const after = s.slice(m.index + m[0].length);
+  const f = /^\s*for\s+(?:an?\s+|the\s+)?/i.exec(after);
+  if (!f) return m[0];
+  let head = after.slice(f[0].length);
+  const cut = SCOPE_CUT.exec(head);
+  if (cut) head = head.slice(0, cut.index);
+  const p = /\bpermits?\b/i.exec(head);
+  if (p) head = head.slice(0, p.index + p[0].length);
+  return `${head.trim()} ${m[0]}`.trim();
+}
+/** A name with no anchor (a bare link text beside an anchored slug): the words up to its first scope mark. */
+const unanchoredHead = (name: string): string => {
+  const s = String(name ?? "").replace(/\s+/g, " ").trim();
+  const cut = SCOPE_CUT.exec(s);
+  return (cut ? s.slice(0, cut.index) : s).trim();
+};
+/** The building and the electrical permit JOINED in one head ("Building & Wiring", "Building/Electrical",
+ *  "Building, Plumbing & Electrical", "Electrical and Building Permits") — a COMBINED application. Two
+ *  discipline words NOT joined ("Building Department Electrical Permit Application") are not a combined
+ *  form: the electrical word decides, as classifyFormType always read it. */
+const JOIN = String.raw`\s*(?:&|\+|/|,|\band\b)\s*`;
+const B_WORD = String.raw`(?:building|bldg|bld|structural)`;
+const E_WORD = String.raw`(?:electrical|electric|ele|wiring)`;
+const ITEM = String.raw`(?:\s+permits?)?`;
+const COMBINED_HEAD = new RegExp(
+  String.raw`\b${B_WORD}\b${ITEM}(?:${JOIN}[a-z]+${ITEM})*?${JOIN}${E_WORD}\b|\b${E_WORD}\b${ITEM}(?:${JOIN}[a-z]+${ITEM})*?${JOIN}${B_WORD}\b`, "i");
+/** WHICH PERMIT one head phrase is for — the one answer the harvest (classifyApplicationDocument) and the
+ *  store's re-type (ahjFormAuto.classifyFormType) both read. A COMBINED building + electrical form is the
+ *  BUILDING side's (never the electrical slot's: the building permit is its first claim, and a combined
+ *  row filed as electrical replaced the AHJ's real electrical application). */
+export function headDiscipline(head: string): ApplicationDiscipline {
+  const electrical = ELECTRICAL_APP_WORDS.test(head);
+  const building = BUILDING_APP_WORDS.test(head);
+  if (electrical && building) return COMBINED_HEAD.test(head) ? "combined" : "electrical";
+  return electrical ? "electrical" : building ? "building" : "general";
+}
+/** Does a free-text NAME (a filename, a formName, "<url> <link words> <slug>") name a COMBINED building +
+ *  electrical application — headDiscipline over each of its names: every URL by its document's own slug
+ *  (never its folders: "/building/Electrical-Permit-Application.pdf" is an electrical form in a building
+ *  folder), and the words around the URLs. */
+export function namesCombinedApplication(text: string): boolean {
+  const slugs: string[] = [];
+  const rest = String(text ?? "").replace(/https?:\/\/\S+/gi, (u) => { slugs.push(documentSlugWords(u)); return " "; });
+  // The WHOLE name decides (forms-find converge: the harvest and this re-type must read the same text —
+  // a head-only reading took "Residential Permit Application - Electrical" as the building side's).
+  return [...slugs, rest].some((n) => {
+    const name = n.replace(/_+|(?<=\w)-(?=\w)/g, " ");
+    return applicationHeadPhrase(name) != null && headDiscipline(name) === "combined";
+  });
+}
+/** The words a document's own URL carries: its last path segment, extension and separators dropped
+ *  ("/DocumentCenter/View/4313/Residential-Application" -> "Residential Application"). */
+export function documentSlugWords(href: string): string {
+  try {
+    const seg = decodeURIComponent(new URL(href).pathname).split("/").filter(Boolean).pop() ?? "";
+    return seg.replace(/\.[a-z0-9]{2,5}$/i, "").replace(/[-_+.]+/g, " ").trim();
+  } catch {
+    return "";
+  }
+}
+/**
+ * A blank permit APPLICATION document, by the words naming it and its URL — or null. `discipline`
+ * says which permit it is for (an electrical-only application — "Wiring" included — is never the
+ * building-side blank); `score` ranks a residential / solar / building application above a generic
+ * one. Its HEAD phrase (applicationHeadPhrase) must NAME this job's work (JOB_APP_WORDS: a bare
+ * "Permit Application" or "<X> Permit Application" is not taken), and names no other department,
+ * activity or subject (OTHER_DEPARTMENT / OTHER_SUBJECT, whatever else it says) nor another trade alone;
+ * the scope text after the head never decides. Never a fee schedule, a checklist / guide / handout, an
+ * agenda / minutes / newsletter, a commercial-only one, a tax / licence application, a utility's
+ * application anywhere in the name (rule 5), or a page. A score boost never lifts an excluded head.
+ */
+export function classifyApplicationDocument(words: string, href: string): { discipline: ApplicationDiscipline; score: number } | null {
+  if (!DOCUMENT_URL.test(String(href ?? ""))) return null;
+  // Each NAME separately (the link's words, the document's own slug): a head read over the two run
+  // together would take the slug for the words' scope.
+  const names = [String(words ?? ""), documentSlugWords(href)].map((n) => n.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const w = names.join(" ");
+  if (!APPLICATION_WORDS.test(w)) return null;
+  // A name that says it is an application (its anchor); the others (a bare "Download" link text) may
+  // still exclude or name the work below — every test reads WHOLE names.
+  const anchoredNames = names.filter((n) => applicationHeadPhrase(n) != null);
+  if (!anchoredNames.length) return null;
+  // FORMS-FIND CONVERGE (2026-09-28): every test reads the WHOLE name — an excluded department, trade,
+  // subject or discipline word ANYWHERE excludes, and the permit is read from the same text the store's
+  // re-type (classifyFormType) reads. The head-only reading admitted "Building Permit Application - Sign",
+  // "Residential Permit Application - Plumbing" and took "… - Electrical" as the building side's. A
+  // real application whose title lists another trade in its scope is MISSED — never a wrong form.
+  if (FEE_LINK.test(w) || NOT_A_FORM.test(w) || UTILITY_APPLICATION.test(w)) return null;
+  if (!JOB_APP_WORDS.test(w)) return null;
+  if (NOT_A_BUILD_PERMIT.test(w) || OTHER_DEPARTMENT.test(w) || OTHER_SUBJECT.test(w)) return null;
+  if (OTHER_TRADE.test(w) && !TRADE_RESCUE.test(w)) return null;
+  // A COMMERCIAL-only application is not a residential solar job's form (one naming both is).
+  if (/commercial/i.test(w) && !/residential|dwelling/i.test(w)) return null;
+  // Which permit: the anchored names decide (a bare link text or an opaque slug says nothing of it).
+  // (Two names disagreeing, building vs electrical, read as electrical — the store's precedence.)
+  const named = anchoredNames.map(headDiscipline);
+  const discipline: ApplicationDiscipline = named.includes("combined") ? "combined" : named.includes("electrical") ? "electrical"
+    : named.includes("building") ? "building" : headDiscipline(w);
+  let score = 1;
+  if (/residential|dwelling|single[- ]family|one[- ]?(?:and|&)[- ]?two[- ]family/i.test(w)) score += 3;
+  if (/solar|photo-?voltaic|\bpv\b/i.test(w)) score += 3;
+  if (/building|construction/i.test(w)) score += 2;
+  if (/\bpermit\b/i.test(w)) score += 1;
+  return { discipline, score };
+}
+/**
+ * The permit APPLICATION documents an AHJ's OWN page links, best first. Only a page on the AHJ's
+ * own site is read for them (isAhjFormsSite — its own domain by name, never merely a .gov, and
+ * never a state's own site for a local AHJ), and only a link on THAT page's registrable domain
+ * is taken: an off-site link (another town's form, a vendor), and a utility host (rule 5), never.
+ */
+export function applicationFormLinks(pages: ReadPage[], names: string[], state?: string): Array<{ href: string; text: string; discipline: ApplicationDiscipline; score: number }> {
+  const out: Array<{ href: string; text: string; discipline: ApplicationDiscipline; score: number }> = [];
+  for (const page of pages) {
+    if (!page.ok || page.kind !== "html") continue;
+    const pageHost = portalHostOf(page.finalUrl);
+    if (!isAhjFormsSite(pageHost, names, state)) continue;
+    const dom = registrableDomain(pageHost);
+    for (const l of page.links) {
+      const host = portalHostOf(l.href);
+      if (!host || registrableDomain(host) !== dom || isUtilityPlatformUrl(l.href)) continue;
+      if (/translate|facebook|twitter|mailto|[?&]splash=|isexternal/i.test(l.href)) continue;
+      const doc = classifyApplicationDocument(l.text, l.href);
+      if (doc && !out.some((o) => o.href === l.href)) out.push({ href: l.href, text: l.text, ...doc });
+    }
+  }
+  return out.sort((a, b) => b.score - a.score);
+}
+/** THE AHJ'S OWN SITE, for its forms — ONE predicate at every door of the form acquisition (the
+ *  forms page read, the links taken from it, the search results taken, the "Forms page:" KB note):
+ *  the AHJ's OWN DOMAIN by its name (isAgencyOwnDomain), never merely "a government host". What it
+ *  finds is stored in the SHARED ahj_form_templates under this AHJ's name and its URL written into
+ *  the AHJ's shared KB notes, so "any .gov / any same-state .<st>.us" (isOfficialAgencyHost — the
+ *  page-reading door's question) harvested a NEIGHBOURING town's application as this AHJ's
+ *  (www.newtonma.gov for the City of Waltham; forms-find skeptic F1, 2026-09-28). A county's or a
+ *  regional host whose name is not the AHJ's is a MISSED form, never a wrong one. Never a permit /
+ *  utility platform, and never a STATE's own site for a local AHJ (a state's forms are not the city's).
+ *  Two more ways a neighbour's site passed for the AHJ's own (forms-find close, 2026-09-28):
+ *   - a PLACE-PREFIXED name's single words never stand alone (placeBoundKeys): bedfordma.gov is the
+ *     Town of Bedford's, not the City of New Bedford's (newbedford-ma.gov); springfield-ma.gov is not
+ *     West Springfield's — the joined key ("newbedford") is required;
+ *   - a site whose domain names the OTHER class of jurisdiction (siteNamesAnotherJurisdictionClass):
+ *     jeffersoncountyor.gov / co.jefferson.or.us are not the City of Jefferson's, cityofmarion.org is
+ *     not Marion County's — while cityofvenus.org stays the Town of Venus's (a city, a town, a village,
+ *     a township and a borough are one municipal class). */
+export function isAhjFormsSite(host: string, names: string[], state?: string): boolean {
+  if (!host || isUtilityPlatformUrl(`https://${host}/`) || !isAgencyOwnDomain(host, names, state, placeBoundKeys(names))) return false;
+  if (siteNamesAnotherJurisdictionClass(host, names)) return false;
+  const hs = hostStateOf(host);
+  if (hs && state && hs.state !== String(state).toLowerCase()) return false;
+  return !(hs?.stateSite && !names.some((n) => stateAgencyOf(n)));
+}
+/** A place name's PREFIX word: "New Bedford", "West Springfield", "North Andover", "Fort Worth", "Lake
+ *  Forest", "St. Louis" — the word after it is not the place by itself (Bedford, Springfield, Andover). */
+const PLACE_PREFIX_WORDS = new Set(["new", "north", "south", "east", "west", "upper", "lower", "great", "little", "mount", "mt", "fort", "ft", "port", "lake", "saint", "st"]);
+/** The AHJ's distinctive keys for its forms SITE: nameKeys, less every single word from a place prefix
+ *  on ("City of New Bedford" -> only "newbedford"; "Salt Lake City" keeps "salt" — its "lake" prefixes
+ *  nothing). Initials are not keys and are untouched (nyc.gov, fcgov.com). */
+export function placeBoundKeys(names: string[]): string[] {
+  const bound = new Set<string>();
+  for (const n of names) {
+    const ws = String(n ?? "").toLowerCase().replace(/[^a-z\s-]+/g, " ").split(/[\s-]+/).filter((w) => w && !GENERIC_NAME_WORDS.has(w));
+    const i = ws.findIndex((w, j) => PLACE_PREFIX_WORDS.has(w) && j < ws.length - 1);
+    if (i >= 0) for (const w of ws.slice(i)) bound.add(w);
+  }
+  return nameKeys(names).filter((k) => !bound.has(k));
+}
+/** The two classes of local jurisdiction: a county (a parish), or a municipality — a city, a town, a
+ *  village, a township and a borough are ONE class (the Town of Venus's site is cityofvenus.org). */
+const JURISDICTION_CLASS: Record<string, "county" | "municipal"> = { county: "county", parish: "county", city: "municipal", town: "municipal", township: "municipal", twp: "municipal", borough: "municipal", boro: "municipal", village: "municipal" };
+/** The type affix of a US locality domain (<affix>.<name>.<st>.us): co.marion.or.us is the county's. */
+const LOCALITY_AFFIX_CLASS: Record<string, "county" | "municipal"> = { co: "county", county: "county", ci: "municipal", city: "municipal", town: "municipal", twp: "municipal", vil: "municipal", village: "municipal" };
+/** The site's domain names the OTHER class of jurisdiction than every type the AHJ's own name carries:
+ *  jeffersoncountyor.gov or co.jefferson.or.us for the City of Jefferson, cityofmarion.org for Marion
+ *  County. The AHJ's own keys are taken out of the domain first (georgetowntx.gov names no town); a name
+ *  with no type word, or with both ("City and County of Denver"), is never contradicted. (The anchor
+ *  door's applicationDocsAgency.hostNamesAnotherType asks a stricter question — it REMOVES an anchor —
+ *  and keeps city / town / township apart; the forms site reads one municipal class.) */
+function siteNamesAnotherJurisdictionClass(host: string, names: string[]): boolean {
+  const own = new Set<string>([...jurisdictionTypes(names)].map((t) => JURISDICTION_CLASS[t]).filter(Boolean));
+  if (!own.size) return false;
+  let t = portalNameToken(`https://${host}/`);
+  for (const k of nameKeys(names).sort((a, b) => b.length - a.length)) t = t.split(k).join(" ");
+  const found = new Set<string>();
+  for (const m of t.matchAll(/(township|twp|county|city|town|borough|boro|village|parish)/g)) found.add(JURISDICTION_CLASS[m[1]]);
+  const locality = /^([a-z]+)\.[a-z0-9-]+\.[a-z]{2}\.us$/.exec(registrableDomain(String(host ?? "").toLowerCase().replace(/^www\./, "")));
+  if (locality && LOCALITY_AFFIX_CLASS[locality[1]]) found.add(LOCALITY_AFFIX_CLASS[locality[1]]);
+  return found.size > 0 && ![...found].some((c) => own.has(c));
 }
 const FEE_LINE = /solar|photo-?voltaic|\bpv\b|renewable|\bkva\b|\bkw\b|surcharge|electrical permit|minor work/i;
 const DOC_LINE = /required|submit|plan|site|diagram|spec|checklist|form|application|upload|attach|stamp|seal|engineer|calculation|drawing/i;

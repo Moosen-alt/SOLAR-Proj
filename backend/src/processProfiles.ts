@@ -254,6 +254,17 @@ export function jurisdictionKindsCompatible(project: JurisdictionKind, profile: 
   return true; // a bare project name ("Deschutes", "Keizer") may be either — scored below
 }
 
+/** Does this AHJ-side name (a project's AHJ, or a registry match term) name the project's
+ *  jurisdiction? Whole words, same kind (a county term never matches a city AHJ, nor the reverse).
+ *  THE ONE NAME TEST for a hand-written registry (applicationDocs' application profiles, ahjForms'
+ *  built-in forms). It says nothing about the STATE — every caller gates that separately. */
+export function registryTermMatches(ahjName: string, term: string): boolean {
+  const name = ` ${String(ahjName ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
+  const t = String(term ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (!t || !name.includes(` ${t} `)) return false;
+  return jurisdictionKindsCompatible(jurisdictionKind(ahjName), jurisdictionKind(term));
+}
+
 // Split a multi-jurisdiction AHJ name into its individual jurisdictions, so a combined record
 // like "Marion Co/Hubbard OR/Keizer OR / Mount Angel / Salem / Gervais" matches a project in
 // "Keizer". Without this, a bare "Keizer" stub outscores the rich combined record. Each part

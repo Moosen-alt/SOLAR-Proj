@@ -6,26 +6,44 @@ import { PDFDocument, PDFName, PDFRadioGroup, StandardFonts, rgb } from "pdf-lib
 import type { ProjectRecord } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
-import { clientStagingOverlay } from "./clients";
+import { clientLicenceRow, clientStagingOverlay, kindForSlot, licenceFor, licenceJobState, type LicenceClient } from "./clients";
+import type { LicenceAnswer } from "../../shared/src/types";
+import { requiredTracks } from "./submittalTracks";
+import { planSetLicenceWarning, planSetPrintedLicences } from "./clientMatch";
+import type { CaptionSide, LabelItem, WidgetCaptions, WidgetRect } from "./formTextLayer";
+import {
+  attestsAttachedDocument, captionSourceRule, contactShapeRefusal, isLicenceHolderSlot, isTotalRow, isValuationSlot, licenceSourceRef, operatorItemLabels,
+  OREGON_CCB_SOURCE, signerNameConflicts, slotLicenceRef, STATE_LICENCE_SOURCE, TYPED_LICENCE_PREFIX, widgetContactKind, widgetLabel,
+  type LicenceSourceRef, type OperatorItem, type PlacedWidget,
+} from "./formFieldChecks";
+import { namesWorkersComp, workersCompAffidavitItem } from "./formFieldChecks";
 import { HttpError } from "./httpError";
-import { loadDefaultSignaturesByRole } from "./signatures";
+import { logger } from "./logger";
+import type { PageGeometry } from "./formRowGeometry";
+import { isLicenceHolderRole, loadDefaultSignaturesByRole } from "./signatures";
 import { nowIso } from "./time";
 import { resolveValuation } from "./valuation";
 import { parseJson } from "./json";
-import { resolvePermitPath, evaluatePrescriptiveCriteria, type PrescriptiveCriterion, type PrescriptiveLimitInputs } from "./permitPath";
+import { resolvePermitPath, evaluatePrescriptiveCriteria, usStateCode, type PrescriptiveCriterion, type PrescriptiveLimitInputs } from "./permitPath";
+import { registryTermMatches } from "./processProfiles";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { isDocumentDateStale } from "./documentDate";
+import { mountAdjective, mountKindForProject } from "./codeReviewRules";
 import { findFeeScheduleForProject, feeForProject, knownElectricalReviewRequired, type FeeScheduleLine } from "./feeSchedules";
+import { curatedPrintedFees, curatedFormMapForHash, curatedFormSourcesFor, CURATED_SAVED_FEE_NOTE, type PrintedFeeLadder } from "./curatedAhjForms";
+import { bcd5952TemplateForHash } from "./bcd5952Template";
 import {
-  batteryStatus, SERVICE_FEEDER_CHARGE_KIND, SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND, SERVICE_FEEDER_STATE_SURCHARGE_KIND,
+  isServiceLineBaseKind, isServiceLineChargeKind, serviceFeeder200Quantity, serviceLineCounts, SERVICE_FEEDER_CHARGE_KIND,
 } from "./batteryServiceFeeder";
 import { BCD_5952_LIMITS, type ChecklistRecovery } from "./prescriptiveChecklist";
-import { bcdChecklistAnswers, bcd5952MissingFacts, bcd5952SnapshotAdditions } from "./bcdChecklistFacts";
+import { bcdChecklistAnswers, bcd5952AssumedFacts, bcd5952FailedRows, bcd5952MissingFacts, bcd5952SnapshotAdditions } from "./bcdChecklistFacts";
 import { iowaPvWorksheetValues } from "./iowaPvWorksheet";
 import { documentFetchDisabled } from "./documentFetch";
 import {
-  applicationKindForPath, formApplicationKind, formAuthorityFor, rowBelongsToAuthority, structureMeaningOf,
-  TRACK_FORM_TYPES, tracksIssuedByOther,
+  agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce,
+  applicationKindForPath, explicitSingleFamilyAnswer, formApplicationKind, formAuthorityFor, rowBelongsToAuthority, structureMeaningOf,
+  structureDescriptionOf,
+  TRACK_FORM_TYPES, trackForFormType, tracksIssuedByOther,
 } from "./applicationDocsAgency";
 
 /** Which of the two MUTUALLY EXCLUSIVE building-side applications a permit path calls
@@ -194,7 +212,12 @@ export interface SignaturePlacement {
 export interface AhjFormDefinition {
   id: string;
   formName: string;
-  matchJurisdictions: string[]; // lowercase substrings matched against project.ahj
+  /** The two-letter state whose agency publishes this form (usStateCode). REQUIRED: a registry form
+   *  matches a project only in its own state — "Portland" names a city in OR, ME, TX, CT, MI and TN,
+   *  and Portland, Oregon's electrical application was filled with Oregon fees and an Oregon CCB for
+   *  South Portland, Maine. "" (a stored row with no state) matches nothing in the registry. */
+  state: string;
+  matchJurisdictions: string[]; // whole-word, kind-compatible terms matched against project.ahj (registryTermMatches)
   sourceUrl: string; // verified URL of the blank fillable PDF
   version: string;
   status: "verified" | "unverified_template";
@@ -213,13 +236,27 @@ export interface AhjFormDefinition {
   overlayFields?: OverlayField[];
   // operator-signature image placements (applied to both fill modes)
   signatureFields?: SignaturePlacement[];
-  /** Runtime-only recovery for unverified stored checklists. Never set on
-   *  registry or human-verified definitions and never persisted to field maps. */
+  /** Runtime-only: recover the BCD 5952's Yes/No answers from the project's evidenced facts. Set on
+   *  every STORED definition, verified or not (dry-run 2026-09-28 B6: marking a 5952 verified used
+   *  to switch this off, so a verified checklist went out with no answers drawn). Safe on a verified
+   *  map: recovery recognises only the exact printed 5952 revision and only ADDS rows the map does
+   *  not already answer — it never rewrites a mapped field (prescriptiveChecklist.ts). Never set on
+   *  registry definitions and never persisted to field maps. */
   recoverPrescriptiveCheckboxes?: boolean;
   notes?: string[];
   requiredFields?: Record<string, string>;
   preserveInteractive?: boolean;
   fieldFontSizes?: Record<string, number>;
+  /** Blanks the mapper found that no source can fill, by printed label (stored maps only). */
+  operatorItems?: OperatorItem[];
+  /** Runtime-only: a stored map nobody has verified yet. The map-level checks (one signer per
+   *  signature, a licence holder is not the applicant) re-run at fill on these; a human-verified
+   *  map is what a person confirmed and is filled as written (hard rule 3). Never persisted. */
+  unverifiedMap?: boolean;
+  /** Runtime-only: the permit this form is for — "building" / "electrical" from its form type
+   *  (applicationDocsAgency.trackForFormType), "permit" for a generic permit application, null when
+   *  the form names none. A generic licence source resolves by it. Never persisted. */
+  formTrack?: string | null;
 }
 
 // The registry. Seed with verified forms as field maps are confirmed via the
@@ -228,6 +265,7 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
   {
     id: "portland-electrical-renewable-energy",
     formName: "City of Portland — Electrical Renewable Energy Permit Application",
+    state: "OR",
     matchJurisdictions: ["portland", "city of portland"],
     sourceUrl: "https://www.portland.gov/ppd/documents/electrical-renewable-energy-permit-application/download",
     version: "2024",
@@ -235,6 +273,7 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
     // This is a flat (non-AcroForm) PDF; values are drawn at coordinates derived
     // from the form's own label baselines (US Letter, 612x792, y from bottom).
     fillMode: "overlay",
+    formTrack: "electrical",
     textFields: {},
     overlayFields: [
       // Type of work + Category of construction: mark "Other" and write "Solar"
@@ -379,10 +418,38 @@ export interface FillContext {
   // (loaded in buildContext) — the presc* sources must screen against the SAME
   // limits QC's baseline rules use, not always the Oregon defaults.
   prescriptiveLimits?: PrescriptiveLimitInputs;
+  /** Evaluate the presc* sources against prescriptiveLimits ALONE (no Oregon defaults) — every job
+   *  whose state is not Oregon, including an unknown state (buildContext). */
+  prescriptiveJurisdictionOnly?: boolean;
   // The jurisdiction's PUBLISHED electrical fee brackets, when one is on file. Loaded in
   // buildContext so renewableFee can prefer a schedule somebody researched over the ladder
   // printed on the form we happen to have a copy of. See renewableFee.
   publishedElectricalBrackets?: Array<{ minKw?: number | null; maxKw?: number | null; feeUsd: number }>;
+  // The fee ladder PRINTED on the blank being filled (curatedAhjForms.curatedPrintedFees, by the
+  // blank's own hash) — set per form by fillLoadedForm, never shared across forms. The electrical*
+  // fee sources fall back to it only where no saved electrical fee line is on file.
+  printedFeeLadder?: PrintedFeeLadder | null;
+  // THIS PROJECT'S CLIENT'S LICENCES (clients.licenceFor — the one answer). Set by buildContext;
+  // absent on a hand-built context, where the client.* keys are read as given.
+  licences?: FillLicences;
+  // The track of the form being filled (applicationDocsAgency.trackForFormType of its form type) —
+  // set per form by fillLoadedForm; a generic licence source resolves by it.
+  formTrack?: string | null;
+}
+
+/** The licence book a fill reads: the project's own client only (null = no client). */
+export interface FillLicences {
+  client: LicenceClient;
+  state: string;
+  companyName: string;
+  /** The project's permit tracks (submittalTracks.requiredTracks, minus NEM) — a generic slot on a
+   *  form whose own track is unknown resolves by the project's single permit track when it has one. */
+  projectTracks: string[];
+  /** The plan set's printed title-block licence numbers (snapshot.planSetInstaller), a REFERENCE
+   *  for the operator only — never filled into anything. */
+  planSetLicences: string[];
+  /** "the plan set's licence belongs to <other company>…" when it does (clientMatch). */
+  planSetWarning: string;
 }
 
 function str(v: unknown): string {
@@ -491,20 +558,100 @@ function wrapTwoLines(text: string, width: number): [string, string] {
  *  printed beside a services quantity of 1 is the same understatement as
  *  pricing the line at $0. The per-row renewable figures are unaffected. */
 function serviceFeederOnForm(ctx: FillContext, line: FeeScheduleLine | undefined): {
-  applies: boolean; priced: boolean; baseUsd: number; stateUsd: number; communityUsd: number;
+  applies: boolean; qty: string; priced: boolean; rowUsd: number; baseUsd: number; stateUsd: number; communityUsd: number;
 } {
-  const applies = batteryStatus(ctx.snapshot) === "yes";
+  // THE QUANTITY IS THE ONE COUNT (batteryServiceFeeder.serviceFeeder200Quantity): the
+  // battery's line plus a service upgrade's line in the <=200A tier — the number the
+  // portal's "Service 0-200 amps (qty)" box is typed with. The fee line's charges carry
+  // the SAME count (feeSchedules.serviceFeederCharges reads serviceLineCounts).
+  const qty = serviceFeeder200Quantity(ctx.snapshot);
+  const lines = serviceLineCounts(ctx.snapshot);
   const charges = line?.charges ?? [];
-  const base = charges.find((c) => c.kind === SERVICE_FEEDER_CHARGE_KIND);
-  const priced = applies && base?.amountUsd != null;
-  const sum = (kind: string) => charges.filter((c) => c.kind === kind).reduce((n, c) => n + (c.amountUsd ?? 0), 0);
+  const serviceCharges = charges.filter((c) => isServiceLineChargeKind(c.kind));
+  // ANY service line this filing owes — the <=200A row's, a 201-400 A upgrade's, an upgrade no
+  // tier prices — makes a renewable-only total an understatement.
+  const applies = Number(qty) > 0 || lines.le200 > 0 || lines.t201to400 > 0 || lines.upgradeTierUnbilled
+    || serviceCharges.some((c) => isServiceLineBaseKind(c.kind));
+  const row = charges.find((c) => c.kind === SERVICE_FEEDER_CHARGE_KIND);
+  // PRICED = every service line on this filing carries its amount (either tier; an upgrade
+  // neither tier prices never does), and the <=200A row carries its own when a quantity is
+  // printed in it. Anything less leaves every whole-application figure blank.
+  const priced = applies
+    && serviceCharges.filter((c) => isServiceLineBaseKind(c.kind)).every((c) => c.amountUsd != null)
+    && (!(Number(qty) > 0) || row?.amountUsd != null);
+  const sum = (pick: (kind: string) => boolean) => serviceCharges.filter((c) => pick(c.kind)).reduce((n, c) => n + (c.amountUsd ?? 0), 0);
   return {
     applies,
+    qty,
     priced,
-    baseUsd: priced ? base!.amountUsd! : 0,
-    stateUsd: priced ? sum(SERVICE_FEEDER_STATE_SURCHARGE_KIND) : 0,
-    communityUsd: priced ? sum(SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND) : 0,
+    rowUsd: priced && row?.amountUsd != null ? row.amountUsd : 0,
+    baseUsd: priced ? sum((k) => isServiceLineBaseKind(k)) : 0,
+    stateUsd: priced ? sum((k) => /_state_surcharge$/.test(k)) : 0,
+    communityUsd: priced ? sum((k) => /_community_surcharge$/.test(k)) : 0,
   };
+}
+
+/** THE FEE LADDER PRINTED ON THE BLANK BEING FILLED, in whole cents — only where no saved electrical
+ *  fee line is on file (the caller's rule), and only up to the size the form prices flat
+ *  (`autoMaxKva`: above it the form needs per-kVA math and plan review, which are never computed).
+ *  The kVA is the same AC-rating basis as the bracket Qty (systemKva / feeBracket), bounds inclusive. */
+function printedLadderCents(ctx: FillContext): { base: number; stateSurcharge: number } | null {
+  const ladder = ctx.printedFeeLadder;
+  if (!ladder || ladder.discipline !== "electrical") return null;
+  // THE AC RATING ONLY — never systemKva's DC fallback. The ladder is priced in kVA (inverter
+  // output); a DC-only job (15.91 kW DC, no AC on file) would otherwise be priced from the ARRAY,
+  // one bracket up ($156 where the AC rating may well sit in the $94 row). No AC rating, no amount.
+  const k = Number(ctx.project.systemSizeAcKw);
+  if (!(k > 0) || k > ladder.autoMaxKva) return null;
+  const tier = ladder.tiers.find((t) => k <= t.maxKva);
+  if (!tier) return null;
+  const base = Math.round(tier.feeUsd * 100);
+  // "State surcharge (12% of permit fee)", to the cent.
+  return { base, stateSurcharge: Math.round((base * ladder.stateSurchargePercent) / 100) };
+}
+
+/** THE SAVED ELECTRICAL FEE LINE, as the printed-ladder fallback asks "is one on file?". A line
+ *  flagged `unresolvedCollector` (feeSchedules: a delegation whose collector has no schedule stored —
+ *  the City of Jefferson -> Marion County row the per-job lookup writes) is NOT a saved line: nothing
+ *  was evaluated. Any other line, priced or declined, is — a schedule that declined keeps its blank.
+ *  The one answer for the computed fee sources and the fill's "fees came from the form" note. */
+function savedElectricalLine(ctx: FillContext): FeeScheduleLine | undefined {
+  const line = ctx.publishedFeeLines?.find((l) => l.discipline === "electrical");
+  return line?.unresolvedCollector ? undefined : line;
+}
+
+/** MAY THE FORM'S PRINTED LADDER PRICE IT? The one answer for the fee cells and the "fees came from
+ *  the form" note. Only when no saved electrical line is on file (savedElectricalLine) AND the ladder's
+ *  OWN authority has no undifferentiated / combo schedule on file either (skeptic stage-forms-fee-2: a
+ *  direct Marion County project with Marion's undifferentiated $134.40 schedule printed the ladder's
+ *  $105.28 and said "no saved Marion County schedule is on file"). Then the cells stay blank — the E-01
+ *  is never priced from an undifferentiated amount. Another authority's undifferentiated row (the
+ *  city's own, on a Jefferson job) does not stop it. */
+function printedLadderApplies(ctx: FillContext): boolean {
+  if (!ctx.printedFeeLadder || savedElectricalLine(ctx)) return false;
+  const own = String(ctx.printedFeeLadder.authority ?? "").trim().toLowerCase();
+  if (!own) return true;
+  return !(ctx.publishedFeeLines ?? []).some((l) => (l.discipline === "" || l.discipline === "combo") && !l.unresolvedCollector
+    && String(l.authority ?? "").trim().toLowerCase() === own);
+}
+
+function printedLadderFee(name: string, ctx: FillContext): string {
+  const fees = printedLadderCents(ctx);
+  if (!fees) return "";
+  const usd = (cents: number) => money(cents / 100);
+  // The kVA row's own amount (it fills the bracket's Total through electricalTier*Total).
+  if (name === "electricalBaseFee") return usd(fees.base);
+  // The ladder prices the renewable row alone. A services/feeders line (a battery's, a service
+  // upgrade's) is not on it, so no whole-application figure is written — the same rule as an unpriced
+  // services line on a saved schedule (serviceFeederOnForm): a renewable-only total understates the permit.
+  if (serviceFeederOnForm(ctx, undefined).applies) return "";
+  if (name === "electricalSubtotal") return usd(fees.base);
+  // A known plan-review trigger adds a charge the ladder does not compute: no surcharge, no total.
+  if (knownElectricalReviewRequired(ctx.snapshot)) return "";
+  if (name === "electricalStateSurcharge") return usd(fees.stateSurcharge);
+  if (name === "electricalTotalFee") return usd(fees.base + fees.stateSurcharge);
+  // A community surcharge / another county's grand total is not on this ladder.
+  return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -526,7 +673,7 @@ function prescriptiveComputed(name: string, ctx: FillContext): string {
   if (!m) return "";
   const key = m[1][0].toLowerCase() + m[1].slice(1);
   const variant = m[2];
-  const rows = (ctx.prescriptive ??= evaluatePrescriptiveCriteria(ctx.project, ctx.prescriptiveLimits || {}));
+  const rows = (ctx.prescriptive ??= evaluatePrescriptiveCriteria(ctx.project, ctx.prescriptiveLimits || {}, { jurisdictionOnly: ctx.prescriptiveJurisdictionOnly === true }));
   let answer: string;
   if (key === "all") {
     // Overall verdict: Yes only when EVERY row affirmatively passes; No as soon
@@ -570,10 +717,10 @@ function computed(name: string, ctx: FillContext): string {
     }
     case "servicesFeeders200Qty":
     case "servicesFeeders200Total": {
-      const line = ctx.publishedFeeLines?.find(l => l.discipline === "electrical");
+      const line = savedElectricalLine(ctx);
       const svc = serviceFeederOnForm(ctx, line);
-      if (name === "servicesFeeders200Qty") return svc.applies ? "1" : "";
-      return svc.priced ? money(svc.baseUsd) : "";
+      if (name === "servicesFeeders200Qty") return Number(svc.qty) > 0 ? svc.qty : "";
+      return svc.priced && Number(svc.qty) > 0 ? money(svc.rowUsd) : "";
     }
     // electricalBaseFee is the RENEWABLE (kVA) line's own amount — it fills the
     // kVA row and the renewable-table subtotal, and older stored maps also put it
@@ -585,8 +732,12 @@ function computed(name: string, ctx: FillContext): string {
     case "electricalCommunitySurcharge":
     case "coosElectricalTotal":
     case "electricalTotalFee": {
-      const line = ctx.publishedFeeLines?.find(l => l.discipline === "electrical");
-      if (line?.feeUsd == null) return "";
+      // No saved electrical line (none at all, or a delegation to a collector with no schedule on
+      // file — savedElectricalLine): the ladder printed on this blank, where it has one. A saved
+      // line that declines to price (feeUsd null, with its reason) is never overruled by the form.
+      const line = savedElectricalLine(ctx);
+      if (!line) return printedLadderApplies(ctx) ? printedLadderFee(name, ctx) : "";
+      if (line.feeUsd == null) return "";
       if (name === "electricalBaseFee") return line.baseFeeUsd == null ? "" : money(line.baseFeeUsd);
       const svc = serviceFeederOnForm(ctx, line);
       if (svc.applies && !svc.priced) return "";
@@ -605,12 +756,29 @@ function computed(name: string, ctx: FillContext): string {
       const base = computed('electricalBaseFee', ctx);
       return base && feeBracket(ctx) === tier ? name.endsWith('Qty') ? '1' : base : '';
     }
+    // THE STRUCTURE ANSWER REACHES THESE TOO (applicationDocsAgency — dry run 2026-09-28, B5). They
+    // read constructionCategory alone while residentialCategory and structureSfdOrAccessory read the
+    // structure description, so one job printed "single-family dwelling" on the 5952 and "Still
+    // needs: construction category" on the county electrical form. The parsed category's own answers
+    // are KEPT (converge 2026-09-28): a structure answer ADDS evidence, it never blanks what the
+    // parsed category already said.
+    //
+    // "Single Family Dwelling" is ticked on EXPLICIT single-family evidence only: the parsed category
+    // saying so, or a structure answer saying so (explicitSingleFamilyAnswer). Never on "R-3" or the
+    // one-and-two-family option — both also cover two-family dwellings.
     case "singleFamilyCategory":
-      return /^single[- ]family(?: dwelling)?$/i.test(str(ctx.snapshot.constructionCategory).trim()) ? "yes" : "";
+      return /^single[- ]family(?: dwelling)?$/i.test(str(ctx.snapshot.constructionCategory).trim())
+        || explicitSingleFamilyAnswer(ctx.snapshot) ? "yes" : "";
     case "constructionCategory": {
+      // An explicit "Other" (with its description) is the operator's own answer — read first.
       const v = str(ctx.snapshot.constructionCategory || ctx.snapshot.occupancyType).trim();
       if (/^other$/i.test(v)) return str(ctx.snapshot.constructionCategoryOther).trim() ? "other" : "";
-      return /^(?:single[- ]family(?: dwelling)?|1[- ]and[- ]2[- ]family|one[- ]and[- ]two[- ]family|R-?3)$/i.test(v) ? "residential" : "";
+      // RESIDENTIAL construction: the parsed category (R-3 and the one-and-two-family option are
+      // residential whatever structure sits beside them — a duplex, townhouse, manufactured home or
+      // accessory building next to "R-3" is still residential construction), or a structure answer
+      // that means a single-family dwelling.
+      return /^(?:single[- ]family(?: dwelling)?|1[- ]and[- ]2[- ]family|one[- ]and[- ]two[- ]family|R-?3)$/i.test(v)
+        || structureMeaningOf(ctx.snapshot) === "single_family" ? "residential" : "";
     }
     case "declaredValuation":
     case "estimatedJobValue": {
@@ -682,9 +850,11 @@ function computed(name: string, ctx: FillContext): string {
       // line under the authorized signature.
       return ctx.signatures?.applicant?.name ?? "";
     case "electricianSignerName":
-      // Typed name on the stored electrician signature; falls back to the
-      // supervisor name from the client profile when no sig image is stored.
-      return ctx.signatures?.electrician?.name ?? ctx.client.electricalSupervisorName ?? "";
+      // THE JOB'S COMPANY'S electrician, and only theirs: the typed name on that company's own
+      // electrician signature (buildContext loads licence-holder signatures by project.clientId),
+      // else the supervisor on that company's own record. Never the org's — an org-level default
+      // printed one company's supervising electrician on another company's application.
+      return ctx.signatures?.electrician?.name || ctx.client.electricalSupervisorName || "";
     case "descriptionOfWork": {
       const s = ctx.snapshot;
       const qty = str(s["moduleQuantity"] ?? s["module_quantity"]);
@@ -701,8 +871,13 @@ function computed(name: string, ctx: FillContext): string {
       const additionTail = isAddition
         ? ` Addition to existing${existingDc ? ` ${existingDc} kW DC` : ""} PV system${combinedDc ? ` (combined ${combinedDc} kW DC)` : ""}.`
         : "";
+      // THE ONE MOUNT PREDICATE (codeReviewRules.mountKindForProject): this hard-coded "roof-mounted"
+      // for every job, so a ground-mount form said roof-mounted beside its own roofMounted = "no".
+      // Unknown mount: no adjective (leak sweep 2026-09-28).
+      const mountWord = mountAdjective(mountKindForProject({ ...ctx.project, parserSnapshot: s } as ProjectRecord)).toLowerCase();
+      const system = `photovoltaic solar system${isAddition ? " addition" : ""}`;
       return [
-        isAddition ? "Install roof-mounted photovoltaic solar system addition" : "Install roof-mounted photovoltaic solar system",
+        mountWord ? `Install ${mountWord} ${system}` : `Install ${system}`,
         qty && model ? `: ${qty}x ${model}` : "",
         size ? `, ${size}` : "",
         battery ? `, with ${battery} battery storage` : "",
@@ -792,8 +967,12 @@ export function resolveSource(source: FieldSource, ctx: FillContext): string {
   switch (scope) {
     case "project":
       return str((ctx.project as unknown as Record<string, unknown>)[key]);
-    case "client":
-      return str(ctx.client[key]);
+    case "client": {
+      // A typed licence source / the generic state licence resolve through clients.licenceFor (the
+      // one answer) for this form's track; everything else is the overlay key as given.
+      const lic = ctx.licences ? licenceSourceValue(source, ctx) : null;
+      return lic ?? str(ctx.client[key]);
+    }
     case "snapshot":
       return str(ctx.snapshot[key]);
     case "computed":
@@ -803,14 +982,98 @@ export function resolveSource(source: FieldSource, ctx: FillContext): string {
   }
 }
 
+/** The generic licence's track for the form being filled: the form's own track (its form type);
+ *  a generic permit application takes the project's combo filing when it has one, else the
+ *  building side; a form with no track takes the project's single permit track, else unknown. */
+function fillLicenceTrack(ctx: FillContext): string | null {
+  const ft = String(ctx.formTrack ?? "");
+  if (ft === "building" || ft === "electrical" || ft === "combo") return ft;
+  const tracks = ctx.licences?.projectTracks ?? [];
+  if (ft === "permit") return tracks.includes("combo") ? "combo" : "building";
+  return tracks.length === 1 ? tracks[0] : null;
+}
+
+/** The licence answer a licence source asks for, on this fill (null for a source that is not one). */
+export function licenceAnswerFor(ref: LicenceSourceRef, ctx: FillContext): LicenceAnswer | null {
+  const L = ctx.licences;
+  if (!L) return null;
+  return ref.kind === "generic"
+    ? licenceFor(L.client, L.state, { track: fillLicenceTrack(ctx) })
+    : licenceFor(L.client, L.state, ref.kind);
+}
+
+/**
+ * ONE LICENCE NUMBER, ONE SLOT — the one predicate for AcroForm widgets AND flat-PDF overlay
+ * placements (licences skeptic L4). Two licence slots a form prints for DIFFERENT licences (Waltham:
+ * the construction supervisor's "License Number" and the home-improvement contractor's
+ * "Registration Number", both captioned without their kind) must never both carry one number: a
+ * GENERIC number slot whose value another licence number slot on the form also carries is blocked
+ * (left blank, named) — the slot that named its licence keeps it. Returns slot key → the other
+ * slots' labels.
+ */
+export function duplicateLicenceSlots(slots: Array<{ key: string; label: string; value: string; ref: LicenceSourceRef | null }>): Map<string, string> {
+  const blocked = new Map<string, string>();
+  const numberSlots = slots.filter((r) => r.ref && r.ref.field === "number" && r.value.trim());
+  for (const r of numberSlots) {
+    if (r.ref?.kind !== "generic") continue;
+    const others = numberSlots.filter((o) => o.key !== r.key && o.value.trim().toUpperCase() === r.value.trim().toUpperCase());
+    if (others.length) blocked.set(r.key, others.map((o) => o.label).join(", "));
+  }
+  return blocked;
+}
+
+/** A typed licence source (client.stateLicence.<kind>[.expires|.holder]) or the generic state
+ *  licence, resolved by licenceFor; null for every other source (read from the overlay as given). */
+function licenceSourceValue(source: string, ctx: FillContext): string | null {
+  if (source !== STATE_LICENCE_SOURCE && !source.startsWith(TYPED_LICENCE_PREFIX)) return null;
+  const ref = licenceSourceRef(source);
+  if (!ref) return "";
+  const a = licenceAnswerFor(ref, ctx);
+  if (!a) return null;
+  return ref.field === "expires" ? (a.number ? a.expires : "") : ref.field === "holder" ? a.holder : a.number;
+}
+
 export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
   // Reuse the same client overlay the portal adapters get, so PDF and portal
   // stay consistent. portalType "" yields licensing fields without a specific
-  // installer identity.
-  const client = clientStagingOverlay(db, project.clientId, "");
+  // installer identity. The licence keys are THIS job's state's (clients.licenceOverlay): on an
+  // Oregon job exactly the named columns as before; elsewhere the state's own licences.
+  const client = clientStagingOverlay(db, project.clientId, "", { state: String(project.state ?? ""), track: null });
+  // A LICENCE IS A STATE'S AND A SLOT'S. The overlay carried the client's Oregon CCB number for
+  // every job, and a stored map bound it to City of Waltham's MASSACHUSETTS construction-supervisor
+  // licence slot. On a FORM, client.ccbLicenseNumber / ccbExpiration are Oregon's CCB and nothing
+  // else (the source says so to the mapper), so they resolve only on an Oregon job. The typed
+  // sources (client.stateLicence.<kind>) and the generic client.stateContractorLicense resolve per
+  // form through clients.licenceFor — the answer the submit gate and the portal overlay read. None
+  // of the needed kind on file = "" (the fill names it for the operator) — never another kind's,
+  // state's or company's number.
+  const licenceClient = clientLicenceRow(db, project.clientId);
+  // The job's licence state: ONE answer (clients.licenceJobState — "Oregon" is OR; blank is UNKNOWN,
+  // no state's licences).
+  const st = licenceJobState(project.state);
+  if (st !== "OR") { delete client.ccbLicenseNumber; delete client.ccbExpiration; }
+  let projectTracks: string[] = [];
+  try { projectTracks = requiredTracks(project).filter((t) => t !== "nem"); } catch { projectTracks = []; }
+  const planSetLicences = planSetPrintedLicences(project.parserSnapshot);
+  let planSetWarning = "";
+  try { planSetWarning = planSetLicenceWarning(db, project) ?? ""; } catch { planSetWarning = ""; }
+  const licences: FillLicences = {
+    client: licenceClient, state: st,
+    companyName: String(licenceClient?.company_name || licenceClient?.legal_business_name || ""),
+    projectTracks, planSetLicences, planSetWarning,
+  };
+  // The generic licence for a fill with no form in hand (bcd5952SnapshotAdditions and callers that
+  // read the overlay directly); a form resolves it again for its own track (resolveSource).
+  const generic = licenceFor(licenceClient, licences.state, { track: projectTracks.length === 1 ? projectTracks[0] : null });
+  if (generic.number) client.stateContractorLicense = generic.number;
+  else delete client.stateContractorLicense;
   // Per-AHJ prescriptive limits (same jurisdiction code profile QC screens on),
   // so the presc* checkbox sources answer against this AHJ's actual thresholds.
-  // Only concrete values override; anything missing keeps the Oregon defaults.
+  // IN OREGON only concrete values override and anything missing keeps Oregon's defaults. OUTSIDE
+  // Oregon (or with no recognised state) the jurisdiction's own limits are the ONLY limits: a row it
+  // never published answers [verify] — a Utah job's "meets the prescriptive criteria" box was ticked
+  // against Oregon's 70 psf (leak sweep wrong-kind-prescriptive-oregon-limits-any-state).
+  const prescriptiveJurisdictionOnly = usStateCode(project.state) !== "OR";
   const prescriptiveLimits: PrescriptiveLimitInputs = {};
   try {
     const p = resolveEffectiveCodeContext(db, project.state, project.ahj).prescriptive || {};
@@ -818,7 +1081,11 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
     if (p.maxPvDeadLoadPsf != null) prescriptiveLimits.maxPvDeadLoadPsf = p.maxPvDeadLoadPsf;
     if (p.maxRafterSpacingIn != null) prescriptiveLimits.maxRafterSpacingIn = p.maxRafterSpacingIn;
     if (p.allowedWindExposures?.length) prescriptiveLimits.allowedWindExposures = p.allowedWindExposures;
-  } catch { /* profile data optional — Oregon defaults apply */ }
+    if (prescriptiveJurisdictionOnly) {
+      if (p.maxWindSpeedMphExpB != null) prescriptiveLimits.maxWindSpeedMphExpB = p.maxWindSpeedMphExpB;
+      if (p.maxWindSpeedMphExpC != null) prescriptiveLimits.maxWindSpeedMphExpC = p.maxWindSpeedMphExpC;
+    }
+  } catch { /* profile data optional — Oregon: its defaults apply; elsewhere: every row [verify] */ }
   // The jurisdiction's own published electrical brackets, if anybody has researched them. Read
   // through the SAME discipline-aware lookup the fee sheet and the invoice use, so the PDF and
   // the quote cannot disagree. Absent is the ordinary case and costs nothing: renewableFee then
@@ -837,9 +1104,10 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
       publishedElectricalBrackets = sched.brackets;
     }
   } catch { /* no schedule module or unreadable row — the printed ladder stands */ }
-  return {
+  const ctx: FillContext = {
     project,
     client,
+    licences,
     publishedElectricalBrackets,
     publishedFeeLines: feeForProject(db, project, "permit")?.lines,
     // Parsed/operator values win; beneath them, BCD 5952 facts another record already answers
@@ -851,10 +1119,49 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
     } as Record<string, unknown>,
     // The signature stamped on a permit form comes from the org that OWNS the
     // project — this runs from background jobs with no request, so it can't be
-    // taken from a session.
-    signatures: loadDefaultSignaturesByRole(db, projectOrgId(db, project.id)),
+    // taken from a session. A LICENCE HOLDER's line (electrician, contractor) is the
+    // job's COMPANY's (project.clientId) and nobody else's — see signatures.ts.
+    signatures: loadDefaultSignaturesByRole(db, projectOrgId(db, project.id), String(project.clientId ?? "")),
     prescriptiveLimits,
+    prescriptiveJurisdictionOnly,
   };
+  // THE OWNER'S MAILING ADDRESS IS THE INSTALLATION ADDRESS unless the project records another
+  // (operator ruling 2026-09-27, Michael Sheridan's Marion B-01S / E-01: "this will just be the
+  // install address"). Only when NO mailing address is on file — a parsed or entered one (even a
+  // partial one) is never mixed with the site's.
+  if (!str(ctx.snapshot.homeownerMailingAddress) && !str(ctx.snapshot.homeownerMailingCityStateZip)) {
+    const street = computed("streetAddress", ctx);
+    const cityStateZip = computed("cityStateZip", ctx);
+    if (street && str(ctx.project.city) && str(ctx.project.zip)) {
+      ctx.snapshot.homeownerMailingAddress = street;
+      ctx.snapshot.homeownerMailingCityStateZip = cityStateZip;
+    }
+  }
+  // THE STRUCTURE THE ARRAY IS ON, FROM THE PLAN SET when no person answered it (operator ruling
+  // 2026-09-28; applicationDocsAgency.structureDescriptionOf — the answer formFactQuestions reads to
+  // decide whether to ask). Every form's "snapshot.structureDescription" box (BCD 5952 "Structure
+  // description") prints it; the fill note names its evidence (structureFillNote).
+  const structure = structureDescriptionOf(ctx.snapshot);
+  if (!str(ctx.snapshot.structureDescription) && structure.source === "plan") ctx.snapshot.structureDescription = structure.value;
+  return ctx;
+}
+
+/** Sources that read the project's structure answer — a form mapping any of them shows the
+ *  plan-set evidence when the answer was derived rather than given. */
+const STRUCTURE_SOURCES = new Set(["snapshot.structureDescription", "computed.singleFamilyCategory", "computed.constructionCategory",
+  "computed.residentialCategory", "computed.structureSfdOrAccessory"]);
+function structureFillNote(def: AhjFormDefinition, ctx: FillContext): string {
+  const sources = [
+    ...Object.values(def.textFields ?? {}), ...Object.values(def.requiredFields ?? {}),
+    ...Object.values(def.checkboxes ?? {}).map((r) => r?.source), ...Object.values(def.radioGroups ?? {}).map((r) => r?.source),
+    ...(def.overlayFields ?? []).flatMap((f) => [f?.source, f?.onlyIf?.source]),
+  ].map((v) => String(v ?? ""));
+  if (!def.recoverPrescriptiveCheckboxes && !sources.some((v) => STRUCTURE_SOURCES.has(v))) return "";
+  // The PROJECT's snapshot (buildContext's overlay writes the derived value into ctx.snapshot, where it
+  // would read as a person's answer).
+  const d = structureDescriptionOf((ctx.project?.parserSnapshot ?? {}) as Record<string, unknown>);
+  if (d.source !== "plan") return "";
+  return `Structure: ${d.value} — from the plan set (${d.basis}; operator ruling 2026-09-28). A different answer on the project (the structure question, or Manual entry → Structure description) replaces it.`;
 }
 
 /** The module datasheet's extracted text (the listing agency is read from it — never from the
@@ -923,6 +1230,19 @@ async function trimSignatureMargins(bytes: Uint8Array, mime: string): Promise<{ 
   }
 }
 
+/**
+ * THE LICENCE-HOLDER LINES THIS FORM LEAVES UNSIGNED, NAMED FOR THE OPERATOR. A licence holder's
+ * signature is the job's company's (signatures.ts); when that company has none on file, the line is
+ * left empty — no image, no date — and this names it, so it reads as work owed, not as done.
+ * One entry per role, whose words say where to fix it.
+ */
+export function unsignedLicenceHolderLines(def: AhjFormDefinition, ctx: FillContext): string[] {
+  const sigs = ctx.signatures ?? {};
+  const company = String(ctx.client.installerCompanyName || ctx.client.companyName || "").trim() || "this job's company";
+  const roles = Array.from(new Set((def.signatureFields ?? []).map((pl) => pl.role).filter((r) => isLicenceHolderRole(r) && !sigs[r])));
+  return roles.map((role) => `${role === "electrician" ? "Electrician" : "Contractor"} signature — no ${role} signature on file for ${company}; the line is left unsigned (sign it by hand, or add ${company}'s ${role} signature under Signatures and rebuild)`);
+}
+
 async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: FillContext): Promise<number> {
   const placements = def.signatureFields ?? [];
   const sigs = ctx.signatures ?? {};
@@ -986,10 +1306,19 @@ async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: Fil
   return drawn;
 }
 
-export function matchingForms(ahj: string): AhjFormDefinition[] {
-  const needle = (ahj || "").toLowerCase();
-  if (!needle) return [];
-  return ahjFormRegistry.filter((def) => def.matchJurisdictions.some((m) => needle.includes(m)));
+/**
+ * The built-in registry forms for THIS project's jurisdiction. Two gates, both required:
+ *  - STATE: usStateCode(project.state) must equal the form's own state. A blank or unrecognised
+ *    state matches nothing — an unknown state is not Oregon (or anywhere else).
+ *  - NAME: whole words of the AHJ, kind-compatible (registryTermMatches — the same test the
+ *    application-profile registry uses). The old `ahj.includes("portland")` substring put Portland,
+ *    Oregon's electrical application on South Portland, Maine.
+ */
+export function matchingForms(project: { ahj?: string | null; state?: string | null }): AhjFormDefinition[] {
+  const ahj = String(project.ahj ?? "").trim();
+  const state = usStateCode(project.state);
+  if (!ahj || !state) return [];
+  return ahjFormRegistry.filter((def) => def.state === state && def.matchJurisdictions.some((m) => registryTermMatches(ahj, m)));
 }
 
 // SSRF guard: an AHJ form URL comes from operator input (/api/ahj-forms/inspect), so a
@@ -1095,16 +1424,85 @@ export async function fetchFormTemplate(def: AhjFormDefinition): Promise<Uint8Ar
 export interface InspectedField {
   name: string;
   type: string;
+  /** 0-based page of the field's first widget, when it could be told. */
+  page?: number;
+  /** The first widget's rectangle, PDF points (bottom-left origin). */
+  rect?: WidgetRect;
+  /** The nearest printed text on each side of the widget (formTextLayer.captionsForRect). */
+  captions?: WidgetCaptions;
+  /** THE printed caption of a text widget — the form's calibrated side (formTextLayer.primaryCaption). */
+  caption?: string;
 }
 
-export async function inspectFormFields(pdfBytes: Uint8Array): Promise<{ isXfa: boolean; fields: InspectedField[] }> {
+/**
+ * Every AcroForm field with WHERE it is and WHAT IS PRINTED AROUND IT. A widget's name is often
+ * auto-generated and shifted onto the neighbouring box (Waltham names the agent's EMAIL box
+ * "Telephone"); the printed caption is what the box is. Geometry and the blank's own text layer
+ * only — never a field VALUE (a blank uploaded half-filled must not carry its values to the mapper).
+ * Captions are best-effort: any text-layer failure leaves them off and the names stand.
+ */
+export async function inspectPlacedFields(pdfBytes: Uint8Array): Promise<{ isXfa: boolean; fields: InspectedField[]; captionSide: CaptionSide | null; labels: LabelItem[] }> {
   const doc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
   const form = doc.getForm();
-  const fields = form.getFields().map((f) => ({ name: f.getName(), type: f.constructor.name }));
+  const pages = doc.getPages();
+  const pageRefs = pages.map((p) => p.ref.toString());
+  const pageOfAnnot = new Map<string, number>();
+  pages.forEach((p, i) => { try { for (const ref of p.node.Annots()?.asArray() ?? []) pageOfAnnot.set(ref.toString(), i); } catch { /* no annots */ } });
+  const fields: InspectedField[] = form.getFields().map((f) => {
+    const out: InspectedField = { name: f.getName(), type: f.constructor.name };
+    try {
+      const w = f.acroField.getWidgets()[0];
+      if (w) {
+        const r = w.getRectangle();
+        let page = w.P() ? pageRefs.indexOf(w.P()!.toString()) : -1;
+        if (page < 0) { const ref = doc.context.getObjectRef(w.dict); if (ref) page = pageOfAnnot.get(ref.toString()) ?? -1; }
+        if (page >= 0 && [r.x, r.y, r.width, r.height].every(Number.isFinite)) {
+          out.page = page;
+          out.rect = { x: r.x, y: r.y, width: r.width, height: r.height };
+        }
+      }
+    } catch { /* geometry is best-effort */ }
+    return out;
+  });
   // No terminal AcroForm fields => likely XFA-only or a flat/scanned PDF that
   // pdf-lib cannot fill programmatically.
   const isXfa = fields.length === 0;
-  return { isXfa, fields };
+  let captionSide: CaptionSide | null = null;
+  let labels: LabelItem[] = [];
+  if (!isXfa) {
+    try {
+      const tl = await import("./formTextLayer");
+      labels = await tl.extractLabels(pdfBytes);
+      for (const f of fields) if (f.rect && f.page != null) f.captions = tl.captionsForRect(labels, f.page, f.rect);
+      const text = fields.filter((f) => /text/i.test(f.type));
+      captionSide = tl.calibrateCaptionSide(text);
+      for (const f of text) { const c = tl.primaryCaption(f.captions, captionSide); if (c) f.caption = c; }
+    } catch { /* no text layer — names only, as before */ }
+  }
+  return { isXfa, fields, captionSide, labels };
+}
+
+export async function inspectFormFields(pdfBytes: Uint8Array): Promise<{ isXfa: boolean; fields: InspectedField[]; captionSide: CaptionSide | null }> {
+  const { isXfa, fields, captionSide } = await inspectPlacedFields(pdfBytes);
+  return { isXfa, fields, captionSide };
+}
+
+/**
+ * WHOSE IS A REQUIRED FIELD THE FILL LEFT BLANK (gates-proper C4) — the one answer the fill result and
+ * the "application field(s) still blank" card read. By the field's SOURCE key first (a label is prose):
+ *   - "agency": a fee, surcharge, subtotal or total the form could not price (computed.*Fee /
+ *     *Surcharge / *Subtotal / *Total) — the issuing agency computes it from its own schedule (Marion
+ *     County in its portal; Coos County at intake). Not the operator's data, never a reason to wait.
+ *   - "planning_office": a land-use approval number / date — issued by the planning office, and only
+ *     where the project needed one.
+ *   - "operator": everything else — project data the operator can add, or complete on the form.
+ */
+export type RequiredFieldOwner = "agency" | "planning_office" | "operator";
+export function requiredFieldOwner(label: string, source: string): RequiredFieldOwner {
+  const src = String(source ?? "");
+  if (/^computed\.[A-Za-z]*(Fee|Surcharge|Subtotal|Total)$/.test(src)) return "agency";
+  if (/^snapshot\.landUse/i.test(src) || /land[-\s]?use approval/i.test(String(label ?? ""))) return "planning_office";
+  return "operator";
 }
 
 export interface FilledFormResult {
@@ -1114,10 +1512,16 @@ export interface FilledFormResult {
   outputPath?: string;
   filledFieldCount?: number;
   unmappedRequested?: string[];
+  /** For a blank in unmappedRequested that is NOT the operator's data: whose it is (requiredFieldOwner). */
+  requestedFieldOwners?: Record<string, RequiredFieldOwner>;
   message?: string;
   /** Whether this form's mapping is human-verified. Registry forms are inherently
    *  verified; stored auto/uploaded forms start false until the operator confirms. */
   verified?: boolean;
+  /** Stored forms only: the fill used the BUILT-IN map written in code for this exact blank (by its
+   *  sha256 — effectiveStoredFieldMap), not an automatically derived one. No mapping verification is
+   *  asked for it; the filled PDF is still reviewed before filing. */
+  builtInMap?: boolean;
   /** ahj_form_templates row id (stored forms only), for the verify action. */
   templateId?: string;
   /** True when signature placements are hand-tuned on the registry def, so the
@@ -1131,6 +1535,11 @@ export interface FilledFormResult {
   documentStale?: boolean;
   /** Where the blank was downloaded from, so the operator can re-check it. */
   sourceUrl?: string;
+  /** Blanks the product did NOT fill, by printed label, with why — for the operator to complete by
+   *  hand: facts no source holds (zoning, setbacks, flood zone…), a mapped value that is empty on
+   *  this job, a value refused as the wrong shape for its box, an attestation never made
+   *  automatically. Never left silently blank. */
+  operatorItems?: string[];
 }
 
 export async function fillForm(
@@ -1155,6 +1564,14 @@ export async function fillLoadedForm(
   ctx: FillContext,
   outputPath: string,
 ): Promise<FilledFormResult> {
+  // THE BLANK'S OWN PRINTED FEE LADDER, by its exact bytes (curatedAhjForms.curatedPrintedFees) — so
+  // a row stored before the ladder existed reads it too. Per form: a copy of the context, never the
+  // caller's shared one, and a blank without a ladder never inherits another form's.
+  const printedFeeLadder = curatedPrintedFees(templateBytes);
+  if (printedFeeLadder || ctx.printedFeeLadder) ctx = { ...ctx, printedFeeLadder };
+  // THIS FORM'S TRACK — a generic licence source resolves by it (fillLicenceTrack). Per form, on a
+  // copy: the caller's context is shared across every form of the package.
+  if (def.formTrack !== undefined || ctx.formTrack !== undefined) ctx = { ...ctx, formTrack: def.formTrack ?? null };
   const doc = await PDFDocument.load(templateBytes, { ignoreEncryption: true });
   let checklist: ChecklistRecovery = { recognized: false, overlays: [], omittedTextFields: [], textFieldOverrides: {} };
   let checklistCtx = ctx;
@@ -1162,11 +1579,14 @@ export async function fillLoadedForm(
     const [{ extractLabels }, { recoverBcd5952Checklist, BCD_5952_LIMITS }] = await Promise.all([
       import("./formTextLayer"), import("./prescriptiveChecklist"),
     ]);
+    // A human-verified stored map (unverifiedMap === false) is filled as written: its answers are
+    // recovered, its map is not repaired (hard rule 3).
     checklist = recoverBcd5952Checklist(doc, await extractLabels(templateBytes), def.overlayFields,
-      def.textFields, Object.values(def.checkboxes ?? {}).map((r) => r.source));
+      def.textFields, Object.values(def.checkboxes ?? {}).map((r) => r.source), { repairMap: def.unverifiedMap !== false });
     // A checklist's printed thresholds control its answers, even when a cached
     // project evaluation used different jurisdiction limits. Do not mutate ctx.
-    checklistCtx = { ...ctx, prescriptive: undefined,
+    // (Oregon's own form: its printed limits over Oregon's — never "jurisdiction only".)
+    checklistCtx = { ...ctx, prescriptive: undefined, prescriptiveJurisdictionOnly: false,
       prescriptiveLimits: { ...ctx.prescriptiveLimits, ...BCD_5952_LIMITS } };
   }
   const drawChecklist = async (): Promise<number> => {
@@ -1185,18 +1605,104 @@ export async function fillLoadedForm(
   // NAME THE MISSING FACT, NOT THE ROW: "roof material and layer count" on a project whose roof
   // material was parsed read as "it filled metal roofing" (bcdChecklistFacts.bcd5952MissingFacts).
   const unresolvedChecklistRows = checklist.recognized ? bcd5952MissingFacts(ctx.project).map((m) => m.missing) : [];
+  // A ROW THAT ANSWERS NO IS SAID, WITH ITS CLAUSE (bcdChecklistFacts.bcd5952FailedRows — the list the
+  // submit gate's permit-path warning reads too): the form itself says a No row may not go on the
+  // prescriptive path.
+  const failedChecklistRows = checklist.recognized ? bcd5952FailedRows(ctx.project).map((f) => f.clause) : [];
+  // A ROW THAT PASSED ON A STANDING ASSUMPTION IS SAID AS ONE (bcdChecklistFacts.bcd5952AssumedFacts —
+  // the roof layer count, operator ruling 2026-09-28), so a person can see it and answer otherwise.
+  const assumedChecklistRows = checklist.recognized ? bcd5952AssumedFacts(ctx.project).map((f) => f.assumed) : [];
   const checklistMessage = checklist.recognized
     ? "BCD 5952: filled independently supported answers. Review the completed PDF before filing."
       + (unresolvedChecklistRows.length ? ` Still needs evidence: ${unresolvedChecklistRows.join("; ")}.` : "")
+      + (failedChecklistRows.length ? ` Answers No (the checklist says a No row may not be submitted on the prescriptive path): ${failedChecklistRows.join("; ")}.` : "")
+      + (assumedChecklistRows.length ? ` Assumed: ${assumedChecklistRows.join("; ")}.` : "")
     : undefined;
   // The cached research title can claim several applications were combined,
   // while the actual two-page PDF is only this checklist.
   const resultFormName = checklist.recognized
     ? "Oregon BCD 5952 - Prescriptive Solar PV Installation Checklist"
     : def.formName;
-  const missingRequired = Object.entries(def.requiredFields ?? {}).filter(([, source]) => !resolveSource(source, ctx).trim()).map(([label]) => label);
-  const completionMessage = [checklistMessage, missingRequired.length ? `Still needs: ${missingRequired.join("; ")}.` : "",
-    ...(def.notes ?? [])].filter(Boolean).join(" ") || undefined;
+  const missingRequiredEntries = Object.entries(def.requiredFields ?? {}).filter(([, source]) => !resolveSource(source, ctx).trim());
+  const missingRequired = missingRequiredEntries.map(([label]) => label);
+  // WHO SUPPLIES EACH BLANK (gates-proper C4 — requiredFieldOwner, the one answer). A fee, a
+  // surcharge or a grand total the form could not price is the AGENCY's to compute (Marion County
+  // prices the E-01 in its own portal); a land-use approval comes from the planning office. Neither is
+  // "resolve in QC / Human Review". The labels stay in unmappedRequested (the blank is still SAID);
+  // requestedFieldOwners tells the screen whose it is.
+  const requestedFieldOwners: Record<string, RequiredFieldOwner> = {};
+  for (const [label, source] of missingRequiredEntries) {
+    const owner = requiredFieldOwner(label, source);
+    if (owner !== "operator") requestedFieldOwners[label] = owner;
+  }
+  const operatorMissing = missingRequired.filter((l) => !requestedFieldOwners[l]);
+  const agencyMissing = missingRequired.filter((l) => requestedFieldOwners[l] === "agency");
+  const officeMissing = missingRequired.filter((l) => requestedFieldOwners[l] === "planning_office");
+  // Say where the fees came from whenever the printed ladder priced this form (no saved line on file —
+  // the same savedElectricalLine answer the fee cells used).
+  const printedFeeNote = ctx.printedFeeLadder && printedLadderApplies(ctx)
+    && resolveSource("computed.electricalBaseFee", ctx) ? ctx.printedFeeLadder.note : "";
+  // ONE STORY ABOUT THE FEES. The curated maps' generic note ("Fee entries use the current saved
+  // jurisdiction lookup; printed rates may be historical.") contradicts the printed-ladder note, so
+  // when the ladder priced the form that exact sentence is dropped — at fill time, because a row
+  // stored before the ladder existed (Michael's E-01) carries it in its stored map. Exact literal.
+  const notes = printedFeeNote
+    ? (def.notes ?? []).map((n) => n.split(CURATED_SAVED_FEE_NOTE).map((s) => s.trim()).filter(Boolean).join(" "))
+    : (def.notes ?? []);
+  // A licence-holder line with no signature on file for THIS job's company stays unsigned, and is
+  // named as the operator's item (listed with the blanks, so the form reads "needs details").
+  const unsignedLines = unsignedLicenceHolderLines(def, ctx);
+  missingRequired.push(...unsignedLines);
+  // A structure answer the PLAN SET gave (no person did) is said with the words that decided it.
+  const structureNote = structureFillNote(def, ctx);
+  const completionMessage = [checklistMessage, structureNote, operatorMissing.length ? `Still needs: ${operatorMissing.join("; ")}.` : "",
+    unsignedLines.length ? `Left unsigned: ${unsignedLines.join("; ")}.` : "",
+    officeMissing.length ? `From the planning / land-use office (when it applies): ${officeMissing.join("; ")}.` : "",
+    agencyMissing.length ? `Left for the agency to compute: ${agencyMissing.join("; ")}.` : "",
+    printedFeeNote, ...notes].filter(Boolean).join(" ") || undefined;
+
+  // WHAT THE OPERATOR MUST FILL BY HAND, by printed label. Seeded from the map (blanks the mapper
+  // named that no source can answer — zoning, setbacks, flood zone…); every check below adds what it
+  // refuses or cannot answer, so no blank on the form is silent.
+  const operatorItems: OperatorItem[] = [...(def.operatorItems ?? [])];
+  // THE PLAN SET NAMES ANOTHER COMPANY'S LICENCE (clientMatch.planSetLicenceWarning): said on every
+  // filled form, never acted on — the job's company is the operator's call.
+  if (ctx.licences?.planSetWarning) operatorItems.push({ label: ctx.licences.planSetWarning });
+  const jobState = String(ctx.project?.state ?? "").trim().toUpperCase();
+  /** The plan set's printed licence as a REFERENCE for a blank licence slot — never filled. */
+  const planSetHint = (): string => {
+    const printed = ctx.licences?.planSetLicences ?? [];
+    if (!printed.length) return "";
+    const company = ctx.licences?.companyName || "this client";
+    return `; the plan set prints ${printed.join(" / ")} — add it to ${company}'s licences under Clients if it is theirs`;
+  };
+  /** A licence slot left blank, named with WHY (clients.licenceFor's reason) and the plan-set hint. */
+  const licenceItem = (label: string, ref: LicenceSourceRef): OperatorItem | null => {
+    const a = licenceAnswerFor(ref, ctx);
+    if (!a) return null;
+    if (ref.field === "holder") return { label: `${label} (the licence holder's name — ${a.number ? `no holder's name is on file for the ${a.label} ${a.number}` : a.reason || "no holder on file"}; add it under Clients or enter it by hand${planSetHint()})` };
+    if (a.candidates.length) return { label: `${label} (${a.reason} — enter the right one by hand)` };
+    const reason = ref.kind === "generic" && /^no \w+ contractor licence on file/.test(a.reason) ? a.reason.replace(/ on file/, " on file for this client") : `${a.reason || "none on file"} for this client`;
+    return { label: `${label} (${reason}${planSetHint()})` };
+  };
+  /** A mapped DATA source that resolved empty on this job. computed.* rows are blank by design on
+   *  many forms (a fee tier this system is not in), so only the data scopes and the computed
+   *  answers a person supplies (who signs, the valuation) are named. */
+  const emptyItem = (label: string, source: string, ref?: LicenceSourceRef | null): OperatorItem | null => {
+    if (source === OREGON_CCB_SOURCE && jobState && jobState !== "OR" && (!ref || ref.oregonCcb)) {
+      return { label: `${label} (an Oregon CCB number is not a ${jobState} licence — enter the ${jobState} licence by hand, or re-map this form)` };
+    }
+    const licRef = ref ?? licenceSourceRef(source);
+    if (licRef && ctx.licences) {
+      const item = licenceItem(label, licRef);
+      if (item) return item;
+    }
+    if (source === STATE_LICENCE_SOURCE) return { label: `${label} (no ${jobState || "state"} contractor licence on file for this client)` };
+    if (/^(project|snapshot|client)\./.test(source) || ["computed.applicantSignerName", "computed.estimatedJobValue", "computed.declaredValuation"].includes(source)) {
+      return { label: `${label} (no data on file for this job)` };
+    }
+    return null;
+  };
 
   // Both flat and AcroForm templates can have additional fields without widgets.
   const drawMappedOverlays = async (): Promise<number> => {
@@ -1209,28 +1715,132 @@ export async function fillLoadedForm(
     // "off a bit" drift. Falls back to x/y for unlabeled fields / no text layer /
     // label-not-found, so nothing regresses. Text layer is read at most once.
     let anchorFor: ((f: OverlayField) => { x: number; y: number } | null) | null = null;
+    // ROW SNAP (formRowGeometry.rowSnapPlacement): a labelled placement is drawn INSIDE the row its
+    // printed label sits in — the page's own rules and shaded header bands, read once per blank —
+    // never on the rule (Yamhill County, live 2026-09-28: every owner/contractor/applicant value
+    // struck through), never in a header band, a header with blank rows under it filled across them.
+    // An unverified map's row is its LABEL's (resolvePlacementLabel, near the map's point); a verified
+    // map's row is the one its own point names — the text moves only within the cell a person
+    // confirmed (hard rule 3). FLAT_FORM_ROW_SNAP=0 turns it off (release #11 placement).
+    const rowSnapOn = process.env.FLAT_FORM_ROW_SNAP !== "0";
+    let textItems: LabelItem[] = [];
+    let geometry: PageGeometry[] = [];
+    let snapTools: typeof import("./formRowGeometry") | null = null;
+    let resolveLabel: typeof import("./formTextLayer").resolvePlacementLabel | null = null;
     if ((def.overlayFields ?? []).some((f) => f.label && f.label.trim())) {
       try {
-        const { extractLabels, hasTextLayer, anchorPlacement, sideForLabel } = await import("./formTextLayer");
+        const { extractLabels, hasTextLayer, anchorPlacement, sideForLabel, resolvePlacementLabel } = await import("./formTextLayer");
         const items = await extractLabels(templateBytes);
         if (hasTextLayer(items)) {
-          anchorFor = (f) => (f.label && f.label.trim())
-            ? anchorPlacement(items, { page: f.page, label: f.label, side: sideForLabel(f.label), size: f.size ?? 9 })
-            : null;
+          textItems = items;
+          resolveLabel = resolvePlacementLabel;
+          anchorFor = (f) => {
+            if (!f.label || !f.label.trim()) return null;
+            // The printed label near the map's point, and ITS side ("Job site address:" prints a colon
+            // the map's "Job site address" dropped — the value goes right of it, not above it).
+            // (A check mark keeps release #11's anchoring: it sits in its box, beside its caption.)
+            if (rowSnapOn && def.unverifiedMap && !/^lit:.{0,2}$/.test(String(f.source || ""))) {
+              const L = resolvePlacementLabel(items, f.label, f.page, { x: f.x, y: f.y });
+              return L ? anchorPlacement([L], { page: f.page, label: L.str, side: sideForLabel(L.str), size: f.size ?? 9 }) : null;
+            }
+            return anchorPlacement(items, { page: f.page, label: f.label, side: sideForLabel(f.label), size: f.size ?? 9 });
+          };
+          if (rowSnapOn) {
+            snapTools = await import("./formRowGeometry");
+            geometry = await snapTools.extractPageGeometry(templateBytes);
+          }
         }
       } catch { /* keep anchorFor null → use stored x/y */ }
     }
+    // Each placement's value, resolved once before anything is drawn, so the one-number-one-slot
+    // check below sees every licence placement on the form (as the AcroForm path does).
+    const resolveOverlay = (index: number, field: OverlayField): { skip: boolean; overlaySource: string; text: string; printed: string; overlayRef: LicenceSourceRef | null } => {
+      if (field.onlyIf) {
+        const cond = resolveSource(field.onlyIf.source, ctx);
+        if (!checkboxRuleChecked({ source: field.onlyIf.source, equals: field.onlyIf.equals }, cond)) return { skip: true, overlaySource: "", text: "", printed: "", overlayRef: null };
+      }
+      // A recognized checklist may repair a stored placement's SOURCE (never its map).
+      let overlaySource = checklist.overlaySourceOverrides?.[index] ?? field.source;
+      const printed = String(field.label ?? "").trim();
+      // THE PARCEL BOX AND THE DESCRIPTION OF WORK (formFieldChecks.captionSourceRule): on a map nobody
+      // verified, the printed label decides — a parcel box never takes the description of work.
+      if (def.unverifiedMap && printed) {
+        const bound = captionSourceRule(printed, overlaySource);
+        if (bound) overlaySource = bound.source;
+      }
+      let text = resolveSource(overlaySource, ctx);
+      // The printed label names its licence (unverified maps) — the same rule as a widget's caption.
+      let overlayRef: LicenceSourceRef | null = null;
+      if (def.unverifiedMap && printed && ctx.licences) {
+        const slot = slotLicenceRef({ name: "", caption: printed }, overlaySource);
+        if (slot?.overridden) {
+          overlayRef = slot.ref;
+          const a = licenceAnswerFor(slot.ref, ctx);
+          text = !a ? "" : slot.ref.field === "expires" ? (a.number ? a.expires : "") : slot.ref.field === "holder" ? a.holder : a.number;
+        }
+      }
+      return { skip: false, overlaySource, text, printed, overlayRef };
+    };
+    const overlayResolved = (def.overlayFields ?? []).map((field, index) => resolveOverlay(index, field));
+    // ONE LICENCE NUMBER, ONE SLOT — on a flat PDF too (licences skeptic L4): two generic licence
+    // placements (Waltham's "License Number" / "Registration Number") are never both drawn with one
+    // number. The same predicate the AcroForm path asks (duplicateLicenceSlots); unverified maps only.
+    const overlayDupBlocked = def.unverifiedMap
+      ? duplicateLicenceSlots(overlayResolved.map((r, index) => ({
+        key: String(index), label: r.printed || `placement ${index + 1}`, value: r.text,
+        ref: r.skip ? null : (r.overlayRef ?? licenceSourceRef(r.overlaySource)),
+      })))
+      : new Map<string, string>();
     for (const [index, field] of (def.overlayFields ?? []).entries()) {
       const page = pages[field.page];
       if (!page) continue;
-      if (field.onlyIf) {
-        const cond = resolveSource(field.onlyIf.source, ctx);
-        if (!checkboxRuleChecked({ source: field.onlyIf.source, equals: field.onlyIf.equals }, cond)) continue;
+      const resolved = overlayResolved[index];
+      if (resolved.skip) continue;
+      const { overlaySource, printed, overlayRef } = resolved;
+      let text = resolved.text;
+      if (overlayDupBlocked.has(String(index))) {
+        const ref = overlayRef ?? licenceSourceRef(overlaySource);
+        const a = ref ? licenceAnswerFor(ref, ctx) : null;
+        operatorItems.push({ label: `${printed || `placement ${index + 1}`} (the same licence number as ${overlayDupBlocked.get(String(index))} — this slot asks for a different licence${a?.label ? ` than the ${a.label}` : ""}; enter it by hand)` });
+        continue;
       }
-      // A recognized checklist may repair a stored placement's SOURCE (never its map).
-      let text = resolveSource(checklist.overlaySourceOverrides?.[index] ?? field.source, ctx);
-      if (!text) continue;
+      // Placements carrying the form's printed label get the same checks a widget does: never an
+      // attestation of an attached document, never a value the wrong shape for its box, and a data
+      // value that is empty on this job is named rather than silently skipped.
+      if (printed && attestsAttachedDocument(printed)) {
+        if (text) operatorItems.push({ label: `${printed} (an attestation — attach the document and tick by hand)` });
+        continue;
+      }
+      if (!text) {
+        const item = printed ? emptyItem(printed, overlaySource, overlayRef) : null;
+        if (item) operatorItems.push(item);
+        continue;
+      }
+      const overlayRefusal = printed ? contactShapeRefusal(widgetContactKind({ name: "", caption: printed }), text) : null;
+      if (overlayRefusal) { operatorItems.push({ label: `${printed} (left blank: ${overlayRefusal})` }); continue; }
       const size = field.size ?? 9;
+      // A check mark ("lit:X") sits in its box where the map put it: a row snap would move it right
+      // of its caption.
+      const isMark = /^lit:/.test(overlaySource) && text.trim().length <= 2;
+      const pageGeometry = printed && !isMark && snapTools ? geometry.find((g) => g.page === field.page) : undefined;
+      if (pageGeometry && snapTools) {
+        const point = { x: field.x, y: field.y };
+        const L = def.unverifiedMap && resolveLabel ? resolveLabel(textItems, printed, field.page, point) : null;
+        // No label to anchor the row (a verified map, or none found): the row is the one release #11's
+        // own position names — the label-anchored point, else the map's — and only y moves into it.
+        const start = L ? point : ((anchorFor ? anchorFor(field) : null) ?? point);
+        const snap = snapTools.rowSnapPlacement({
+          geometry: pageGeometry, items: textItems, label: L, point: start, text, size,
+          widthOf: (t, s) => font.widthOfTextAtSize(t, s),
+        });
+        if (snap) {
+          for (const line of snap.lines) page.drawText(line.text, { x: line.x, y: line.y, size: line.size, font, color: rgb(0, 0, 0) });
+          if (snap.truncated) operatorItems.push({ label: `${printed} (the value is longer than the form's box — check it on the filled form and complete it by hand)` });
+          drawn += 1;
+          continue;
+        }
+        logger.info("forms", "flat-form row snap found no row; the map's own position is used", { form: def.formName, label: printed, page: field.page, labelFound: Boolean(L) });
+      }
       if (field.maxWidth) {
         while (text.length > 1 && font.widthOfTextAtSize(text, size) > field.maxWidth) {
           text = text.slice(0, -1);
@@ -1243,19 +1853,41 @@ export async function fillLoadedForm(
       const anchored = anchorFor ? anchorFor(field) : null;
       const nx = (anchored ? anchored.x : field.x) + (Number(process.env.OVERLAY_NUDGE_X) || 0);
       const ny = (anchored ? anchored.y : field.y) + (Number(process.env.OVERLAY_NUDGE_Y) || 0);
+      // NEVER IN A SHADED HEADER BAND (an unverified map): a value the rows could not take is named
+      // for the operator rather than drawn over "JOB SITE INFORMATION AND LOCATION".
+      if (pageGeometry && snapTools && def.unverifiedMap && !isMark) {
+        const box = { x0: nx, y0: ny - 0.22 * size, x1: nx + font.widthOfTextAtSize(text, size), y1: ny + 0.72 * size };
+        if (snapTools.headerBands(pageGeometry, textItems).some((b) => box.x0 < b.x1 && box.x1 > b.x0 && box.y0 < b.y1 && box.y1 > b.y0)) {
+          operatorItems.push({ label: `${printed} (no row for it could be found on the form — complete it by hand)` });
+          continue;
+        }
+      }
       page.drawText(text, { x: nx, y: ny, size, font, color: rgb(0, 0, 0) });
       drawn += 1;
     }
     return drawn;
   };
+  /** THE WORKERS' COMPENSATION AFFIDAVIT, read off the form's own text (formFieldChecks
+   *  .workersCompAffidavitItem): named for the operator whatever the model returned, unless an item
+   *  already names it. Never ticked, never signed. */
+  const workersCompItem = async (items?: LabelItem[]): Promise<OperatorItem | null> => {
+    if (operatorItems.some((i) => namesWorkersComp(i.label))) return null;
+    let text = items ?? [];
+    if (!items) { try { text = await (await import("./formTextLayer")).extractLabels(templateBytes); } catch { text = []; } }
+    return workersCompAffidavitItem(text);
+  };
   // Overlay mode: flat PDF, draw text at coordinates.
   if (def.fillMode === "overlay") {
     const drawn = await drawMappedOverlays() + await drawChecklist();
+    const wc = await workersCompItem();
+    if (wc) operatorItems.push(wc);
     await drawSignatures(doc, def, ctx);
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.writeFileSync(outputPath, await doc.save());
     return { formId: def.id, formName: resultFormName, status: "filled", outputPath, filledFieldCount: drawn,
-      unmappedRequested: [...checklist.omittedTextFields, ...missingRequired], message: completionMessage };
+      unmappedRequested: [...checklist.omittedTextFields, ...missingRequired], message: completionMessage,
+      ...(Object.keys(requestedFieldOwners).length ? { requestedFieldOwners } : {}),
+      operatorItems: operatorItemLabels(operatorItems) };
   }
 
   const form = doc.getForm();
@@ -1282,12 +1914,100 @@ export async function fillLoadedForm(
   // size keeps the blank's own auto-size (fit), so it is never clipped at the box edge.
   const sizingFont = await doc.embedFont(StandardFonts.Helvetica);
 
+  // WHAT THE BLANK PRINTS AROUND EACH WIDGET, read once (inspectPlacedFields). A widget's name can be
+  // shifted onto its neighbour's box — Waltham's "Telephone" widget IS the agent's Email Address box
+  // — so the checks below key on the printed caption first and the name second. Best-effort: with
+  // no text layer every check falls back to the name alone.
+  let placed: InspectedField[] = [];
+  let labelItems: LabelItem[] = [];
+  try { const got = await inspectPlacedFields(templateBytes); placed = got.fields; labelItems = got.labels; } catch { /* names only */ }
+  const placedByName = new Map<string, PlacedWidget>(placed.map((w) => [w.name, w]));
+  const widgetOf = (name: string): PlacedWidget => placedByName.get(name) ?? { name, type: "" };
+  // ONE SIGNER, ONE NAME — on a map nobody has verified. The "I, ___" declarant and the printed name
+  // under the same signature are one person; bound to two different people (Waltham 7b: the org's
+  // signer declares, the homeowner is printed), neither is written — which person is right is the
+  // operator's call, and the pair is named for them.
+  const signerBlocked = new Set<string>();
+  if (def.unverifiedMap) {
+    for (const conflict of signerNameConflicts(placed, def.textFields, labelItems)) {
+      for (const f of conflict.fields) signerBlocked.add(f);
+      operatorItems.push({ label: `${conflict.labels.join(" / ")} (one signature, bound to different people — fill by hand)` });
+    }
+  }
+
+  // WHICH LICENCE EACH SLOT TAKES (unverified maps): the slot's printed caption names its licence and
+  // outranks a bound licence source of another kind (formFieldChecks.slotLicenceRef); a holder NAME
+  // slot takes the licence's holder. Resolved once, before anything is written, so the duplicate
+  // check below can see every licence slot on the form. A verified map is filled as written (rule 3).
+  const slotResolution = new Map<string, { value: string; ref: LicenceSourceRef | null; generic: boolean }>();
+  for (const [fieldName, source] of Object.entries(def.textFields)) {
+    const effectiveSource = checklist.textFieldOverrides[fieldName] ?? source;
+    let value = resolveSource(effectiveSource, ctx);
+    let ref = licenceSourceRef(effectiveSource);
+    if (def.unverifiedMap && ref && ctx.licences) {
+      const slot = slotLicenceRef(widgetOf(fieldName), effectiveSource);
+      if (slot?.overridden) {
+        ref = slot.ref;
+        const a = licenceAnswerFor(slot.ref, ctx);
+        value = !a ? "" : ref.field === "expires" ? (a.number ? a.expires : "") : ref.field === "holder" ? a.holder : a.number;
+      }
+    }
+    slotResolution.set(fieldName, { value, ref, generic: ref?.kind === "generic" });
+  }
+  // ONE LICENCE NUMBER, ONE SLOT. Two licence slots a form prints for DIFFERENT licences (Waltham:
+  // the construction supervisor's "License Number" and the home-improvement contractor's
+  // "Registration Number", both captioned without their kind) must never both carry one number. A
+  // number the generic source chose that another licence slot on this form also carries is left
+  // blank and named — the slot that named its licence keeps it.
+  const dupLicenceBlocked = def.unverifiedMap
+    ? duplicateLicenceSlots([...slotResolution.entries()].map(([n, r]) => ({ key: n, label: widgetLabel(widgetOf(n)), value: r.value, ref: r.ref })))
+    : new Map<string, string>();
+
   for (const [fieldName, source] of Object.entries(def.textFields)) {
     if (checklist.omittedTextFields.includes(fieldName)) { unmapped.push(fieldName); continue; }
     if (!available.has(fieldName)) { unmapped.push(fieldName); continue; }
+    if (signerBlocked.has(fieldName)) continue;
+    const widget = widgetOf(fieldName);
+    const label = widgetLabel(widget);
     try {
       const field = form.getTextField(fieldName);
-      const value = resolveSource(checklist.textFieldOverrides[fieldName] ?? source, ctx);
+      const effectiveSource = checklist.textFieldOverrides[fieldName] ?? source;
+      const resolved = slotResolution.get(fieldName);
+      let value = resolved?.value ?? resolveSource(effectiveSource, ctx);
+      const licRef = resolved?.ref ?? null;
+      if (dupLicenceBlocked.has(fieldName)) {
+        const a = licRef ? licenceAnswerFor(licRef, ctx) : null;
+        operatorItems.push({ field: fieldName, label: `${label} (the same licence number as ${dupLicenceBlocked.get(fieldName)} — this slot asks for a different licence${a?.label ? ` than the ${a.label}` : ""}; enter it by hand)` });
+        continue;
+      }
+      if (value && attestsAttachedDocument(`${widget.name} ${widget.caption ?? ""}`)) {
+        operatorItems.push({ field: fieldName, label: `${label} (an attestation — attach the document and complete by hand)` });
+        continue;
+      }
+      if (def.unverifiedMap && value && effectiveSource === "computed.applicantSignerName"
+        && (isLicenceHolderSlot(widget.name) || isLicenceHolderSlot(widget.caption))) {
+        // A LICENCE HOLDER IS NOT THE APPLICANT: the slot takes the holder of the licence its caption
+        // names, when one is on file; otherwise it is left for the operator, named.
+        const kind = kindForSlot(String(widget.caption || "").trim() || widget.name);
+        const holder = kind && kind !== "generic" ? (licenceAnswerFor({ kind, field: "holder" }, ctx)?.holder ?? "") : "";
+        if (!holder) {
+          operatorItems.push({ field: fieldName, label: `${label} (the licence holder's name — the applicant signer is not the licence holder)` });
+          continue;
+        }
+        value = holder;
+      }
+      // THE SHAPE GUARD: an email box never takes a value with no "@", a phone box never takes one
+      // with "@". Keyed on the printed caption, so a box named "Telephone" but captioned "Email
+      // Address" is an email box. Refused = left blank and named, never written wrong.
+      const refusal = contactShapeRefusal(widgetContactKind(widget), value);
+      if (refusal) {
+        operatorItems.push({ field: fieldName, label: `${label} (left blank: ${refusal})` });
+        continue;
+      }
+      if (!value.trim()) {
+        const item = emptyItem(label, effectiveSource, licRef);
+        if (item) operatorItems.push({ field: fieldName, ...item });
+      }
       field.setText(value);
       const fontSize = def.fieldFontSizes?.[fieldName] ?? checklist.fieldFontSizes?.[fieldName];
       const boxWidth = field.acroField.getWidgets()[0]?.getRectangle().width ?? 0;
@@ -1304,19 +2024,39 @@ export async function fillLoadedForm(
   // formula." Any fillable text field that asks for the job value and is NOT already
   // mapped gets computed.estimatedJobValue — which also spares the human-verified
   // Coos Bay map from needing an edit (rule 3): its blank "Estimated Job Value"
-  // field fills here without the map changing. The name match is deliberately
-  // tight: "Valuation Date" or "Land Value" must never catch it, and a value the
-  // map already wrote is never overwritten.
+  // field fills here without the map changing. The match (formFieldChecks.isValuationSlot, name OR
+  // printed caption) is deliberately tight: "Valuation Date" or "Land Value" must never catch it,
+  // and a value the map already wrote is never overwritten.
+  //
+  // A COST TABLE IS ONE TOTAL, NOT SIX COPIES. Waltham's Section 6 prints Building / Electrical /
+  // Plumbing / Mechanical / Fire Protection / Total rows, all named "Estimated Costs …". When
+  // several blanks match, only the one whose name or caption says Total is filled; with no single
+  // Total, none is — and the operator is told which blanks to complete.
+  //
+  // ONE BOX NEVER FAILS THE FORM. Each read and write is guarded per field, as it was before the
+  // cost-table rule: a valuation box whose maxLength is shorter than the value (setText throws) or
+  // a rich-text box (getText throws) is left blank and named — the rest of the form still fills.
   const valuationDefault = resolveSource("computed.estimatedJobValue", ctx);
   if (valuationDefault) {
     const mappedNames = new Set(Object.keys(def.textFields));
-    const valuationName = /((estimated|declared)\s+)?job\s+valu(e|ation)|declared\s+valuation|valuation\s+of\s+(the\s+)?work|estimated\s+value\b|^valuation$/i;
-    for (const name of available) {
-      if (mappedNames.has(name) || !valuationName.test(name)) continue;
-      try {
-        const field = form.getTextField(name);
-        if (!field.getText()) { field.setText(valuationDefault); filled += 1; }
-      } catch { /* not a text field — leave it */ }
+    const textWidget = (name: string): boolean => { try { form.getTextField(name); return true; } catch { return false; } };
+    const isEmpty = (name: string): boolean => { try { return !form.getTextField(name).getText(); } catch { return false; } };
+    const slots = [...available].filter(textWidget).map(widgetOf).filter(isValuationSlot);
+    const open = slots.filter((w) => !mappedNames.has(w.name) && isEmpty(w.name));
+    const totals = slots.filter(isTotalRow);
+    const targets = totals.length ? (totals.length === 1 ? open.filter((w) => w.name === totals[0].name) : []) : (open.length === 1 ? open : []);
+    const answered = totals.some((w) => mappedNames.has(w.name));
+    if (!targets.length && open.length > 1 && !answered) {
+      operatorItems.push({ label: `Estimated cost / valuation (${open.map(widgetLabel).join("; ")} — no single Total row to carry it; enter it where the form asks)` });
+    }
+    for (const w of targets) {
+      try { form.getTextField(w.name).setText(valuationDefault); filled += 1; }
+      catch (err) {
+        try { form.getTextField(w.name).setText(""); } catch { /* leave it as it is */ }
+        const why = /max\s*length/i.test(err instanceof Error ? `${err.name} ${err.message}` : String(err))
+          ? "the valuation is longer than this box allows" : "this box would not take the valuation";
+        operatorItems.push({ field: w.name, label: `${widgetLabel(w)} (left blank: ${why} — enter the estimated valuation by hand)` });
+      }
     }
   }
 
@@ -1326,6 +2066,14 @@ export async function fillLoadedForm(
       const value = resolveSource(rule.source, ctx);
       const checked = checkboxRuleChecked(rule, value);
       const box = form.getCheckBox(fieldName);
+      // NEVER AN ATTESTATION WE CANNOT BACK: a box saying a workers'-comp affidavit is attached is
+      // ticked by the person who attaches it. There is no workers'-comp support in the product.
+      const w = widgetOf(fieldName);
+      if (checked && attestsAttachedDocument(`${w.name} ${w.captions?.left ?? ""} ${w.captions?.right ?? ""} ${w.captions?.above ?? ""}`)) {
+        box.uncheck();
+        operatorItems.push({ field: fieldName, label: `${widgetLabel({ name: w.name, caption: w.captions?.left || w.captions?.right || w.captions?.above })} (an attestation — attach the document and tick by hand)` });
+        continue;
+      }
       if (checked) box.check(); else box.uncheck();
       filled += 1;
     } catch {
@@ -1345,6 +2093,14 @@ export async function fillLoadedForm(
       unmapped.push(fieldName);
     }
   }
+
+  // A named blank that something DID fill after all (the valuation default on a Total the mapper
+  // listed) is no longer the operator's to fill. Read before flattening removes the fields.
+  const stillBlank = (item: OperatorItem): boolean => {
+    if (!item.field) return true;
+    try { return !form.getTextField(item.field).getText(); } catch { return true; }
+  };
+  const openItems = operatorItems.filter(stillBlank);
 
   // Flatten so the filled values are baked in and can't be edited in transit.
   try { if (!def.preserveInteractive) form.flatten(); else form.updateFieldAppearances(); } catch (error) {
@@ -1366,8 +2122,13 @@ export async function fillLoadedForm(
 
   // BCD's Yes radio groups span unrelated questions. Independent X overlays
   // after flattening preserve multiple answers without radio-group clearing.
+  // (Overlay checks push their own operator items; those carry no field, so they are all open.)
+  const beforeOverlays = operatorItems.length;
   filled += await drawMappedOverlays();
   filled += await drawChecklist();
+  openItems.push(...operatorItems.slice(beforeOverlays));
+  const wc = await workersCompItem(labelItems.length ? labelItems : undefined);
+  if (wc) openItems.push(wc);
 
   // Stamp signatures on top of the flattened form.
   await drawSignatures(doc, def, ctx);
@@ -1383,6 +2144,8 @@ export async function fillLoadedForm(
     filledFieldCount: filled,
     unmappedRequested: [...unmapped, ...missingRequired],
     message: completionMessage,
+    ...(Object.keys(requestedFieldOwners).length ? { requestedFieldOwners } : {}),
+    operatorItems: operatorItemLabels(openItems),
   };
 }
 
@@ -1407,7 +2170,7 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
     } catch { /* best-effort: the row stays blank and the fill note names it */ }
   }
   const permitPath = resolvePermitPath(project).path;
-  const defs = matchingForms(project.ahj).filter((d) => d.status === "verified");
+  const defs = matchingForms(project).filter((d) => d.status === "verified");
   const ctx = buildContext(db, project);
   const outDir = path.join(FILLED_DIR, project.id);
 
@@ -1505,7 +2268,7 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
       [issuerNote, message, staleNote].filter(Boolean).join(" ") || undefined;
     try {
       const result = await fillLoadedForm(stored.def, stored.bytes, ctx, path.join(outDir, `${stored.def.id}.pdf`));
-      forms.push({ ...result, ...dated, message: withNote(result.message), verified: stored.verified, templateId: stored.templateId });
+      forms.push({ ...result, ...dated, message: withNote(result.message), verified: stored.verified, builtInMap: stored.builtInMap, templateId: stored.templateId });
     } catch (err) {
       // Keep the verify/re-map affordance alive even when the fill errors, so the
       // operator can re-map or delete a broken template instead of being stuck.
@@ -1515,6 +2278,7 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
         status: "error",
         message: withNote(`Fill failed: ${(err as Error).message || String(err)}`),
         verified: stored.verified,
+        builtInMap: stored.builtInMap,
         templateId: stored.templateId,
         ...dated,
       });
@@ -1559,10 +2323,17 @@ export interface StoredTemplate {
   def: AhjFormDefinition;
   bytes: Uint8Array;
   templateId: string;
+  /** A PERSON verified this row's map (field_map.verified === true). Unchanged by builtInMap: it also
+   *  decides which agency form replaces the AHJ's own and which stored rows acquisition protects. */
   verified: boolean;
+  /** The row is filled from the BUILT-IN map written in code for its exact blank (effectiveStoredFieldMap),
+   *  not from the automatically derived copy stored on it — no person is asked to verify that mapping. */
+  builtInMap: boolean;
   documentDate: string;
   documentStale: boolean;
   sourceUrl: string;
+  /** The stored blank's sha256 (field_map.sourceHash, stamped at store) — "" on rows stored before it. */
+  sourceHash: string;
   applicationKind: "prescriptive" | "structural" | null;
   /** The row's form_type ("" on rows stored before the column mattered). */
   formType: string;
@@ -1575,12 +2346,87 @@ export interface StoredTemplate {
 
 type TemplateRow = { id: string; ahj_name: string; state: string; form_type?: string; original_filename: string; pdf_blob: Buffer | null; field_map: string; document_date: string; source_url: string };
 
+/** A stored form's permit track, from its form type (applicationDocsAgency.trackForFormType — the one
+ *  answer): the generic permit application is "permit" (the project's combo filing, else building). */
+function storedFormTrack(formType: string): string | null {
+  if (formType === "permit_application") return "permit";
+  return trackForFormType(formType);
+}
+
+/** A stored row's field map, as the fill reads it. */
+export type StoredRowFieldMap = { formName?: string; sourceUrl?: string; sourceHash?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; radioGroups?: Record<string, { source: string; equals?: string; option: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[]; verified?: boolean; verifiedAt?: string; lastCheckedAt?: string; applicationKind?: string; requiredFields?: Record<string,string>; notes?: string; preserveInteractive?: boolean; fieldFontSizes?: Record<string,number>; operatorItems?: OperatorItem[] };
+
+/**
+ * THE BUILT-IN MAP FOR ONE EXACT BLANK, by its sha256 — the hash-locked maps written in code
+ * (bcd5952Template: Oregon's statewide BCD 440-5952; curatedAhjForms: each curated authority's own
+ * application). The same hash-keyed builders acquisition's byte-keyed ones delegate to, so the two
+ * cannot disagree about which map a blank has. A curated map applies only to a row of an authority
+ * that holds THAT seed (a harvest can store the Coos County PDF under any AHJ's name — the Coos Bay
+ * map never attaches to a stranger's row); the BCD checklist is the state's form, stored per AHJ.
+ * null for any other hash — a label-anchored template (Iowa's worksheet) is not hash-locked.
+ */
+export function codeTemplateMapFor(sourceHash: string, sourceUrl: string, authority: { ahj: string; state: string }): StoredRowFieldMap | null {
+  const hash = String(sourceHash || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(hash)) return null;
+  const bcd = bcd5952TemplateForHash(hash, sourceUrl);
+  if (bcd) return bcd as StoredRowFieldMap;
+  const curated = curatedFormMapForHash(hash, sourceUrl);
+  if (curated && curatedFormSourcesFor(authority.ahj, authority.state).some((s) => s.hash === hash)) return curated.map as StoredRowFieldMap;
+  return null;
+}
+
+/**
+ * THE MAP A STORED ROW IS FILLED FROM — one answer for the fill (storedTemplateFromRow) and the verify
+ * route (server.ts PATCH /api/ahj-templates/:id/verify), so what a person verifies is what they saw.
+ *
+ * A row whose blank is a hash-locked code template (its stamped field_map.sourceHash) and that NO
+ * PERSON verified reads the CURRENT code map, not the copy stamped into it at store (dry-run
+ * 2026-09-28 B6: a 5952 row stored 09-19 still filled the owner phone from the old source and
+ * printed at auto-size; the Coos County electrical row lacked the battery services line added since
+ * — acquisition answers "exists" for good, so a code fix never reached an older row). Read-time
+ * only: nothing is written. A VERIFIED row is never swapped (hard rule 3) — it fills exactly what a
+ * person confirmed. Kept from the stored row: its hash, check time and stamped application kind.
+ */
+export function effectiveStoredFieldMap(row: { ahj_name: string; state: string; field_map: string; source_url?: string }): { map: StoredRowFieldMap; builtInMap: boolean } {
+  const stored = parseJson<StoredRowFieldMap>(String(row.field_map || "{}"), {});
+  if (stored.verified === true) return { map: stored, builtInMap: false };
+  const code = codeTemplateMapFor(String(stored.sourceHash || ""), String(stored.sourceUrl || row.source_url || ""), { ahj: String(row.ahj_name || ""), state: String(row.state || "") });
+  if (!code) return { map: stored, builtInMap: false };
+  return {
+    map: {
+      ...code,
+      sourceHash: stored.sourceHash,
+      ...(stored.lastCheckedAt ? { lastCheckedAt: stored.lastCheckedAt } : {}),
+      ...(stored.applicationKind ? { applicationKind: stored.applicationKind } : {}),
+      verified: false,
+    },
+    builtInMap: true,
+  };
+}
+
+/**
+ * A PERSON marks a stored row's mapping verified (or not) — PATCH /api/ahj-templates/:id/verify.
+ * They verify WHAT THEY PREVIEWED: the map the fill used (effectiveStoredFieldMap). An unverified row
+ * of a hash-locked blank fills from the CURRENT built-in map, so recording the stale copy stamped
+ * into the row would switch the fill back to the old map the moment it was verified (a verified row
+ * is never swapped — hard rule 3). Un-verifying keeps the row's own map. false when no such row.
+ */
+export function setStoredTemplateVerified(db: AppDb, templateId: string, verified: boolean): boolean {
+  const row = db.get<{ field_map: string; ahj_name: string; state: string; source_url: string }>(
+    "SELECT field_map, ahj_name, state, source_url FROM ahj_form_templates WHERE id = ?", [templateId]);
+  if (!row) return false;
+  const map: StoredRowFieldMap = verified ? { ...effectiveStoredFieldMap(row).map } : parseJson<StoredRowFieldMap>(String(row.field_map || "{}"), {});
+  map.verified = verified;
+  map.verifiedAt = verified ? nowIso() : undefined;
+  db.run("UPDATE ahj_form_templates SET field_map = ?, updated_at = ? WHERE id = ?", [JSON.stringify(map), nowIso(), templateId]);
+  return true;
+}
+
 /** A stored row as a fillable definition; null when its map could fill nothing. */
 function storedTemplateFromRow(row: TemplateRow, issuedBy = ""): StoredTemplate | null {
   if (!row.pdf_blob) return null;
   const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
-  let map: { formName?: string; sourceUrl?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; radioGroups?: Record<string, { source: string; equals?: string; option: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[]; verified?: boolean; requiredFields?: Record<string,string>; notes?: string; preserveInteractive?: boolean; fieldFontSizes?: Record<string,number> } = {};
-  map = parseJson(row.field_map, {});
+  const { map, builtInMap } = effectiveStoredFieldMap(row);
   const textFields = map.textFields || {};
   const overlayFields = map.overlayFields || [];
   const signatureFields = map.signatureFields || [];
@@ -1592,6 +2438,7 @@ function storedTemplateFromRow(row: TemplateRow, issuedBy = ""): StoredTemplate 
     def: {
       id: `tmpl-${row.id}`,
       formName: map.formName || row.original_filename || `${row.ahj_name} form`,
+      state: usStateCode(row.state),
       matchJurisdictions: [rowAhj],
       sourceUrl: map.sourceUrl || "",
       version: "stored",
@@ -1606,14 +2453,20 @@ function storedTemplateFromRow(row: TemplateRow, issuedBy = ""): StoredTemplate 
       preserveInteractive: map.preserveInteractive,
       fieldFontSizes: map.fieldFontSizes,
       notes: map.notes ? [map.notes] : undefined,
-      recoverPrescriptiveCheckboxes: map.verified !== true,
+      // Every stored row, verified or not — see the field's own comment (B6).
+      recoverPrescriptiveCheckboxes: true,
+      operatorItems: Array.isArray(map.operatorItems) ? map.operatorItems : undefined,
+      unverifiedMap: map.verified !== true,
+      formTrack: storedFormTrack(String(row.form_type || "")),
     },
     bytes: new Uint8Array(row.pdf_blob),
     templateId: row.id,
     verified: map.verified === true,
+    builtInMap,
     documentDate: String(row.document_date || ""),
     documentStale: isDocumentDateStale(String(row.document_date || "")),
     sourceUrl: String(row.source_url || map.sourceUrl || ""),
+    sourceHash: String(map.sourceHash || ""),
     applicationKind: storedApplicationKind(row),
     formType: String(row.form_type || ""),
     authority: String(row.ahj_name || ""),
@@ -1652,19 +2505,30 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string, opts:
     "SELECT id, ahj_name, state, form_type, original_filename, pdf_blob, field_map, document_date, source_url FROM ahj_form_templates WHERE pdf_blob IS NOT NULL ORDER BY updated_at DESC",
   );
   let out: StoredTemplate[] = [];
+  const ownRows = new Map<string, TemplateRow>();
   for (const row of rows) {
     const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
     if (!rowAhj) continue;
     const nameMatches = rowAhj === needle || needle.includes(rowAhj) || rowAhj.includes(needle);
     if (!nameMatches || !rowStateOk(row, state)) continue;
     const t = storedTemplateFromRow(row);
-    if (t) out.push(t);
+    if (t) { out.push(t); ownRows.set(t.templateId, row); }
   }
   if (opts.ownOnly) return out;
   for (const other of tracksIssuedByOther({ state, ahj })) {
     const types = TRACK_FORM_TYPES[other.track];
+    // C1 THE AMPLIFIER (agency-contain): the agency's rows THIS job may use — curated, person-placed, or
+    // on a site this job's own lookup anchors (applicationDocsAgency.agencyRowAppliesToJob). A row of the
+    // agency's that the AHJ's name happens to contain ("Unincorporated Kestrel County") is held to the
+    // same answer: it is the agency's row whichever pass found it.
+    const anchors = anchorSitesOnce({ state, ahj }, other.name);
+    const applies = (row: TemplateRow): boolean => agencyRowAppliesToJob({ state, ahj }, other.name, agencyRowProvenance(row), anchors);
+    out = out.filter((t) => {
+      const own = ownRows.get(t.templateId);
+      return t.issuedBy || !own || !types.includes(t.formType) || !rowBelongsToAuthority(t.authority, other.name) || applies(own);
+    });
     const agency = rows
-      .filter((row) => types.includes(String(row.form_type || "")) && rowStateOk(row, state) && rowBelongsToAuthority(row.ahj_name, other.name))
+      .filter((row) => types.includes(String(row.form_type || "")) && rowStateOk(row, state) && rowBelongsToAuthority(row.ahj_name, other.name) && applies(row))
       .map((row) => storedTemplateFromRow(row, other.name))
       .filter((t): t is StoredTemplate => Boolean(t));
     if (!agency.length) continue;
@@ -1678,19 +2542,22 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string, opts:
 /** Blanks the ISSUING AGENCY holds for this project's tracks that cannot be filled (no usable
  *  map: a flat scan, or an AcroForm nothing mapped to). They are never reported "filled" — they are
  *  listed so the operator completes and attaches them by hand. */
-export function heldUnfillableAgencyBlanks(db: AppDb, project: Pick<ProjectRecord, "ahj" | "state">): Array<{ templateId: string; formName: string; formType: string; agency: string; sourceUrl: string; applicationKind: "prescriptive" | "structural" | null }> {
-  const out: Array<{ templateId: string; formName: string; formType: string; agency: string; sourceUrl: string; applicationKind: "prescriptive" | "structural" | null }> = [];
+export function heldUnfillableAgencyBlanks(db: AppDb, project: Pick<ProjectRecord, "ahj" | "state">): Array<{ templateId: string; formName: string; formType: string; agency: string; sourceUrl: string; sourceHash: string; verified: boolean; applicationKind: "prescriptive" | "structural" | null }> {
+  const out: Array<{ templateId: string; formName: string; formType: string; agency: string; sourceUrl: string; sourceHash: string; verified: boolean; applicationKind: "prescriptive" | "structural" | null }> = [];
   const others = tracksIssuedByOther(project);
   if (!others.length) return out;
   const rows = db.query<TemplateRow>(
     "SELECT id, ahj_name, state, form_type, original_filename, pdf_blob, field_map, document_date, source_url FROM ahj_form_templates WHERE pdf_blob IS NOT NULL",
   );
   for (const other of others) {
+    // C1 (agency-contain): only the agency's rows THIS job may use (agencyRowAppliesToJob).
+    const anchors = anchorSitesOnce(project, other.name);
     for (const row of rows) {
       if (!TRACK_FORM_TYPES[other.track].includes(String(row.form_type || "")) || !rowStateOk(row, project.state) || !rowBelongsToAuthority(row.ahj_name, other.name)) continue;
+      if (!agencyRowAppliesToJob(project, other.name, agencyRowProvenance(row), anchors)) continue;
       if (storedTemplateFromRow(row)) continue;
-      const map = parseJson<{ formName?: string }>(String(row.field_map || "{}"), {});
-      out.push({ templateId: row.id, formName: map.formName || row.original_filename, formType: String(row.form_type || ""), agency: other.name, sourceUrl: String(row.source_url || ""), applicationKind: storedApplicationKind(row) });
+      const map = parseJson<{ formName?: string; sourceHash?: string; verified?: boolean }>(String(row.field_map || "{}"), {});
+      out.push({ templateId: row.id, formName: map.formName || row.original_filename, formType: String(row.form_type || ""), agency: other.name, sourceUrl: String(row.source_url || ""), sourceHash: String(map.sourceHash || ""), verified: map.verified === true, applicationKind: storedApplicationKind(row) });
     }
   }
   return out;
@@ -1784,6 +2651,12 @@ export function filledApplicationForms(db: AppDb, projectId: string, permitPath?
   // Resolved here when the caller didn't pass one, so EVERY consumer is covered —
   // including ones that only have a projectId in hand (autoLearn's upload sweep).
   const resolvedPath = permitPath ?? permitPathForProjectId(db, projectId);
+  // The project as the registry matches it (ahj + state) — read once, for the registry guard below.
+  let projectMatch: { ahj: string; state: string } = { ahj: "", state: "" };
+  try {
+    const row = db.get<{ ahj?: string | null; state?: string | null }>("SELECT ahj, state FROM projects WHERE id = ?", [projectId]);
+    projectMatch = { ahj: String(row?.ahj ?? ""), state: String(row?.state ?? "") };
+  } catch { /* no row: no registry form matches */ }
   const out: FilledApplicationForm[] = [];
   for (const f of files) {
     const formId = f.replace(/\.pdf$/, "");
@@ -1809,6 +2682,11 @@ export function filledApplicationForms(db: AppDb, projectId: string, permitPath?
     } else {
       const def = ahjFormRegistry.find((d) => d.id === formId);
       if (!def) continue; // same rule for a registry id the code no longer carries
+      // A REGISTRY FORM COUNTS ONLY WHILE IT STILL MATCHES THE PROJECT (forms skeptic note 2): the
+      // same "is this form the project's" question matchingForms answers when the form is filled
+      // (state + AHJ, whole word). A Portland OR fill left on disk from before the registry carried a
+      // state, or from before the project's state/AHJ was corrected, never rides another job's packet.
+      if (!matchingForms(projectMatch).some((d) => d.id === def.id)) continue;
       formName = def.formName || "";
       const name = formName.toLowerCase();
       if (/electrical/.test(name)) docType = "electrical_application";

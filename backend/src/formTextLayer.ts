@@ -149,6 +149,60 @@ export function anchorPlacement(items: LabelItem[], opts: AnchorOpts): { x: numb
   return { x: lbl.x + lbl.width + gap, y: lbl.y };
 }
 
+/** Letters and digits only — "E-mail:" and "Email:" read alike, "PROPERTY OWNER" and "Property Owner". */
+const looseNorm = (s: string): string => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/**
+ * WHICH PRINTED LABEL A MAPPED PLACEMENT BELONGS TO, near where the map put it. A flat form repeats
+ * its labels ("Name:", "Address:", "Phone:" in the owner, contractor AND applicant blocks), and a
+ * vision map names the repeat by its section ("Property Owner - Name:", "Required data: Valuation:"),
+ * which no single text item prints. In order:
+ *  1. the whole label (exact, or the short prefix findLabel accepts) — of several, the nearest the
+ *     map's point;
+ *  2. a section-qualified label: the section header item, then the NEAREST item printing the tail
+ *     BELOW that header (within 160pt) — "Applicant - Name:" is the Name under APPLICANT, even when
+ *     the map's y drifted into the Address row beneath it;
+ *  3. the tail alone, nearest the map's point;
+ *  4. a label-like item just LEFT of the map's point on its own line (±9pt).
+ * null when nothing reasonable matches (the caller keeps the map's own point).
+ */
+export function resolvePlacementLabel(items: LabelItem[], label: string, page: number, point: { x: number; y: number }): LabelItem | null {
+  const pool = items.filter((i) => i.page === page && i.str.trim());
+  const near = (cands: LabelItem[]): LabelItem | null => cands.length
+    ? [...cands].sort((a, b) => (Math.abs(a.y - point.y) + Math.abs(a.x - point.x) * 0.05) - (Math.abs(b.y - point.y) + Math.abs(b.x - point.x) * 0.05))[0]
+    : null;
+  const matches = (it: LabelItem, want: string): boolean => {
+    const s = norm(it.str), w = norm(want);
+    if (!w) return false;
+    if (s === w || (s.startsWith(w) && s.length <= w.length + 3)) return true;
+    const ls = looseNorm(it.str), lw = looseNorm(want);
+    return Boolean(lw) && ls === lw;
+  };
+  const whole = pool.filter((it) => matches(it, label));
+  if (whole.length) return near(whole);
+  // "Section - Label" / "Section: Label" — the header, then the tail beneath it.
+  const split = /^(.{3,60}?)\s*(?:\s[-–—]\s|:\s+)\s*(.{2,60})$/.exec(String(label || "").trim());
+  if (split) {
+    const [, head, tail] = split;
+    const lh = looseNorm(head);
+    const tails = pool.filter((it) => matches(it, tail));
+    const headers = lh.length >= 3 ? pool.filter((it) => looseNorm(it.str).startsWith(lh)) : [];
+    let best: { it: LabelItem; score: number } | null = null;
+    for (const h of headers) {
+      const under = tails.filter((t) => t.y < h.y - 1 && h.y - t.y <= 160).sort((a, b) => b.y - a.y)[0];
+      if (!under) continue;
+      const score = Math.abs(under.y - point.y);
+      if (!best || score < best.score) best = { it: under, score };
+    }
+    if (best) return best.it;
+    if (tails.length) return near(tails);
+  }
+  // A label-like item on the map point's own line, ending just left of it.
+  const left = pool.filter((it) => Math.abs(it.y - point.y) <= 9 && it.x < point.x && it.x + it.width <= point.x + 8 && point.x - (it.x + it.width) <= 90);
+  const labelish = left.filter((it) => /[:#?]\s*$/.test(it.str.trim()));
+  return near(labelish.length ? labelish : left);
+}
+
 /** A label ending in ":" or "#" takes its value to the RIGHT; a bare caption
  *  ("Print Name") takes it ABOVE the caption (on the blank line). */
 export function sideForLabel(labelStr: string): "right" | "above" {
@@ -203,6 +257,98 @@ export function autoPlaceFromData(items: LabelItem[], data: Record<string, strin
     if (placed) out.push(placed);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// WIDGET CAPTIONS. An AcroForm widget's NAME is often auto-generated from whatever text sat near
+// it when somebody ran "detect form fields", and it is often shifted onto the neighbouring box:
+// City of Waltham's residential application names the 2.2 Authorized Agent's EMAIL box
+// "Telephone". The printed caption beside the box is what the applicant reads, so it is what the
+// box IS. These helpers read it off the text layer by geometry only (no model, no project data).
+// ---------------------------------------------------------------------------
+
+/** A widget rectangle in PDF points, bottom-left origin (pdf-lib's getRectangle()). */
+export interface WidgetRect { x: number; y: number; width: number; height: number }
+
+/** The printed text around one widget, by side. Each is the nearest single text item there. */
+export interface WidgetCaptions { left?: string; right?: string; below?: string; above?: string }
+
+export type CaptionSide = "below" | "above" | "left" | "right";
+
+/** How far (pt) above or below a box its caption may sit. Waltham's captions sit 8-13pt under. */
+const CAPTION_REACH = 14;
+
+const cleanCaption = (s: string): string => s.replace(/_{2,}/g, " ").replace(/\s+/g, " ").trim().slice(0, 90);
+
+/**
+ * The nearest printed text on each side of a widget. Geometry only:
+ *  - left / right: an item on the box's own line (baseline inside the box band) ending just left of
+ *    it / starting just right of it;
+ *  - below / above: an item within CAPTION_REACH under / over the box that starts where the box
+ *    starts (left-aligned to its first half).
+ */
+export function captionsForRect(items: LabelItem[], page: number, r: WidgetRect): WidgetCaptions {
+  const pool = items.filter((i) => i.page === page && cleanCaption(i.str));
+  const top = r.y + r.height;
+  const inBand = (i: LabelItem) => i.y >= r.y - 1 && i.y <= top - 1;
+  const aligned = (i: LabelItem) => i.x >= r.x - 8 && i.x <= r.x + r.width * 0.5;
+  const out: WidgetCaptions = {};
+  const left = pool
+    .filter((i) => inBand(i) && i.x < r.x - 1 && i.x + i.width <= r.x + 6 && r.x - (i.x + i.width) <= 120)
+    .sort((a, b) => (b.x + b.width) - (a.x + a.width))[0];
+  if (left) out.left = cleanCaption(left.str);
+  const right = pool
+    .filter((i) => inBand(i) && i.x >= r.x + r.width - 6 && i.x - (r.x + r.width) <= 60)
+    .sort((a, b) => a.x - b.x)[0];
+  if (right) out.right = cleanCaption(right.str);
+  const below = pool
+    .filter((i) => aligned(i) && i.y < r.y - 0.5 && i.y >= r.y - CAPTION_REACH)
+    .sort((a, b) => b.y - a.y || Math.abs(a.x - r.x) - Math.abs(b.x - r.x))[0];
+  if (below) out.below = cleanCaption(below.str);
+  const above = pool
+    .filter((i) => aligned(i) && i.y > top && i.y <= top + CAPTION_REACH)
+    .sort((a, b) => a.y - b.y || Math.abs(a.x - r.x) - Math.abs(b.x - r.x))[0];
+  if (above) out.above = cleanCaption(above.str);
+  return out;
+}
+
+const CAPTION_STOP = new Set(["the", "and", "for", "undefined", "text", "field", "row", "box", "check", "of", "to", "be", "by"]);
+const captionWords = (s: string): string[] =>
+  String(s || "").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 2 && !CAPTION_STOP.has(w));
+
+/** Does a widget's (auto-generated) name say the same thing as a printed caption? */
+export function captionAgreesWithName(name: string, caption: string | undefined): boolean {
+  const c = captionWords(caption || "");
+  const n = captionWords(name);
+  if (!c.length || !n.length) return false;
+  const ns = new Set(n);
+  const cs = new Set(c);
+  return c.every((w) => ns.has(w)) || n.every((w) => cs.has(w));
+}
+
+/**
+ * Which side of its boxes THIS form prints captions on. A caption-under form (Waltham) and a
+ * caption-over form look alike box by box — in a dense form the text 9pt under one box is 9pt
+ * over the next — so a single box cannot say. The form as a whole can: most auto-generated
+ * widget names were taken from the real caption, so the side the most names AGREE with is the
+ * form's convention (Waltham: 14 names agree with the text below their box, 8 above, 7 left).
+ * null when no side wins clearly (at least 2 agreements and strictly more than the runner-up) —
+ * then no caption is treated as THE caption and the name stands.
+ */
+export function calibrateCaptionSide(widgets: Array<{ name: string; captions?: WidgetCaptions }>): CaptionSide | null {
+  const sides: CaptionSide[] = ["below", "above", "left", "right"];
+  const counts = sides.map((side) => ({ side, n: widgets.filter((w) => captionAgreesWithName(w.name, w.captions?.[side])).length }))
+    .sort((a, b) => b.n - a.n);
+  if (counts[0].n < 2 || counts[0].n <= counts[1].n) return null;
+  return counts[0].side;
+}
+
+/** THE printed caption of a text widget: the form's calibrated side, else the text on its own
+ *  line to the left (an inline "Label: [____]"), else "" (unknown — the name stands). */
+export function primaryCaption(captions: WidgetCaptions | undefined, side: CaptionSide | null): string {
+  if (!captions) return "";
+  if (side && captions[side]) return captions[side] as string;
+  return side === "left" ? "" : captions.left || "";
 }
 
 export interface CheckboxOpts {

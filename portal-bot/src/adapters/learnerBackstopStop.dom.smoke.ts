@@ -81,8 +81,11 @@ try {
       check("MUST-EXCLUDE (1) the learner STOPS at the next page boundary, named (backstop_abort), ok=false, and page 2 is never filled",
         !!r && r.ok === false && r.stopReason === "backstop_abort" && !filledP2, `ok=${r?.ok} stop=${r?.stopReason} filledP2=${filledP2} ${msg}`);
     } else {
-      check("MUST-EXCLUDE (2) after the learner declares review, the page's POSTs are aborted (REVIEW-PAGE LOCKDOWN), ok=false",
-        !!r && r.ok === false && /REVIEW-PAGE LOCKDOWN — the run is at review \(learner at review\)/.test(msg + String(r?.message ?? "")), `ok=${r?.ok} stop=${r?.stopReason} ${msg}`);
+      // A page script's background POST at review is ABORTED and named; it no longer fails a learn that
+      // reached review (live 3eaa1231: WalkMe / Accela page methods at CapConfirm). A form submission or a
+      // filing-shaped URL still stops it (filingBackstop.dom.smoke toReviewForm / the filing-URL rule).
+      check("MUST-EXCLUDE (2) after the learner declares review, the page's background POSTs are aborted (REVIEW-PAGE LOCKDOWN) and named — never sent",
+        !!r && /REVIEW-PAGE LOCKDOWN — the run is at review \(learner at review\)/.test(msg + String(r?.message ?? "")), `ok=${r?.ok} stop=${r?.stopReason} posts=[${posts.join(",")}] ${msg}`);
     }
   }
 } finally {

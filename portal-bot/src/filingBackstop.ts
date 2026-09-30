@@ -104,6 +104,18 @@ export interface FilingBackstop {
   /** Where (origin + path) each request the own-write exemption let through on a terminal-reading
    *  page went, in order — reported by the run. */
   readonly ownWriteRequests: string[];
+  /** Did the run write (openOwnWrite) on this page's CURRENT document — since its last load? */
+  ownWriteSinceLoad(page: unknown): boolean;
+  /** THE RUN'S OWN SAVE DRAIN (dryrun-0928 B3) on `page`: until the closer runs, a fetch / XHR from
+   *  that page to its OWN origin passes the review lockdown's live reading (rule 4b) — the portal
+   *  committing the answers the run wrote (PowerClerk batches them into one SaveChanges XHR ~5 s
+   *  after the first change, long after a per-write window closed). A document request (a form
+   *  submit — the shape of a page that files by itself), another origin, payment, the filing-URL
+   *  rule, the dismisser/Enter windows and the sticky lock (4a) all still apply. drainOwnWrites
+   *  opens it; nothing else should. */
+  openDrain(page: unknown, why: string): () => void;
+  /** Where (origin + path) each request the drain let through went, in order. */
+  readonly drainRequests: string[];
   /** The run is at review: abort every state-changing request until dispose() hands the page to
    *  a person. Sticky. */
   lockReview(why: string): void;
@@ -114,7 +126,17 @@ export interface FilingBackstop {
 
 /** The rules whose abort stops the run by name (a window abort is reported, and the run goes on:
  *  nothing was sent, and the dismissal / Enter was not a step of the recipe). */
-export const isStoppingAbort = (a: BackstopAbort): boolean => a.rule === "filing-url" || a.rule === "review-lockdown";
+//
+// A REVIEW-LOCKDOWN ABORT STOPS THE RUN ONLY WHEN IT COULD HAVE BEEN A FILING: a document request (the
+// review page submitting a form — the shape of a page that files by itself) or a filing- / payment-
+// shaped URL. A background call the page's scripts make at review — a third-party tracker (live,
+// Oregon ePermitting's CapConfirm: ec.walkme.com/event/tell, postEvent), the portal's own read-only
+// page method (CapConfirm.aspx/DisplayRequiredLicenseProfessionalType), a keepalive — is STILL ABORTED
+// (nothing reaches the server) and reported, but it does not fail a run that reached review: live run
+// 3eaa1231 (Michael Sheridan's building permit) was marked failed at the review page for exactly those.
+// Operator ruling 2026-09-26: false stops on legitimate steps are bugs; the network block is the line.
+export const isStoppingAbort = (a: BackstopAbort): boolean => a.rule === "filing-url"
+  || (a.rule === "review-lockdown" && (/^document$/i.test(String(a.resourceType || "")) || isFilingOrPaymentRequest(a.method, a.where)));
 
 const REGISTRY = new WeakMap<object, FilingBackstop>();
 
@@ -168,6 +190,132 @@ export async function withOwnWriteWindow<T>(page: unknown, why: string, fn: () =
     const t = setTimeout(close, Math.max(0, graceMs));
     (t as { unref?: () => void }).unref?.();
   }
+}
+
+/**
+ * IS THE PORTAL STILL SAVING WHAT THE RUN WROTE? — the one reading both adapters' drains ask
+ * (dryrun-0928 B3). PowerClerk's own indicator ([data-test-role='project-save-state']) says
+ * "Saving…" from the first unsaved change until its batched SaveChanges XHR returns; without it, a
+ * visible element whose whole text is "Saving…". Deliberately NOT a spinner class: a persistent
+ * spinner would hold every review page for the full budget and report answers "not saved" that
+ * were. An unreadable page reads false (not saving) — the drain then ends; it never blocks a run.
+ * The in-page callback is fully inline: tsx's __name wrapper does not exist in the browser.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function autosavePending(page: any): Promise<boolean> {
+  if (!page || typeof page.evaluate !== "function") return false;
+  try {
+    return Boolean(await page.evaluate(() => {
+      const state = document.querySelector("[data-test-role='project-save-state']");
+      if (state) {
+        // Saved (its own marker, or the word) = not pending; an EMPTY indicator says nothing either
+        // way = not pending; any other state it prints ("Saving…", "Unsaved changes") = pending.
+        if (state.querySelector("[data-test-role='save-state-saved']")) return false;
+        const text = ((state as HTMLElement).innerText || state.textContent || "").trim();
+        if (!text) return false;
+        return /saving|unsaved|pending/i.test(text) || !/\bsaved\b/i.test(text);
+      }
+      const els = Array.from(document.querySelectorAll("span, div, small, p, label"));
+      for (const el of els) {
+        const t = (el.textContent || "").trim();
+        if (!/^saving(\.{0,3}|…)?$/i.test(t)) continue;
+        const r = (el as HTMLElement).getBoundingClientRect();
+        const s = window.getComputedStyle(el as HTMLElement);
+        if (r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none") return true;
+      }
+      return false;
+    }));
+  } catch { return false; }
+}
+
+export interface DrainOutcome {
+  /** A drain window was opened (the run wrote on this page's current document). */
+  drained: boolean;
+  /** The portal still read as saving when the budget ran out — its save was NOT seen to finish. */
+  stillSaving: boolean;
+  waitedMs: number;
+}
+
+/**
+ * NEVER LOCK OR HAND OVER A REVIEW PAGE WHILE THE RUN'S OWN SAVE IS PENDING (dryrun-0928 B3).
+ *
+ * On PowerClerk's last page the learn chose "No Aggregation", "No" and ticked the certification at
+ * 16:13:11; PowerClerk batched them into ONE SaveChanges3 XHR at 16:13:16 — 5 s after the first
+ * change — and the review lockdown aborted it: each write's own-write window had closed 1.5 s after
+ * the write. The page was handed over reading "Saving…", and closing it lost the answers.
+ *
+ * So before the run locks the page (lockReview) or hands it to a person, it waits — while the
+ * portal reads as saving (autosavePending), up to `budgetMs` — with a DRAIN open on the backstop:
+ * a same-origin fetch / XHR from the page passes rule 4b; a document request (a form submit), any
+ * other origin, a payment or a filing URL is still aborted (hard rule 1 unchanged). Only a page the
+ * run WROTE on since its last load is drained. It ends after ~750 ms of "not saving". Returns what
+ * it saw; stillSaving=true is the run's cue to say, by name, that the answers may not be saved.
+ */
+export async function drainOwnWrites(
+  page: unknown,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  opts: { isSaving?: (page: any) => Promise<boolean>; budgetMs?: number; why?: string } = {},
+): Promise<DrainOutcome> {
+  const bs = backstopFor(page);
+  if (!bs || !bs.ownWriteSinceLoad(page)) return { drained: false, stillSaving: false, waitedMs: 0 };
+  const isSaving = opts.isSaving ?? autosavePending;
+  // 12 s by default — above the ~5 s PowerClerk batch delay measured live. REVIEW_SAVE_DRAIN_MS
+  // overrides it (a smoke's short budget; an operator with a slower portal).
+  const envBudget = Number(process.env.REVIEW_SAVE_DRAIN_MS);
+  const budget = Math.max(0, opts.budgetMs ?? (Number.isFinite(envBudget) && envBudget > 0 ? envBudget : 12_000));
+  const close = bs.openDrain(page, opts.why ?? "the run's own answers still saving");
+  const t0 = Date.now();
+  let quiet = 0;
+  try {
+    while (Date.now() - t0 < budget) {
+      const saving = await isSaving(page).catch(() => false);
+      quiet = saving ? 0 : quiet + 1;
+      if (quiet >= 3) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    const stillSaving = await isSaving(page).catch(() => false);
+    return { drained: true, stillSaving, waitedMs: Date.now() - t0 };
+  } finally {
+    close();
+  }
+}
+
+/** The one sentence a run adds when its drain ran out with the portal still saving (B3). */
+export function unsavedAtReviewWarning(where: string): string {
+  return `ANSWERS ON THE REVIEW PAGE MAY NOT BE SAVED: the portal still read "Saving…" when automation handed ${where} over — make sure the page shows it saved (touch a field again if it does not) before you verify and submit.`;
+}
+
+/**
+ * THE PORTAL'S OWN CALLS THE REVIEW LOCKDOWN HELD BACK (dryrun-0928 B14). Both Accela runs aborted
+ * CapConfirm.aspx/DisplayRequiredLicenseProfessionalType — the review page's own load-time
+ * PageMethod (ASP.NET PageMethods always POST) — and the person got the page with no hint a
+ * section may render incomplete. The abort is right (a word list exempting "Display*" calls is what
+ * the backstop exists not to be); saying so is the fix. Only non-stopping review-lockdown aborts
+ * (stopping ones already fail the run, named) whose ORIGIN is the review page's: a third-party
+ * tracker (WalkMe) is not the portal's own and stays in the warnings only. origin + path only.
+ */
+export function portalOwnCallsBlockedAtReview(aborts: BackstopAbort[], reviewPageUrl: string): string[] {
+  const home = originOf(reviewPageUrl);
+  if (!home) return [];
+  const out: string[] = [];
+  for (const a of aborts) {
+    if (a.rule !== "review-lockdown" || isStoppingAbort(a)) continue;
+    if (originOf(a.where) !== home) continue;
+    if (!out.includes(a.where)) out.push(a.where);
+  }
+  return out;
+}
+
+/** The hand-off line for those calls. `lastDocumentMethod` decides the advice: a page reached by
+ *  GET can be reloaded; one rendered from a POST (or unknown) must not be — a reload re-sends the
+ *  previous form — so the person goes back through the portal's own navigation instead. */
+export function reviewBlockedCallsLine(paths: string[], lastDocumentMethod: string | null): string {
+  if (!paths.length) return "";
+  const shown = paths.slice(0, 3).map((p) => p.replace(/^https?:\/\/[^/]+/i, "")).join(", ");
+  const advice = String(lastDocumentMethod ?? "").toUpperCase() === "GET"
+    ? "reload the review page before you verify and submit"
+    : "use the portal's own navigation back to the review step before you verify and submit (a reload could re-send the previous form)";
+  return `While automation held this review page, the portal's own background request(s) ${shown}${paths.length > 3 ? `, +${paths.length - 3} more` : ""} were blocked — nothing was sent. A section that depends on them may render incomplete: ${advice}.`;
 }
 
 /** How long the lockdown waits for the requesting page to answer "are you terminal?". A page
@@ -291,6 +439,14 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
   const ownWrites = new Map<number, { page: unknown; why: string }>();
   let nextOwnWrite = 1;
   const ownWriteRequests: string[] = [];
+  // WHEN the run last wrote on a page, and when that page last loaded a document: "the run wrote on
+  // this document" is lastOwnWriteAt > lastLoadAt (a write on an earlier page is not this page's save).
+  const lastOwnWriteAt = new WeakMap<object, number>();
+  const lastLoadAt = new WeakMap<object, number>();
+  // THE OWN-SAVE DRAINS (openDrain), each bound to the page whose save it lets finish.
+  const drains = new Map<number, { page: unknown; why: string }>();
+  let nextDrain = 1;
+  const drainRequests: string[] = [];
   let locked = "";
   let disposed = false;
   // A NAVIGATION REQUEST (a form POST) CANNOT BE ASKED LIVE: evaluating the page it is navigating
@@ -312,9 +468,12 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
     if (!pg || typeof pg !== "object" || watched.has(pg) || typeof pg.on !== "function") return;
     watched.add(pg);
     const onLoad = (): void => refresh(pg);
+    // A new document on this page: the run's writes on the previous one are not this one's to save.
+    const onDocument = (): void => { lastLoadAt.set(pg, Date.now()); };
+    pg.on("domcontentloaded", onDocument);
     pg.on("domcontentloaded", onLoad);
     pg.on("load", onLoad);
-    unwatch.push(() => { try { pg.off("domcontentloaded", onLoad); pg.off("load", onLoad); } catch { /* page gone */ } });
+    unwatch.push(() => { try { pg.off("domcontentloaded", onDocument); pg.off("domcontentloaded", onLoad); pg.off("load", onLoad); } catch { /* page gone */ } });
     refresh(pg);
   };
   try {
@@ -373,7 +532,9 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
         // "the approved click's request went" (finalSubmitRequestSent true).
         let mainFrame = false;
         try { mainFrame = !!pg && typeof pg.mainFrame === "function" && request.frame() === pg.mainFrame(); } catch { mainFrame = false; }
-        const filing = navigation ? mainFrame : isFilingOrPaymentRequest(method || "POST", url);
+        // The URL's PATH decides (autosubmit-close-2 skeptic s4TrackQuery): server-side GTM's
+        // "/gtm/collect?en=form_submit" is analytics whose query merely names the event.
+        const filing = navigation ? mainFrame : isFilingOrPaymentRequest(method || "POST", url.split(/[?#]/)[0]);
         approvedAdmissions.push({ where: whereOf(url), navigation, mainFrame, resourceType, filing });
         closeSlot();
       }
@@ -412,6 +573,20 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
           ownWriteRequests.push(whereOf(url));
           await route.fallback().catch(() => null);
           return;
+        }
+        // THE RUN'S OWN SAVE, STILL IN FLIGHT (dryrun-0928 B3): while drainOwnWrites holds the page, a
+        // fetch / XHR to the page's OWN origin is the portal committing what the run wrote — never a
+        // document request (a form submit), never another origin (a tracker), never a navigation.
+        const drain = pg ? [...drains.values()].find((d) => d.page === pg) : undefined;
+        if (drain && !navigation && /^(xhr|fetch)$/i.test(resourceType)) {
+          let pageUrl = "";
+          try { pageUrl = typeof pg.url === "function" ? String(pg.url() || "") : ""; } catch { pageUrl = ""; }
+          const origin = originOf(url);
+          if (origin !== "" && origin === originOf(pageUrl)) {
+            drainRequests.push(whereOf(url));
+            await route.fallback().catch(() => null);
+            return;
+          }
         }
         await abort("review-lockdown", `the page this request came from is the review/terminal page (${label})`);
         return;
@@ -493,10 +668,23 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
     openOwnWrite(pg: unknown, why: string) {
       const id = nextOwnWrite++;
       // Bound to the page written on — by default the backstop's own page, never "any page".
-      ownWrites.set(id, { page: pg && typeof pg === "object" ? pg : page, why: String(why || "").slice(0, 120) });
+      const bound = pg && typeof pg === "object" ? pg : page;
+      ownWrites.set(id, { page: bound, why: String(why || "").slice(0, 120) });
+      lastOwnWriteAt.set(bound as object, Date.now());
       return () => { ownWrites.delete(id); };
     },
     ownWriteRequests,
+    ownWriteSinceLoad(pg: unknown) {
+      const p = (pg && typeof pg === "object" ? pg : page) as object;
+      const wrote = lastOwnWriteAt.get(p);
+      return typeof wrote === "number" && wrote >= (lastLoadAt.get(p) ?? 0);
+    },
+    openDrain(pg: unknown, why: string) {
+      const id = nextDrain++;
+      drains.set(id, { page: pg && typeof pg === "object" ? pg : page, why: String(why || "").slice(0, 120) });
+      return () => { drains.delete(id); };
+    },
+    drainRequests,
     approvedSlotOpen() { return slotLive(); },
     closeApprovedSlot() { closeSlot(); },
     lockReview(why: string) {
@@ -510,6 +698,7 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
       if (target !== page && REGISTRY.get(target) === bs) REGISTRY.delete(target);
       windows.clear();
       ownWrites.clear();
+      drains.clear();
       locked = "";
       for (const u of unwatch.splice(0)) u();
       await target.unroute("**/*", handler).catch(() => null);

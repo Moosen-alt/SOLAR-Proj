@@ -855,6 +855,7 @@ function renderAhjForms() {
           <strong>${esc(r.ahj_name)}</strong>
           <span class="muted" style="font-size:12px">· ${esc(r.state || "—")} · ${esc(r.form_type || "permit_application")} · ${esc(fillMode)} · ${mapped} field(s) mapped</span>
           ${fillable ? "" : '<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:var(--warning);color:#fff;margin-left:6px">manual</span>'}
+          ${r.builtInMap === true ? '<span class="muted" style="font-size:11px;margin-left:6px" title="Filled from the map written for this exact official revision (matched by the blank\'s fingerprint)">built-in map</span>' : ""}
         </div>
         <div style="display:flex;gap:6px;align-items:center">
           <a class="secondary" href="/api/ahj-templates/${esc(r.id)}/pdf" target="_blank" rel="noopener" style="font-size:11px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;text-decoration:none">Blank PDF</a>
@@ -943,7 +944,7 @@ function renderSignatures() {
         <img src="/api/signatures/${esc(r.id)}/image" alt="${esc(r.name)}" style="height:34px;max-width:160px;background:#fff;border:1px solid var(--line);border-radius:4px;padding:2px" />
         <div>
           <strong>${esc(r.name || r.role)}</strong>
-          <span class="muted" style="font-size:12px">· ${esc(r.role)}${r.isDefault ? " · default" : ""}</span>
+          <span class="muted" style="font-size:12px">· ${esc(r.role)}${r.isDefault ? " · default" : ""}${esc(signatureCompanyNote(r))}</span>
         </div>
       </div>
       <div style="display:flex;gap:6px;align-items:center">
@@ -962,6 +963,31 @@ function renderSignatures() {
   }));
 }
 
+// A LICENCE HOLDER SIGNS FOR ONE COMPANY (signatures.ts LICENCE_HOLDER_ROLES — keep the two lists
+// equal). The applicant is whoever submits, the same on every company's job.
+const SIGNATURE_LICENCE_ROLES = ["electrician", "contractor"];
+
+function signatureCompanyNote(r) {
+  if (!SIGNATURE_LICENCE_ROLES.includes(r.role)) return "";
+  if (!r.clientId) return " · no company — never stamped";
+  const c = (state.clients || []).find((x) => x.id === r.clientId);
+  return ` · for ${c ? (c.companyName || c.legalBusinessName || "a company") : "a company"}`;
+}
+
+async function syncSignatureCompanyPicker() {
+  const role = $("addSigRole")?.value || "applicant";
+  const sel = $("addSigClient");
+  if (!sel) return;
+  const needsCompany = SIGNATURE_LICENCE_ROLES.includes(role);
+  sel.hidden = !needsCompany;
+  if (!needsCompany) return;
+  if (!(state.clients || []).length) { try { await loadClients(); } catch { /* the upload names the gap */ } }
+  const keep = sel.value;
+  sel.innerHTML = `<option value="">Company (required)…</option>` + (state.clients || [])
+    .map((c) => `<option value="${esc(c.id)}">${esc(c.companyName || c.legalBusinessName || "Unnamed")}</option>`).join("");
+  if (keep) sel.value = keep;
+}
+
 async function uploadSignature(ev) {
   const file = ev.target.files && ev.target.files[0];
   if (!file) return;
@@ -969,10 +995,17 @@ async function uploadSignature(ev) {
   const name = ($("addSigName")?.value || "").trim();
   const isDefault = $("addSigDefault")?.checked ? "1" : "0";
   const status = $("signaturesStatus");
+  const clientId = SIGNATURE_LICENCE_ROLES.includes(role) ? ($("addSigClient")?.value || "") : "";
+  if (SIGNATURE_LICENCE_ROLES.includes(role) && !clientId) {
+    showMessage(`Choose the company this ${role} signs for — a licence holder's signature is stamped only on that company's jobs.`, "error");
+    ev.target.value = "";
+    return;
+  }
   if (status) status.textContent = `Uploading ${file.name}…`;
   try {
     const buf = await file.arrayBuffer();
     const qs = new URLSearchParams({ role, name, default: isDefault });
+    if (clientId) qs.set("clientId", clientId);
     const res = await fetch(`/api/signatures?${qs.toString()}`, {
       method: "POST", headers: { "Content-Type": file.type || "image/png" }, body: buf,
     });
@@ -1251,6 +1284,10 @@ function showSubmitBlockerNote(gate, stageIdx, nextStep) {
   if (!gate || gate.canPrepareSubmission || !blockers.length) return false;
   if (gate.decision === "submitted_tracking" && stageIdx >= 3) return false;
   if (nextStep && nextStep.gateChecked && nextStep.allFiled === true) return false;
+  // Not while automation is doing it (next step automation_running): the automatic chain splits the
+  // plan set and finds/fills the forms these blockers name (operator 2026-09-28: "can we just not
+  // have it do this automatically?" — it was, mid-run). The note returns if the chain leaves any.
+  if (nextStep && nextStep.key === "automation_running") return false;
   return true;
 }
 const WAITING_ON_LABEL = { designer: "Waiting on designer", customer: "Waiting on customer", ahj: "Waiting on AHJ", utility: "Waiting on utility" };
@@ -2052,6 +2089,30 @@ async function selectProject(projectId) {
     loadNextStep(projectId),
   ]);
   renderDetail();
+  // THE FORMS FOUND BEFORE STAY ON SCREEN (operator 09-27: "the files that it finds don't stay if you
+  // leave the project and come back"). Opening a project reset the packet + filled-forms card to empty
+  // until Build / Find was clicked again, though the forms were stored all along. Load them in the
+  // background — the same call Build makes — and repaint only if this project is still the one open.
+  // THE PACKET AND THE FORMS ARE TWO LOADS, NOT ONE (operator 09-28: "the PDFs go away if I click out
+  // of the project"). loadStageResults (above) already carries the packet whenever the chain has logged
+  // application_docs.generated — which it does within seconds of creation — so "packet already here"
+  // must not mean "skip the forms": that skip is exactly how the filled PDFs (and the "none on file /
+  // Find official form" card) vanished on every open after the first, and on every stage_steps_done.
+  void (async () => {
+    try {
+      if (!state.applicationDocs) {
+        const docs = await api(`/api/projects/${projectId}/application-docs`);
+        if (state.selectedProjectId !== projectId) return;
+        if (!state.applicationDocs) state.applicationDocs = docs;
+      }
+      if (!state.filledForms) {
+        const filled = await api(`/api/projects/${projectId}/filled-forms`, { method: "POST", body: "{}" });
+        if (state.selectedProjectId !== projectId || state.filledForms) return;
+        state.filledForms = filled;
+      }
+      renderDetail();
+    } catch { /* the Build / Find buttons still work; nothing to show yet */ }
+  })();
 }
 
 // THE ONE ANSWER to "what does this project need next, and from whom" — computed on the
@@ -3307,14 +3368,26 @@ function reviewItemBuckets(items) {
   return out;
 }
 
+// WHICH STAGE THE STEPPER OPENS. The server's stageIndex, with one step forward: a
+// `ready_to_stage` project whose submit gate says "can stage" has finished Build & Validate —
+// the work left is Submit. Live 2026-09-28: the gate read "0 blockers … can stage" while
+// Submit sat padlocked "Not reached". The status alone cannot say it (ready_to_stage is also
+// written before the reviewer gate has passed, and QC's may-it-move rule reads the stage
+// map), so this is display only, and only when the gate is THIS project's.
+function stepperStageIndex(d, gate) {
+  const idx = Number.isInteger(d?.stageIndex) ? d.stageIndex : 0;
+  if (idx === 1 && d?.project?.status === "ready_to_stage" && gate && gate.projectId === d.project.id && gate.canPrepareSubmission === true) return 2;
+  return idx;
+}
+
 // Apply the pipeline-stepper state to the five stage accordions: completed stages
 // collapse with a check, the current stage opens, future stages lock. Driven by
-// state.detail.stageIndex (computed server-side). A blocked project paints a red
-// overlay on its active stage rather than getting its own stage.
+// state.detail.stageIndex (computed server-side) via stepperStageIndex. A blocked project
+// paints a red overlay on its active stage rather than getting its own stage.
 function applyStageState() {
   const d = state.detail;
   if (!d) return;
-  const active = Number.isInteger(d.stageIndex) ? d.stageIndex : 0;
+  const active = stepperStageIndex(d, state.submitGate);
   // Default expand/collapse: current stage open, others closed. But a stage the
   // operator manually opened (tracked in state.stageOverrides via summary clicks)
   // must STAY open across re-renders and navigation — otherwise the Submit gate
@@ -3614,6 +3687,7 @@ function renderRecordPortal() {
     if ($("manualPermitPathHint")) $("manualPermitPathHint").textContent = choice.hint;
   }
   setIfIdle("manualStructureType", snap.structureTypeOverride ? String(snap.structureTypeOverride) : "unknown");
+  setIfIdle("manualStructureDescription", snap.structureDescription ? String(snap.structureDescription) : "");
   setIfIdle("manualHomeownerEmail", snap.homeownerEmail != null ? String(snap.homeownerEmail) : "");
   setIfIdle("manualHomeownerPhone", snap.homeownerPhone != null ? String(snap.homeownerPhone) : "");
   setIfIdle("manualDescription", desc);
@@ -3644,6 +3718,16 @@ async function saveManualEntry() {
   const structureTypeChoice = ($("manualStructureType")?.value || "").trim();
   const structureTypeOnFile = String(state.detail?.project?.parserSnapshot?.structureTypeOverride || "unknown");
   if (structureTypeChoice && structureTypeChoice !== structureTypeOnFile) payload.structureTypeOverride = structureTypeChoice;
+  // STRUCTURE DESCRIPTION (the building the array is on) — a person's answer, which wins over the
+  // plan-set derivation (operator ruling 2026-09-28). Sent only when it differs from what is on file;
+  // clearing it ("") hands the answer back to the plan set.
+  // An answer on file that none of the options spells (the select shows it blank) is never wiped by
+  // saving another field.
+  const structureDescSel = $("manualStructureDescription");
+  const structureDescChoice = (structureDescSel?.value || "").trim();
+  const structureDescOnFile = String(state.detail?.project?.parserSnapshot?.structureDescription || "").trim();
+  const structureDescShown = !structureDescOnFile || Array.from(structureDescSel?.options || []).some((o) => o.value === structureDescOnFile);
+  if (structureDescSel && structureDescChoice !== structureDescOnFile && (structureDescShown || structureDescChoice)) payload.structureDescription = structureDescChoice;
   if (email) payload.homeownerEmail = email;
   if (phone) payload.homeownerPhone = phone;
   if (desc) payload.projectDescriptionText = desc;
@@ -3728,7 +3812,8 @@ async function launchTrackRecorder(trackType, scope, btn) {
   try {
     const res = await api(`/api/projects/${p.id}/launch-record`, {
       method: "POST",
-      body: JSON.stringify({ scope: resolvedScope, portalUrl: portalUrl || undefined }),
+      // The track rides along: a permit recording is keyed on the agency that issues THAT permit.
+      body: JSON.stringify({ scope: resolvedScope, portalUrl: portalUrl || undefined, track: trackType }),
     });
     // Update the card inline so the operator sees the status without scrolling.
     const card = btn?.closest(".track-card");
@@ -4370,6 +4455,22 @@ function linkifyText(text) {
   return out + esc(s.slice(last));
 }
 
+// FILED OUTSIDE THIS TOOL (operator 09-28: "City of Waltham only does in-person permit submission ...
+// ensure they're bold enough to know, same with email submissions as it will require us to go outside
+// of the submission tool"). A bold, coloured banner on the card — never the grey "Channel:" line alone.
+const OFF_TOOL_CHANNEL = {
+  in_person: { title: "IN-PERSON SUBMISSION", what: "This jurisdiction does not take this filing online. The bot prepares and fills the packet; a person must deliver it at the counter — outside this tool." },
+  email: { title: "EMAIL SUBMISSION", what: "This filing is sent by email, not through a portal. The bot prepares and fills the packet; a person must email it — outside this tool — then record the confirmation here." },
+  mail: { title: "SUBMISSION BY MAIL", what: "This filing is mailed. The bot prepares and fills the packet; a person must print and mail it — outside this tool." },
+};
+function offToolChannelHtml(t) {
+  const k = OFF_TOOL_CHANNEL[t.channelKind];
+  if (!k) return "";
+  return `<div role="note" style="margin:0 0 8px;padding:8px 10px;border:2px solid var(--warning);border-left-width:6px;border-radius:6px;background:rgba(245,158,11,0.10)">
+    <strong style="font-size:14px;letter-spacing:.02em">⚠ ${esc(k.title)}</strong>
+    <div style="font-size:12px;margin-top:2px">${esc(k.what)}</div></div>`;
+}
+
 function trackChannelHtml(t) {
   const channel = String(t.channel || "");
   const basis = TRACK_CHANNEL_BASIS[t.channelBasis];
@@ -4410,6 +4511,60 @@ function trackNextActionText(t) {
   return m ? `After those: ${m[1]}` : next;
 }
 
+// WHO ISSUES THIS PERMIT (split issuer, operator fact 2026-09-28: "Electrical permit issued through
+// Yamhill; Building permit issued through Newberg"). The server's one answer (permitProcess.trackIssuer)
+// and where it came from; every portal/recipe line on the card is that agency's. The operator can name
+// another agency for THIS track — saved through the project update route as the snapshot key below,
+// cleared with "". Untrusted text: esc() everything.
+const TRACK_ISSUER_KEY = { building: "trackIssuerBuilding", electrical: "trackIssuerElectrical", combo: "trackIssuerCombo", permit: "trackIssuerCombo", mpu: "trackIssuerMpu" };
+const TRACK_ISSUER_SOURCE = {
+  operator: { badge: "badge-info", label: "set by an operator" },
+  lookup: { badge: "badge-info", label: "per-job lookup, cited" },
+  project: { badge: "badge-none", label: "the project's AHJ" },
+};
+// The line sits on the card's FACE (above the channel); its set/clear control is a collapsed
+// <details> lower down, beside the capture form, so everything before the card's first <details>
+// is still what an operator sees without opening anything.
+function trackIssuerHtml(t) {
+  if (t.category !== "permit" || !t.issuer || !TRACK_ISSUER_KEY[t.type]) return "";
+  const i = t.issuer;
+  const src = TRACK_ISSUER_SOURCE[i.source];
+  const cited = i.source === "lookup" && httpUrl(i.sourceUrl) ? ` — ${linkifyText(httpUrl(i.sourceUrl))}` : "";
+  const refused = i.refused ? `<div style="margin-top:2px;color:var(--warning)">${esc(i.refused)}</div>` : "";
+  return `<div class="track-issuer" style="margin:0 0 6px;font-size:12px">
+    <strong>Issued by:</strong> ${esc(i.name || "—")}${src ? ` <span class="badge ${src.badge}">${esc(src.label)}</span>` : ""}${cited}
+    ${refused}
+  </div>`;
+}
+function trackIssuerEditHtml(t) {
+  if (t.category !== "permit" || !t.issuer || !TRACK_ISSUER_KEY[t.type]) return "";
+  const i = t.issuer;
+  return `<details class="track-issuer-edit" style="margin:0 0 6px;font-size:12px">
+      <summary class="muted">${i.override ? "Change the agency that issues this permit" : "Another agency issues this permit?"}</summary>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px">
+        <input data-track-issuer-input="${esc(t.type)}" value="${esc(i.override || "")}" placeholder="e.g. City of Newberg" maxlength="120" style="flex:1 1 180px;min-width:0" aria-label="Agency that issues this permit" />
+        <button type="button" class="secondary" data-track-issuer-save="${esc(t.type)}">Save</button>
+        ${i.override ? `<button type="button" class="ghost" data-track-issuer-clear="${esc(t.type)}">Clear</button>` : ""}
+      </div>
+    </details>`;
+}
+
+async function saveTrackIssuer(type, value, btn) {
+  const key = TRACK_ISSUER_KEY[type];
+  if (!key || !state.selectedProjectId) return;
+  if (btn) btn.disabled = true;
+  try {
+    const detail = await api(`/api/projects/${state.selectedProjectId}`, { method: "PUT", body: JSON.stringify({ [key]: value }) });
+    if (detail && detail.project) state.detail = detail;
+    await loadSubmittalTracks();
+    renderDetail();
+    showMessage(value ? `Saved — ${value} issues this ${humanize(type)} permit.` : `Cleared — the project's AHJ issues this ${humanize(type)} permit.`, "info");
+  } catch (err) {
+    showMessage(err.message || "Could not save the issuing agency.", "error");
+    if (btn) btn.disabled = false;
+  }
+}
+
 function trackCardHtml(t) {
   const cls = TRACK_STATUS_CLASS[t.status] || "info";
   // Captured numbers — only the fields this track actually uses (NEM has no permit #).
@@ -4442,7 +4597,14 @@ function trackCardHtml(t) {
         ${t.recipeStatus === "recording" && t.recipeId ? `<button type="button" class="secondary" data-track-finish-recipe="${esc(t.recipeId)}" title="You've verified (and fixed) the captured fill in the review browser — save it as the replayable recipe and close the review browser"><i data-lucide="check-circle-2"></i><span>Recording looks right — save recipe</span></button>` : ""}
       </div>`
     : `<div class="track-recipe track-recipe--none" data-track-type="${esc(t.type)}">
-        <span class="track-recipe-badge badge-none"><i data-lucide="circle-dashed"></i> No bot recipe yet</span>
+        ${t.borrowedRecipe
+          // NO RECIPE OF ITS OWN, BUT THE LAST RUN BORROWED ONE (operator 09-28: "if we're using the Coos
+          // Bay recipe can we make it say that somewhere?"). Say whose, for which record type.
+          ? `<span class="track-recipe-badge badge-ok" title="This jurisdiction has no recording of its own. Stage replayed a recording learned for ${esc(t.borrowedRecipe.learnedFor)} on the same portal (${esc(t.borrowedRecipe.portalHost)}), bound to this project's data. Check every jurisdiction-specific answer before submitting.">
+              <i data-lucide="copy-check"></i> Bot recipe: borrowed from ${esc(t.borrowedRecipe.learnedFor)}${t.borrowedRecipe.recordType ? ` (${esc(t.borrowedRecipe.recordType)}${t.borrowedRecipe.recipeVersion ? `, v${esc(t.borrowedRecipe.recipeVersion)}` : ""})` : ""}
+            </span>
+            <span class="muted" style="font-size:11px">Same portal, used on this project's last run. Record one for ${esc(t.label.replace(/\s*\x28.*$/, ""))} below if its steps differ.</span>`
+          : `<span class="track-recipe-badge badge-none"><i data-lucide="circle-dashed"></i> No bot recipe yet</span>`}
         <div class="track-record-steps">
           <button type="button" class="secondary" data-track-open-recorder="${esc(t.type)}" data-scope="${esc(t.recipeScopeType || "ahj")}" title="Launch a browser session to record this portal — the bot will replay it on future projects"><i data-lucide="play"></i><span>Open recorder</span></button>
           <span class="track-record-arrow muted">→</span>
@@ -4458,6 +4620,8 @@ function trackCardHtml(t) {
       <span>${esc(t.label)}</span>
       ${statusBadge(t.statusLabel)}
     </div>
+    ${trackIssuerHtml(t)}
+    ${offToolChannelHtml(t)}
     ${trackChannelHtml(t)}
     ${trackPrerequisitesHtml(t)}
     <p style="margin:0 0 6px;font-size:12px">→ ${linkifyText(trackNextActionText(t))}</p>
@@ -4470,6 +4634,7 @@ function trackCardHtml(t) {
       <button type="button" class="secondary" data-track-approve="${esc(t.type)}" title="Your approval of THIS run lets the bot click the portal's application submit (needs the server switch PORTAL_ALLOW_FINAL_SUBMIT=1 and a recipe recorded through submit; otherwise it stages to review for you). Never pays fees; stops for CAPTCHA/MFA."><i data-lucide="check-check"></i><span>Approve &amp; auto-submit</span></button>
     </div>
     ${recipeBlock}
+    ${trackIssuerEditHtml(t)}
     <details class="track-submit"${t.status === "staged" ? " open" : ""}>
       <summary>${submitted ? "Update numbers / status link" : "I submitted it → capture #"}</summary>
       <div class="track-submit-form">
@@ -4520,6 +4685,16 @@ function renderSubmittalTracks() {
 
   wrap.querySelectorAll("button[data-track-submit]").forEach((btn) => {
     btn.addEventListener("click", () => markSubmittalTrack(btn.dataset.trackSubmit));
+  });
+  wrap.querySelectorAll("button[data-track-issuer-save]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const type = btn.dataset.trackIssuerSave;
+      const input = Array.from(wrap.querySelectorAll("input[data-track-issuer-input]")).find((el) => el.dataset.trackIssuerInput === type);
+      saveTrackIssuer(type, String(input?.value || "").trim(), btn);
+    });
+  });
+  wrap.querySelectorAll("button[data-track-issuer-clear]").forEach((btn) => {
+    btn.addEventListener("click", () => saveTrackIssuer(btn.dataset.trackIssuerClear, "", btn));
   });
   wrap.querySelectorAll("button[data-track-approve]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -4713,6 +4888,21 @@ function applyAutopilotState(s) {
       banner.style.display = "none";
     }
   }
+  // WHAT THE PERSON TAKING THE REVIEW PAGE MUST KNOW (dryrun-0928 B3 / B14): answers the portal may
+  // not have saved when automation handed over, and the portal's own background calls the review
+  // lockdown held back (a section may render incomplete). Its own banner — never folded into the
+  // mismatch list. textContent only: the notes carry portal paths, never markup.
+  const handoffBanner = $("reviewHandoffBanner");
+  const handoffList = $("reviewHandoffList");
+  if (handoffBanner && handoffList) {
+    const notes = Array.isArray(s.reviewHandoffNotes) ? s.reviewHandoffNotes.filter((n) => typeof n === "string" && n.trim()) : [];
+    if (notes.length > 0 && s.phase === "awaiting_approval") {
+      handoffList.textContent = notes.join(" | ");
+      handoffBanner.style.display = "";
+    } else {
+      handoffBanner.style.display = "none";
+    }
+  }
   // Advise the operator about required fields the gap-fill left blank (no project data).
   const gapBanner = $("gapFillBanner");
   const gapList = $("gapFillList");
@@ -4758,11 +4948,11 @@ function resetAutopilotRail() {
   }
   const reasonEl = $("autopilotReason");
   if (reasonEl) { reasonEl.textContent = ""; reasonEl.hidden = true; }
-  for (const id of ["reviewMismatchBanner", "gapFillBanner"]) {
+  for (const id of ["reviewMismatchBanner", "reviewHandoffBanner", "gapFillBanner"]) {
     const el = $(id);
     if (el && el.style) el.style.display = "none";
   }
-  for (const id of ["reviewMismatchList", "gapFillList"]) {
+  for (const id of ["reviewMismatchList", "reviewHandoffList", "gapFillList"]) {
     const el = $(id);
     if (el) el.textContent = "";
   }
@@ -5944,6 +6134,10 @@ function bcd5952ClauseNotes(form) {
     if (/metal/.test(roof)) note("roof material and layer count", "Roofing: Yes — via the metal-roof clause");
     else if (/compos|asphalt/.test(roof) && max("roofLayers", 2) === true) note("roof material and layer count", "Roofing: Yes — via ≤2 layers composition shingle (not the metal-roof clause)");
     else if (/wood|shake/.test(roof) && max("roofLayers", 1) === true) note("roof material and layer count", "Roofing: Yes — via ≤1 layer wood shake (not the metal-roof clause)");
+    // An UNSTATED layer count passes on the operator's default (backend roofCovering.oregonRoofingRow,
+    // operator ruling 2026-09-28 "Assume 1-2 layers is good") — the note names the assumption.
+    else if (/compos|asphalt/.test(roof) && num("roofLayers") == null) note("roof material and layer count", "Roofing: Yes — via ≤2 layers composition shingle; layer count not stated, assumed 1-2 layers (operator ruling 2026-09-28)");
+    else if (/wood|shake/.test(roof) && num("roofLayers") == null) note("roof material and layer count", "Roofing: Yes — via single-layer wood shake; layer count not stated, assumed one layer (operator ruling 2026-09-28)");
   }
 
   const exposure = str("wind").toUpperCase();
@@ -5953,14 +6147,31 @@ function bcd5952ClauseNotes(form) {
       any(flag("attachmentsOutsideEdgeZone"), max("attachmentEdgeSpacingIn", 24)),
       exposure === "B" ? max("windSpeed", 120) : exposure === "C" ? max("windSpeed", 110) : null));
   if (method1 === true) note("attachment method compliance", "Attachments: Yes — via Method 1 (lagged to roof framing)");
-  else if (flag("standingSeamMethod2Compliant") === true) note("attachment method compliance", "Attachments: Yes — via Method 2 (standing-seam clamps)");
+  // Method 2 is the standing-seam METAL method (backend method2Fact): never a Yes on another covering.
+  else if ((!roof || /metal|standing[-\s]?seam|corrugated/.test(roof)) && flag("standingSeamMethod2Compliant") === true) note("attachment method compliance", "Attachments: Yes — via Method 2 (standing-seam clamps)");
 
   return notes.length ? `<p class="muted bcd-clauses">${esc(`Compound rows — the clause each Yes came from: ${notes.join("; ")}.`)}</p>` : "";
+}
+
+// THE SEARCH IS RUNNING NOW: the packet's acquiredAtStagingDocuments carry `inFlight` while the form
+// research pass for this AHJ/path runs (backend formAcquisitionPlan's in-flight registry — the chain's
+// automatic pass or an earlier click). The card says so and holds the Find button: a click mid-search
+// used to start a second, identical six-minute search (Beaverton, 09-28: three passes at once).
+function formResearchInFlight() {
+  const rows = (state.applicationDocs && state.applicationDocs.acquiredAtStagingDocuments) || [];
+  const row = rows.find((d) => d && d.inFlight && d.inFlight.since);
+  if (!row) return null;
+  const t = new Date(row.inFlight.since);
+  const started = Number.isNaN(t.getTime()) ? "" : ` (started ${t.toISOString().slice(11, 16)} UTC)`;
+  return { since: row.inFlight.since, text: `Checking the AHJ's required official forms…${started}` };
 }
 
 function renderFilledForms(projectId) {
   const ff = state.filledForms;
   if (!ff) return "";
+  const searching = formResearchInFlight();
+  const findBtnAttrs = searching ? " disabled" : "";
+  const findStatus = searching ? esc(searching.text) : "";
   if (ff.error) {
     return `<article class="item warning"><div class="item-title"><span>Official AHJ PDF form</span>${statusBadge("error")}</div><p>${esc(ff.error)}</p></article>`;
   }
@@ -5987,34 +6198,44 @@ function renderFilledForms(projectId) {
       <div class="item-title"><span>Official AHJ PDF form</span>${statusBadge("none on file")}</div>
       <p>No filled PDF form for <strong>${esc(ff.ahj || "this AHJ")}</strong> yet. Find the AHJ's official permit PDF, map its fields, and fill it — or upload the blank PDF yourself if it can't be found (e.g. the AHJ is online-only).</p>
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px">
-        <button type="button" id="findAhjFormBtn" class="secondary"><i data-lucide="search"></i><span>Find official form</span></button>
+        <button type="button" id="findAhjFormBtn" class="secondary"${findBtnAttrs}><i data-lucide="search"></i><span>Find official form</span></button>
         <label class="secondary" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--line);border-radius:6px">
           <i data-lucide="upload"></i><span>Upload blank PDF</span>
           <input id="uploadAhjFormInput" type="file" accept="application/pdf" style="display:none">
         </label>
-        <span id="findAhjFormStatus" class="muted" style="font-size:12px"></span>
+        <span id="findAhjFormStatus" class="muted" style="font-size:12px">${findStatus}</span>
       </div>
     </article>`;
   }
-  const acquisitionControls = `<article class="item info"><button type="button" id="findAhjFormBtn" class="secondary">Find missing official forms</button>
+  const acquisitionControls = `<article class="item info"><button type="button" id="findAhjFormBtn" class="secondary"${findBtnAttrs}>Find missing official forms</button>
     <label class="secondary" style="margin-left:8px">Upload blank PDF<input id="uploadAhjFormInput" type="file" accept="application/pdf" style="display:none"></label>
-    <span id="findAhjFormStatus" class="muted"></span></article>`;
+    <span id="findAhjFormStatus" class="muted">${findStatus}</span></article>`;
   return acquisitionControls + forms.map((f) => {
     const ok = f.status === "filled";
     // "skipped" = the OTHER application for this permit path (prescriptive vs structural).
     // It's intentional, not a problem — render it neutral and never block on it.
     const skipped = f.status === "skipped";
     const isStored = Boolean(f.templateId);
-    const unverified = isStored && f.verified === false;
-    const missingDetails = (f.unmappedRequested || []).length > 0;
+    // A stored form filled from the BUILT-IN map written for its exact blank (backend
+    // effectiveStoredFieldMap) is never asked for "mark verified" — the submit gate does not ask
+    // either (dry-run 2026-09-28 B6), and verifying would pin the row's stale stored copy.
+    const builtIn = isStored && f.verified === false && f.builtInMap === true;
+    const unverified = isStored && f.verified === false && !builtIn;
+    // A value the AGENCY computes (a fee / surcharge / total — requestedFieldOwners, gates-proper C4)
+    // is not a detail the operator owes: it never turns the form's badge to "needs details". A named
+    // operator item (forms-fill: a refused shape, a licence not on file, a signer to confirm) is.
+    const ownersOf = f.requestedFieldOwners || {};
+    const operatorBlanks = (f.unmappedRequested || []).filter((l) => ownersOf[l] !== "agency");
+    const operatorItems = f.operatorItems || [];
+    const missingDetails = operatorBlanks.length > 0 || operatorItems.length > 0;
     const extra = [
       f.filledFieldCount != null ? `${f.filledFieldCount} field(s) filled` : "",
-      missingDetails && !f.message?.includes("Still needs:") ? `Needs details: ${(f.unmappedRequested || []).join(", ")}` : "",
+      operatorBlanks.length && !f.message?.includes("Still needs:") ? `Needs details: ${operatorBlanks.join(", ")}` : "",
       f.message || "",
     ].filter(Boolean).join(" · ");
     // Cls: unverified auto-maps are a warning (block submit) until confirmed.
     const cls = skipped ? "info" : !ok || missingDetails || unverified ? "warning" : "pass";
-    const badge = skipped ? "not this path" : !ok ? (f.status || "not filled") : missingDetails ? "needs details" : unverified ? "needs verify" : (isStored ? "verified" : "filled PDF");
+    const badge = skipped ? "not this path" : !ok ? (f.status || "not filled") : missingDetails ? "needs details" : unverified ? "needs verify" : builtIn ? "built-in map" : (isStored ? "verified" : "filled PDF");
     return `<article class="item ${cls}">
       <div class="item-title"><span>${esc(f.formName || f.formId)}</span>${statusBadge(badge)}</div>
       ${ok ? `<p><a href="/api/projects/${encodeURIComponent(projectId)}/filled-forms/${encodeURIComponent(f.formId)}" target="_blank" rel="noopener"><strong>⬇ Download filled ${esc(f.formName || "AHJ form")} (PDF)</strong></a></p>` : ""}
@@ -6023,10 +6244,12 @@ function renderFilledForms(projectId) {
           <button type="button" class="secondary" data-verify-form="${esc(f.templateId)}" style="font-size:12px">✓ Looks right — mark verified</button>
           <button type="button" class="secondary" data-remap-form="${esc(f.templateId)}" style="font-size:12px">Re-map</button>
         </div>` : ""}
+      ${builtIn ? `<p class="muted">Built-in map written for this exact official revision (matched by the blank's fingerprint) — no mapping verification needed. Review the filled PDF before filing.</p>` : ""}
       ${ok && !isStored && !f.signaturesLocked ? `<p class="muted"><button type="button" class="secondary" data-detect-sign="${esc(f.formId)}" style="font-size:12px">Detect signature lines (AI)</button> — stamp your stored signature on this form.</p>` : ""}
       ${ok && !isStored && f.signaturesLocked ? `<p class="muted">✓ Built-in form — signature + date auto-placed on the authorized-signature line. No verification needed.</p>` : ""}
       ${f.documentStale ? `<p class="muted"><strong>This blank dates itself “${esc(f.documentDate)}”</strong> — over two years old. Re-check the AHJ's current forms page before filing${f.sourceUrl ? ` (<a href="${esc(f.sourceUrl)}" target="_blank" rel="noopener noreferrer">source</a>)` : ""}. Check any printed fee rates against the current schedule.</p>` : ""}
       ${extra ? `<p class="muted">${esc(extra)}</p>` : ""}
+      ${ok && operatorItems.length ? `<p><strong>Fill by hand before filing (${operatorItems.length}):</strong></p><ul class="muted" style="margin:2px 0 6px 18px">${operatorItems.map((it) => `<li>${esc(it)}</li>`).join("")}</ul>` : ""}
       ${ok ? bcd5952ClauseNotes(f) : ""}
     </article>`;
   }).join("");
@@ -6066,28 +6289,110 @@ function renderFilledForms(projectId) {
  * own. Fields and documents get SEPARATE verdict rows — one sentence covering both
  * is how the first version went wrong.
  */
-function documentVerdictHtml(pkg, formMissingFields = []) {
-  const missingFields = [...new Set([...(pkg.missingFields || []), ...formMissingFields])];
+/**
+ * THE FILLED FORMS' BLANKS, SPLIT BY WHOSE THEY ARE (gates-proper C4) — the backend's one answer
+ * (ahjForms.requiredFieldOwner, carried on each form as requestedFieldOwners). A fee / surcharge /
+ * total the agency computes is not the operator's to supply, and a land-use approval comes from the
+ * planning office; the old card listed Marion County's "electrical permit fee (the county schedule,
+ * when not on file)" under "Resolve them in QC / Human Review before staging", and the operator
+ * bypassed the gate over it. Pure: [operator's blanks (planning-office ones labelled), agency's].
+ */
+function filledFormBlanks(forms) {
+  const mine = [];
+  const agency = [];
+  for (const f of (forms || []).filter((x) => x && x.status === "filled")) {
+    const owners = f.requestedFieldOwners || {};
+    for (const label of f.unmappedRequested || []) {
+      if (owners[label] === "agency") agency.push(label);
+      else mine.push(owners[label] === "planning_office" ? `${label} (from the planning / land-use office, when the project needs one)` : label);
+    }
+    // The fill's named operator items (forms-fill) are the operator's too.
+    for (const item of f.operatorItems || []) mine.push(item);
+  }
+  return [mine, agency];
+}
+
+function documentVerdictHtml(pkg, formMissingFields = [], agencyComputedFields = []) {
+  // ONE BLANK, ONE LINE. The same printed field named twice — "Tax map/parcel no.:" by one form and
+  // "Tax map/parcel number." by another, "Cross street/directions to job site" with and without its
+  // colon — is listed once, keeping the line that says more (a note in brackets wins). The key is the
+  // label before its note: lowercased, "number" / "no." / "#" read alike, punctuation dropped. A
+  // "— the box named …" suffix stays in the key: two boxes that share a label are two blanks.
+  const blankKey = (item) => {
+    const text = String(item || "").replace(/\s+/g, " ").trim();
+    const noteAt = text.search(/ \x28/);
+    const label = noteAt > 0 ? text.slice(0, noteAt) : text;
+    return label.toLowerCase()
+      .replace(/\bnumber\b|\bnum\b|\bno\b|#/g, " no ")
+      .replace(/[^a-z0-9/&]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
+  const blankScore = (item) => (/ \x28/.test(String(item)) ? 1000 : 0) + String(item).length;
+  const bestBlank = new Map();
+  for (const item of [...(pkg.missingFields || []), ...formMissingFields]) {
+    const key = blankKey(item);
+    if (!key) continue;
+    const prev = bestBlank.get(key);
+    if (prev === undefined || blankScore(item) > blankScore(prev)) bestBlank.set(key, item);
+  }
+  const missingFields = [...bestBlank.values()];
+  const agencyFields = [...new Set(agencyComputedFields)];
   const inventoryResolved = pkg.missingDocumentsStatus === "resolved";
   const missingDocs = inventoryResolved ? (pkg.missingDocuments || []) : [];
   const filledAtStaging = inventoryResolved ? (pkg.filledAtStagingDocuments || []) : [];
+  const acquiredAtStaging = inventoryResolved ? (pkg.acquiredAtStagingDocuments || []) : [];
+  // WHICH APPLICATION(S) THIS AHJ REQUIRES IS NOT KNOWN (pkg.applicationSetUnknown, the inventory's
+  // own sentence): an advisory row in the "could not determine" style — never pass-green.
+  const unknownApps = inventoryResolved && pkg.applicationSetUnknown ? String(pkg.applicationSetUnknown) : "";
+  const unknownAppsRow = unknownApps
+    ? `<div class="kx-docstate is-unknown">
+        <span class="kx-docstate-icon" aria-hidden="true">?</span>
+        <div class="kx-docstate-body">
+          <span class="kx-docstate-title">Which permit application(s) this AHJ requires is not known</span>
+          <span class="kx-docstate-text">${esc(unknownApps)}</span>
+        </div>
+      </div>`
+    : "";
 
+  // What the operator can do about a blank, said truthfully: nothing waits on it (no gate reads these
+  // fields), and QC / Human Review cannot fill a form field — the project record or the form can.
   const fieldRow = missingFields.length
     ? `<div class="kx-docstate is-missing">
         <span class="kx-docstate-icon" aria-hidden="true">⚠</span>
         <div class="kx-docstate-body">
           <span class="kx-docstate-title">${plural(missingFields.length, "application field")} still blank</span>
-          <span class="kx-docstate-text">The generated packet cannot fill these from the plan set. Resolve them in QC / Human Review before staging.</span>
+          <span class="kx-docstate-text">Fields, not files. A blank on a generated form does not hold staging: add the data to the project and rebuild, or complete it on the filled form before the final submit. (The portal's own required fields are checked when it is staged.)</span>
           <ul class="kx-docstate-list">${missingFields.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>
         </div>
       </div>`
-    : `<div class="kx-docstate is-clear">
+    : agencyFields.length
+      ? `<div class="kx-docstate is-clear">
+        <span class="kx-docstate-icon" aria-hidden="true">✓</span>
+        <div class="kx-docstate-body">
+          <span class="kx-docstate-title">No application field is waiting on you</span>
+          <span class="kx-docstate-text">Every field this packet needs from the project is filled. The values below are the agency's to compute.</span>
+        </div>
+      </div>`
+      : `<div class="kx-docstate is-clear">
         <span class="kx-docstate-icon" aria-hidden="true">✓</span>
         <div class="kx-docstate-body">
           <span class="kx-docstate-title">No critical application field is blank</span>
           <span class="kx-docstate-text">Every scalar field this packet needs was read off the project. This says nothing about the FILES — see below.</span>
         </div>
       </div>`;
+  // THE AGENCY'S OWN VALUES — a fee, surcharge or total the form could not price. Neutral: the agency
+  // computes it from its own schedule (in its portal, or at intake); nothing here waits on it.
+  const agencyRow = agencyFields.length
+    ? `<div class="kx-docstate is-clear">
+        <span class="kx-docstate-icon" aria-hidden="true">ⓘ</span>
+        <div class="kx-docstate-body">
+          <span class="kx-docstate-title">${plural(agencyFields.length, "value")} left for the agency to compute</span>
+          <span class="kx-docstate-text">Fees, surcharges and totals the form could not price from a saved schedule. The agency computes them from its own schedule in its portal or at intake — nothing waits on them, and automation never pays a fee.</span>
+          <ul class="kx-docstate-list">${agencyFields.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>
+        </div>
+      </div>`
+    : "";
 
   let docRow;
   if (!inventoryResolved) {
@@ -6123,12 +6428,16 @@ function documentVerdictHtml(pkg, formMissingFields = []) {
           <span class="kx-docstate-text">These are files, not fields. The submittal is incomplete until each one is attached.</span>
           <ul class="kx-docstate-list">${missingDocs.map((d) => `<li>${esc(d.label)}<span class="kx-docstate-why"> — ${esc(d.why)}</span></li>`).join("")}</ul>
         </div>
-      </div>`;
+      </div>${unknownAppsRow}`;
+  } else if (unknownAppsRow) {
+    // NOTHING KNOWN IS NOT NOTHING OWED: an application set that is empty because nobody knows this
+    // AHJ is never rendered as the all-clear (leak sweep, 2026-09-28).
+    docRow = unknownAppsRow;
   } else {
     docRow = `<div class="kx-docstate is-clear">
         <span class="kx-docstate-icon" aria-hidden="true">✓</span>
         <div class="kx-docstate-body">
-          <span class="kx-docstate-title">Every required document is on file${filledAtStaging.length ? " or filled at staging" : ""}</span>
+          <span class="kx-docstate-title">Every required document is on file${acquiredAtStaging.length ? " or made by Stage itself" : filledAtStaging.length ? " or filled at staging" : ""}</span>
           <span class="kx-docstate-text">The required-document inventory ran against the real uploads and filled forms on disk and found nothing blocking missing${filledAtStaging.length ? " that you need to supply" : ""}. On file is not the same as attached: staging attaches what the portal's upload slots ask for, and the run does not yet report what went up — check the portal's attachment list before you submit.</span>
         </div>
       </div>`;
@@ -6148,8 +6457,22 @@ function documentVerdictHtml(pkg, formMissingFields = []) {
         </div>
       </div>`
     : "";
+  // DOWNLOADED AT STAGING (gates-proper C1) — a required form nobody has fetched yet that Stage
+  // downloads (the issuing agency's published form, a cited PDF) or researches, and fills, before it
+  // counts. Not the operator's to attach; if the download fails, Stage says so and stops.
+  // (acquiredAtStaging is read above, beside filledAtStaging.)
+  const acquiredRow = acquiredAtStaging.length
+    ? `<div class="kx-docstate is-clear">
+        <span class="kx-docstate-icon" aria-hidden="true">⤓</span>
+        <div class="kx-docstate-body">
+          <span class="kx-docstate-title">${plural(acquiredAtStaging.length, "required form")} downloaded and filled by Stage</span>
+          <span class="kx-docstate-text">Nothing for you to attach: Stage fetches the official blank and fills it before it counts the documents. If a download fails, Stage stops and names the form — then use Find missing official forms or upload the blank.</span>
+          <ul class="kx-docstate-list">${acquiredAtStaging.map((d) => `<li>${esc(d.label)}<span class="kx-docstate-why"> — ${esc(d.why)}</span></li>`).join("")}</ul>
+        </div>
+      </div>`
+    : "";
 
-  return `<div class="stack">${fieldRow}${docRow}${filledRow}</div>`;
+  return `<div class="stack">${fieldRow}${agencyRow}${docRow}${filledRow}${acquiredRow}</div>`;
 }
 
 // THE PERMIT PATH, ITS EVIDENCE, AND THE OVERRIDE — on the project screen.
@@ -6260,7 +6583,7 @@ function renderApplicationDocs() {
         <div class="kx-preflight-col">
           ${pkg.permitType ? `<div class="kx-issue-field"><span class="kx-issue-field-label">Permitting type</span><span class="kx-issue-field-value">${esc(pkg.permitType)}</span></div>` : ""}
           ${profileNotes.length ? `<div class="kx-issue-field"><span class="kx-issue-field-label">Jurisdiction notes</span><span class="kx-issue-field-value">${profileNotes.map(esc).join("<br>")}</span></div>` : ""}
-          ${documentVerdictHtml(pkg, state.filledForms?.projectId === pid ? (state.filledForms.forms || []).filter(f => f.status === "filled").flatMap(f => f.unmappedRequested || []) : [])}
+          ${documentVerdictHtml(pkg, ...filledFormBlanks(state.filledForms?.projectId === pid ? (state.filledForms.forms || []) : []))}
         </div>
       </div>
     </div>
@@ -6558,6 +6881,19 @@ function permitStatusTargetId(explicitId) {
   return explicitId || picked || state.recheckTargetId || targets[0]?.id || null;
 }
 
+// WHAT THE PORTAL ITSELF SAYS for this filing (operator 2026-09-28: "pull exactly what the AHJ says …
+// then we can just see what is needed directly without confusion"). Only the filing's NEWEST reading
+// counts — an older reading's words beside a newer badge would be the stale answer in another form;
+// when the newest reading states no status field, nothing is shown. Pure; lifted by
+// backend/test/portalSays.test.ts.
+function portalSaysFor(target, checks) {
+  const mine = (checks || []).filter((c) => c && c.targetId === target.id);
+  if (!mine.length) return null;
+  const newest = mine.reduce((a, b) => (String(b.createdAt) > String(a.createdAt) ? b : a));
+  const text = String(newest.portalStatedStatus || "").trim();
+  return text ? { text, at: newest.createdAt } : null;
+}
+
 function renderPermitMonitor() {
   const targets = state.detail.permitCheckTargets || [];
   const checks = state.detail.permitStatusChecks || [];
@@ -6569,9 +6905,11 @@ function renderPermitMonitor() {
       ? `<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:var(--info);color:#fff;margin-left:6px">${esc(target.portalPlatform)}</span>`
       : "";
     const sourceLabel = ` · ${esc(permitTargetKindLabel(target))}`;
+    const said = portalSaysFor(target, checks);
     return `
     <article class="item info">
       <div class="item-title"><span>${esc(target.portalName || target.jurisdiction || "Permit target")}${sourceLabel}</span>${statusBadge(target.latestOutcome || "active")}${platformLabel}</div>
+      ${said ? `<p><strong>Portal says:</strong> “${esc(said.text)}” <span class="muted">· read ${esc(new Date(said.at).toLocaleString())}</span></p>` : ""}
       <p>${esc([target.applicationNumber && `Application ${target.applicationNumber}`, target.permitNumber && `Permit ${target.permitNumber}`].filter(Boolean).join(" | ") || "No application/permit number recorded yet.")}</p>
       ${target.portalUrl ? `<p class="muted" style="word-break:break-all">${esc(target.portalUrl)}</p>` : ""}
       <p class="muted">Checks every ${target.checkFrequencyDays} day(s) · Next: ${target.nextCheckAt ? esc(new Date(target.nextCheckAt).toLocaleString()) : "not scheduled"} · Source strategy: ${esc(target.portalPlatform || "auto")}</p>
@@ -8110,6 +8448,102 @@ const CLIENT_TEXT_FIELDS = [
   "businessZip", "businessPhone", "businessEmail", "authorizedSignerName", "authorizedSignerTitle", "notes",
 ];
 
+// ----- State licences (Clients editor) -----
+// THE ONE KIND LIST (shared/src/licenceKinds.ts LICENCE_KINDS): kind, label, and whether it is a
+// PERSON's licence (carries a holder's name). backend/test/licencesByType.test.ts fails on drift.
+const LICENCE_KIND_OPTIONS = [
+  { kind: "contractor", label: "Contractor (general / building / residential)", person: false },
+  { kind: "electrical_contractor", label: "Electrical contractor", person: false },
+  { kind: "construction_supervisor", label: "Construction supervisor", person: true },
+  { kind: "home_improvement_contractor", label: "Home improvement contractor", person: false },
+  { kind: "solar_contractor", label: "Solar contractor", person: false },
+  { kind: "master_electrician", label: "Master / supervising electrician", person: true },
+  { kind: "business_registration", label: "Business registration (not a contractor licence)", person: false },
+];
+
+/** The editor's rows for one client, straight from what the server stored. */
+function stateLicencesFromClient(client) {
+  const list = client && Array.isArray(client.stateLicenses) ? client.stateLicenses : [];
+  return list.map((l) => ({
+    state: String(l.state || ""), kind: String(l.kind || ""), number: String(l.number || ""),
+    expires: String(l.expires || ""), holder: String(l.holder || ""),
+  }));
+}
+
+function licenceKindIsPerson(kind) {
+  return LICENCE_KIND_OPTIONS.some((k) => k.kind === kind && k.person);
+}
+
+/** One licence row. Every stored value goes through esc(); a kind the list does not know is kept
+ *  and shown so it is never silently changed. */
+function stateLicenceRowHtml(lic, idx) {
+  const known = LICENCE_KIND_OPTIONS.some((k) => k.kind === lic.kind);
+  const options = LICENCE_KIND_OPTIONS.map((k) => `<option value="${esc(k.kind)}"${k.kind === lic.kind ? " selected" : ""}>${esc(k.label)}</option>`).join("");
+  const unknownOption = !known && lic.kind ? `<option value="${esc(lic.kind)}" selected>${esc(lic.kind)} - pick a type</option>` : "";
+  const blankOption = !lic.kind ? `<option value="" selected>Type...</option>` : "";
+  const person = licenceKindIsPerson(lic.kind);
+  return `<div class="state-licence-row" data-sl-row="${idx}">
+      <input data-sl="state" data-idx="${idx}" maxlength="2" placeholder="ST" aria-label="State" value="${esc(lic.state)}" />
+      <select data-sl="kind" data-idx="${idx}" aria-label="Licence type">${blankOption}${unknownOption}${options}</select>
+      <input data-sl="number" data-idx="${idx}" placeholder="Licence number" aria-label="Licence number" value="${esc(lic.number)}" />
+      <input data-sl="expires" data-idx="${idx}" type="date" aria-label="Expires" value="${esc(lic.expires)}" />
+      <input data-sl="holder" data-idx="${idx}" placeholder="${person ? "Holder name" : "Holder: person licences"}" aria-label="Holder" value="${esc(lic.holder)}"${person ? "" : " disabled"} />
+      <button type="button" class="danger-button" data-remove-sl="${idx}" aria-label="Remove licence"><i data-lucide="x"></i><span>Remove</span></button>
+    </div>`;
+}
+
+/** The rows as the API takes them, and what is wrong with any half-filled row. An untouched new
+ *  row is dropped; a row with a number but no state or type is an error, never silently dropped. */
+function stateLicencesPayload(drafts) {
+  const list = [];
+  const errors = [];
+  (drafts || []).forEach((d, i) => {
+    const st = String(d.state || "").trim().toUpperCase();
+    const number = String(d.number || "").trim();
+    const kind = String(d.kind || "").trim();
+    const expires = String(d.expires || "").trim();
+    const holder = String(d.holder || "").trim();
+    if (!st && !number && !kind && !expires && !holder) return;
+    const isState = st.length === 2 && st.split("").every((c) => c >= "A" && c <= "Z");
+    if (!isState) errors.push(`State licence row ${i + 1}: the state must be two letters, e.g. MA.`);
+    else if (!number) errors.push(`State licence row ${i + 1}: the licence number is missing.`);
+    else if (!kind) errors.push(`State licence row ${i + 1}: pick the licence type.`);
+    else list.push({ state: st, kind, number, ...(expires ? { expires } : {}), ...(holder ? { holder } : {}) });
+  });
+  return { list, errors };
+}
+
+/** THE SAVE NEVER WIPES LICENCES: stateLicenses goes out only as the editor's FULL list, and only
+ *  when that list was loaded from THIS client (updateClient is a partial update — no key, no write). */
+function withStateLicences(payload, drafts, loadedFor, clientId) {
+  if (loadedFor !== clientId) return payload;
+  return { ...payload, stateLicenses: stateLicencesPayload(drafts).list };
+}
+
+function renderStateLicences() {
+  const wrap = $("stateLicencesList");
+  if (!wrap) return;
+  const drafts = state.stateLicencesDraft || [];
+  wrap.innerHTML = drafts.length
+    ? drafts.map(stateLicenceRowHtml).join("")
+    : `<p class="muted">No state licences yet. Add one row per licence: state, type, number.</p>`;
+  wrap.querySelectorAll("[data-sl]").forEach((el) => {
+    el.addEventListener(el.tagName === "SELECT" ? "change" : "input", () => {
+      const row = state.stateLicencesDraft[Number(el.dataset.idx)];
+      if (!row) return;
+      row[el.dataset.sl] = el.value;
+      if (el.dataset.sl === "kind") renderStateLicences();
+    });
+  });
+  wrap.querySelectorAll("[data-remove-sl]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.stateLicencesDraft.splice(Number(btn.dataset.removeSl), 1);
+      renderStateLicences();
+    });
+  });
+  if (window.lucide) window.lucide.createIcons();
+}
+
 function clientFormStatus(message, kind) {
   const el = $("clientFormStatus");
   if (!message) { el.hidden = true; el.textContent = ""; return; }
@@ -8137,7 +8571,7 @@ function renderClientsList() {
   list.innerHTML = state.clients.map((client) => `
     <button type="button" class="client-row${client.id === state.editingClientId ? " active" : ""}" data-client-id="${esc(client.id)}">
       <strong>${esc(client.companyName || client.legalBusinessName || "Unnamed")}</strong>
-      <span class="muted">${esc(client.ccbLicenseNumber ? "CCB " + client.ccbLicenseNumber : "No CCB on file")}</span>
+      <span class="muted">${esc(client.ccbLicenseNumber ? "CCB " + client.ccbLicenseNumber : "No CCB on file")}${esc((client.stateLicenses || []).length ? ` · ${client.stateLicenses.length} state licence${client.stateLicenses.length === 1 ? "" : "s"}` : "")}</span>
     </button>
   `).join("");
   list.querySelectorAll("[data-client-id]").forEach((btn) => {
@@ -8198,6 +8632,10 @@ function blankClientForm() {
   CLIENT_TEXT_FIELDS.forEach((field) => { const el = $("c_" + field); if (el) el.value = ""; });
   state.portalIdentitiesDraft = [];
   renderPortalIdentities();
+  // A new client: its licence list starts empty and IS the list saved with it.
+  state.stateLicencesDraft = [];
+  state.stateLicencesLoadedFor = "";
+  renderStateLicences();
   clientFormStatus("");
   if ($("clientCredentials")) $("clientCredentials").hidden = true;
   renderClientsList();
@@ -8242,6 +8680,10 @@ function editClient(clientId) {
     portalType: i.portalType, installerCompanyLabel: i.installerCompanyLabel, installerContactCode: i.installerContactCode, notes: i.notes,
   }));
   renderPortalIdentities();
+  // The editor holds THIS client's full stored list; only a list loaded here is ever saved back.
+  state.stateLicencesDraft = stateLicencesFromClient(client);
+  state.stateLicencesLoadedFor = clientId;
+  renderStateLicences();
   clientFormStatus("");
   loadClientCredentials(clientId);
   renderClientsList();
@@ -8284,7 +8726,7 @@ function renderPortalIdentities() {
 function collectClientPayload() {
   const payload = { portalIdentities: state.portalIdentitiesDraft || [] };
   CLIENT_TEXT_FIELDS.forEach((field) => { payload[field] = $("c_" + field)?.value ?? ""; });
-  return payload;
+  return withStateLicences(payload, state.stateLicencesDraft, state.stateLicencesLoadedFor, $("clientId").value || "");
 }
 
 async function saveClient(event) {
@@ -8292,6 +8734,11 @@ async function saveClient(event) {
   const payload = collectClientPayload();
   if (!payload.companyName && !payload.legalBusinessName) {
     clientFormStatus("Company name (or legal business name) is required.", "error");
+    return;
+  }
+  const licenceProblems = "stateLicenses" in payload ? stateLicencesPayload(state.stateLicencesDraft).errors : [];
+  if (licenceProblems.length) {
+    clientFormStatus(licenceProblems[0], "error");
     return;
   }
   try {
@@ -8567,6 +9014,11 @@ if ($("plSaveBtn")) $("plSaveBtn").addEventListener("click", async () => {
   } catch (err) { $("plStatus").textContent = err.message || "Save failed."; }
 });
 
+$("addStateLicenceBtn")?.addEventListener("click", () => {
+  state.stateLicencesDraft = state.stateLicencesDraft || [];
+  state.stateLicencesDraft.push({ state: "", kind: "", number: "", expires: "", holder: "" });
+  renderStateLicences();
+});
 $("addPortalIdentityBtn").addEventListener("click", () => {
   state.portalIdentitiesDraft = state.portalIdentitiesDraft || [];
   state.portalIdentitiesDraft.push({ portalType: "powerclerk_pge", installerCompanyLabel: "", installerContactCode: "", notes: "" });
@@ -8933,6 +9385,7 @@ if ($("addUtilityBtn")) {
 if ($("addFormFile")) $("addFormFile").addEventListener("change", uploadAhjFormFromManager);
 if ($("refreshFormsBtn")) $("refreshFormsBtn").addEventListener("click", refreshAhjFormLinks);
 if ($("addSigFile")) $("addSigFile").addEventListener("change", uploadSignature);
+if ($("addSigRole")) $("addSigRole").addEventListener("change", () => { syncSignatureCompanyPicker(); });
 $("projectStatusFilter").addEventListener("change", (e) => {
   projectFilterState.status = e.target.value;
   reloadProjects();

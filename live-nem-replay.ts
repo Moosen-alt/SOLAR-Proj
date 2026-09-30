@@ -60,12 +60,12 @@ if (!recipe) {
 
 // Client licensing overlay, exactly as staging applies it, so the contractor identity that
 // replays is the authoritative one rather than whatever the plan set said.
-const overlay = clientStagingOverlay(db, project.clientId, portalType);
+const overlay = clientStagingOverlay(db, project.clientId, portalType, { state: String(project.state ?? ""), track: "nem" });
 const stagedProject = Object.keys(overlay).length > 0
   ? { ...project, parserSnapshot: { ...project.parserSnapshot, ...overlay } }
   : project;
 
-const fieldValues = resolveRecipeFieldValues(db, stagedProject, portalType);
+const fieldValues = resolveRecipeFieldValues(db, stagedProject, portalType, "nem");
 const docsByType = projectDocsByType(db, projectId);
 const credential = project.clientId
   ? (getDecryptedCredentialByUrl(db, project.clientId, recipe.portalUrl) ?? undefined)

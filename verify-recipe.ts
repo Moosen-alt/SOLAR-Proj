@@ -20,7 +20,7 @@ const row = db.get<{ id: string; status: string; version: number; profile_key: s
 if (!row) { console.error(`no recipe ${recipeArg}`); process.exit(1); }
 const recipe = getPortalRecipe(db, row.id);
 const project = getProjectDetail(db, db.get<{ id: string }>("SELECT id FROM projects WHERE id LIKE ?", [`${projectArg}%`])!.id, null).project;
-const replayFields = resolveRecipeFieldValues(db, project, "powerclerk");
+const replayFields = resolveRecipeFieldValues(db, project, "powerclerk", "nem");
 
 console.log(`recipe   ${row.id.slice(0, 8)} v${row.version}  status=${row.status}  ${recipe.steps.length} steps  key=${row.profile_key}`);
 console.log(`learned against ${project.homeownerName}\n`);

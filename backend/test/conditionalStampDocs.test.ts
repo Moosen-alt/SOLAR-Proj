@@ -45,10 +45,10 @@ assert.equal(wantsStamp(proj({ systemSizeDcKw: null }, { mounting: "Roof Mount" 
 ok("unknown DC size never invents a stamp requirement from a kW threshold");
 
 // 6) The reason names WHY, so the operator can act on it.
-const why = requiredDocuments(proj({ systemSizeDcKw: 12 }), { stampThresholdKwDc: 10, jurisdictionLabel: "California" })
+const why = requiredDocuments(proj({ systemSizeDcKw: 12 }), { stampThresholdKwDc: 10, stampThresholdConfirmed: true, jurisdictionLabel: "California" })
   .find((d) => d.docType === "structural_letter")?.why || "";
 assert.ok(/California/.test(why) && /10/.test(why), `reason should name the jurisdiction + threshold: ${why}`);
-const alwaysWhy = requiredDocuments(proj({ systemSizeDcKw: 4 }), { stampThresholdKwDc: 0, jurisdictionLabel: "Chicago" })
+const alwaysWhy = requiredDocuments(proj({ systemSizeDcKw: 4 }), { stampThresholdKwDc: 0, stampThresholdConfirmed: true, jurisdictionLabel: "Chicago" })
   .find((d) => d.docType === "structural_letter")?.why || "";
 assert.ok(/Chicago/.test(alwaysWhy) && /any size|regardless/i.test(alwaysWhy), `reason should say any-size: ${alwaysWhy}`);
 ok("the requirement explains which rule triggered it");
@@ -58,7 +58,7 @@ ok("the requirement explains which rule triggered it");
 const eng = resolveStampRequirement(proj({}, { permitPathOverride: "engineered" }));
 assert.equal(eng.source, "engineered_path");
 assert.equal(eng.waivable, false);
-const jur = resolveStampRequirement(proj({ systemSizeDcKw: 12 }, { mounting: "Roof Mount" }), { stampThresholdKwDc: 10, jurisdictionLabel: "California" });
+const jur = resolveStampRequirement(proj({ systemSizeDcKw: 12 }, { mounting: "Roof Mount" }), { stampThresholdKwDc: 10, stampThresholdConfirmed: true, jurisdictionLabel: "California" });
 assert.equal(jur.source, "jurisdiction_threshold");
 assert.equal(jur.waivable, false);
 const hearsay = resolveStampRequirement(prescriptive, { processProfileRequiresStamp: true, jurisdictionLabel: "Marion County" });
@@ -77,9 +77,23 @@ const advisory = requiredDocuments(prescriptive, { processProfileRequiresStamp: 
 assert.ok(advisory, "profile hearsay adds the letter to the list");
 assert.equal(advisory?.blocking, false, "…as an advisory, not a submit blocker");
 // The hard triggers still block.
-const hard = requiredDocuments(proj({ systemSizeDcKw: 12 }), { stampThresholdKwDc: 10 })
+const hard = requiredDocuments(proj({ systemSizeDcKw: 12 }), { stampThresholdKwDc: 10, stampThresholdConfirmed: true })
   .find((d) => d.docType === "structural_letter");
 assert.equal(hard?.blocking, true);
 ok("profile-flagged letter is advisory in the doc list; path/threshold letters still block");
+
+// 9) AN UNCONFIRMED THRESHOLD IS A NOTE (leak sweep, 2026-09-28): a number with no provenance — the
+//    shipped state-level "stamp commonly required over ~10 kW" hedges — is the same trigger, stated
+//    as an advisory the operator confirms: listed, never blocking, never "<AHJ> requires".
+const note = resolveStampRequirement(proj({ systemSizeDcKw: 12 }, { mounting: "Roof Mount" }), { stampThresholdKwDc: 10, jurisdictionLabel: "City of Newton", stampThresholdBasis: "the seeded MA state-level reference note" });
+assert.equal(note.required, true, "still named — a note is not nothing");
+assert.equal(note.waivable, true, "an unconfirmed threshold never hard-blocks");
+assert.ok(!/City of Newton requires/.test(note.reason) && /[Cc]onfirm/.test(note.reason) && /MA state-level reference note/.test(note.reason), note.reason);
+const noteRow = requiredDocuments(proj({ systemSizeDcKw: 12 }), { stampThresholdKwDc: 10, jurisdictionLabel: "City of Newton" })
+  .find((d) => d.docType === "structural_letter");
+assert.equal(noteRow?.blocking, false);
+const anySizeNote = resolveStampRequirement(proj({ systemSizeDcKw: 4 }, { mounting: "Roof Mount" }), { stampThresholdKwDc: 0, jurisdictionLabel: "Chicago" });
+assert.equal(anySizeNote.waivable, true);
+ok("an unconfirmed jurisdiction threshold is a waivable advisory, never '<AHJ> requires'");
 
 console.log(`\nconditionalStampDocs: all ${passed} checks passed`);

@@ -258,6 +258,33 @@ export function extractStatedStatus(rawStatusText: string): string {
   return m ? m[1].trim().replace(/\s+/g, " ") : "";
 }
 
+// ACCELA'S RECORD-PAGE CHROME IS NOT THE RECORD (live 2026-09-28, a City of Corvallis building
+// record reading "Record Status: Received"). On a record not yet issued, Accela prints the "Add to
+// Existing Collection … Create a New Collection" widget where an issued record prints "Expiration
+// Date", so STATUS_LINE finds no end to the value and the whole page is scanned — and two pieces
+// of chrome on it then speak for the record:
+//   - the record-detail heading pair "More Details" › "Additional Information" (the section that
+//     holds Job Value) matched correctionPattern's "additional information": correction_flagged;
+//   - the anonymous visitor's invitation "To schedule inspections, pay fees or upload documents,
+//     please log in to your account." matched readyForIssuePattern's "pay fees": ready_for_issue,
+//     a POSITIVE reading on a trusted poll, once the heading was gone.
+// Both are removed from the text before any pattern runs; the patterns themselves are unchanged
+// (a missed correction is worse than a false one — the previous attempt to "fix" this by rewriting
+// the patterns lost real corrections). Deliberately narrow:
+//   - the heading only when "Additional Information" DIRECTLY follows "More Details" (whitespace or
+//     one > › » | - between, or glued), and never when it goes on to ask for something ("…
+//     Additional Information Needed / Required / Requested" stays, and still reads as a correction);
+//   - the invitation only as that whole sentence — "pay fees" anywhere else still counts.
+// "More Details" itself is kept. The stated status is extracted from the page BEFORE this runs.
+const ACCELA_DETAIL_HEADING =
+  /More\s+Details\s*(?:[>›»|-]\s*)?Additional\s+Information(?!\s*(?:is\s+)?(?:needed|required|requested))/gi;
+const ACCELA_VISITOR_INVITATION =
+  /To\s+schedule\s+inspections,\s*pay\s+fees\s+or\s+upload\s+documents,\s*please\s+log\s*in\s+to\s+your\s+account\.?/gi;
+
+export function withoutAccelaRecordChrome(text: string): string {
+  return text.replace(ACCELA_DETAIL_HEADING, "More Details ").replace(ACCELA_VISITOR_INVITATION, " ").replace(/\s+/g, " ").trim();
+}
+
 // A LOGIN PAGE IS NOT A STATUS. A status check whose session has lapsed lands on the
 // portal's sign-in screen, and that page's text scrapes like any other: the monitor recorded
 // "PowerClerk Log In Username: Password: ..." as the status of three live interconnection
@@ -310,11 +337,64 @@ function nemApproved(statusLabel: string, confidence: number, message: string): 
   };
 }
 
+/** The fall-through reading's label: no rule matched the words at all. */
+const UNMATCHED_STATUS_LABEL = "Needs human review";
+
 function classifyStatusOnly(rawStatusText: string, track: TrackKind): PermitStatusClassification {
   const stated = extractStatedStatus(rawStatusText);
   // Keep the full text when the portal states nothing — that is the old behaviour, and the
   // only behaviour available for portals that render status as prose.
-  const text = stated || clean(rawStatusText);
+  const scanned = stated || clean(rawStatusText);
+  // Accela's record-page chrome is removed from whichever text is scanned — AFTER the stated
+  // status was pulled out of the raw page, so extraction is exactly what it was.
+  const withoutChrome = withoutAccelaRecordChrome(scanned);
+  const read = classifyScannedText(withoutChrome, stated, track);
+  // A CORRECTION THE HEADING RAISED STANDS WHEN THE PAGE'S OWN WORDS SAY NOTHING. Removing the
+  // chrome may let the page's own words answer (the live "Received" -> waiting). When they answer
+  // nothing at all — a status no rule knows, e.g. "Corr. Required" on a record page whose value
+  // STATUS_LINE could not end — the page reads as it always did if that was a correction: a missed
+  // correction is worse than a false one. Only a CORRECTION is restored: a fee reading the visitor
+  // invitation produced is a positive written to the project and the client, and never comes back.
+  //
+  // "THE PAGE'S OWN WORDS" ARE THE WORDS AFTER THE STATUS LABEL, not the whole page: every Oregon
+  // ePermitting record page also prints "Processing Status" and "Plan Review Required: No", which
+  // waitingPattern reads — so a whole-page test would drop base's correction on "Corr. Required" or
+  // "Revisions Required" (values STATUS_LINE cannot pull out). Base's correction stands unless the
+  // status value itself answers a non-correction rule ("Received", "In Review", "Processing").
+  if (withoutChrome !== scanned && !statusHeadSpeaks(rawStatusText, track)) {
+    const base = classifyScannedText(scanned, stated, track);
+    if (base.outcome === "correction_flagged") return base;
+  }
+  return read;
+}
+
+/** The status value as printed right after the "Record/Permit/Application Status" label, read loosely
+ *  (punctuation allowed, e.g. "Corr. Required") and cut at the page's next field — "" if none. */
+function statusHeadOf(rawStatusText: string): string {
+  const m = /\b(?:record|permit|application)\s+status\s*:?\s*(.{1,80})/i.exec(clean(rawStatusText));
+  if (!m) return "";
+  return m[1].split(/\s*(?:\bexpiration\b|\bexpires\b|\bdate\b|\badd\s+to\s+existing\b|\bcreate\s+a\s+new\b|\brecord\b|\bpermit\b|\bapplication\b|\bwork\s+location\b)/i)[0].slice(0, 40).trim();
+}
+
+/**
+ * WHAT THE PORTAL ITSELF SAYS, verbatim (operator 2026-09-28: "Can we just pull exactly what the AHJ
+ * says … then we can just see what is needed directly without confusion"). The record's own status
+ * field — "Ready to Issue", "App Submitted", "Corr. Required" — shown beside our reading so a stale
+ * or mis-worded label is visible at a glance. "" when the page states no labelled status.
+ */
+export function portalStatedStatus(rawStatusText: string): string {
+  return extractStatedStatus(rawStatusText) || statusHeadOf(rawStatusText);
+}
+
+/** Does the status value alone answer a rule other than a correction? */
+function statusHeadSpeaks(rawStatusText: string, track: TrackKind): boolean {
+  const head = statusHeadOf(rawStatusText);
+  if (!head) return false;
+  const own = classifyScannedText(head, head, track);
+  return own.outcome !== "correction_flagged" && !(own.outcome === "needs_human_review" && own.statusLabel === UNMATCHED_STATUS_LABEL);
+}
+
+function classifyScannedText(text: string, stated: string, track: TrackKind): PermitStatusClassification {
   const lower = text.toLowerCase();
 
   if (!text) {
@@ -451,7 +531,7 @@ function classifyStatusOnly(rawStatusText: string, track: TrackKind): PermitStat
 
   return {
     outcome: "needs_human_review",
-    statusLabel: "Needs human review",
+    statusLabel: UNMATCHED_STATUS_LABEL,
     confidence: 0.45,
     reviewedByAhj: false,
     readyForIssue: false,
@@ -552,6 +632,18 @@ export function shouldRecordStatusCheck(
   const previousLabel = String(previous.statusLabel ?? "").trim();
   return previousOutcome !== String(next.outcome ?? "").trim()
     || previousLabel !== String(next.statusLabel ?? "").trim();
+}
+
+// AN OPEN FILING IS READ DAILY (2026-09-28: a Marion County building permit went "Ready to Issue"
+// the same day while the card said "Waiting" — its last read was 14 hours old and the next was a
+// week out). A filing the agency has not finished with is re-read at most OPEN_FILING_CHECK_DAYS
+// apart, whatever the stored cadence; a finished one (issued / NEM-approved) keeps its own. One
+// request per filing per day — gentle on any portal.
+export const OPEN_FILING_CHECK_DAYS = 1;
+const FINISHED_OUTCOMES = new Set(["issued", NEM_APPROVAL_OUTCOME]);
+export function effectiveCheckDays(storedDays: unknown, latestOutcome: string | null | undefined): number {
+  const stored = Math.max(1, Math.floor(Number(storedDays) || 7));
+  return FINISHED_OUTCOMES.has(String(latestOutcome ?? "").trim()) ? stored : Math.min(stored, OPEN_FILING_CHECK_DAYS);
 }
 
 export function nextCheckIso(days: number, from = new Date()): string {
