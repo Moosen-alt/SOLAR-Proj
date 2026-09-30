@@ -1,1 +1,3 @@
-[]
+[
+  {"test": "backend/test/backupMirrorScope.test.ts", "issue": 3, "reason": "Windows-only path literals fail on Linux (CI)"}
+]
