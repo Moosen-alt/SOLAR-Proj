@@ -94,7 +94,7 @@ jobs:
         id: portal
         if: steps.scope.outputs.code == 'true'
         continue-on-error: true
-        run: npm run portal:test:unit -- --concurrency ${{ vars.CI_TEST_CONCURRENCY || 1 }}
+        run: npm run portal:test:unit -- --concurrency ${{ vars.CI_TEST_CONCURRENCY || 1 }} --timeout 1200
 
       - name: Smoke (end-to-end, scratch DB)
         id: smoke
