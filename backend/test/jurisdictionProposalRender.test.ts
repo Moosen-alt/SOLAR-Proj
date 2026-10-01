@@ -35,7 +35,7 @@ const bundle = [
   cut("function", "esc"), cut("function", "humanize"), cut("function", "statusBadge"), cut("function", "kbConfidenceBadge"), cut("function", "kbNotesHtml"),
   cut("const", "JURISDICTION_CRITERION_LABELS"), cut("const", "JURISDICTION_STATUS_LABELS"), cut("function", "jurisdictionProposalsHtml"),
   cut("function", "codeProfileForKb"), cut("const", "KB_CRITERIA_LABELS"), cut("const", "KB_OBSERVED_LABELS"), cut("function", "kbDesignCriteriaHtml"),
-  cut("function", "renderKnowledgeProfile"),
+  cut("function", "kbDeleteButtonHtml"), cut("function", "renderKnowledgeProfile"),
 ].join("\n\n");
 type Fns = {
   jurisdictionProposalsHtml: (list: unknown[]) => string;
