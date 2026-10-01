@@ -349,7 +349,13 @@ export const applicationProfiles: ApplicationRequirementProfile[] = [
     id: "oregon-city-solar",
     name: "Oregon City Solar PV",
     matchJurisdictions: ["oregon city"],
-    portalName: "Oregon City / ePermitting",
+    // Oregon City files on ITS OWN Tyler EnerGov Citizen Self Service portal — it is NOT an Oregon
+    // ePermitting subscriber (owner, live portal, 2026-10-01; #24). This profile used to say
+    // "Oregon City / ePermitting", which the D1 evidence (statewideEvidence) read as "files on the
+    // statewide portal". The EnerGov words now say "elsewhere", so the Accela fallback is withheld.
+    // No portal URL here: the CSS address is not verified — a person saves it on the AHJ's
+    // knowledge-base profile (hard rule 3). Seeded from the city's solar page (sourceUrl).
+    portalName: "Oregon City EnerGov Citizen Self Service (Tyler)",
     sourceUrl: "https://www.orcity.org/3224/Solar-PV-installation",
     requiresAhjApplication: false,
     requiresStructuralApplication: false,
@@ -357,8 +363,18 @@ export const applicationProfiles: ApplicationRequirementProfile[] = [
     requiresPrescriptiveChecklist: true,
     requiresBidSheet: false,
     requiresPortalEntryOnly: true,
+    // The record type's own text: "Separate electrical permits are required for these installations."
+    permitStructure: "separate",
+    submissionMethod: "Online portal (Oregon City's own Tyler EnerGov Citizen Self Service)",
     requiredDocuments: ["Prescriptive solar installation checklist", "Site/fire pathway plan", "Plan set and specifications"],
-    notes: ["Oregon City publishes prescriptive/non-prescriptive PV paths and links to apply online."],
+    notes: [
+      "Oregon City files on its own Tyler EnerGov Citizen Self Service portal (Application Assistant), not Oregon ePermitting.",
+      "PRESCRIPTIVE path: record type \"Solar Prescriptive - Solar\" (category Other) — prescriptive rooftop PV on residential structures, reviewed under Oregon's Installation Checklist.",
+      "NOT prescriptive: apply as an \"Alteration Permit\" instead.",
+      "One permit per structure: each structure requires a separate permit.",
+      "A separate electrical permit is required for these installations.",
+      "Permit help: permits@orcity.org, 503-722-3789.",
+    ],
   },
   {
     id: "washington-county-bdas",
