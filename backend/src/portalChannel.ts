@@ -98,10 +98,11 @@ export function selectStagingActor(opts: {
   // reported a successful "staged to review" that never touched the portal, the
   // real filing moved to awaiting_human_submit, and the approve path fabricated
   // MOCK-/CONF- permit numbers staff would trust. Disabling auto-learn must mean
-  // "surface a blocker", never "silently simulate".
+  // "surface a blocker", never "silently simulate". The same holds when NO portal is known at
+  // all (#14): cold-start research that confirms nothing used to land here as a mock "staged"
+  // run on a production box; it now surfaces "portal unconfirmed" like any other missing portal.
   if (opts.simulationEnabled) return "MockPortalAdapter";
-  if (opts.isRealPortal) return "NoAdapter";
-  return "MockPortalAdapter";
+  return "NoAdapter";
 }
 
 const ADAPTER_TO_CHANNEL: Record<string, PortalChannel> = {
@@ -168,7 +169,9 @@ export function resolvePortalChannel(input: PortalChannelInputs): PortalChannelD
         ? "No recipe yet — universal learner self-seeds one on this stage."
         : channel === "handcoded"
           ? "Auto-seed disabled — hand-coded platform adapter (legacy fallback)."
-          : "No real portal to drive (dev / mock).";
+          : channel === "manual"
+            ? "No portal automation for this portal (or no portal known) — stop and surface."
+            : "No real portal to drive (dev / mock).";
   return { channel, adapterLabel, reason, blocked: false };
 }
 

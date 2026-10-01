@@ -8665,7 +8665,8 @@ export async function prepareSubmission(
   //                             human on MFA/CAPTCHA. On a learn failure we STOP AND SURFACE — no
   //                             silent fallback to the hand-coded adapter.
   //   3. PowerClerk/Accela    — reachable ONLY when auto-seed is disabled (PORTAL_AUTOSEED=0).
-  //   4. MockPortalAdapter    — dev / no real portal.
+  //   4. MockPortalAdapter    — ONLY on the explicit MOCK_PORTAL=1 switch (smoke / rehearsal);
+  //                             no portal + no switch → NoAdapter: stop and surface (#14).
   const autoSeedEnabled = process.env.PORTAL_AUTOSEED !== "0" && process.env.PORTAL_AUTOSEED !== "false";
   // A portal is "real" (worth driving live automation against — incl. self-seeding a recipe) when
   // EITHER a configured portal_profiles row exists OR we know a genuine PORTAL ENTRY URL for it.
@@ -9194,12 +9195,22 @@ export async function prepareSubmission(
         ? `No recording exists yet for ${where}'s ${track} permit${ownPortalUrl ? ` on ${portalHostOf(ownPortalUrl) || ownPortalUrl}` : ""}, and the recording learned elsewhere on that portal was not reused: ${refused}. Nothing was opened. This permit needs one supervised learn or recording for its issuing agency; then re-stage.`
         : withheld
           ? `No portal is confirmed for ${where}'s ${track ?? "permit"} permit, so nothing was opened. ${withheld}`
+          // NO PORTAL KNOWN AT ALL (#14): nothing launchable for this entity — say the portal is
+          // unconfirmed, in the same words the learner's no-URL stop uses, so staff don't read it as
+          // "automation missing for a known portal".
+          : !hasLaunchablePortal && !credentialUrl
+            ? (process.env.ANTHROPIC_API_KEY
+              ? `No portal URL is known for ${portalLabel}, and automatic research couldn't confirm one either. Nothing was staged. Record the portal once (or add its URL to the knowledge base) and re-stage.`
+              : `No portal URL is known for ${portalLabel}, so nothing was staged. Record the portal once (or add its URL to the knowledge base) and re-stage — with an ANTHROPIC_API_KEY configured this would have been researched automatically.`)
+              + (refusedUrls.length
+                ? ` Refused (not this ${track === "nem" ? "utility's" : "AHJ's"} portal): ${refusedUrls.slice(0, 3).map((r) => `${r.url} — ${r.reason}`).join("; ")}.`
+                : "")
           : `No portal automation is available for ${where} yet, so there's nothing to stage against. Record the portal once (paste its login/landing URL under "Record this portal") or add its URL to the knowledge base, then re-stage.`;
       result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
     } else {
-      // The mock stands in ONLY when there is no real portal AND auto-seed is off —
-      // offline dev, the smoke test, and the simulated rehearsal. A project with a
-      // real portal can never reach it in any mode.
+      // The mock stands in ONLY on the explicit MOCK_PORTAL=1 switch with auto-seed off —
+      // offline dev, the smoke test, and the simulated rehearsal (selectStagingActor never
+      // returns it otherwise, #14). A project with a real portal can never reach it in any mode.
       result = await stageWithMockPortal(stagedProject, files, reviewerReport);
     }
   } catch (err) {

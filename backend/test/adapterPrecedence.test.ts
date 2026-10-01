@@ -56,14 +56,17 @@ const dispatchCases: Array<[Parameters<typeof selectStagingActor>[0], string, st
   // No recipe + real portal + seed OFF → legacy hand-coded fallback by platform.
   [{ hasRecipe: false, isRealPortal: true, isAccela: false, isPowerClerk: true, autoSeedEnabled: false }, "PowerClerkAdapter", "no recipe + PowerClerk + seed off → hand-coded fallback"],
   [{ hasRecipe: false, isRealPortal: true, isAccela: true, isPowerClerk: false, autoSeedEnabled: false }, "OregonEPermittingAdapter", "no recipe + Accela + seed off → hand-coded fallback"],
-  // No real portal → mock, regardless of the seed flag.
-  [{ hasRecipe: false, isRealPortal: false, isAccela: false, isPowerClerk: false, autoSeedEnabled: true }, "MockPortalAdapter", "mock portal + seed on → mock (no live learn in dev)"],
+  // No real portal and no explicit simulation → SURFACE, regardless of the seed flag (#14: the
+  // mock used to run here on a production box and report "Mock portal staged").
+  [{ hasRecipe: false, isRealPortal: false, isAccela: false, isPowerClerk: false, autoSeedEnabled: true }, "NoAdapter", "no portal + seed on + no MOCK_PORTAL → surface, never mock"],
+  [{ hasRecipe: false, isRealPortal: false, isAccela: false, isPowerClerk: false, autoSeedEnabled: true, simulationEnabled: true }, "MockPortalAdapter", "no portal + seed on + MOCK_PORTAL=1 → mock (no live learn in dev)"],
   // A REAL portal with seed off and no hand-coded adapter must SURFACE, never
   // simulate: the mock's fake "staged to review" moved real filings to
   // awaiting_human_submit and the approve path then fabricated MOCK-/CONF- numbers.
   [{ hasRecipe: false, isRealPortal: true, isAccela: false, isPowerClerk: false, autoSeedEnabled: false }, "NoAdapter", "REAL portal + seed off + no hand-coded adapter → surface, never mock"],
   [{ hasRecipe: false, isRealPortal: true, isAccela: false, isPowerClerk: false, autoSeedEnabled: false, simulationEnabled: true }, "MockPortalAdapter", "explicit MOCK_PORTAL=1 → simulation allowed (smoke/rehearsal only)"],
-  [{ hasRecipe: false, isRealPortal: false, isAccela: true, isPowerClerk: false, autoSeedEnabled: false }, "MockPortalAdapter", "mock portal + seed off → mock"],
+  [{ hasRecipe: false, isRealPortal: false, isAccela: true, isPowerClerk: false, autoSeedEnabled: false }, "NoAdapter", "no portal + seed off + no MOCK_PORTAL → surface, never mock"],
+  [{ hasRecipe: false, isRealPortal: false, isAccela: true, isPowerClerk: false, autoSeedEnabled: false, simulationEnabled: true }, "MockPortalAdapter", "no portal + seed off + MOCK_PORTAL=1 → mock"],
 ];
 for (const [opts, expected, label] of dispatchCases) {
   run(`selectStagingActor: ${label}`, () => {
