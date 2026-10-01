@@ -41,4 +41,4 @@ body:
     id: found-by
     attributes:
       label: Filed by
-      placeholder: "worker-3, fable, or leave empty if you are the owner"
+      placeholder: "worker-3, helm, or leave empty if you are the owner"

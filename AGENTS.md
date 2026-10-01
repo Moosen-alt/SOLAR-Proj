@@ -9,7 +9,7 @@ Instructions for AI coding agents (Claude, Codex, Cursor, or anything else) work
 2. [CLAUDE.md](CLAUDE.md): architecture, commands, and the **hard safety rules**. They apply to
    every agent, not only Claude.
 3. Your manual: [docs/agents/worker.md](docs/agents/worker.md), or
-   [docs/agents/fable.md](docs/agents/fable.md) if you are the lead.
+   [docs/agents/helm.md](docs/agents/helm.md) if you are the lead.
 
 ## The project
 

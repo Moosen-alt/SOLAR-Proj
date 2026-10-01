@@ -13,7 +13,7 @@ You take one issue from the board to a reviewed-and-ready pull request. The
 - The branch your session was started on is your work branch. Push there.
 - Open the PR with **base `main`**. Your environment may default to another base branch; set it
   explicitly.
-- Don't subscribe to PR activity or schedule check-ins. Fable reviews on its own cycle; if changes are
+- Don't subscribe to PR activity or schedule check-ins. Helm reviews on its own cycle; if changes are
   requested, the issue goes back on the board for a worker (maybe you, maybe not) to pick up.
 
 ## 1. Pick an issue (skip if you were handed one)
@@ -50,7 +50,7 @@ CLAUDE.md sections for the code you'll touch ("Architecture notes" has the traps
 **reproduce it first**: write the failing test before the fix.
 
 If the issue is wrong (already fixed on `main`, impossible as written, or really needs a live portal
-or an owner decision), don't improvise. `/release <id> <what you found>` and stop, so Fable can
+or an owner decision), don't improvise. `/release <id> <what you found>` and stop, so Helm can
 fix the issue.
 
 ## 4. Implement
