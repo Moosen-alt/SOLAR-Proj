@@ -34,8 +34,8 @@ npm run typecheck
 node scripts/doctor.mjs   # checks the environment and prints the fix for anything wrong
 ```
 
-If npm skips install scripts (newer npm versions do by default), `better-sqlite3` and `esbuild` break.
-Use `npm ci --allow-scripts=better-sqlite3,esbuild`.
+`package.json` approves the two install scripts the project needs (`allowScripts`: `better-sqlite3`, `esbuild`),
+so newer npm versions that gate install scripts run them without extra flags.
 
 ## Tests
 

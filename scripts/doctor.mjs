@@ -17,16 +17,19 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(path.join(ROOT, "package.json"));
 const FULL = process.argv.includes("--full");
 const WIN = process.platform === "win32";
-const INSTALL = "npm ci --allow-scripts=better-sqlite3,esbuild";
+const INSTALL = "npm ci";
 
 const results = [];
 const ok = (name, detail) => results.push({ level: "ok", name, detail });
 const warn = (name, detail, fix) => results.push({ level: "warn", name, detail, fix });
 const bad = (name, detail, fix) => results.push({ level: "FIX", name, detail, fix });
 
-/** Run a command; shell on Windows so .cmd shims (npm, gh, claude) resolve. */
+/** Run a command. A bare name (npm, gh, claude) goes through the shell on Windows so its .cmd shim
+ *  resolves; an absolute path (node itself) never does, because the shell would split
+ *  "C:\Program Files\nodejs\node.exe" at the space. */
 const run = (cmd, args, opts = {}) => {
-  const r = spawnSync(cmd, args, { cwd: ROOT, encoding: "utf8", shell: WIN, timeout: opts.timeout ?? 30_000 });
+  const shell = WIN && !path.isAbsolute(cmd);
+  const r = spawnSync(cmd, args, { cwd: ROOT, encoding: "utf8", shell, timeout: opts.timeout ?? 30_000 });
   return { code: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim(), error: r.error };
 };
 const has = (cmd) => { const r = run(cmd, ["--version"]); return r.code === 0 ? r.out.split(/\r?\n/)[0] : null; };
