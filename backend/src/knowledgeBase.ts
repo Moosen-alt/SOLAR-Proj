@@ -2455,6 +2455,45 @@ export function listKnowledgeProfiles(db: AppDb): PermitUtilityKnowledgeProfile[
     .map(mapKnowledge);
 }
 
+export type KnowledgeDeleteResult =
+  | { status: "not_found" }
+  | { status: "verified_needs_confirmation"; profile: PermitUtilityKnowledgeProfile }
+  | { status: "deleted"; profile: PermitUtilityKnowledgeProfile; removed: Record<string, number> };
+
+// The tables whose profile_key is a FOREIGN KEY into permit_utility_knowledge (db.ts, with
+// foreign_keys = ON). The row cannot go while any of these still points at it, and they are the
+// evidence the row was built from: leaving them would let the next rebuildKnowledgeRollup /
+// mbox re-import resurrect exactly the entry a person just removed (the poisoned Albuquerque row,
+// issue #8). So a delete takes them with it, and the counts go in the audit.
+const KNOWLEDGE_CHILD_TABLES = [
+  "knowledge_events",
+  "historical_project_fingerprints",
+  "historical_failure_examples",
+  "mbox_learning_records",
+] as const;
+
+/**
+ * DELETE ONE SHARED KB ROW — the operator's way out of a poisoned or junk entry (issue #26).
+ * A HUMAN-VERIFIED row (isVerifiedKnowledge, rule 3) is refused unless the caller passes
+ * confirmVerified: nobody wipes a person's verified knowledge by a misclick. Authorization and
+ * the audit entry live at the route edge (admin-only), like every other admin write.
+ */
+export function deleteKnowledgeProfile(db: AppDb, profileKey: string, options: { confirmVerified: boolean }): KnowledgeDeleteResult {
+  const row = db.get<Row>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [profileKey]);
+  if (!row) return { status: "not_found" };
+  const profile = mapKnowledge(row);
+  if (isVerifiedKnowledge(row) && !options.confirmVerified) return { status: "verified_needs_confirmation", profile };
+  const removed: Record<string, number> = {};
+  db.transaction(() => {
+    for (const table of KNOWLEDGE_CHILD_TABLES) {
+      removed[table] = Number(db.get<Row>(`SELECT COUNT(*) AS n FROM ${table} WHERE profile_key = ?`, [profileKey])?.n ?? 0);
+      db.run(`DELETE FROM ${table} WHERE profile_key = ?`, [profileKey]);
+    }
+    db.run("DELETE FROM permit_utility_knowledge WHERE profile_key = ?", [profileKey]);
+  });
+  return { status: "deleted", profile, removed };
+}
+
 // Find the best-matching LEARNED profile for a project's jurisdiction, so the
 // application-doc builder can use the AHJ's real learned requirements instead of
 // a generic fallback. Tries most-specific key first (state+ahj+utility) down to

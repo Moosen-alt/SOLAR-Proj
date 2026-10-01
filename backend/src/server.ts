@@ -13,7 +13,7 @@ import { parseJson } from "./json";
 import { collectDiagnostics, logErrorBlock, logger, requestLogger, startupBanner } from "./logger";
 import { buildInfo, publicBuildInfo, versionString } from "./buildInfo";
 import { checkConcurrencyConfig, readConcurrencyConfig } from "./concurrencyConfig";
-import { findLearnedProfileForProject, retractCorrectionLearning, saveVerifiedAhjProfile, saveVerifiedUtilityProfile } from "./knowledgeBase";
+import { deleteKnowledgeProfile, findLearnedProfileForProject, retractCorrectionLearning, saveVerifiedAhjProfile, saveVerifiedUtilityProfile } from "./knowledgeBase";
 import {
   listPortalRecipes,
   getPortalRecipe,
@@ -1205,6 +1205,27 @@ app.get("/api/ops-report", (req, res) => {
 
 app.get("/api/knowledge-base", (_req, res) => {
   res.json(getKnowledgeBase(db));
+});
+
+// Remove one SHARED KB row (issue #26) — the way out of a poisoned or junk entry short of a
+// SQLite edit. The table is shared across every tenant on purpose (CLAUDE.md), so this is
+// ADMIN-ONLY (requireAdmin: the operator's own org) and AUDITED with the key and who. A
+// human-verified row (rule 3) needs ?confirmVerified=1 or it is refused with 409.
+app.delete("/api/knowledge-base/:profileKey", (req, res) => {
+  requireAdmin(req);
+  const profileKey = String(req.params.profileKey || "");
+  const confirmVerified = ["1", "true"].includes(String(req.query.confirmVerified || "").toLowerCase());
+  const result = deleteKnowledgeProfile(db, profileKey, { confirmVerified });
+  if (result.status === "not_found") throw new HttpError(404, "Knowledge-base entry not found.");
+  if (result.status === "verified_needs_confirmation") {
+    throw new HttpError(409, `${profileKey} is human-verified knowledge. Confirm deleting a verified entry to remove it.`, { code: "verified_needs_confirmation", profileKey });
+  }
+  const { profile, removed } = result;
+  addAuditLog(db, null, "human", currentUser(db, req)?.email || "operator", "knowledge.deleted", {
+    profileKey, state: profile.state, ahj: profile.ahj, utility: profile.utility,
+    portalUrl: profile.portalUrl, confidence: profile.confidence, wasVerified: Boolean(profile.verifiedAt), removed,
+  });
+  res.json({ deleted: true, profileKey, removed });
 });
 
 app.get("/api/email-tracker", (req, res) => {
