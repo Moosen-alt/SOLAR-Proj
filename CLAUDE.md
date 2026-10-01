@@ -6,7 +6,7 @@ AHJ documents → stage the portal application → human verifies + submits.
 
 ## Working here as an agent
 
-This repo is worked as a GitHub-board team: the owner, **Fable** (the lead: triage,
+This repo is worked as a GitHub-board team: the owner, **Helm** (the lead: triage,
 dispatch, review, merge, the Owner Digest) and worker agents. Before any task read
 **[CONSTITUTION.md](CONSTITUTION.md)**, which is binding (roles, the `/claim` protocol,
 filing issues, PRs, escalation), and your manual in `docs/agents/`. **Trunk is `main`:**

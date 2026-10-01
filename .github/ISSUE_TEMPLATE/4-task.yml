@@ -1,5 +1,5 @@
 name: Task (board work item)
-description: A work item an agent can pick up cold. The format Fable uses for every board task.
+description: A work item an agent can pick up cold. The format Helm uses for every board task.
 labels: ["needs-triage"]
 body:
   - type: textarea

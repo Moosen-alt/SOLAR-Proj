@@ -53,9 +53,9 @@ gh api -X PUT repos/Moosen-alt/SOLAR-Proj/branches/main/protection --input .gith
 ```
 
 If that answers **403 "Upgrade to GitHub Pro"**: branch protection on private repos needs a paid plan.
-Skip it. Fable still refuses to merge on red CI; GitHub just won't enforce it for you.
+Skip it. Helm still refuses to merge on red CI; GitHub just won't enforce it for you.
 
-**c. Pin the Owner Digest,** your one-page report from Fable, at the top of the Issues tab:
+**c. Pin the Owner Digest,** your one-page report from Helm, at the top of the Issues tab:
 
 ```
 gh issue list --label owner-digest
@@ -78,24 +78,24 @@ Settings → Billing and plans → Usage. Your options, cheapest first:
 - Run CI on your own machine instead of GitHub's (free, unlimited): add a self-hosted runner under
   Settings → Actions → Runners, then `gh variable set CI_RUNNER --body self-hosted --repo Moosen-alt/SOLAR-Proj`
 - Set a spending limit under Settings → Billing and pay per minute.
-- Run fewer workers: tell Fable "fleet size 3".
+- Run fewer workers: tell Helm "fleet size 3".
 
 ## 4. Talking to the team
 
-You talk to **Fable** only. Fable runs everyone else.
+You talk to **Helm** only. Helm runs everyone else.
 
 | You want to | Do this |
 | --- | --- |
 | See what's going on | Read the pinned **Owner Digest** issue |
 | Ask for anything | `gh issue create --repo Moosen-alt/SOLAR-Proj --label owner-request --title "..." --body "..."`, or the "Owner request" form on GitHub |
-| Answer Fable's question | Reply on that issue in plain words. An unsigned comment from you is always read as the owner |
+| Answer Helm's question | Reply on that issue in plain words. An unsigned comment from you is always read as the owner |
 | Approve a `safety-critical` change | `gh pr edit <number> --repo Moosen-alt/SOLAR-Proj --add-label owner-approved` |
 | See what's waiting on you | `gh issue list --repo Moosen-alt/SOLAR-Proj --label status:needs-owner` |
 | Pause or resume the bots | Comment `pause` or `resume` on the Owner Digest |
 | Change the fleet size | Comment `fleet size 3` (or any number) on the Owner Digest |
 
 **Only you ever add `owner-approved`.** The bots post through your account, so GitHub can't tell
-the difference. The constitution forbids them, and Fable treats any bot-applied approval as a breach.
+the difference. The constitution forbids them, and Helm treats any bot-applied approval as a breach.
 
 ## 5. Your own terminal Claude sessions
 
@@ -106,7 +106,7 @@ the difference. The constitution forbids them, and Fable treats any bot-applied 
 - If your terminal Claude works a board issue, it follows the same rules as any worker: it reads
   `CONSTITUTION.md` and `AGENTS.md`, claims the issue, and signs its comments. Tell it
   "you are worker-local". Unsigned comments are reserved for you.
-- **Its queue is the `local-only` label.** Fable puts that on anything that needs your machine or
+- **Its queue is the `local-only` label.** Helm puts that on anything that needs your machine or
   your eyes; cloud bots can't claim those. To see it: `gh issue list --repo Moosen-alt/SOLAR-Proj --label local-only` (ready, or
   changes-requested when its PR was sent back).
   To hand your terminal one: tell it "work issue #N as worker-local".

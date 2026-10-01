@@ -1,4 +1,4 @@
-# Handoff — state of the tool (July 2026, end of Fable 5 session)
+# Handoff — state of the tool (July 2026, end of Claude Fable 5 session)
 
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.

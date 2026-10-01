@@ -69,7 +69,7 @@ jobs:
             const R = context.repo;
             const OWNER = context.repo.owner;
             const STATUS = ['status:ready', 'status:in-progress', 'status:in-review', 'status:changes-requested', 'status:blocked', 'status:needs-owner'];
-            const LEADS = ['fable', 'owner'];
+            const LEADS = ['helm', 'owner'];
             const STALE_HOURS = 36;
             const NO_TRIAGE = ['type:epic', 'owner-digest'];
 
@@ -179,7 +179,7 @@ jobs:
                 return;
               }
 
-              if (!isLead) { await say(n, `⛔ \`/${cmd}\` is for the lead (fable) or the owner.`); return; }
+              if (!isLead) { await say(n, `⛔ \`/${cmd}\` is for the lead (helm) or the owner.`); return; }
 
               if (cmd === 'unblock' || cmd === 'ready') {
                 await setStatus(n, 'status:ready');

@@ -1,5 +1,5 @@
 name: Owner request
-description: Anything you want done, changed, investigated or fixed. Plain words are fine. Fable turns it into tasks.
+description: Anything you want done, changed, investigated or fixed. Plain words are fine. Helm turns it into tasks.
 title: "[Owner] "
 labels: ["owner-request", "needs-triage"]
 body:
