@@ -17,7 +17,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(path.join(ROOT, "package.json"));
 const FULL = process.argv.includes("--full");
 const WIN = process.platform === "win32";
-const INSTALL = "npm ci --allow-scripts=better-sqlite3,esbuild";
+const INSTALL = "npm ci";
 
 const results = [];
 const ok = (name, detail) => results.push({ level: "ok", name, detail });

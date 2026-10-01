@@ -21,15 +21,15 @@ cd C:\Users\isobl\SOLAR-Proj
 git fetch origin
 git checkout main
 git pull
-npm ci --allow-scripts=better-sqlite3,esbuild
+npm ci
 node scripts/doctor.mjs
 ```
 
 (Until setup creates `main`, use `git checkout claude/busy-hopper-c2at3x` instead.)
 
-**Why `--allow-scripts`:** your npm skips package install scripts unless you allow them, the same way it
-did for Claude Code. `better-sqlite3` (the database) and `esbuild` (what `tsx` runs on) need theirs.
-Without them, every script and test fails with errors like "Could not locate the bindings file".
+**Install scripts:** `better-sqlite3` (the database) and `esbuild` (what `tsx` runs on) need their install
+scripts. They're approved in `package.json` (`allowScripts`), so plain `npm ci` runs them. If you ever see
+"Could not locate the bindings file", run `npm rebuild better-sqlite3 esbuild`.
 
 **The doctor** checks Node, git, the dependencies, the database module, tsx, Playwright, `gh` and
 Claude Code, and prints the exact fix for anything wrong. Run `node scripts/doctor.mjs --full` to also
@@ -112,7 +112,7 @@ the difference. The constitution forbids them, and Fable treats any bot-applied 
 
 | Symptom | Fix |
 | --- | --- |
-| `Could not locate the bindings file` (better-sqlite3) | `npm ci --allow-scripts=better-sqlite3,esbuild` |
+| `Could not locate the bindings file` (better-sqlite3) | `npm ci` |
 | `esbuild` / `tsx` errors on every command | same as above |
 | `The command line is too long.` | Pull `main`: the old test chain that caused this is gone |
 | Tests fail with `fetch failed` / port in use | A test server was left running: `taskkill /F /IM node.exe` (this closes ALL node processes) |
