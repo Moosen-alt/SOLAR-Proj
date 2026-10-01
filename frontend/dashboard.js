@@ -1857,8 +1857,36 @@ function renderKnowledgeProfile(profile) {
       ${corrections.length ? `<div style="margin-top:4px;font-size:12px"><strong>Common corrections:</strong> <ul style="margin:2px 0 0 16px;padding:0">${corrections.map((c) => `<li>${esc(c.rootCause)}${c.count > 1 ? ` (×${c.count})` : ""}</li>`).join("")}</ul></div>` : ""}
       ${profile.notes ? kbNotesHtml(profile.notes) : ""}
       ${kbDesignCriteriaHtml(codeProfileForKb(profile, state.codeProfiles || []))}
+      ${kbDeleteButtonHtml(profile)}
     </article>
   `;
+}
+
+// DELETE ENTRY (issue #26): the operator's way out of a poisoned or junk row short of a SQLite
+// edit. The key is state|ahj|utility (pipes, spaces), so it rides in a data- attribute (escaped)
+// and is URL-encoded on the way out. Admin-only on the server; a non-admin just gets the 403.
+function kbDeleteButtonHtml(profile) {
+  if (!profile || !profile.profileKey) return "";
+  return `<div style="margin-top:6px;text-align:right"><button type="button" class="secondary" style="font-size:12px" data-kb-delete="${esc(profile.profileKey)}" data-kb-verified="${profile.verifiedAt ? "1" : ""}">Delete entry</button></div>`;
+}
+
+async function deleteKnowledgeEntry(profileKey, verified) {
+  // Rule 3 in spirit: a human-verified row asks twice, and only then sends confirmVerified.
+  if (!confirm(`Delete the knowledge-base entry "${profileKey}"? This removes it for every company and cannot be undone.`)) return false;
+  if (verified && !confirm(`"${profileKey}" is HUMAN-VERIFIED knowledge. Delete it anyway?`)) return false;
+  try {
+    await api(`/api/knowledge-base/${encodeURIComponent(profileKey)}${verified ? "?confirmVerified=1" : ""}`, { method: "DELETE" });
+  } catch (err) {
+    showMessage(err.message || "Could not delete the knowledge-base entry.", "error");
+    return false;
+  }
+  // Gone without a reload: drop it from the cached list and repaint.
+  state.knowledgeProfiles = (state.knowledgeProfiles || []).filter((p) => p.profileKey !== profileKey);
+  const countEl = $("knowledgeCount");
+  if (countEl) countEl.textContent = state.knowledgeProfiles.length;
+  renderKnowledgeBase();
+  showMessage(`Deleted knowledge-base entry ${profileKey}.`);
+  return true;
 }
 
 // THE JURISDICTION'S CODE PROFILE ON ITS KB CARD. Knowledge rows are keyed state|ahj|utility and
@@ -2050,6 +2078,10 @@ function renderKnowledgeBase() {
     }
   }
   container.innerHTML = html;
+
+  container.querySelectorAll("[data-kb-delete]").forEach((btn) => {
+    btn.addEventListener("click", () => deleteKnowledgeEntry(btn.getAttribute("data-kb-delete"), btn.getAttribute("data-kb-verified") === "1"));
+  });
 
   const moreBtn = $("kbShowMore");
   if (moreBtn) {
