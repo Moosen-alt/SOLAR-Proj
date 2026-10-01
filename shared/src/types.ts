@@ -1552,15 +1552,45 @@ export interface DesignCriteriaResearchResult {
   provider: "claude" | "stub";
   /** Only values found on a page the search actually returned; each carries its citation. */
   values: Array<{
-    criterion: "groundSnowLoadPsf" | "windSpeedMph" | "windExposure";
+    criterion: "groundSnowLoadPsf" | "windSpeedMph" | "windExposure" | "seismicDesignCategory" | "frostDepthIn";
     value: number | string;
     sourceUrl: string;
     quote?: string;
     /** Ground snow only: "pg" (strength) or "pg_asd" (allowable-stress, stored as groundSnowLoadAsdPsf). */
     qualifier?: "pg" | "pg_asd";
+    /** Set when the page is NOT a jurisdiction-wide design value (a project-type handout: a storage
+     *  building, deck, fence…): why. The value is kept, seeded, and flagged for a person. */
+    weakSource?: string;
   }>;
   webGrounded: boolean;
+  /** The answer was cut off (max_tokens / pause_turn): a missing value is "not researched", not "not found". */
+  truncated?: boolean;
   notes: string;
+}
+
+/** WHAT A DESIGN-CRITERIA LOOKUP IS ASKED TO ANSWER for an AHJ. Every item is recorded as found
+ *  (with its citation), found on a weak source, not found, or not researched — never silently absent:
+ *  QC and the reviewer compare plan sets against this profile, so a missing criterion is a silent pass. */
+export type DesignCriteriaChecklistItem =
+  | "groundSnowLoad"
+  | "windSpeed"
+  | "windExposure"
+  | "seismicDesignCategory"
+  | "frostDepth"
+  | "fireSetbacks"
+  | "localPvAmendments";
+
+export interface DesignCriteriaLookupRecord {
+  at: string;
+  items: Array<{
+    item: DesignCriteriaChecklistItem;
+    /** not_found: a grounded, complete lookup found no citable value. not_researched: the lookup
+     *  did not run, failed, or was cut off. weak_source: found, but on a page that is not a
+     *  jurisdiction-wide design value. */
+    status: "found" | "weak_source" | "not_found" | "not_researched";
+    sourceUrl?: string;
+    note?: string;
+  }>;
 }
 
 /** WHAT KIND OF STRUCTURE CARRIES THE ARRAY. One predicate answers it (structureType in
@@ -1721,7 +1751,11 @@ export interface JurisdictionCodeProfile {
     field?: string;
     quote?: string;
     at?: string;
+    /** The page is a project-type handout, not a jurisdiction-wide design value: why (verify it). */
+    weakSource?: string;
   }>;
+  /** The last design-criteria lookup's checklist: each item found / weak / not found / not researched. */
+  designCriteriaLookup?: DesignCriteriaLookupRecord;
   researchedAt?: string;
   verifiedAt?: string;
   verifiedBy?: string;

@@ -24,6 +24,8 @@ import type {
   CodeFamily,
   CodeReference,
   CodeResearchProvenance,
+  DesignCriteriaChecklistItem,
+  DesignCriteriaLookupRecord,
   DesignCriteriaResearchResult,
   JurisdictionAdoptionModel,
   JurisdictionCodeProfile,
@@ -200,16 +202,34 @@ function mapRow(row: Row): JurisdictionCodeProfile {
   };
 }
 
-function optionalLayerFields(payload: unknown): Pick<JurisdictionCodeProfile, "adoptionModel" | "upcoming" | "researchProvenance"> {
-  const p = (payload ?? {}) as { adoptionModel?: unknown; upcoming?: unknown };
+function optionalLayerFields(payload: unknown): Pick<JurisdictionCodeProfile, "adoptionModel" | "upcoming" | "researchProvenance" | "designCriteriaLookup"> {
+  const p = (payload ?? {}) as { adoptionModel?: unknown; upcoming?: unknown; designCriteriaLookup?: unknown };
   const adoptionModel = adoptionModelOf(p.adoptionModel);
   const upcoming = upcomingOf(p.upcoming);
   const researchProvenance = provenanceOf(payload);
+  const designCriteriaLookup = designCriteriaLookupOf(p.designCriteriaLookup);
   return {
     ...(adoptionModel ? { adoptionModel } : {}),
     ...(upcoming && upcoming.length ? { upcoming } : {}),
     ...(researchProvenance ? { researchProvenance } : {}),
+    ...(designCriteriaLookup ? { designCriteriaLookup } : {}),
   };
+}
+
+/** A stored lookup checklist, shape-checked on read (rows are shared data; older rows have none). */
+function designCriteriaLookupOf(v: unknown): DesignCriteriaLookupRecord | undefined {
+  const r = v as { at?: unknown; items?: unknown } | null | undefined;
+  if (!r || typeof r !== "object" || typeof r.at !== "string" || !Array.isArray(r.items)) return undefined;
+  const items = (r.items as Array<Record<string, unknown> | null>)
+    .filter((i): i is Record<string, unknown> => !!i && (DESIGN_CRITERIA_CHECKLIST as readonly string[]).includes(String(i.item))
+      && ["found", "weak_source", "not_found", "not_researched"].includes(String(i.status)))
+    .map((i) => ({
+      item: i.item as DesignCriteriaChecklistItem,
+      status: i.status as DesignCriteriaLookupRecord["items"][number]["status"],
+      ...(typeof i.sourceUrl === "string" && i.sourceUrl ? { sourceUrl: i.sourceUrl.slice(0, 500) } : {}),
+      ...(typeof i.note === "string" && i.note ? { note: i.note.slice(0, 300) } : {}),
+    }));
+  return items.length ? { at: r.at, items } : undefined;
 }
 
 // --- The state's adoption model --------------------------------------------------------------
@@ -607,6 +627,8 @@ function upsert(db: AppDb, profile: JurisdictionCodeProfile, opts: { confidence:
   // through the PUT route edits codes/criteria and says nothing about the adoption model).
   const adoptionModel = adoptionModelOf(profile.adoptionModel) ?? adoptionModelOf(priorPayload.adoptionModel);
   const upcoming = upcomingOf(profile.upcoming) ?? upcomingOf(priorPayload.upcoming);
+  // The last lookup's checklist rides every re-save that does not carry its own.
+  const designCriteriaLookup = designCriteriaLookupOf(profile.designCriteriaLookup) ?? designCriteriaLookupOf(priorPayload.designCriteriaLookup);
   const payload = JSON.stringify({
     // Read-time presentation (inheritedFrom, layer, layerLabel) never lands in a row: a verify
     // through the PUT route sends the read back, and "not confirmed" must not be stored as a fact.
@@ -618,6 +640,7 @@ function upsert(db: AppDb, profile: JurisdictionCodeProfile, opts: { confidence:
     citations: profile.citations ?? [],
     ...(adoptionModel ? { adoptionModel } : {}),
     ...(upcoming && upcoming.length ? { upcoming } : {}),
+    ...(designCriteriaLookup ? { designCriteriaLookup } : {}),
     ...(researchProvenance && opts.confidence === "seeded" ? { researchProvenance } : {}),
   });
   if (existing) {
@@ -2070,6 +2093,7 @@ export function mergeResearchedDesignCriteria(
     if (!/^https?:\/\//i.test(url)) { skipped.push(`${v.criterion} (no source URL)`); continue; }
     let value: number | string | null = null;
     if (v.criterion === "windExposure") value = /^[BCD]$/i.test(String(v.value).trim()) ? String(v.value).trim().toUpperCase() : null;
+    else if (v.criterion === "seismicDesignCategory") value = /^(?:A|B|C|D[012]?|E|F)$/i.test(String(v.value).trim()) ? String(v.value).trim().toUpperCase() : null;
     else value = typeof v.value === "number" && Number.isFinite(v.value) && v.value > 0 && v.value < 400 ? v.value : null;
     if (value == null) { skipped.push(`${v.criterion} (unusable value)`); continue; }
     // pg(asd) is ANOTHER quantity (allowable-stress, ~0.7 x Pg): stored in its own field, never in
@@ -2079,7 +2103,8 @@ export function mergeResearchedDesignCriteria(
     if (had !== undefined && had !== null && had !== "") { skipped.push(`${field} (already on file)`); continue; }
     if (verifiedStateLayerNote(db, target.state, "designCriteria", field)) { skipped.push(`${field} (the state's verified profile sets it)`); continue; }
     (dc as Record<string, unknown>)[field] = value;
-    citations.push({ label: `Design criteria lookup: ${field} = ${value}`, sourceUrl: url.slice(0, 500), kind: "design_criteria_research", field: `designCriteria.${field}`, ...(v.quote ? { quote: String(v.quote).slice(0, 240) } : {}), at });
+    // A project-type handout is kept (seeded, like every lookup value) but FLAGGED on its citation.
+    citations.push({ label: `Design criteria lookup: ${field} = ${value}`, sourceUrl: url.slice(0, 500), kind: "design_criteria_research", field: `designCriteria.${field}`, ...(v.quote ? { quote: String(v.quote).slice(0, 240) } : {}), at, ...(v.weakSource ? { weakSource: String(v.weakSource).slice(0, 200) } : {}) });
     filled.push(field);
   }
   if (!filled.length) return { saved: false, filled, skipped, reason: "nothing new to fill", profileKey: key };
@@ -2151,6 +2176,69 @@ export function saveResearchedPlacementRules(
   return { saved: true, setbacks: addedSetbacks, amendments: newAmend.length, profileKey: key };
 }
 
+// --- The lookup's checklist -------------------------------------------------------------
+
+/** WHAT THE DESIGN-CRITERIA JOB MUST ANSWER for every AHJ, in display order. */
+export const DESIGN_CRITERIA_CHECKLIST: readonly DesignCriteriaChecklistItem[] = [
+  "groundSnowLoad", "windSpeed", "windExposure", "seismicDesignCategory", "frostDepth", "fireSetbacks", "localPvAmendments",
+];
+const CHECKLIST_FIELDS: Partial<Record<DesignCriteriaChecklistItem, Array<keyof JurisdictionDesignCriteria>>> = {
+  groundSnowLoad: ["groundSnowLoadPsf", "groundSnowLoadAsdPsf"],
+  windSpeed: ["windSpeedMph"],
+  windExposure: ["windExposure"],
+  seismicDesignCategory: ["seismicDesignCategory"],
+  frostDepth: ["frostDepthIn"],
+};
+
+/**
+ * EVERY CHECKLIST ITEM, EXPLICITLY (pure). A value on the row is found — or weak_source when its
+ * lookup citation is flagged (a project-type handout). A missing one is not_found ONLY when the half
+ * that asks for it ran web-grounded and complete; otherwise it is not_researched (no API key, a
+ * failed or truncated lookup, a lookup that never ran) — "we looked and it isn't published" and "we
+ * never looked" are different answers for the operator.
+ * `research` null = the criteria lookup did not run; `placementRan` = the placement lookup ran grounded.
+ */
+export function buildDesignCriteriaChecklist(
+  profile: Pick<JurisdictionCodeProfile, "designCriteria" | "fireSetbacks" | "amendments" | "citations"> | null,
+  research: DesignCriteriaResearchResult | null,
+  placementRan: boolean,
+  at: string = nowIso(),
+): DesignCriteriaLookupRecord {
+  const dc = (profile?.designCriteria ?? {}) as Record<string, unknown>;
+  const cites = profile?.citations ?? [];
+  const lookupComplete = !!research && research.provider !== "stub" && research.webGrounded && !research.truncated;
+  const whyNot = !research ? "the design-criteria lookup did not run"
+    : research.provider === "stub" ? "no LLM configured"
+      : !research.webGrounded ? "the lookup was not web-grounded"
+        : "the lookup was cut off before it finished";
+  const items = DESIGN_CRITERIA_CHECKLIST.map((item): DesignCriteriaLookupRecord["items"][number] => {
+    const fields = CHECKLIST_FIELDS[item];
+    if (fields) {
+      const field = fields.find((f) => dc[f] !== undefined && dc[f] !== null && dc[f] !== "");
+      if (field) {
+        const c = cites.filter((x) => x && x.field === `designCriteria.${field}`).pop();
+        if (c?.weakSource) return { item, status: "weak_source", ...(c.sourceUrl ? { sourceUrl: c.sourceUrl } : {}), note: c.weakSource };
+        return { item, status: "found", ...(c?.sourceUrl ? { sourceUrl: c.sourceUrl } : {}) };
+      }
+      return lookupComplete ? { item, status: "not_found", note: "no jurisdiction-wide value found on an official page" } : { item, status: "not_researched", note: whyNot };
+    }
+    const have = item === "fireSetbacks" ? (profile?.fireSetbacks ?? []).length > 0 : (profile?.amendments ?? []).length > 0;
+    if (have) return { item, status: "found" };
+    return placementRan ? { item, status: "not_found", note: "no cited rule found on the AHJ's own pages" } : { item, status: "not_researched", note: "the placement-rules lookup did not run or was not web-grounded" };
+  });
+  return { at, items };
+}
+
+/** Store the checklist on the AHJ's own EXISTING row, as seeded — never a human-verified row
+ *  (resolveCriteriaWriteRow), and never a new row created only to say "nothing found" (an empty AHJ
+ *  row would read as researched; the job result carries the checklist either way). */
+export function saveDesignCriteriaLookupRecord(db: AppDb, target: { state: string; ahj: string }, record: DesignCriteriaLookupRecord): boolean {
+  const row = resolveCriteriaWriteRow(db, target.state, target.ahj);
+  if (!row || row.kind === "blocked_verified" || row.kind === "create") return false;
+  upsert(db, { ...row.profile, designCriteriaLookup: record }, { confidence: "seeded" });
+  return true;
+}
+
 /** The design_criteria_research job body. `provider` is a test seam. */
 export async function runDesignCriteriaResearch(
   db: AppDb,
@@ -2181,13 +2269,22 @@ export async function runDesignCriteriaResearch(
   const own = resolveCriteriaWriteRow(db, state, ahj);
   const dcNow = own && own.kind !== "create" ? own.profile.designCriteria ?? {} : {};
   const criteriaAnswered = (typeof dcNow.groundSnowLoadPsf === "number" || typeof dcNow.groundSnowLoadAsdPsf === "number") && typeof dcNow.windSpeedMph === "number";
+  // EVERY CHECKLIST ITEM IS RECORDED (found / weak source / not found / not researched) on the row
+  // and in the job result, so a criterion nobody found is a visible gap, never a silent pass.
+  const checklist = (research: DesignCriteriaResearchResult | null, placement: Record<string, unknown>): DesignCriteriaLookupRecord => {
+    const row = resolveCriteriaWriteRow(db, state, ahj);
+    const record = buildDesignCriteriaChecklist(row && row.kind !== "create" ? row.profile : null, research,
+      placement.webGrounded === true && !placement.error);
+    saveDesignCriteriaLookupRecord(db, { state, ahj }, record);
+    return record;
+  };
   if (criteriaAnswered || !llm.researchDesignCriteria) {
     const placement = await placementHalf();
-    return { saved: false, reason: criteriaAnswered ? "design criteria already on file" : "provider has no design-criteria lookup", placement };
+    return { saved: false, reason: criteriaAnswered ? "design criteria already on file" : "provider has no design-criteria lookup", placement, checklist: checklist(null, placement).items };
   }
   const research = await llm.researchDesignCriteria({ state, ahj });
   const merged = mergeResearchedDesignCriteria(db, { state, ahj, profileKey }, research);
   const placement = await placementHalf();
   // The lookup's own notes (truncated, pages read, what was dropped and why) reach the job result.
-  return { ...merged, webGrounded: research.webGrounded, found: research.values?.length ?? 0, notes: String(research.notes || "").slice(0, 1000), placement };
+  return { ...merged, webGrounded: research.webGrounded, found: research.values?.length ?? 0, notes: String(research.notes || "").slice(0, 1000), placement, checklist: checklist(research, placement).items };
 }
