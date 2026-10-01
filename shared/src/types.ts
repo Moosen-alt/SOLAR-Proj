@@ -3685,4 +3685,6 @@ export interface WebLookupResult {
   /** The title each search result carried, by URL. */
   resultTitles?: Record<string, string>;
   error?: string;
+  /** The call hit its own time budget; text/URLs are what the search had gathered by then. */
+  timedOut?: boolean;
 }

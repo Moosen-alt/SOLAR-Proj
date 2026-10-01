@@ -214,6 +214,15 @@ Return ONLY JSON:
 
 const lookupTimeoutMs = () => Math.max(120000, Number(process.env.UTILITY_FILING_LOOKUP_TIMEOUT_MS) || 240000);
 
+/** THE BUDGETS. "full" is the first try. "tight" is the one background retry after a timeout
+ *  (issue #9: PNM's lookup ran 6 searches + 3 page reads for 240s and was aborted with nothing):
+ *  half the searches, one page read, a smaller answer — the same time budget, so it finishes. */
+export const UTILITY_FILING_BUDGETS = {
+  full: { maxSearches: 6, maxFetches: 3, maxTokens: 4000 },
+  tight: { maxSearches: 3, maxFetches: 1, maxTokens: 3000 },
+} as const;
+export type UtilityFilingBudget = keyof typeof UTILITY_FILING_BUDGETS;
+
 export interface UtilityFilingLookupRun {
   saved: boolean;
   reason: string;
@@ -221,27 +230,34 @@ export interface UtilityFilingLookupRun {
   grounded: number;
   dropped: string[];
   error?: string;
+  /** The call hit its time budget (the trigger retries it once, tighter). */
+  timedOut?: boolean;
 }
+
+const isTimeout = (r: Pick<WebLookupResult, "timedOut" | "error">) => Boolean(r.timedOut) || /\b(?:abort(?:ed)?|timed? ?out)\b/i.test(str(r.error));
 
 export async function runUtilityFilingLookup(
   db: AppDb,
   llm: Pick<LLMProvider, "webLookup">,
-  input: { state: string; utility: string; city?: string; force?: boolean },
+  input: { state: string; utility: string; city?: string; force?: boolean; budget?: UtilityFilingBudget },
 ): Promise<UtilityFilingLookupRun> {
   const existing = getUtilityFilingLookup(db, input.state, input.utility);
   if (existing?.confidence === "verified") return { saved: false, reason: "a person verified this utility's filing location", lookup: existing, grounded: 0, dropped: [] };
   if (existing && !input.force) return { saved: false, reason: "already looked up (seeded)", lookup: existing, grounded: 0, dropped: [] };
   if (!llm.webLookup) return { saved: false, reason: "no web lookup available (no model key)", lookup: existing, grounded: 0, dropped: [] };
+  const budget = UTILITY_FILING_BUDGETS[input.budget ?? "full"];
   let r: WebLookupResult;
   try {
     r = await llm.webLookup({
       label: "utilityFilingLookup", system: UTILITY_FILING_SYSTEM,
       user: `Utility: ${input.utility}\nState: ${input.state}${input.city ? `\nService address city: ${input.city}` : ""}`,
-      maxTokens: 4000, maxSearches: 6, readPages: true, maxFetches: 3, timeoutMs: lookupTimeoutMs(),
+      maxTokens: budget.maxTokens, maxSearches: budget.maxSearches, readPages: true, maxFetches: budget.maxFetches, timeoutMs: lookupTimeoutMs(),
     });
   } catch (err) {
-    return { saved: false, reason: "lookup failed", lookup: existing, grounded: 0, dropped: [], error: err instanceof Error ? err.message : String(err) };
+    const error = err instanceof Error ? err.message : String(err);
+    return { saved: false, reason: "lookup failed", lookup: existing, grounded: 0, dropped: [], error, timedOut: isTimeout({ error }) };
   }
+  const timedOut = isTimeout(r);
   const seen = [...r.resultUrls, ...(r.fetchedUrls ?? [])];
   const ungrounded = r.groundedSearches <= 0;
   const parsed = ungrounded
@@ -253,19 +269,37 @@ export async function runUtilityFilingLookup(
     : parseUtilityFilingAnswer(r.text, seen);
   // An aborted call that found nothing is not stored — a retry later may succeed. A grounded
   // "not found" IS stored, so the same utility is not searched on every project.
-  if (ungrounded && r.error) return { saved: false, reason: `lookup failed: ${r.error.slice(0, 160)}`, lookup: existing, grounded: 0, dropped: [], error: r.error };
+  if (ungrounded && r.error) return { saved: false, reason: `lookup failed: ${r.error.slice(0, 160)}`, lookup: existing, grounded: 0, dropped: [], error: r.error, timedOut };
+  // A FAILED call that DID ground (a timeout's partial evidence): whatever passes the same cited
+  // discipline is kept — but a partial that kept nothing is NOT a grounded "not found". Storing it
+  // would pin the utility to "not yet identified" for a week on the strength of an unfinished search.
+  if (r.error && !parsed.filing.value && !parsed.program.value) {
+    return { saved: false, reason: `lookup failed: ${r.error.slice(0, 160)} (nothing usable in its partial results)`, lookup: existing, grounded: r.groundedSearches, dropped: parsed.dropped, error: r.error, timedOut };
+  }
   const save = saveUtilityFilingLookup(db, {
     state: input.state, utility: input.utility,
     filing: parsed.filing as CitedFact<UtilityFilingLocation>, program: parsed.program as CitedFact<UtilityProgramKind>,
     ...(parsed.programName ? { programName: parsed.programName } : {}),
     lookedUpAt: new Date().toISOString(),
   });
-  return { saved: save.saved, reason: save.reason, lookup: save.lookup, grounded: r.groundedSearches, dropped: parsed.dropped };
+  return { saved: save.saved, reason: r.error ? `${save.reason} (partial results kept after: ${r.error.slice(0, 120)})` : save.reason, lookup: save.lookup, grounded: r.groundedSearches, dropped: parsed.dropped,
+    ...(r.error ? { error: r.error, timedOut } : {}) };
 }
 
 const inFlight = new Map<string, number>();
 const RETRY_MS = 24 * 3600 * 1000;
 const EMPTY_RETRY_MS = 7 * 24 * 3600 * 1000;
+/** After the background retry ALSO timed out, the next form-research pass (pipeline or the
+ *  operator's "Find official form") may start a fresh attempt this soon — not a day later. */
+const TIMED_OUT_RETRY_MS = 3600 * 1000;
+
+/** What the trigger is doing for a utility, IN MEMORY (a read path writes nothing): the track card
+ *  says "timed out, retrying" instead of a silent "not yet identified". */
+export interface UtilityFilingLookupStatus { state: "running" | "retrying" | "timed_out" | "failed"; at: string; error?: string; retryAfter?: string }
+const statusByKey = new Map<string, UtilityFilingLookupStatus>();
+export function utilityFilingLookupStatus(state: string, utility: string): UtilityFilingLookupStatus | null {
+  return statusByKey.get(utilityFilingKey(state, utility)) ?? null;
+}
 /**
  * THE TRIGGER, fire-and-forget: look up a project's utility once (per utility, shared), when a
  * model key is configured and nothing is on file. Returns true when a lookup was started. Callers
@@ -290,9 +324,32 @@ export function ensureUtilityFilingLookedUp(
   const last = inFlight.get(key);
   if (last && Date.now() - last < RETRY_MS) return false;
   inFlight.set(key, Date.now());
-  void runUtilityFilingLookup(db, llm, { state: project.state, utility: project.utility, city: project.city, force: Boolean(emptyAndStale) })
-    .then((run) => logger.info("utility-filing", `utility filing lookup for ${project.utility} (${project.state}): ${run.reason}`, { grounded: run.grounded, dropped: run.dropped.length }))
-    .catch((err) => logger.warn("utility-filing", `utility filing lookup failed for ${project.utility}: ${err instanceof Error ? err.message : String(err)}`));
+  statusByKey.set(key, { state: "running", at: new Date().toISOString() });
+  const base = { state: project.state, utility: project.utility, city: project.city, force: Boolean(emptyAndStale) };
+  const log = (run: UtilityFilingLookupRun, attempt: string) =>
+    logger.info("utility-filing", `utility filing lookup for ${project.utility} (${project.state})${attempt}: ${run.reason}`, { grounded: run.grounded, dropped: run.dropped.length, timedOut: Boolean(run.timedOut) });
+  void (async () => {
+    let run = await runUtilityFilingLookup(db, llm, base);
+    log(run, "");
+    // A TIMEOUT IS NOT A VERDICT (issue #9). One background retry on the tight budget; a partial
+    // that was kept (run.saved) needs none.
+    if (run.timedOut && !run.saved) {
+      statusByKey.set(key, { state: "retrying", at: new Date().toISOString(), error: run.error });
+      run = await runUtilityFilingLookup(db, llm, { ...base, budget: "tight" });
+      log(run, " (retry, tight budget)");
+    }
+    if (run.saved || !run.error) {
+      statusByKey.delete(key);
+    } else {
+      // A double timeout: the next form-research pass may try again within the hour, not tomorrow.
+      if (run.timedOut) inFlight.set(key, Date.now() - RETRY_MS + TIMED_OUT_RETRY_MS);
+      const retryAfter = new Date((inFlight.get(key) ?? Date.now()) + RETRY_MS).toISOString();
+      statusByKey.set(key, { state: run.timedOut ? "timed_out" : "failed", at: new Date().toISOString(), error: run.error, retryAfter });
+    }
+  })().catch((err) => {
+    statusByKey.set(key, { state: "failed", at: new Date().toISOString(), error: err instanceof Error ? err.message : String(err) });
+    logger.warn("utility-filing", `utility filing lookup failed for ${project.utility}: ${err instanceof Error ? err.message : String(err)}`);
+  });
   return true;
 }
 
@@ -328,6 +385,14 @@ export const UTILITY_TRACK_LABELS: Record<UtilityProgramKind | "unknown", string
   unknown: "Utility interconnection application (net-metering program not yet confirmed)",
 };
 
+/** What the card says while the lookup is not settled — never a silent "not yet identified". */
+export const UTILITY_LOOKUP_STATUS_TEXT: Record<UtilityFilingLookupStatus["state"], string> = {
+  running: "lookup in progress",
+  retrying: "lookup timed out, retrying with a smaller search",
+  timed_out: "lookup timed out twice — retry: \"Find official form\" (or the next research pass) looks it up again",
+  failed: "lookup failed — retry: \"Find official form\" (or the next research pass) looks it up again",
+};
+
 export function utilityTrackPresentation(db: AppDb | null, project: Pick<ProjectRecord, "state" | "utility">): UtilityTrackPresentation {
   const lookup = db ? getUtilityFilingLookup(db, project.state, project.utility) : null;
   const verified = lookup?.confidence === "verified";
@@ -335,11 +400,15 @@ export function utilityTrackPresentation(db: AppDb | null, project: Pick<Project
   const program: UtilityProgramKind | "unknown" = lookup?.program?.value ?? (known ? "net_metering" : "unknown");
   const filing = lookup?.filing?.value ?? null;
   const tag = verified ? "verified by a person" : "cited";
+  const status = filing || known ? null : utilityFilingLookupStatus(project.state, project.utility);
   const channel = filing
     ? `${filing.name}${filing.url ? ` — ${filing.url}` : ""} (${tag}: ${lookup!.filing.sourceUrl})`
     : known
       ? known.channel
-      : "Utility interconnection portal — not yet identified (verify on the utility's interconnection page)";
+      : status
+        // "not yet identified" stays in the sentence: channelKindOf / the next action read it as unknown.
+        ? `Utility interconnection portal — not yet identified: ${UTILITY_LOOKUP_STATUS_TEXT[status.state]}${status.retryAfter ? ` after ${status.retryAfter.slice(0, 16).replace("T", " ")} UTC` : ""} (verify on the utility's interconnection page meanwhile)`
+        : "Utility interconnection portal — not yet identified (verify on the utility's interconnection page)";
   const programLabel = UTILITY_TRACK_LABELS[program];
   return {
     label: lookup?.program?.value && lookup.programName ? `${programLabel} — ${lookup.programName}` : programLabel,

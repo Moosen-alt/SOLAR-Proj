@@ -1197,6 +1197,28 @@ export function webSearchResultUrls(msg: { content?: unknown }, max = 20): strin
   return urls;
 }
 
+/** What a web search had gathered when OUR timeout aborted it: the stream's last snapshot, read
+ *  with the same helpers as a finished answer. Grounding is decided exactly as for a finished one —
+ *  a partial snapshot with no search result block is model memory and stays ungrounded. */
+export interface PartialWebSearch { text: string; searches: number; groundedSearches: number; resultUrls: string[]; fetchedUrls: string[]; resultTitles: Record<string, string>; fetches: number }
+export function partialWebSearchOf(snapshot: unknown): PartialWebSearch {
+  const msg = (snapshot && typeof snapshot === "object" ? snapshot : {}) as { content?: unknown; usage?: unknown };
+  const blocks = Array.isArray(msg.content) ? (msg.content as Array<Record<string, unknown> | null>) : [];
+  const { searches, groundedSearches } = summarizeWebSearch(msg);
+  return {
+    text: blocks.map((b) => (b?.type === "text" && typeof b.text === "string" ? b.text : "")).join(""),
+    searches, groundedSearches, resultUrls: webSearchResultUrls(msg, 400), fetchedUrls: webFetchResultUrls(msg),
+    resultTitles: webSearchResultTitles(msg, 400), fetches: countWebFetches(msg),
+  };
+}
+/** askWithWebSearch's own timeout fired. Carries the partial evidence; the message is the SDK's. */
+export class WebSearchAbortedError extends Error {
+  constructor(message: string, readonly partial: PartialWebSearch) {
+    super(message);
+    this.name = "WebSearchAbortedError";
+  }
+}
+
 /** The TITLE each search result carried, by URL (the per-job lookup picks the agency's fee schedule /
  *  checklist from its search results by title — a URL alone rarely says "fee schedule"). */
 export function webSearchResultTitles(msg: { content?: unknown }, max = 400): Record<string, string> {
@@ -1388,11 +1410,19 @@ export class ClaudeLLMProvider implements LLMProvider {
   /** Stream one request, adding the advisor tool (beta) when the target carries one. The beta
    *  message is structurally a superset of Message for everything this file reads (content blocks
    *  by type, usage, stop_reason). */
-  private streamFinal(t: CallTarget, params: Anthropic.MessageStreamParams, options?: { signal?: AbortSignal }): Promise<Anthropic.Message> {
-    if (!t.advisor) return this.client.messages.stream(params, options).finalMessage();
+  /** `onStream` hands the caller the live stream, so a call it aborts can still read what the
+   *  stream had gathered (askWithWebSearch: a timed-out search keeps its grounded evidence). */
+  private streamFinal(t: CallTarget, params: Anthropic.MessageStreamParams, options?: { signal?: AbortSignal }, onStream?: (s: { currentMessage?: unknown }) => void): Promise<Anthropic.Message> {
+    if (!t.advisor) {
+      const s = this.client.messages.stream(params, options);
+      onStream?.(s);
+      return s.finalMessage();
+    }
     const tools = [...((params.tools as unknown[] | undefined) ?? []), advisorToolFor(t.advisor)];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return this.client.beta.messages.stream({ ...(params as any), tools, betas: [ADVISOR_BETA] }, options).finalMessage() as unknown as Promise<Anthropic.Message>;
+    const s = this.client.beta.messages.stream({ ...(params as any), tools, betas: [ADVISOR_BETA] }, options);
+    onStream?.(s);
+    return s.finalMessage() as unknown as Promise<Anthropic.Message>;
   }
 
   /** Append the advisor nudge to a user turn — only when the advisor is on. */
@@ -2395,6 +2425,13 @@ Rules:
         fetchedUrls: web.fetchedUrls, resultTitles: web.resultTitles,
       };
     } catch (err) {
+      // A timeout keeps what the search had gathered (the caller still validates every citation
+      // against these URLs, and an ungrounded partial is still memory) and says it timed out.
+      if (err instanceof WebSearchAbortedError) {
+        const p = err.partial;
+        return { text: p.text, groundedSearches: p.groundedSearches, searches: p.searches, stopReason: null, resultUrls: p.resultUrls, pagesRead: p.fetches,
+          fetchedUrls: p.fetchedUrls, resultTitles: p.resultTitles, error: errMsg(err), timedOut: true };
+      }
       return { text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: errMsg(err) };
     }
   }
@@ -2973,6 +3010,7 @@ Return ONLY JSON:
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const route = this.routeOf(label, task);
     let answeredBy = route.model;
+    const live: { stream?: { currentMessage?: unknown } } = {};
     try {
       const msg = await this.instrument(label, route, { chars: userMessage.length, maxTokens, webSearch: maxUses, timeoutMs, ...(extraTools.length ? { extraTools: extraTools.map((t) => String(t.name)) } : {}) }, (t) => {
         answeredBy = t.model;
@@ -2990,6 +3028,7 @@ Return ONLY JSON:
             messages: [{ role: "user", content: this.withAdvisorNudge(t, userMessage) }],
           },
           { signal: controller.signal },
+          (st) => { live.stream = st; },
         );
       });
       const { searches, groundedSearches } = summarizeWebSearch(msg);
@@ -3008,6 +3047,11 @@ Return ONLY JSON:
         outputTokens: typeof usage?.output_tokens === "number" ? usage.output_tokens : undefined,
         model: answeredBy,
       };
+    } catch (err) {
+      // OUR timeout fired: what the stream had gathered by then is evidence, not noise (issue #9 —
+      // PNM's lookup ran its searches for 240s and every result was thrown away with the abort).
+      if (controller.signal.aborted) throw new WebSearchAbortedError(errMsg(err), partialWebSearchOf(live.stream?.currentMessage));
+      throw err;
     } finally {
       clearTimeout(timer);
     }
