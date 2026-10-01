@@ -1,4 +1,9 @@
-# CI for every PR into main and every push to main. It never deploys (deploy.yml is manual).
+# CI for every PR into main, plus ONE scheduled run on main each night. It never deploys
+# (deploy.yml is manual).
+#
+# No run on push to main: every merge was just tested on its PR, and the post-merge run doubled
+# the metered minutes without catching anything. The nightly run on main is the safety net for two
+# PRs that were green alone and break together; `workflow_dispatch` runs it on demand.
 #
 # ONE JOB, ONE REQUIRED CHECK: "CI passed". Branch protection requires exactly that name.
 #
@@ -6,7 +11,7 @@
 # GitHub bills each JOB separately (its own npm ci, rounded up to the minute). Speed comes from
 # running suites side by side INSIDE this job (CI_TEST_CONCURRENCY), which is unbilled
 # parallelism. It defaults to serial until a concurrent run is proven to match the serial one;
-# serial takes about 25-30 minutes.
+# serial takes about 45 minutes.
 #
 # Every suite runs even when an earlier one fails (continue-on-error), so one red never hides
 # the others; the last step turns any red into a failed check.
@@ -20,8 +25,8 @@ name: CI
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [main]
+  schedule:
+    - cron: "17 9 * * *" # nightly on main, 09:17 UTC (3:17am Denver)
   workflow_dispatch:
 
 concurrency:
