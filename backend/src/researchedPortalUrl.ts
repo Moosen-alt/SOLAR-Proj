@@ -53,10 +53,31 @@ export function researchWithFittedUrl<T extends { portalUrl: string; notes: stri
   track: "permit" | "nem",
   entity: { state?: string; name?: string },
   research: T,
-): T {
+): T & { referenceUrl?: string } {
   const url = String(research.portalUrl || "").trim();
   if (!url) return research;
-  const reason = researchedUrlRefusal(db, track, entity, url);
+  let reason = "";
+  if (researchSaysPortalUnconfirmed(research.notes)) {
+    reason = RESEARCH_UNCONFIRMED_REASON;
+    addAuditLog(db, null, "system", "kb research", "knowledge.researched_url_not_saved", {
+      track, state: entity.state ?? "", entity: entity.name ?? "", url, code: "unconfirmed", reason,
+    });
+  } else {
+    reason = researchedUrlRefusal(db, track, entity, url);
+  }
   if (!reason) return research;
-  return { ...research, portalUrl: "", notes: `${research.notes || ""} [researched portal not saved: ${url} — ${reason}]`.trim() };
+  // Not lost: the savers keep it as a REFERENCE link (a note segment), never as portal_url.
+  return { ...research, portalUrl: "", referenceUrl: url, notes: `${research.notes || ""} [researched portal not saved: ${url} — ${reason}]`.trim() };
+}
+
+// RESEARCH THAT SAYS ITS OWN URL IS NOT THE CONFIRMED PORTAL (issue #8). PNM's research answered
+// "The specific portal login URL was not confirmed in this research, so no exact deep link is
+// asserted" — and its portalUrl (the utility's reference library) was saved and launched as the
+// portal anyway. This is the research's own provenance, not a host judgement (that stays
+// hostFitsTrackAndEntity's): when the research disclaims the URL, it is kept as a reference link.
+const UNCONFIRMED_PORTAL_NOTE = /\b(?:portal|login|application)(?: login)? (?:url|link|page|address)\b[^.]{0,80}?\b(?:was|is|could|has) not (?:be |been )?(?:confirmed|verified|found)\b|\bno exact (?:deep )?link\b/i;
+export const RESEARCH_UNCONFIRMED_REASON = "the research itself says this URL was not confirmed as the application portal";
+/** True when the research's notes disclaim the portal URL it returned. */
+export function researchSaysPortalUnconfirmed(notes: string | null | undefined): boolean {
+  return UNCONFIRMED_PORTAL_NOTE.test(String(notes ?? ""));
 }

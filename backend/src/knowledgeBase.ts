@@ -2117,12 +2117,15 @@ export function saveResearchedAhjProfile(
      *  be on the AHJ's own site). Kept as its OWN note segment ("Forms page: <url>"), so it merges
      *  and dedupes by segment and steers the next search (knowledgeResearchHint). */
     formsPageUrl?: string;
+    /** A researched URL the write door refused as the portal (researchWithFittedUrl). */
+    referenceUrl?: string;
   },
 ): PermitUtilityKnowledgeProfile {
   const provenance = researchProvenance(research, "AI AHJ research");
   const scrub = (s: string): string => (provenance.modelMemory ? stripUrlsFromModelMemory(s) : s);
   const formsPageSegment = research.formsPageUrl && /^https?:\/\//i.test(research.formsPageUrl) && !provenance.modelMemory
     ? `Forms page: ${research.formsPageUrl}` : "";
+  const referenceSegment = referenceLinkSegment(research.referenceUrl, provenance.modelMemory);
   const noteParts = [
     "AI-researched AHJ profile — verify against the official site before relying on it.",
     provenance.note,
@@ -2143,12 +2146,21 @@ export function saveResearchedAhjProfile(
     sources: [provenance.source],
     confidence: "seeded",
     // The research blob stays one segment (unchanged); the forms page is a segment of its own.
-    notes: [noteParts.join(" "), formsPageSegment].filter(Boolean).join(" | "),
+    notes: [noteParts.join(" "), formsPageSegment, referenceSegment].filter(Boolean).join(" | "),
   };
   return upsertKnowledge(db, facts, {
     eventType: "ahj.ai_researched",
     details: { ahj: input.ahj, state: input.state, utility: input.utility || "", platform: research.portalPlatform, confidence: research.confidence, docCount: research.requiredDocuments.length, webGrounded: research.webGrounded ?? null },
   });
+}
+
+/** A researched URL refused as the portal (an information page, another track's or entity's host,
+ *  or one the research itself did not confirm — researchWithFittedUrl) is KEPT, as a reference link
+ *  in its own note segment: never portal_url, never launched (issue #8). Model-memory research
+ *  stores no links at all. */
+function referenceLinkSegment(url: string | undefined, modelMemory: boolean): string {
+  const u = clean(url);
+  return u && /^https?:\/\//i.test(u) && !modelMemory ? `Reference link (not confirmed as the application portal): ${u}` : "";
 }
 
 /** A PERSON'S verified save naming an information page as the portal is refused OUT LOUD (a 409
@@ -2217,9 +2229,10 @@ export function saveVerifiedAhjProfile(
 export function saveResearchedUtilityProfile(
   db: AppDb,
   input: { state: string; utility: string; ahj?: string },
-  research: UtilityResearchResult & ResearchProvenanceFlag,
+  research: UtilityResearchResult & ResearchProvenanceFlag & { referenceUrl?: string },
 ): PermitUtilityKnowledgeProfile {
   const provenance = researchProvenance(research, "AI utility NEM research");
+  const referenceSegment = referenceLinkSegment(research.referenceUrl, provenance.modelMemory);
   const scrub = (s: string): string => (provenance.modelMemory ? stripUrlsFromModelMemory(s) : s);
   const noteParts = [
     "AI-researched utility NEM profile — verify against the utility's official interconnection page before relying on it.",
@@ -2235,7 +2248,11 @@ export function saveResearchedUtilityProfile(
   ].filter(Boolean).map(scrub).filter(Boolean);
   const facts: KnowledgeFacts = {
     state: input.state,
-    ahj: input.ahj || "",
+    // ALWAYS the utility's own row (ahj ""), whatever AHJ the research was run for (issue #8). The
+    // caller passes the project's AHJ as research CONTEXT; keying the row on it made the NEM result
+    // an AHJ-keyed row, and the permit track's KB read (WHERE ahj = ?) and the permit card's
+    // "link on file" then served PNM's site as City of Albuquerque's permit portal (rule 5).
+    ahj: "",
     utility: input.utility,
     portalName: scrub(research.portalName),
     portalUrl: provenance.modelMemory ? "" : research.portalUrl,
@@ -2244,7 +2261,7 @@ export function saveResearchedUtilityProfile(
     requiredDocuments: research.requiredDocuments.map(scrub).filter(Boolean),
     sources: [provenance.source],
     confidence: "seeded",
-    notes: noteParts.join(" "),
+    notes: [noteParts.join(" "), referenceSegment].filter(Boolean).join(" | "),
   };
   return upsertKnowledge(db, facts, {
     eventType: "utility.ai_researched",

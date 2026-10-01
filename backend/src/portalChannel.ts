@@ -316,6 +316,10 @@ const UTILITY_PLATFORM_HOSTS = [
   "coned.com",         // Con Edison (NY)
   "psegliny.com",      // PSEG Long Island (NY)
   "pseg.com",          // PSE&G (NJ)
+  // New Mexico (issue #8): cold-start research for City of Albuquerque / PNM returned
+  // pnm.com/solarreferencelibrary, and the permit track launched it ("City of Albuquerque at
+  // www.pnm.com is showing a login page"). PNM's own domain is never an AHJ permit portal.
+  "pnm.com",           // PNM (Public Service Company of New Mexico)
 ];
 // Salesforce Experience Cloud (<tenant>.my.site.com, <tenant>.force.com, <tenant>.my.salesforce-
 // sites.com) is a PLATFORM, not a utility: several utilities run their interconnection intake as a
@@ -569,12 +573,19 @@ export function isVendorDomain(host: string | null | undefined): boolean {
 //
 // Judged from the URL alone (no fetch — this runs inside every resolver). An information page is:
 //   - a document (.pdf/.doc/.docx/.xls/.xlsx/.rtf/.txt);
-//   - a page under a help/FAQ/guide/brochure/handout/forms-library/news path segment;
+//   - a page under a help/FAQ/guide/brochure/handout/forms-library/news path segment, or a
+//     library / reference / resources segment — whole ("/resources/") or compound
+//     ("/solarreferencelibrary", "/solar-resources": issue #8, PNM's document library was
+//     researched and saved as Albuquerque's portal);
 //   - a SharePoint content page ("/Pages/<name>.aspx") on a government site — the CMS every
 //     Oregon state agency and many counties publish on; application portals are not built on it.
 // A known permit/interconnection PLATFORM host is never an information page (its help pages are
 // still on the platform that files), and a bare host is never one.
-const INFO_PATH_SEGMENT = /^(?:help|faqs?|guides?|guidance|brochures?|handouts?|formslibrary|forms-library|news|newsroom|blog|press-releases?|how-to)$/i;
+const INFO_PATH_SEGMENT = /^(?:help|faqs?|guides?|guidance|brochures?|handouts?|formslibrary|forms-library|news|newsroom|blog|press-releases?|how-to|library|libraries|references?|resources)$/i;
+// Compound segments: anything ending in "library" ("solarreferencelibrary", "documentlibrary"), or a
+// hyphen/underscore-joined "…-resources" / "…-reference". Not a bare "…reference" suffix: that would
+// read "/preferences" or "/user-preference" pages as libraries.
+const INFO_PATH_COMPOUND = /(?:library|libraries|[-_](?:resources|references?))$/i;
 const DOCUMENT_EXT = /\.(?:pdf|docx?|xlsx?|rtf|txt|pptx?)$/i;
 export function isInformationalPageUrl(url: string | null | undefined): boolean {
   const raw = String(url ?? "").trim();
@@ -591,7 +602,7 @@ export function isInformationalPageUrl(url: string | null | undefined): boolean 
   const segs = pathname.split("/").filter(Boolean);
   if (!segs.length) return false;
   if (DOCUMENT_EXT.test(segs[segs.length - 1])) return true;
-  if (segs.some((seg) => INFO_PATH_SEGMENT.test(seg))) return true;
+  if (segs.some((seg) => INFO_PATH_SEGMENT.test(seg) || INFO_PATH_COMPOUND.test(seg.replace(/\.[a-z0-9]+$/i, "")))) return true;
   const gov = /\.(?:gov|us)$/.test(host) || /\.(?:gov|state)\.[a-z]{2}\.us$/.test(host);
   if (gov && segs.length >= 2 && /^pages$/i.test(segs[segs.length - 2]) && /\.aspx$/i.test(segs[segs.length - 1])) return true;
   return false;

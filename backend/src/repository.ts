@@ -78,7 +78,7 @@ import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES
 import type { DesignTextSource } from "./designCriteria";
 import { describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor, isStatewidePortalUrl, projectForTrack, refuseTrackIssuerValue, trackIssuer } from "./permitProcess";
 import { statewideDecisionFor, statewideUrlRefusal } from "./statewideEvidence";
-import { researchWithFittedUrl } from "./researchedPortalUrl";
+import { RESEARCH_UNCONFIRMED_REASON, researchSaysPortalUnconfirmed, researchWithFittedUrl } from "./researchedPortalUrl";
 import { bindRecipeForReplay, describeReplayBinding, openPerJobQuestions } from "./recipeReplayBinding";
 import { agencyListStatusResolver, documentInventory, missingFilledAtStaging, owedDocumentAction, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import { startedAtLabel, type StageAcquiredForm } from "./formAcquisitionPlan";
@@ -8449,35 +8449,57 @@ export async function prepareSubmission(
     try {
       let webGrounded: boolean | undefined;
       let researched = "";
+      let researchNotes = "";
+      // WHOSE portal was researched: the track's own entity, named as such in the log (issue #8: a
+      // NEM result for PNM was logged as "for City of Albuquerque").
+      const researchedFor = track === "nem" ? `${detail.project.utility} (utility, NEM track)` : `${portalProject.ahj} (AHJ, ${track ?? "permit"} track)`;
       if (track === "nem" && detail.project.utility) {
         const { research } = await researchAndSaveUtility(db, {
           utility: detail.project.utility, state: detail.project.state || "", ahj: detail.project.ahj,
         });
         researched = String(research.portalUrl || "");
+        researchNotes = String(research.notes || "");
         webGrounded = research.webGrounded;
       } else if (track !== "nem" && portalProject.ahj) {
         const { research } = await researchAndSaveAhj(db, {
           ahj: portalProject.ahj, state: portalProject.state || "", utility: portalProject.utility,
         });
         researched = String(research.portalUrl || "");
+        researchNotes = String(research.notes || "");
         webGrounded = research.webGrounded;
       }
       // A RESEARCHED URL IS NEVER LAUNCHED UNCONFIRMED WHEN IT DISAGREES with the track, with the
       // portal a person verified for this entity, or belongs to another entity (research resolved
-      // Tigard to Accela while Tigard's verified rows say EnerGov). The refusal is audited and
-      // named in the run's message; a person confirms by saving the portal on the entity's profile.
-      credentialUrl = permitSafeUrl(researched, "research");
+      // Tigard to Accela while Tigard's verified rows say EnerGov) — nor when the research itself
+      // says the URL is not the confirmed portal (the same refusal the KB write door makes, so what
+      // is not saved is not launched either). The refusal is audited and named in the run's
+      // message; a person confirms by saving the portal on the entity's profile.
+      const unconfirmed = Boolean(researched) && researchSaysPortalUnconfirmed(researchNotes);
+      credentialUrl = unconfirmed ? "" : permitSafeUrl(researched, "research");
       if (researched && !credentialUrl) {
-        const refusal = refusedUrls.find((r) => r.url === researched.trim());
+        const refusal = unconfirmed
+          ? { code: "unconfirmed", reason: RESEARCH_UNCONFIRMED_REASON }
+          : refusedUrls.find((r) => r.url === researched.trim());
+        if (unconfirmed && !refusedUrls.some((r) => r.url === researched.trim())) {
+          refusedUrls.push({ url: researched.trim(), source: "research", code: "unconfirmed", reason: RESEARCH_UNCONFIRMED_REASON });
+        }
         addAuditLog(db, projectId, "system", "submit gate", "portal.url_research_conflict", {
           track: track ?? "permit", url: researched, code: refusal?.code ?? null, reason: refusal?.reason ?? null,
         });
+        logger.info("prepare-submission", `cold-start research for ${researchedFor} returned ${researched}, refused as the portal: ${refusal?.reason ?? "does not fit this track"}`);
       }
       if (credentialUrl) {
         addAuditLog(db, projectId, "system", "submit gate", "portal.url_researched", {
           track: track ?? "permit", url: credentialUrl, ...researchedUrlProvenance(webGrounded),
         });
-        logger.info("prepare-submission", `cold-start research resolved a portal URL for ${portalProject.ahj || portalProject.utility}: ${credentialUrl}`);
+        logger.info("prepare-submission", `cold-start research resolved a portal URL for ${researchedFor}: ${credentialUrl}`);
+      } else if (track === "nem" ? detail.project.utility : portalProject.ahj) {
+        // NOTHING CONFIRMABLE: said so, for THIS track's entity — never a portal borrowed from the
+        // other track's research (issue #8). The card reads "Unknown — verify" with no link.
+        const entity = track === "nem" ? detail.project.utility : portalProject.ahj;
+        addAuditLog(db, projectId, "system", "submit gate", "portal.url_unconfirmed", {
+          track: track ?? "permit", entity, message: `Portal not confirmed for ${entity}: research found no application portal that fits this track — verify on the ${track === "nem" ? "utility's" : "AHJ's"} site.`,
+        });
       }
     } catch (err) {
       logger.warn("prepare-submission", `cold-start portal research failed: ${err instanceof Error ? err.message : String(err)}`);
