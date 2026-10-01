@@ -242,6 +242,49 @@ function noteSegments(value: unknown): string[] {
   return kept;
 }
 
+// THE PLATFORM SENTENCE IS ONE SEGMENT, WRITTEN ONCE (issue #15). A researched card read "reuse
+// existing PowerClerk (Clean Power Research) — PNM uses PowerClerk for … automation; only the entry
+// URL and login differ (reuse existing PowerClerk … automation; …)": the model answered portalPlatform
+// with the reuse sentence itself (the research prompt and the KB hint both say it), the saver wrapped
+// its template around that, and because the sentence sat INSIDE the one research blob, a re-research
+// that worded anything differently kept a second blob with a second sentence. Now the researched
+// savers store only the platform's LABEL and write the sentence as its own segment, and a new one
+// replaces the old on an unverified row (mergeNoteSegments).
+const RESEARCHED_PLATFORM_SEGMENT = /^Portal platform: [\s\S]*reuse existing/i;
+// The same sentence inside a pre-#15 research blob; non-greedy to the template's own ending, which a
+// nested copy (the live shape) carries only once with its closing ")." .
+const EMBEDDED_PLATFORM_SENTENCE = /\s*Portal platform: [\s\S]*?differ per (?:AHJ|utility)\)\./gi;
+
+/** The platform's NAME out of whatever research returned: no "Portal platform:" prefix, nothing from
+ *  "reuse existing" on, no explanatory clause after a dash or semicolon. "Tyler EnerGov" stays as is. */
+export function portalPlatformLabel(raw: unknown): string {
+  let s = clean(raw).replace(/^portal platform:\s*/i, "");
+  const reuse = s.search(/reuse existing/i);
+  if (reuse >= 0) s = s.slice(0, reuse);
+  s = s.split(/\s+[—–]\s+|;/)[0];
+  if (s.lastIndexOf("(") > s.lastIndexOf(")")) s = s.slice(0, s.lastIndexOf("("));
+  return s.replace(/[\s,.;:—–-]+$/, "").trim();
+}
+
+/** Merge note segments (dedupe by segment, cap 40). An incoming researched platform sentence
+ *  replaces the row's earlier ones — standalone, or inside a legacy research blob — unless the row
+ *  is human-verified (rule 3), where the person's own platform sentence stands and research adds
+ *  none when one is already there. */
+function mergeNoteSegments(currentNotes: unknown, incomingNotes: unknown, humanVerified: boolean): string {
+  let current = noteSegments(currentNotes);
+  let incoming = noteSegments(incomingNotes);
+  if (incoming.some((seg) => RESEARCHED_PLATFORM_SEGMENT.test(seg))) {
+    if (humanVerified) {
+      if (/Portal platform:/i.test(current.join(" | "))) incoming = incoming.filter((seg) => !RESEARCHED_PLATFORM_SEGMENT.test(seg));
+    } else {
+      current = current
+        .filter((seg) => !RESEARCHED_PLATFORM_SEGMENT.test(seg))
+        .map((seg) => (/^AI-researched/i.test(seg) ? seg.replace(EMBEDDED_PLATFORM_SENTENCE, "").trim() : seg));
+    }
+  }
+  return mergeUnique(current, incoming, 40).join(" | ");
+}
+
 function mergeUnique(existing: string[], incoming: string[], limit = 80): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -725,7 +768,7 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
         // fields), so it must be generous — a tight cap here silently drops the
         // newest note (e.g. a human-verified profile) once existing segments
         // fill it. 40 bounds growth without ever truncating legitimate content.
-        mergeUnique(noteSegments(current.notes), noteSegments(facts.notes), 40).join(" | "),
+        mergeNoteSegments(current.notes, facts.notes, humanVerified),
         event ? ts : current.lastLearnedAt,
         ts,
         // FIRST verification wins (the backfill takes MIN(created_at) for the same reason):
@@ -2126,10 +2169,11 @@ export function saveResearchedAhjProfile(
   const formsPageSegment = research.formsPageUrl && /^https?:\/\//i.test(research.formsPageUrl) && !provenance.modelMemory
     ? `Forms page: ${research.formsPageUrl}` : "";
   const referenceSegment = referenceLinkSegment(research.referenceUrl, provenance.modelMemory);
+  const platform = portalPlatformLabel(research.portalPlatform);
+  const platformSegment = platform ? scrub(`Portal platform: ${platform} (reuse existing ${platform} portal automation; only the entry URL + login differ per AHJ).`) : "";
   const noteParts = [
     "AI-researched AHJ profile — verify against the official site before relying on it.",
     provenance.note,
-    research.portalPlatform ? `Portal platform: ${research.portalPlatform} (reuse existing ${research.portalPlatform} portal automation; only the entry URL + login differ per AHJ).` : "",
     research.submissionMethod ? `Submission: ${research.submissionMethod}.` : "",
     research.submissionSteps.length ? `Steps: ${research.submissionSteps.join(" → ")}` : "",
     research.tips.length ? `Tips: ${research.tips.join(" | ")}` : "",
@@ -2140,17 +2184,18 @@ export function saveResearchedAhjProfile(
     utility: input.utility,
     portalName: scrub(research.portalName),
     portalUrl: provenance.modelMemory ? "" : research.portalUrl,
-    portalPlatform: research.portalPlatform,
+    portalPlatform: platform,
     submissionMethod: research.submissionMethod,
     requiredDocuments: research.requiredDocuments.map(scrub).filter(Boolean),
     sources: [provenance.source],
     confidence: "seeded",
-    // The research blob stays one segment (unchanged); the forms page is a segment of its own.
-    notes: [noteParts.join(" "), formsPageSegment, referenceSegment].filter(Boolean).join(" | "),
+    // The research blob is one segment; the platform sentence and the forms page are segments of
+    // their own (a re-research replaces the platform one — mergeNoteSegments).
+    notes: [noteParts.join(" "), platformSegment, formsPageSegment, referenceSegment].filter(Boolean).join(" | "),
   };
   return upsertKnowledge(db, facts, {
     eventType: "ahj.ai_researched",
-    details: { ahj: input.ahj, state: input.state, utility: input.utility || "", platform: research.portalPlatform, confidence: research.confidence, docCount: research.requiredDocuments.length, webGrounded: research.webGrounded ?? null },
+    details: { ahj: input.ahj, state: input.state, utility: input.utility || "", platform, confidence: research.confidence, docCount: research.requiredDocuments.length, webGrounded: research.webGrounded ?? null },
   });
 }
 
@@ -2234,10 +2279,11 @@ export function saveResearchedUtilityProfile(
   const provenance = researchProvenance(research, "AI utility NEM research");
   const referenceSegment = referenceLinkSegment(research.referenceUrl, provenance.modelMemory);
   const scrub = (s: string): string => (provenance.modelMemory ? stripUrlsFromModelMemory(s) : s);
+  const platform = portalPlatformLabel(research.portalPlatform);
+  const platformSegment = platform ? scrub(`Portal platform: ${platform} (reuse existing ${platform} automation; only the entry URL + login differ per utility).`) : "";
   const noteParts = [
     "AI-researched utility NEM profile — verify against the utility's official interconnection page before relying on it.",
     provenance.note,
-    research.portalPlatform ? `Portal platform: ${research.portalPlatform} (reuse existing ${research.portalPlatform} automation; only the entry URL + login differ per utility).` : "",
     research.submissionMethod ? `Submission: ${research.submissionMethod}.` : "",
     research.smartInverterSettings ? `Smart inverter settings: ${research.smartInverterSettings}` : "",
     research.meterAggregation ? `Meter aggregation: ${research.meterAggregation}` : "",
@@ -2256,16 +2302,16 @@ export function saveResearchedUtilityProfile(
     utility: input.utility,
     portalName: scrub(research.portalName),
     portalUrl: provenance.modelMemory ? "" : research.portalUrl,
-    portalPlatform: research.portalPlatform,
+    portalPlatform: platform,
     submissionMethod: research.submissionMethod,
     requiredDocuments: research.requiredDocuments.map(scrub).filter(Boolean),
     sources: [provenance.source],
     confidence: "seeded",
-    notes: [noteParts.join(" "), referenceSegment].filter(Boolean).join(" | "),
+    notes: [noteParts.join(" "), platformSegment, referenceSegment].filter(Boolean).join(" | "),
   };
   return upsertKnowledge(db, facts, {
     eventType: "utility.ai_researched",
-    details: { utility: input.utility, state: input.state, platform: research.portalPlatform, confidence: research.confidence, docCount: research.requiredDocuments.length, webGrounded: research.webGrounded ?? null },
+    details: { utility: input.utility, state: input.state, platform, confidence: research.confidence, docCount: research.requiredDocuments.length, webGrounded: research.webGrounded ?? null },
   });
 }
 
