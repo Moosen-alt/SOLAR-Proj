@@ -320,8 +320,15 @@ async function openCollapsedNav(page: Page): Promise<boolean> {
  * search had already concluded there was none.
  *
  * This cannot slow a replay: recipeAdapter never calls the entry finder.
+ *
+ * Read at CALL time, not import time: the browser-free tests set ENTRY_SETTLE_MS before the
+ * first learn, and an ES module's static imports run before any statement of the importer —
+ * a constant captured at import never saw it, so every review-bound walk on autoLearnAdapter's
+ * fake page (no waitForTimeout, no entry control) spun here the full 30 s (#6).
  */
-const ENTRY_SETTLE_MS = Math.max(0, Number(process.env.ENTRY_SETTLE_MS ?? 30000));
+function entrySettleMs(): number {
+  return Math.max(0, Number(process.env.ENTRY_SETTLE_MS ?? 30000));
+}
 
 export async function findApplicationEntryDeep(
   page: Page,
@@ -351,7 +358,7 @@ export async function findApplicationEntryDeep(
   // afterwards is free, so seconds here are the cheapest thing in the system — while giving
   // up early costs a human sitting down to record the portal by hand. Patience is worth
   // more than speed on a first run.
-  const directDeadline = Date.now() + ENTRY_SETTLE_MS;
+  const directDeadline = Date.now() + entrySettleMs();
   let direct = await findApplicationEntry(page);
   while (!direct && Date.now() < directDeadline) {
     await page.waitForTimeout?.(1500);

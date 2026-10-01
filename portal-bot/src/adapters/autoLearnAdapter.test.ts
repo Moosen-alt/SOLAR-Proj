@@ -9,6 +9,12 @@ const debugTmpBase = fs.mkdtempSync(path.join(os.tmpdir(), "autolearn-test-runs-
 process.env.AUTOLEARN_RUN_DIR = debugTmpBase;
 process.on("exit", () => { try { fs.rmSync(debugTmpBase, { recursive: true, force: true }); } catch { /* best effort */ } });
 
+// The entry finder keeps re-reading the page for ENTRY_SETTLE_MS (30 s by default) before it
+// concludes a portal has no "start an application" control — a live dashboard can paint its
+// nav seconds late. The fake pages here never grow one, so every walk that asked paid the full
+// 30 s (the suite took ~20 minutes, #6). Zero means one look, which is all a fake page needs.
+process.env.ENTRY_SETTLE_MS = "0";
+
 import type { ProjectRecord } from "../../../shared/src/types";
 import {
   AutoLearnAdapter,

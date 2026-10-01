@@ -9629,9 +9629,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private async waitForAutosaveIndicator(maxMs: number): Promise<void> {
     if (!this.page || typeof this.page.evaluate !== "function") return;
     const deadline = Date.now() + maxMs;
+    // Strict true only, as in waitForDynamicFieldsSettle: the in-page reading returns a
+    // boolean, and a test fake's evaluate() answers every call with its own shape (an empty
+    // array is truthy) — which read as "Saving…" forever and spent the whole budget after
+    // every fill on the browser-free suite (#6).
     const savingVisible = async (): Promise<boolean> => {
       try {
-        return await this.page!.evaluate(() => {
+        return (await this.page!.evaluate(() => {
           // NO HOISTED HELPER OF ANY KIND inside an in-page callback: the bundler's
           // keepNames transform wraps any function it can infer a name for — both
           // `const vis = (el) => …` and `const vis = function (el) {…}` — as
@@ -9658,7 +9662,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             if (rr.width > 0 && rr.height > 0 && ss.visibility !== "hidden" && ss.display !== "none") return true;
           }
           return false;
-        });
+        })) === true;
       } catch { return false; }
     };
     // Quick exit: if nothing is saving right now, don't wait at all.
