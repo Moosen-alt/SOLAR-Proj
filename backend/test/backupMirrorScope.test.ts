@@ -81,19 +81,30 @@ const marker = path.join(backupDir, ".backup-source.json");
 
 console.log("\n0. THE PREDICATE");
 {
-  const d = { tree: "C:/data/project-documents", db: "C:/data/autopilot.sqlite" };
+  // Native absolute paths, so the predicate is pinned on every OS (CI and agents run Linux; the
+  // operator runs Windows). Nothing here touches the disk. `respell` writes the SAME path the way
+  // an env var might: backslashes and another case on Windows (C:/x vs c:\x), a redundant "."
+  // segment elsewhere (a Windows literal on Linux is a relative filename, not the same path).
+  const base = path.resolve(os.tmpdir(), "backup-mirror-predicate");
+  const p = (...segs: string[]) => path.join(base, ...segs);
+  const respell = (abs: string) => process.platform === "win32"
+    ? abs.replace(/\//g, "\\").replace(/^[a-z]:/i, (drive) => drive === drive.toLowerCase() ? drive.toUpperCase() : drive.toLowerCase())
+    : `${path.dirname(abs)}${path.sep}.${path.sep}${path.basename(abs)}`;
+  const d = { tree: p("data", "project-documents"), db: p("data", "autopilot.sqlite") };
   check("0a. MUST-EXCLUDE: default tree + another database -> no",
-    !mirrorTreeBelongsToDatabase("C:/data/project-documents", "C:/scratch/x.sqlite", d));
+    !mirrorTreeBelongsToDatabase(p("data", "project-documents"), p("scratch", "x.sqlite"), d));
   check("0b. MUST-EXCLUDE: an explicit env spelling the default path is still the default tree",
-    !mirrorTreeBelongsToDatabase("c:\\data\\project-documents", "C:/scratch/x.sqlite", d));
+    !mirrorTreeBelongsToDatabase(respell(p("data", "project-documents")), p("scratch", "x.sqlite"), d));
   check("0c. MUST-PASS: default tree + default database -> yes",
-    mirrorTreeBelongsToDatabase("C:/data/project-documents", "c:\\data\\autopilot.sqlite", d));
+    mirrorTreeBelongsToDatabase(p("data", "project-documents"), respell(p("data", "autopilot.sqlite")), d));
   check("0d. MUST-PASS: a moved tree + another database -> yes",
-    mirrorTreeBelongsToDatabase("C:/scratch/docs", "C:/scratch/x.sqlite", d));
+    mirrorTreeBelongsToDatabase(p("scratch", "docs"), p("scratch", "x.sqlite"), d));
   check("0e. MUST-PASS: another database IN the default data directory (the test isolate's test.sqlite) -> yes",
-    mirrorTreeBelongsToDatabase("C:/data/project-documents", "C:/data/test.sqlite", d));
+    mirrorTreeBelongsToDatabase(p("data", "project-documents"), p("data", "test.sqlite"), d));
   check("0f. MUST-EXCLUDE: a database in a sub-folder of the data directory is not the data directory",
-    !mirrorTreeBelongsToDatabase("C:/data/project-documents", "C:/data/scratch/x.sqlite", d));
+    !mirrorTreeBelongsToDatabase(p("data", "project-documents"), p("data", "scratch", "x.sqlite"), d));
+  check("0g. the respelled paths really are spelled differently (0b/0c test a spelling, not a copy)",
+    respell(d.tree) !== d.tree && respell(d.db) !== d.db, `${respell(d.tree)} / ${respell(d.db)}`);
 }
 
 console.log("\nA. MUST-EXCLUDE — a scratch database never mirrors the default (real) trees");
