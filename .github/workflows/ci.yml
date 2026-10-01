@@ -45,7 +45,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      # A PR that only touches docs skips the test suites (the check still reports, so it can merge).
+      # A PR that only touches docs, labels or the board/label workflows skips the test suites (the
+      # check still reports, so it can merge). ci.yml itself is not on that list.
       - name: What changed
         id: scope
         run: |
@@ -57,7 +58,7 @@ jobs:
           echo "$files"
           code=true
           if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "$files" ] && \
-             ! echo "$files" | grep -qvE '^(docs/|\.github/ISSUE_TEMPLATE/)|\.md$'; then
+             ! echo "$files" | grep -qvE '^(docs/|\.github/(ISSUE_TEMPLATE/|labels\.json$|workflows/(board|labels-sync)\.yml$))|\.md$'; then
             code=false
             echo "Docs-only change: skipping the test suites."
           fi

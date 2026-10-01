@@ -70,7 +70,7 @@ a human contributor) joins as a worker under the same rules; [AGENTS.md](AGENTS.
 
   | Command | Who | Effect |
   | --- | --- | --- |
-  | `/claim <id>` | anyone; workers only on `bot-safe` issues | ready or changes-requested → in-progress |
+  | `/claim <id>` | anyone; cloud workers only on `bot-safe` issues; `worker-local` also on `local-only` | ready or changes-requested → in-progress |
   | `/release <id> [why]` | the claim holder, or Fable | → ready (changes-requested if a PR is open) |
   | `/block <id> <why>` | anyone | → blocked |
   | `/unblock <id>`, `/ready <id>` | Fable, owner | → ready |
@@ -148,13 +148,16 @@ template is the easy way), or by telling Fable.
   Pointers (files, sources), Safety (the hard rules touched, or none), and Agent notes (priority,
   size, bot-safe, and a `Depends on: #n` line).
 - **Label it:** one `type:*`, one priority, one `size:*`, one `area:*`, a status, plus `bot-safe`,
-  `safety-critical` or `owner-action` where they apply. Unsure? Leave `needs-triage` and Fable
-  finishes it.
+  `local-only`, `safety-critical` or `owner-action` where they apply. Unsure? Leave `needs-triage`
+  and Fable finishes it.
 - **Priority.** `P0`: a hard-rule breach, data loss, or broken trunk/CI. `P1`: blocks production use
   or onboarding a second company. `P2`: important quality or reliability. `P3`: nice to have.
 - **Size.** `S`: under 2 hours. `M`: about half a day. `L`: one to two days. `XL`: too big, split it
   before anyone claims it.
 - **`bot-safe`** only if it can be finished with local code and local tests alone.
+- **`local-only`** when it needs the owner's machine or eyes: a live portal, judging a filled form,
+  real data. Only `worker-local` (the owner's own terminal session) claims it; the board bot refuses
+  every other worker. It follows the same rules as any worker otherwise.
 - **Owner requests** carry `owner-request`. Fable turns each one into tasks within one cycle, links
   them from the request, and closes the request when they're done. If the request is ambiguous,
   Fable asks the owner one clear question first.
