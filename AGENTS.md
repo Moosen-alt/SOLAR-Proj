@@ -64,7 +64,8 @@ or `FAIL - …` per check and exit non-zero on failure. Tests set `AUTOPILOT_DB_
 ## Never
 
 - Run anything against a live utility or AHJ portal, use real credentials, touch production data,
-  or send real email.
+  or send real email. (`worker-local`, on the owner's machine with the owner watching, is the one
+  exception: constitution §4.)
 - Put secrets, credentials, account/meter numbers or real homeowner data anywhere.
 - Push to `main`, force-push `main`, merge your own PR, or apply the `owner-approved` label.
 - Weaken, skip or delete a test that pins a hard safety rule.

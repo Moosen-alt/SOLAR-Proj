@@ -101,7 +101,10 @@ What that means for every agent:
 
 - **Local only.** Never run anything against a live utility or AHJ portal, use real credentials,
   touch production data, or send real email or texts. Local code and local tests only. Work that
-  can't be done that way is not `bot-safe`.
+  can't be done that way is not `bot-safe`; it is `local-only`. The one exception is `worker-local`
+  on the owner's own machine: it may take a live-portal step only while the owner is watching and
+  approves it in the moment, and even then rule 1 holds in full (no fees, no CAPTCHA/MFA, no final
+  submit) and nothing it sees there goes into code, tests, issues or PRs.
 - **No secrets anywhere.** Never put a secret, credential, account/meter number, or a real
   homeowner's details in code, tests, fixtures, logs, commits, issues or PRs. Test data is synthetic.
 - **Safety tests are not negotiable.** Never weaken, skip or delete a test that pins a hard rule to

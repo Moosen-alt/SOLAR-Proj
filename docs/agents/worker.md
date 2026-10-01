@@ -28,7 +28,8 @@ Skip `type:epic`, `owner-action`, `local-only` (the owner's terminal session wor
 anything whose `Depends on:` line lists an open issue.
 
 **If you are `worker-local`** (Claude Code in the owner's terminal, on the owner's machine): your
-queue is `label:local-only status:ready`, and you may also take `bot-safe` issues. Claim with
+queue is `label:local-only` in `status:ready` or `status:changes-requested` (a PR of yours sent
+back), and you may also take `bot-safe` issues. Claim with
 `/claim worker-local`. The same rules apply: branch from `main`, one PR per issue, sign comments
 `[worker-local]`, never merge. Live-portal steps still happen only with the owner watching.
 

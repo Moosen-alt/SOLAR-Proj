@@ -51,7 +51,8 @@ jobs:
         id: scope
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            files=$(git diff --name-only HEAD^1 HEAD)
+            # --no-renames: a moved file lists both paths, so a code file renamed into docs/ still runs the suites.
+            files=$(git diff --no-renames --name-only HEAD^1 HEAD)
           else
             files="(not a PR: run everything)"
           fi
