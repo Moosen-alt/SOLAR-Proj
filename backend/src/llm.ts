@@ -884,13 +884,15 @@ export const FLAT_FORM_OVERLAY_MAX_TOKENS = 16000;
 // (DESIGN_LOOKUP_MAX_FETCHES) and per page (DESIGN_LOOKUP_MAX_PAGE_TOKENS), and its tokens are
 // recorded in llm_calls like every call (instrument()). What it stores is unchanged: seeded,
 // blank-fill only, each value with its page and quote (codeProfiles.mergeResearchedDesignCriteria).
-export const DESIGN_CRITERIA_LOOKUP_SYSTEM = `You look up ONE building jurisdiction's structural design criteria for residential roofs: ground snow load, ultimate design wind speed (Vult), wind exposure category.
+export const DESIGN_CRITERIA_LOOKUP_SYSTEM = `You look up ONE building jurisdiction's structural design criteria for residential roofs: ground snow load, ultimate design wind speed (Vult), wind exposure category, seismic design category (SDC), frost line depth. Answer EVERY one: a value you found, or omit it and say in notes that you looked and did not find it.
 
 WHERE A VALUE MAY COME FROM (a page you actually found):
 1. The jurisdiction's building-department pages and PDFs (design criteria, "currently adopted codes").
 2. The jurisdiction's OWN ADOPTED CODE text wherever it is published — its municipal code, or a code publisher's copy of THAT jurisdiction's code (a page titled with the jurisdiction's name, e.g. "<City> Residential Code … Table R301.2"). A generic IRC/state page with the table left for "the jurisdiction to fill in" is NOT a value.
 3. A STATE code or state agency table that NAMES this jurisdiction (or its county, when the value applies to the whole county with no sub-region) and gives ONE value for it.
 Search for "<jurisdiction> Table R301.2 ground snow load wind speed" and "<jurisdiction> design criteria" first.
+
+A JURISDICTION-WIDE DESIGN VALUE comes from a design-criteria / climatic and geographic design criteria table, the code adoption ordinance or amendments, or a building-safety policy that states it for all construction. A PROJECT-TYPE HANDOUT (a storage building / shed, deck, fence, patio cover, carport, pool or garage handout) is NOT one: keep looking for the table; if a handout is all you find, give the value with "sourceKind": "project_handout".
 You may OPEN (web_fetch) a result page to read its table — only official city, county or state government pages and code-publisher copies of this jurisdiction's adopted code (up.codes, codes.iccsafe.org, municode, ecode360, codepublishing, American Legal). Open at most a few pages; never open a blog, vendor, forum or map-tool page.
 
 WHEN TO OMIT (and say why in notes):
@@ -900,14 +902,17 @@ WHEN TO OMIT (and say why in notes):
 - windSpeedMph must be the ULTIMATE (strength) speed Vult; omit a speed labelled ASD, nominal, Vasd, or a legacy "basic wind speed" from a pre-2012 map.
 - groundSnowLoadPsf is the strength-level ground snow load Pg. A value labelled allowable-stress pg(asd) (2024-edition Table R301.2 prints pg(asd)) goes under groundSnowLoadAsdPsf instead — never under groundSnowLoadPsf.
 - Use the CURRENT edition: a table from a superseded code cycle, or a staging/preview copy of a page, is not the value.
-- The quote must put the number right next to its own label (e.g. "Vult = 120 mph", "Ground snow load pg = 25 psf").
+- The quote must put the number right next to its own label (e.g. "Vult = 120 mph", "Ground snow load pg = 25 psf", "Seismic Design Category: B", "Frost line depth 18 inches").
 
 Return ONLY JSON:
 {"groundSnowLoadPsf": {"value": <number>, "sourceUrl": "<page>", "quote": "<the exact words stating it, with the number>"} or omit,
  "groundSnowLoadAsdPsf": {"value": <number>, "sourceUrl": "<page>", "quote": "<exact words, with pg(asd) and the number>"} or omit,
  "windSpeedMph": {"value": <Vult number>, "sourceUrl": "<page>", "quote": "<exact words, with the number>"} or omit,
  "windExposure": {"value": "<B|C|D>", "sourceUrl": "<page>", "quote": "<exact words naming the exposure category>"} or omit,
+ "seismicDesignCategory": {"value": "<A|B|C|D0|D1|D2|E>", "sourceUrl": "<page>", "quote": "<exact words naming the seismic design category>"} or omit,
+ "frostDepthIn": {"value": <inches>, "sourceUrl": "<page>", "quote": "<exact words, with frost and the number>"} or omit,
  "notes": "<what you could not confirm, and any site-specific tool>"}
+Every value object may also carry "sourceKind": "design_criteria_table|adoption_ordinance|building_safety_policy|code_text|project_handout".
 Never guess. Never use model memory.`;
 
 /** Page-fetch caps for the design-criteria lookup ONLY (the other web-research calls do not fetch). */
@@ -1053,6 +1058,25 @@ function snowClass(label: NumberLabel): SnowClass {
   return asd ? "pg_asd" : "none";
 }
 
+/** A PROJECT-TYPE HANDOUT names the project it is for in its file name or path (measured: City of
+ *  Albuquerque's ground snow load came back cited to ".../BuildingSafety/Storage Building.pdf"). */
+const PROJECT_HANDOUT_PATH = /\b(?:storage[\s_-]*build(?:ing)?s?|sheds?|accessory[\s_-]*(?:build(?:ing)?s?|structures?|dwellings?)|fences?|decks?|patio(?:[\s_-]*covers?)?|carports?|pergolas?|gazebos?|(?:swimming[\s_-]*)?pools?|hot[\s_-]*tubs?|retaining[\s_-]*walls?|garages?|porch(?:es)?|handouts?|brochures?|(?:tip|fact|info(?:rmation)?)[\s_-]*sheets?)\b/i;
+
+/**
+ * IS THIS PAGE A JURISDICTION-WIDE DESIGN VALUE? A handout for one project type (a storage
+ * building, a deck, a fence) may print a snow load, but it is not the jurisdiction's design-criteria
+ * table, adoption ordinance or building-safety policy — the value is kept (seeded) and FLAGGED so a
+ * person verifies it against the real table. Returns why it is weak, or "" for a design-value page.
+ * The model's own "sourceKind" counts; so does the URL's path naming a project type.
+ */
+export function weakDesignSourceReason(sourceUrl: string, sourceKind?: unknown): string {
+  if (String(sourceKind ?? "").trim().toLowerCase() === "project_handout") return "the lookup reported a project-type handout, not a design-criteria table";
+  let pathName = "";
+  try { pathName = decodeURIComponent(new URL(sourceUrl).pathname); } catch { pathName = String(sourceUrl || ""); }
+  const m = pathName.replace(/[+_]/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").match(PROJECT_HANDOUT_PATH);
+  return m ? `project-type handout ("${m[0].trim()}"), not a jurisdiction-wide design-criteria page` : "";
+}
+
 /** The quote conditions the value on the site (elevation, a lookup tool): not the jurisdiction's one value. */
 const SITE_CONDITIONAL = /\bsite[-\s]specific\b|\b(?:below|above|under|over)\s+\d[\d,]*\s*(?:ft|feet|')|\belevations?\b/i;
 
@@ -1075,13 +1099,14 @@ export function parseDesignCriteriaLookup(
   const values: DesignCriteriaResearchResult["values"] = [];
   const dropped: string[] = [];
   if (grounded) {
-    for (const key of ["groundSnowLoadPsf", "groundSnowLoadAsdPsf", "windSpeedMph", "windExposure"] as const) {
-      const v = parsed[key] as { value?: unknown; sourceUrl?: unknown; quote?: unknown } | undefined;
+    for (const key of ["groundSnowLoadPsf", "groundSnowLoadAsdPsf", "windSpeedMph", "windExposure", "seismicDesignCategory", "frostDepthIn"] as const) {
+      const v = parsed[key] as { value?: unknown; sourceUrl?: unknown; quote?: unknown; sourceKind?: unknown } | undefined;
       if (!v || typeof v !== "object") continue;
       const criterion: LookupValue["criterion"] = key === "groundSnowLoadAsdPsf" ? "groundSnowLoadPsf" : key;
       const sourceUrl = typeof v.sourceUrl === "string" ? v.sourceUrl.trim() : "";
       const quote = typeof v.quote === "string" ? v.quote.trim() : "";
-      const value = criterion === "windExposure" ? String(v.value ?? "").trim().toUpperCase() : typeof v.value === "number" ? v.value : Number.NaN;
+      const isText = criterion === "windExposure" || criterion === "seismicDesignCategory";
+      const value = isText ? String(v.value ?? "").trim().toUpperCase() : typeof v.value === "number" ? v.value : Number.NaN;
       if (!sourceUrl || (typeof value === "number" && !Number.isFinite(value)) || value === "") continue;
       let why = "";
       let qualifier: LookupValue["qualifier"];
@@ -1089,13 +1114,25 @@ export function parseDesignCriteriaLookup(
       else if (criterion === "windExposure") {
         if (!/^[BCD]$/.test(String(value)) || !new RegExp(`exposure[^.;]{0,40}\\b${value}\\b|\\b${value}\\b[^.;]{0,20}exposure`, "i").test(quote)) why = "quote does not name the exposure";
         else if (/\bexp(?:osure|\.)?\s*(?:cat(?:egory|\.)?\s*)?[:=]?\s*[BCD]\s*(?:,|\/|&|-|–|\bor\b|\band\b|\bto\b|\bthrough\b)\s*(?:exp(?:osure|\.)?\s*(?:cat(?:egory|\.)?\s*)?)?[BCD]\b/i.test(quote)) why = "quote lists several exposures";
+      } else if (criterion === "seismicDesignCategory") {
+        // The label is matched case-insensitively, the category case-SENSITIVELY ("a house" is not SDC A).
+        const label = quote.match(/seismic|\bSDC\b/i);
+        const tail = label ? quote.slice((label.index ?? 0) + label[0].length).split(/[.;]/)[0].slice(0, 40) : "";
+        if (!/^(?:A|B|C|D[012]?|E|F)$/.test(String(value)) || !new RegExp(`\\b${value}\\b`).test(tail)) why = "quote does not name the seismic design category";
+        else if (/\b(?:A|B|C|D[012]?|E|F)\s*(?:,|\/|&|-|–|\bor\b|\band\b|\bto\b|\bthrough\b)\s*(?:A|B|C|D[012]?|E|F)\b/.test(tail)) why = "quote lists several seismic design categories";
       } else {
         const nums = numbersIn(quote);
         const hits = nums.map((x, i) => ({ ...x, i })).filter((x) => x.n === value);
         if (!hits.length) why = "quote does not contain the value";
         else if (hits.every((h) => inRangeOrList(quote, h.at, h.end))) why = "value sits in a range or list";
         else if (SITE_CONDITIONAL.test(quote)) why = "quote makes the value site-specific";
-        else if (criterion === "windSpeedMph") {
+        else if (criterion === "frostDepthIn") {
+          const bound = hits.filter((h) => !inRangeOrList(quote, h.at, h.end)).some((h) => {
+            const l = labelOf(quote, nums, h.i);
+            return /frost/i.test(l.before) || /^\s*(?:in(?:ch(?:es)?)?\.?|")?\s*\(?\s*frost/i.test(l.after);
+          });
+          if (!bound) why = "quote does not bind the value to frost depth";
+        } else if (criterion === "windSpeedMph") {
           const classes = hits.filter((h) => !inRangeOrList(quote, h.at, h.end)).map((h) => windClass(labelOf(quote, nums, h.i)));
           const speeds = nums.filter((x) => /^\s*mph\b/i.test(quote.slice(x.end, x.end + 6)));
           if (classes.includes("ult")) { /* bound to Vult / ultimate / wind */ }
@@ -1125,7 +1162,8 @@ export function parseDesignCriteriaLookup(
       // One value per stored field: a strength Pg and a pg(asd) may both land; two answers for the
       // same one (the model put a pg(asd) quote under groundSnowLoadPsf and also answered the asd key) keep the first.
       if (values.some((x) => x.criterion === criterion && (x.qualifier ?? "") === (qualifier ?? ""))) { dropped.push(`${key} ${value} (a second value for the same field)`); continue; }
-      const item: LookupValue = { criterion, value, sourceUrl, quote: quote.slice(0, 240), ...(qualifier ? { qualifier } : {}) };
+      const weakSource = weakDesignSourceReason(sourceUrl, v.sourceKind);
+      const item: LookupValue = { criterion, value, sourceUrl, quote: quote.slice(0, 240), ...(qualifier ? { qualifier } : {}), ...(weakSource ? { weakSource } : {}) };
       values.push(item);
     }
   }
@@ -1134,6 +1172,7 @@ export function parseDesignCriteriaLookup(
     provider: "claude",
     values,
     webGrounded: grounded,
+    ...(truncated ? { truncated: true } : {}),
     // A cut-off answer is not a negative result: an empty list from a truncated reply must not
     // read as "the jurisdiction publishes nothing".
     notes: `${grounded ? "Web-grounded lookup." : "No web results — nothing stored."}${truncated ? " Output truncated — not a negative result; retry." : ""}${dropped.length ? ` Dropped: ${dropped.join("; ")}.` : ""} ${notes}`.trim(),

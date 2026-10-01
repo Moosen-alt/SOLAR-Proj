@@ -1907,19 +1907,46 @@ function kbDesignCriteriaHtml(codeProfile) {
       : c && c.kind === "design_criteria_research"
         ? `design-criteria lookup${c.at ? `, ${day(c.at)}` : ""}${c.sourceUrl ? ` (${c.sourceUrl})` : ""}`
         : verified ? "entered at verification" : "seeded research / import";
-    rows.push(`<li>${esc(label)}: <strong>${esc(show(v, unit))}</strong> <span class="muted">— ${esc(from)}</span></li>`);
+    // A value cited to a project-type handout (a storage-building sheet) is not the jurisdiction's table.
+    const weak = c && c.weakSource ? ` <span class="badge badge-warning">⚠ Weak source — verify: ${esc(c.weakSource)}</span>` : "";
+    rows.push(`<li>${esc(label)}: <strong>${esc(show(v, unit))}</strong> <span class="muted">— ${esc(from)}</span>${weak}</li>`);
+  }
+  // THE CHECKLIST'S GAPS: every criterion the lookup is asked for and the row does not hold is
+  // SHOWN — "not found" (a grounded lookup looked) or "not researched" — so a missing criterion is a
+  // visible gap to verify, never a silent pass. Labels inline: the render tests lift this function alone.
+  const checklistLabels = {
+    groundSnowLoad: ["Ground snow load", ["groundSnowLoadPsf", "groundSnowLoadAsdPsf"]],
+    windSpeed: ["Design wind speed (ultimate)", ["windSpeedMph"]],
+    windExposure: ["Wind exposure", ["windExposure"]],
+    seismicDesignCategory: ["Seismic design category", ["seismicDesignCategory"]],
+    frostDepth: ["Frost depth", ["frostDepthIn"]],
+    fireSetbacks: ["Fire setbacks / roof pathways", null],
+    localPvAmendments: ["Local PV amendments", null],
+  };
+  const lookup = codeProfile.designCriteriaLookup && Array.isArray(codeProfile.designCriteriaLookup.items) ? codeProfile.designCriteriaLookup : null;
+  const dcNow = codeProfile.designCriteria || {};
+  const gaps = [];
+  for (const [item, [label, fields]] of Object.entries(checklistLabels)) {
+    const have = fields
+      ? fields.some((f) => dcNow[f] !== undefined && dcNow[f] !== null && dcNow[f] !== "")
+      : (item === "fireSetbacks" ? (codeProfile.fireSetbacks || []).length : (codeProfile.amendments || []).length) > 0;
+    if (have) continue;
+    const rec = lookup ? lookup.items.find((x) => x && x.item === item) : null;
+    const status = rec && rec.status === "not_found" ? `not found${lookup.at ? ` (lookup ${String(lookup.at).slice(0, 10)})` : ""}` : "not researched";
+    gaps.push(`<li>${esc(label)}: <span class="badge badge-warning">${esc(status)} — verify</span></li>`);
   }
   const obs = Array.isArray(codeProfile.approvedDesignSummary) ? codeProfile.approvedDesignSummary : [];
   const obsText = obs.map((o) => {
     const [label, unit] = KB_OBSERVED_LABELS[o.criterion] || [o.criterion, ""];
     return `${label} ${o.value}${unit} (${o.count} issued permit${o.count === 1 ? "" : "s"}${o.lastIssuedAt ? `, latest ${String(o.lastIssuedAt).slice(0, 10)}` : ""})`;
   });
-  if (!rows.length && !obsText.length) return "";
+  if (!rows.length && !obsText.length && !gaps.length) return "";
   const badge = verified
     ? `<span class="badge badge-pass">Verified${codeProfile.verifiedBy ? ` by ${esc(codeProfile.verifiedBy)}` : ""}</span>`
     : `<span class="badge">Seeded — verify locally</span>`;
   return `<div style="margin-top:4px;font-size:12px"><strong>Code profile design criteria</strong> ${badge}
       ${rows.length ? `<ul style="margin:2px 0 0 16px;padding:0">${rows.join("")}</ul>` : `<p class="muted" style="margin:2px 0">No design criteria on file.</p>`}
+      ${gaps.length ? `<p style="margin:4px 0 0"><strong>Not on file — verify with the AHJ:</strong></p><ul style="margin:2px 0 0 16px;padding:0">${gaps.join("")}</ul>` : ""}
       ${obsText.length ? `<p style="margin:2px 0" class="muted">Approved designs used: ${esc(obsText.join("; "))} — corroboration, not the jurisdiction's rule.</p>` : ""}
     </div>`;
 }
