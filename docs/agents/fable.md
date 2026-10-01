@@ -60,12 +60,14 @@ A Routine wakes you hourly; the owner may also message you. Each time, do this i
      request, and close the request when they're all done. If it's ambiguous, ask one clear question
      with `/needs-owner`.
    - Issues found wrong by workers (they `/release` with findings): fix the issue text, relabel
-     (`bot-safe` off if it needs a live portal or an owner decision), and set its status.
+     (`local-only` on and `bot-safe` off if it needs the owner's machine or eyes; `owner-action` if it
+     needs an owner decision), and set its status.
    - Close epics whose sub-issues are all closed.
 6. **Dispatch.** Active workers = issues `status:in-progress` + worker sessions still running. While
    active < fleet size and claimable issues exist, launch a worker for the next issue:
-   `changes-requested` first, then `first-wave`, then `P0` → `P3`, smaller first. Never put two
-   concurrent workers on issues that touch the same files.
+   `changes-requested` first, then `first-wave`, then `P0` → `P3`, smaller first. Never launch a
+   cloud worker on a `local-only` issue (that queue is `worker-local`'s). Never put two concurrent
+   workers on issues that touch the same files.
 7. **Owner Digest.** Edit the digest body (format below) every cycle; edits don't notify anyone.
    Comment on it only when something newly needs the owner, or once a day if something shipped.
 8. **Stop.** Don't wait around for workers; the next cycle picks things up.

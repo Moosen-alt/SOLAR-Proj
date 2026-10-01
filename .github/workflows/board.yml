@@ -147,7 +147,10 @@ jobs:
                 const why = [];
                 if (labels.includes('type:epic')) why.push('it is an epic (claim its sub-issues)');
                 if (labels.includes('owner-action')) why.push('it is an owner action');
-                if (!isLead && !labels.includes('bot-safe')) why.push('it is not labeled `bot-safe`');
+                // `local-only`: the owner's terminal session (worker-local) works it; a cloud bot never does.
+                const local = labels.includes('local-only');
+                if (local && !isLead && who !== 'worker-local') why.push('it is `local-only` (for worker-local, the owner\'s terminal session)');
+                if (!isLead && !labels.includes('bot-safe') && !(local && who === 'worker-local')) why.push('it is not labeled `bot-safe`');
                 if (!['status:ready', 'status:changes-requested'].includes(status)) why.push(`its status is \`${status}\``);
                 if (why.length) { await say(n, `⛔ Not claimable by **${who}**: ${why.join('; ')}. Pick another issue.`); return; }
                 const prs = status === 'status:changes-requested' ? await openPrsFor(n) : [];

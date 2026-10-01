@@ -49,5 +49,6 @@
   { "name": "owner-request", "color": "d876e3", "description": "Filed by the owner: the lead turns it into tasks" },
   { "name": "owner-digest", "color": "5319e7", "description": "The lead's running report to the owner" },
   { "name": "needs-triage", "color": "ededed", "description": "Filed without full labels: the lead triages it" },
-  { "name": "first-wave", "color": "fbca04", "description": "Picked for the first wave of worker bots" }
+  { "name": "first-wave", "color": "fbca04", "description": "Picked for the first wave of worker bots" },
+  { "name": "local-only", "color": "1d76db", "description": "Needs the owner's machine or eyes: only worker-local (the owner's terminal) may claim it" }
 ]

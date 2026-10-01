@@ -24,7 +24,14 @@ Search open issues labeled `bot-safe`, in this order:
 2. `status:ready` + `first-wave`
 3. `status:ready` by priority, `P0` → `P3`, smaller `size:*` first
 
-Skip `type:epic`, `owner-action`, and anything whose `Depends on:` line lists an open issue.
+Skip `type:epic`, `owner-action`, `local-only` (the owner's terminal session works those), and
+anything whose `Depends on:` line lists an open issue.
+
+**If you are `worker-local`** (Claude Code in the owner's terminal, on the owner's machine): your
+queue is `label:local-only` in `status:ready` or `status:changes-requested` (a PR of yours sent
+back), and you may also take `bot-safe` issues. Claim with
+`/claim worker-local`. The same rules apply: branch from `main`, one PR per issue, sign comments
+`[worker-local]`, never merge. Live-portal steps still happen only with the owner watching.
 
 ## 2. Claim it
 

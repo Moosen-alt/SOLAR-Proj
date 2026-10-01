@@ -106,6 +106,10 @@ the difference. The constitution forbids them, and Fable treats any bot-applied 
 - If your terminal Claude works a board issue, it follows the same rules as any worker: it reads
   `CONSTITUTION.md` and `AGENTS.md`, claims the issue, and signs its comments. Tell it
   "you are worker-local". Unsigned comments are reserved for you.
+- **Its queue is the `local-only` label.** Fable puts that on anything that needs your machine or
+  your eyes; cloud bots can't claim those. To see it: `gh issue list --repo Moosen-alt/SOLAR-Proj --label local-only` (ready, or
+  changes-requested when its PR was sent back).
+  To hand your terminal one: tell it "work issue #N as worker-local".
 - To continue a cloud session on your machine: `claude --teleport` inside this folder.
 
 ## 6. When something breaks locally
