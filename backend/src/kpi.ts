@@ -3,7 +3,7 @@ import type { AppDb, SqlParam } from "./db";
 import { mergeStepReport, MIN_CONFIRMED_FIELDS } from "./replayBenchmark";
 import type { CorrectionTrack } from "../../shared/src/types";
 import { HttpError } from "./httpError";
-import { findKnowledgeForLearn, knowledgeProfileKey, seededDeficiencyCureDays } from "./knowledgeBase";
+import { findKnowledgeForLearn, knowledgeProfileKey, median as timelineMedian, seededDeficiencyCureDays } from "./knowledgeBase";
 import { trackForTarget } from "./timelineSamples";
 import { documentInventory, isApplicationFormRow } from "./requiredDocuments";
 import { DOC_TYPE_ALIASES } from "./projectDocuments";
@@ -67,6 +67,64 @@ export interface AwaitingSubmit {
   overAge: number;
 }
 
+/** Below this many filings a rate is shown greyed with its n: a 100% on three filings is noise. */
+export const SMALL_N = 10;
+
+/** A rate that carries its own numerator and denominator. rate is a percent, null when of = 0. */
+export interface KpiRate {
+  n: number;
+  of: number;
+  rate: number | null;
+  smallN: boolean;
+}
+
+export function kpiRate(n: number, of: number): KpiRate {
+  return { n, of, rate: of ? Math.round((n / of) * 1000) / 10 : null, smallN: of < SMALL_N };
+}
+
+/** The owner's KPI set (#49), per FILING (filing_metrics), for filings submitted in the period. */
+export interface FilingKpis {
+  /** Permits issued with zero correction notices ÷ permits submitted. */
+  firstPass: {
+    overall: KpiRate;
+    byTrack: Array<KpiRate & { key: string }>;
+    byAhj: Array<KpiRate & { key: string }>;
+  };
+  /** Cycles = distinct notice_id on permit filings; cause from the bucket. */
+  correctionCycles: {
+    permits: number;
+    byCause: Array<{ cause: "keelix_catchable" | "design" | "ahj_discretionary" | "unclassified"; notices: number; perPermit: number | null }>;
+    /** The product's own number, target 0: by month the permit was submitted. */
+    keelixPer100ByMonth: Array<{ month: string; notices: number; permits: number; per100: number }>;
+  };
+  /** Per AHJ from permit_timeline_samples (the KB's own median); key = KB profile key. */
+  submitToIssued: { overall: CycleStat; byAhj: Array<CycleStat & { key: string }> };
+  interconnection: {
+    /** NEM filings with ≥1 deficiency ÷ NEM filings submitted. */
+    deficiencyRate: KpiRate;
+    /** closed_at − noticed_at per deficiency notice (closed only). */
+    cureDays: CycleStat;
+    /** Notices past the utility's cure window (deficiency_cure_days, stamped as sla_days), open or closed. */
+    cureBreaches: KpiRate;
+    submitToApproved: CycleStat;
+  };
+  reviewerGate: {
+    /** Bucket-A notices whose latest gate run before them reported no finding at all. */
+    falseNegatives: KpiRate;
+    /** Projects whose gate blocked and an operator overrode the status past it. */
+    falsePositives: KpiRate;
+  };
+  /** Staging finished (awaiting_human_submit) → a person sent it, in minutes. */
+  humanMinutes: CycleStat;
+  /** Required fields left blank per measured staging run (stagingQuality): n = blanks, of = runs. */
+  blanksFilledPerRun: { avg: number; of: number };
+  humanQueue: { n: number; oldestDays: number | null; olderThanDays: number; overAge: number };
+  /** Open filings older than their AHJ's (or utility's) p90 — a snapshot, not period-bound. */
+  openPastP90: { n: number; items: Array<{ submissionId: string; projectId: string; track: string; openDays: number; p90Days: number }> };
+  /** Caveats the panel prints beside the numbers. */
+  notes: string[];
+}
+
 export interface KpiReport {
   period: { start: string; end: string };
   projectsSubmitted: number;
@@ -100,6 +158,7 @@ export interface KpiReport {
   }>;
   /** How well the automation filled, not just how fast the business moved. */
   stagingQuality: StagingQuality;
+  filings: FilingKpis;
   byUser: Array<{
     userId: string;
     userName: string;
@@ -685,6 +744,7 @@ export function getKpiReport(
     };
   });
 
+  const stagingQuality = getStagingQuality(db, { start, end, orgId });
   return {
     period: { start, end },
     projectsSubmitted: metrics.length,
@@ -708,8 +768,198 @@ export function getKpiReport(
     packageToSubmitDays: cycleStat(cycles.map((c) => c.days)),
     packageAwaitingSubmit: awaiting(awaitingRows),
     byClient,
-    stagingQuality: getStagingQuality(db, { start, end, orgId }),
+    stagingQuality,
+    filings: getFilingKpis(db, { orgId, start, end, stagingQuality }),
     byUser,
+  };
+}
+
+const CAUSE_OF_BUCKET: Record<string, FilingKpis["correctionCycles"]["byCause"][number]["cause"]> = {
+  A_we_fix: "keelix_catchable",
+  B_designer_fix: "design",
+  C_reviewer_clarification: "ahj_discretionary",
+};
+
+/**
+ * THE OWNER'S KPI SET (#49). Reads only. Denominators are FILINGS (filing_metrics, one row per
+ * submission a person sent — #47), never projects, so a building + electrical project is two
+ * permits and a utility deficiency never lands on the permit side. Cycle numbers exclude filings
+ * that have not closed; those are counted under openPastP90 instead of silently shortening a median.
+ */
+function getFilingKpis(
+  db: AppDb,
+  opts: { orgId: string | null; start: string; end: string; stagingQuality: StagingQuality },
+): FilingKpis {
+  const { orgId, start, end } = opts;
+  const orgJoin = `JOIN projects p ON p.id = f.project_id${orgId ? " AND p.org_id = ?" : ""}`;
+  const orgP = orgId ? [orgId] : [];
+  const filings = db.query<Row>(
+    `SELECT f.*, p.ahj, p.state, p.utility FROM filing_metrics f ${orgJoin}
+      WHERE f.submitted_at >= ? AND f.submitted_at <= ?`,
+    [...orgP, start, end + "T23:59:59"],
+  );
+  const permits = filings.filter((f) => f.track !== "nem" && f.track !== "");
+  const nem = filings.filter((f) => f.track === "nem");
+  const firstPassOf = (rows: Row[]) => kpiRate(rows.filter((f) => f.finished_at != null && Number(f.notice_count) === 0).length, rows.length);
+  const groupRates = (key: (f: Row) => string) => {
+    const groups = new Map<string, Row[]>();
+    for (const f of permits) groups.set(key(f), [...(groups.get(key(f)) ?? []), f]);
+    return [...groups.entries()].map(([k, rows]) => ({ key: k, ...firstPassOf(rows) })).sort((a, b) => b.of - a.of || a.key.localeCompare(b.key));
+  };
+
+  // Corrections ON these filings (submission_id), so cycles and the denominator share one population.
+  const ids = filings.map((f) => String(f.submission_id));
+  const corrections = ids.length
+    ? db.query<Row>(
+      `SELECT submission_id, track, correction_bucket, COALESCE(notice_id, id) AS notice, COALESCE(noticed_at, created_at) AS noticed,
+              closed_at, due_at, sla_days, created_at, noticed_at, project_id
+         FROM corrections WHERE submission_id IN (${ids.map(() => "?").join(", ")})`,
+      ids,
+    )
+    : [];
+  const permitIds = new Set(permits.map((f) => String(f.submission_id)));
+  const permitCorrections = corrections.filter((c) => permitIds.has(String(c.submission_id)));
+  const causeNotices = new Map<string, Set<string>>();
+  for (const c of permitCorrections) {
+    const cause = CAUSE_OF_BUCKET[String(c.correction_bucket ?? "")] ?? "unclassified";
+    causeNotices.set(cause, (causeNotices.get(cause) ?? new Set()).add(String(c.notice)));
+  }
+  const months = new Map<string, { notices: Set<string>; permits: number }>();
+  const monthOf = new Map(permits.map((f) => [String(f.submission_id), String(f.submitted_at).slice(0, 7)]));
+  for (const m of monthOf.values()) months.set(m, { notices: new Set(), permits: (months.get(m)?.permits ?? 0) + 1 });
+  for (const c of permitCorrections) if (c.correction_bucket === "A_we_fix") months.get(monthOf.get(String(c.submission_id))!)!.notices.add(String(c.notice));
+
+  // SUBMITTED → ISSUED per AHJ: the same per-filing samples the KB's median is derived from
+  // (recomputeTimelineFromSamples), with the KB's middle-pair median. It matches the KB's
+  // average_timeline_days only when read across orgs (orgId null): the KB figure pools every
+  // tenant and every period, while this byAhj is org-scoped (still all-time). `overall` is a
+  // different population (this period's filings) on cycleStat's percentile median.
+  const samples = db.query<Row>(
+    `SELECT s.profile_key, s.track, s.days FROM permit_timeline_samples s
+       JOIN projects p ON p.id = s.project_id${orgId ? " AND p.org_id = ?" : ""}
+      WHERE s.milestone = 'issued'`,
+    orgP,
+  );
+  const daysByKey = new Map<string, number[]>();
+  for (const s of samples) daysByKey.set(String(s.profile_key), [...(daysByKey.get(String(s.profile_key)) ?? []), Number(s.days)]);
+  const keyStat = (days: number[]): CycleStat => ({ ...cycleStat(days), median: Math.round(timelineMedian(days) * 10) / 10 });
+  const permitSamples = samples.filter((s) => s.track !== "nem");
+  const permitKeys = new Set(permitSamples.map((s) => String(s.profile_key)));
+  const inPeriodIssued = permits.filter((f) => f.finished_at != null).map((f) => daysBetweenIso(String(f.submitted_at), String(f.finished_at)));
+
+  // INTERCONNECTION: one cure per deficiency NOTICE (its items close together or not at all).
+  const nemNotices = new Map<string, Row[]>();
+  for (const c of corrections) if (c.track === "nem") nemNotices.set(String(c.notice), [...(nemNotices.get(String(c.notice)) ?? []), c]);
+  const cures: number[] = [];
+  let breaches = 0;
+  for (const items of nemNotices.values()) {
+    if (items.some(breachedSla)) breaches++;
+    if (items.every((c) => c.closed_at != null)) {
+      const closed = items.map((c) => String(c.closed_at)).sort().at(-1)!;
+      cures.push(daysBetweenIso(String(items[0].noticed), closed));
+    }
+  }
+
+  // REVIEWER GATE, from the gate's own audit rows (reviewer_report.generated carries its counts).
+  const gateRuns = db.query<Row>(
+    `SELECT a.project_id, a.action, a.details, a.created_at FROM audit_logs a
+       JOIN projects p ON p.id = a.project_id${orgId ? " AND p.org_id = ?" : ""}
+      WHERE a.action IN ('reviewer_report.generated', 'project.status_overridden') ORDER BY a.created_at ASC`,
+    orgP,
+  ).map((r) => ({ projectId: String(r.project_id), action: String(r.action), at: String(r.created_at), d: parseJson<Record<string, unknown>>(String(r.details ?? "{}"), {}) }));
+  const lastGateBefore = (projectId: string, at: string) =>
+    gateRuns.filter((g) => g.projectId === projectId && g.action === "reviewer_report.generated" && g.at <= at).at(-1);
+  const aNotices = new Map<string, Row>();
+  for (const c of permitCorrections) if (c.correction_bucket === "A_we_fix" && !aNotices.has(String(c.notice))) aNotices.set(String(c.notice), c);
+  const judged = [...aNotices.values()].map((c) => lastGateBefore(String(c.project_id), String(c.noticed))).filter((g) => g !== undefined);
+  const missed = judged.filter((g) => Number(g.d.blockerCount ?? 0) === 0 && Number(g.d.warningCount ?? 0) === 0).length;
+  const inPeriod = (at: string) => at >= start && at <= end + "T23:59:59";
+  const blockedProjects = new Set(gateRuns.filter((g) => g.action === "reviewer_report.generated" && inPeriod(g.at) && Number(g.d.blockerCount ?? 0) > 0).map((g) => g.projectId));
+  const overridden = new Set(gateRuns.filter((g) => g.action === "project.status_overridden" && blockedProjects.has(g.projectId) && g.d.to !== "blocked"
+    && Number(lastGateBefore(g.projectId, g.at)?.d.blockerCount ?? 0) > 0).map((g) => g.projectId));
+
+  // HUMAN MINUTES: staged → sent, on the filing's OWN row. The staging run inserts the
+  // awaiting_human_submit row (created_at) in the same transaction that finishes the run, and every
+  // submit path updates that row in place (submitted_at) — while it ALSO overwrites the run's
+  // finished_at with the submit time, so the run cannot date the handoff. A row is counted only when
+  // a prepare_submit run for its track had started by the time it was written (the manual "record a
+  // filing" path inserts rows nothing staged) and it was sent after it was written. A filing
+  // automation sent, or sent by Approve & auto-submit ("<approver> (approved autopilot)"), took no
+  // human minutes and is left out.
+  const handoffs = db.query<Row>(
+    `SELECT s.submitted_at, s.created_at AS staged_at
+       FROM submissions s JOIN projects p ON p.id = s.project_id${orgId ? " AND p.org_id = ?" : ""}
+      WHERE s.submitted_at >= ? AND s.submitted_at <= ? AND s.status <> 'failed'
+        AND s.submitted_by NOT LIKE 'automation%' AND s.submitted_by NOT LIKE '%(approved autopilot)'
+        AND s.created_at < s.submitted_at
+        AND EXISTS (SELECT 1 FROM portal_runs r
+                     WHERE r.project_id = s.project_id AND r.permit_type = s.permit_type
+                       AND r.run_type = 'prepare_submit' AND r.started_at <= s.created_at)`,
+    [...orgP, start, end + "T23:59:59"],
+  );
+  const minutes = handoffs.map((r) => Math.round((Date.parse(String(r.submitted_at)) - Date.parse(String(r.staged_at))) / 60_000));
+
+  const nowMs = Date.now();
+  const queueDays = db.query<Row>(
+    `SELECT s.created_at FROM submissions s JOIN projects p ON p.id = s.project_id${orgId ? " AND p.org_id = ?" : ""}
+      WHERE s.status = 'awaiting_human_submit'`,
+    orgP,
+  ).map((r) => (nowMs - Date.parse(String(r.created_at))) / 86_400_000);
+  const QUEUE_DAYS = 2;
+
+  // OPEN PAST P90: every open filing (any period) against its AHJ's — or for NEM its utility's — p90.
+  const open = db.query<Row>(
+    `SELECT f.submission_id, f.project_id, f.track, f.submitted_at, p.ahj, p.state, p.utility FROM filing_metrics f ${orgJoin}
+      WHERE f.finished_at IS NULL AND f.track <> ''`,
+    orgP,
+  );
+  const items = open.flatMap((f) => {
+    const key = knowledgeProfileKey({ state: String(f.state ?? ""), ahj: f.track === "nem" ? "" : String(f.ahj ?? ""), utility: String(f.utility ?? "") });
+    const p90 = cycleStat(daysByKey.get(key) ?? []).p90;
+    const openDays = daysBetweenIso(String(f.submitted_at), new Date(nowMs).toISOString());
+    return p90 !== null && openDays > p90
+      ? [{ submissionId: String(f.submission_id), projectId: String(f.project_id), track: String(f.track), openDays, p90Days: p90 }]
+      : [];
+  }).sort((a, b) => b.openDays - a.openDays);
+
+  return {
+    firstPass: { overall: firstPassOf(permits), byTrack: groupRates((f) => String(f.track)), byAhj: groupRates((f) => String(f.ahj ?? "") || "unknown") },
+    correctionCycles: {
+      permits: permits.length,
+      byCause: (["keelix_catchable", "design", "ahj_discretionary", "unclassified"] as const).map((cause) => {
+        const notices = causeNotices.get(cause)?.size ?? 0;
+        return { cause, notices, perPermit: permits.length ? Math.round((notices / permits.length) * 100) / 100 : null };
+      }),
+      keelixPer100ByMonth: [...months.entries()].sort(([a], [b]) => a.localeCompare(b))
+        .map(([month, m]) => ({ month, notices: m.notices.size, permits: m.permits, per100: Math.round((m.notices.size / m.permits) * 1000) / 10 })),
+    },
+    submitToIssued: {
+      overall: cycleStat(inPeriodIssued),
+      byAhj: [...permitKeys].map((key) => ({ key, ...keyStat(daysByKey.get(key)!) })).sort((a, b) => b.n - a.n || a.key.localeCompare(b.key)),
+    },
+    interconnection: {
+      deficiencyRate: kpiRate(nem.filter((f) => Number(f.notice_count) > 0).length, nem.length),
+      cureDays: cycleStat(cures),
+      cureBreaches: kpiRate(breaches, nemNotices.size),
+      submitToApproved: cycleStat(nem.filter((f) => f.finished_at != null).map((f) => daysBetweenIso(String(f.submitted_at), String(f.finished_at)))),
+    },
+    reviewerGate: { falseNegatives: kpiRate(missed, judged.length), falsePositives: kpiRate(overridden.size, blockedProjects.size) },
+    humanMinutes: cycleStat(minutes),
+    blanksFilledPerRun: { avg: opts.stagingQuality.avgBlanksPerRun, of: opts.stagingQuality.measured },
+    humanQueue: {
+      n: queueDays.length,
+      oldestDays: queueDays.length ? Math.round(Math.max(...queueDays) * 10) / 10 : null,
+      olderThanDays: QUEUE_DAYS,
+      overAge: queueDays.filter((d) => d > QUEUE_DAYS).length,
+    },
+    openPastP90: { n: items.length, items },
+    notes: [
+      "Cycle medians exclude filings that have not closed; those count under 'open past p90'.",
+      "Issuance is the monitor's first reading of it, so check cadence pads the tail.",
+      "A gate miss is a bucket-A notice whose latest gate run before it reported no finding at all (a lower bound).",
+      "Human minutes run from the staged row's creation to its send; filings automation sent, including Approve & auto-submit, are left out.",
+      "Submit→issued by AHJ is all-time and this org's only, so it can differ from the shared KB timeline, which pools every tenant.",
+    ],
   };
 }
 
