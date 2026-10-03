@@ -191,6 +191,13 @@ async function main(): Promise<void> {
     lr?.jurisdiction === "Valencia County" && lr?.feeUsd === null && lr?.source === "unknown", JSON.stringify(lr));
   check("5c. …and review research for the county is still a target",
     feeResearchTargets(db, valencia, requiredTracks(valencia)).some((t) => t.role === "local_review" && t.ahj === "Valencia County"));
+  // The real enqueue, not just the target list: clear the county's earlier review job (it is inside
+  // the backoff window from 2a), then ask again with the stray row on file.
+  db.run(`DELETE FROM job_queue WHERE job_type = 'fee_research' AND project_id = ? AND payload LIKE '%"role":"local_review"%'`, [valencia.id]);
+  await ensureFeeSchedulesResearched(db, valencia, requiredTracks(valencia));
+  check("5d. …and ensureFeeSchedulesResearched actually queues the county's review research",
+    payloads(valencia.id).some((p) => p.role === "local_review" && p.ahj === "Valencia County"), JSON.stringify(payloads(valencia.id)));
+  await sleep(500);
   delete process.env.NEM_FEE_ESTIMATE_USD;
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
