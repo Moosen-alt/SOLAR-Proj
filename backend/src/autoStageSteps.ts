@@ -117,23 +117,31 @@ export async function processStageStep(db: AppDb, projectId: string, opts: Stage
       "SELECT uploaded_at FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set' ORDER BY uploaded_at DESC LIMIT 1",
       [projectId],
     );
+    // RE-SPLIT ON REPAIR (#29). An existing split is still re-cut when the current classifier
+    // finds a sheet type in this plan set that none of its split rows carry — a project split by
+    // the old scoring (site plan filed as structural) otherwise kept owing a site plan it had
+    // until someone re-uploaded the plan set. Idempotent: once re-split, the gap is closed.
+    // STALE PARTS (#77): a split part holding pages the current classifier does not put in its
+    // type (the pre-#66 calcs sheet as inverter_spec) is withdrawn first, so the gate rules on the
+    // type as missing instead of counting the wrong sheet as attached.
+    // Counted AFTER the withdrawal: a split whose every part was stale is no split at all.
+    let gaps: string[] = [];
+    if (planSet) {
+      try {
+        const { reconcileSplitParts } = await import("./docSplitter");
+        const reconciled = await reconcileSplitParts(db, projectId);
+        gaps = reconciled.gaps;
+        if (reconciled.withdrawn.length) {
+          logger.info("stage-auto", "stale split parts withdrawn", { project: projectId, withdrawn: reconciled.withdrawn.join(",") });
+        }
+      } catch { gaps = []; /* a failed check leaves the existing split standing */ }
+    }
     const splitNewer = planSet
       ? Number(db.get<{ n: number }>(
           "SELECT COUNT(*) AS n FROM project_documents WHERE project_id = ? AND source = 'split' AND uploaded_at >= ?",
           [projectId, planSet.uploaded_at],
         )?.n ?? 0)
       : 0;
-    // RE-SPLIT ON REPAIR (#29). An existing split is still re-cut when the current classifier
-    // finds a sheet type in this plan set that none of its split rows carry — a project split by
-    // the old scoring (site plan filed as structural) otherwise kept owing a site plan it had
-    // until someone re-uploaded the plan set. Idempotent: once re-split, the gap is closed.
-    let gaps: string[] = [];
-    if (planSet && splitNewer > 0) {
-      try {
-        const { splitSheetGaps } = await import("./docSplitter");
-        gaps = await splitSheetGaps(db, projectId);
-      } catch { gaps = []; /* a failed check leaves the existing split standing */ }
-    }
     if (planSet && (splitNewer === 0 || gaps.length > 0)) {
       step("split");
       try {

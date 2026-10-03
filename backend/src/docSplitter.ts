@@ -6,7 +6,7 @@ import { extractPdfPages } from "./batchImport";
 import { portalUploadCapBytes } from "../../portal-bot/src/uploadCap";
 import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
-import { saveProjectDocument, listProjectDocuments, projectDocsByType, documentTypesDeletedSince } from "./projectDocuments";
+import { saveProjectDocument, listProjectDocuments, projectDocsByType, documentTypesDeletedSince, withdrawSplitPart } from "./projectDocuments";
 
 // Sheet/content patterns → upload doc category. Ported from the parser's detectSplitPages;
 // pages are scored against each category and assigned to the best match. The categories are
@@ -270,7 +270,7 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
 
 // Assign each page of the plan set to its categories (classifyPage). 1-based unclassified pages;
 // the unclassified pages that name a spec sheet are also listed as undecided spec pages.
-async function classifyPlanSetPages(planSetPath: string, total: number): Promise<{ byCategory: Map<string, number[]>; unclassified: number[]; undecidedSpec: number[] }> {
+async function classifyPlanSetPages(planSetPath: string, total: number): Promise<{ byCategory: Map<string, number[]>; unclassified: number[]; undecidedSpec: number[]; pageTexts: string[] }> {
   const pageTexts = await extractPdfPages(planSetPath, 80);
   const byCategory = new Map<string, number[]>();
   const unclassified: number[] = [];
@@ -289,38 +289,108 @@ async function classifyPlanSetPages(planSetPath: string, total: number): Promise
       if (SPEC_SHEET_NAME.test(text) && !CALCS_SHEET.test(text) && !isIndexOrNotesPage(text)) undecidedSpec.push(i + 1);
     }
   }
-  return { byCategory, unclassified, undecidedSpec };
+  return { byCategory, unclassified, undecidedSpec, pageTexts };
 }
 
+// A page's identity for comparing a split part against the plan set: its text with whitespace
+// collapsed. copyPages carries the content stream over unchanged, so a part's page reads the same
+// as the plan-set page it was cut from.
+const pageKey = (text: string): string => text.replace(/\s+/g, " ").trim();
+
 /**
- * Sheet types the CURRENT classifier finds in the newest plan set that no split row cut from
- * that plan set carries — i.e. the existing split is stale against a classifier fix. The auto
- * chain dedupes "already split" by recency, so without this a project split by the old
- * winner-take-all scoring (site plan filed as structural, #29) would never get its site_plan
- * part without a re-upload. Read-only: extracts text, writes nothing. Empty when there is no
- * plan set or nothing has been split from it yet (the ordinary split path owns that case).
+ * RECONCILE THE SPLIT PARTS WITH THE CURRENT CLASSIFIER, then name the gaps.
  *
- * A type a PERSON deleted since this plan set landed is never a gap: removing a split part is an
- * operator's ruling on it (wrong sheet, bad cut), and re-cutting it behind their back would undo
- * that and hide the "not attached" verdict QC owes them (qcRejudgedOnDocs 2c).
+ * STALE PARTS (#77). A split row whose pages are not all pages the CURRENT classifier puts in that
+ * type (including when it puts none there) was cut by an older classifier — the pre-#66 scoring
+ * filed the WIRING CALCULATIONS sheet as inverter_spec and title-only EQUIPMENT SPECIFICATION
+ * cut-sheets as module_spec. Such a row is withdrawn (withdrawSplitPart): left standing, the gate
+ * counted it present ("attached file") and every guard skipped the re-split because the type
+ * "existed". A subset is not stale: the NEM size cap trims a part to its lead page. Only rows the
+ * splitter wrote (`source = 'split'`) are ever withdrawn — a document a person uploaded is theirs
+ * whatever it holds — and a type a person deleted is left alone entirely.
+ *
+ * GAPS (#29). Sheet types the current classifier finds in the newest plan set that no remaining
+ * split row cut from that plan set carries — re-cut by the caller. A type a PERSON deleted since
+ * this plan set landed is never a gap: removing a split part is an operator's ruling on it (wrong
+ * sheet, bad cut), and re-cutting it behind their back would undo that and hide the "not attached"
+ * verdict QC owes them (qcRejudgedOnDocs 2c). Empty when nothing has been split from this plan set
+ * yet (the ordinary split path owns that case).
+ *
+ * No plan set on disk → nothing to compare against, no writes. A part that cannot be read is left
+ * standing; a plan set with no text at all withdraws nothing (no classifier answer to judge by).
  */
-export async function splitSheetGaps(db: AppDb, projectId: string): Promise<string[]> {
+export async function reconcileSplitParts(db: AppDb, projectId: string): Promise<{ withdrawn: string[]; gaps: string[] }> {
   const latest = db.get<{ stored_path: string; uploaded_at: string }>(
     "SELECT stored_path, uploaded_at FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set' ORDER BY uploaded_at DESC LIMIT 1",
     [projectId],
   );
-  if (!latest?.stored_path || !fs.existsSync(latest.stored_path)) return [];
+  if (!latest?.stored_path || !fs.existsSync(latest.stored_path)) return { withdrawn: [], gaps: [] };
+  const sheetTypes = CATEGORY_PATTERNS.map((c) => c.docType);
+  const splitParts = db.query<{ id: string; doc_type: string; stored_path: string; uploaded_at: string }>(
+    `SELECT id, doc_type, stored_path, uploaded_at FROM project_documents
+      WHERE project_id = ? AND source = 'split' AND doc_type IN (${sheetTypes.map(() => "?").join(", ")})`,
+    [projectId, ...sheetTypes],
+  );
+  if (splitParts.length === 0) return { withdrawn: [], gaps: [] };
+  const deletedByPerson = documentTypesDeletedSince(db, projectId, latest.uploaded_at);
+  const total = (await PDFDocument.load(fs.readFileSync(latest.stored_path))).getPageCount();
+  const { byCategory, pageTexts } = await classifyPlanSetPages(latest.stored_path, total);
+
+  const withdrawn = new Set<string>();
+  if (pageTexts.some((t) => pageKey(t))) {
+    for (const part of splitParts) {
+      if (deletedByPerson.has(part.doc_type) || !part.stored_path || !fs.existsSync(part.stored_path)) continue;
+      let partPages: string[];
+      try { partPages = await extractPdfPages(part.stored_path, 80); } catch { continue; }
+      const allowed = new Set((byCategory.get(part.doc_type) ?? []).map((i) => pageKey(pageTexts[i] ?? "")));
+      if (partPages.some((t) => !allowed.has(pageKey(t))) && withdrawSplitPart(db, projectId, part.id)) withdrawn.add(part.doc_type);
+    }
+    // A package ZIP the splitter built bundles the withdrawn part (the bot's last-resort upload
+    // fallback): it goes too, and the next package build writes a fresh one.
+    if (withdrawn.size > 0) {
+      for (const zip of db.query<{ id: string }>(
+        "SELECT id FROM project_documents WHERE project_id = ? AND source = 'split' AND doc_type = 'utility_package_zip'", [projectId],
+      )) withdrawSplitPart(db, projectId, zip.id);
+    }
+  }
+
   const splitTypes = new Set(db.query<{ doc_type: string }>(
     "SELECT DISTINCT doc_type FROM project_documents WHERE project_id = ? AND source = 'split' AND uploaded_at >= ?",
     [projectId, latest.uploaded_at],
   ).map((r) => r.doc_type));
-  if (splitTypes.size === 0) return [];
-  for (const t of documentTypesDeletedSince(db, projectId, latest.uploaded_at)) splitTypes.add(t);
-  // Every sheet type already split: nothing a re-classification could add, skip the text pass.
-  if (CATEGORY_PATTERNS.every((c) => splitTypes.has(c.docType))) return [];
-  const total = (await PDFDocument.load(fs.readFileSync(latest.stored_path))).getPageCount();
-  const { byCategory } = await classifyPlanSetPages(latest.stored_path, total);
-  return CATEGORY_PATTERNS
-    .map((c) => c.docType)
-    .filter((t) => PACKAGE_SETS.all.includes(t) && (byCategory.get(t)?.length ?? 0) > 0 && !splitTypes.has(t));
+  if (splitTypes.size === 0) return { withdrawn: [...withdrawn], gaps: [] };
+  for (const t of deletedByPerson) splitTypes.add(t);
+  const gaps = sheetTypes.filter((t) => PACKAGE_SETS.all.includes(t) && (byCategory.get(t)?.length ?? 0) > 0 && !splitTypes.has(t));
+  return { withdrawn: [...withdrawn], gaps };
+}
+
+/**
+ * THE STAGE / LEARN SPLIT GUARD. Withdraw stale parts, then split the plan set for `target` only
+ * when a sheet it needs is still absent AND the split can change that: nothing has been split from
+ * the newest plan set yet, or the current classifier finds one of the target's sheet types that no
+ * split row carries (reconcileSplitParts gaps). Before (#75 review), the guard re-split whenever a
+ * wanted type had no row — and a set whose only spec pages are title-only EQUIPMENT SPECIFICATION
+ * cut-sheets never gets a spec row, so it was re-split on every stage pass.
+ */
+export async function ensurePlanSetSplit(
+  db: AppDb, projectId: string, target: string, sheetTypes: string[],
+): Promise<{ split: boolean; withdrawn: string[]; gaps: string[] }> {
+  const { withdrawn, gaps: allGaps } = await reconcileSplitParts(db, projectId);
+  const wanted = PACKAGE_SETS[target] ?? PACKAGE_SETS.all;
+  const gaps = allGaps.filter((t) => wanted.includes(t));
+  const existing = projectDocsByType(db, projectId);
+  if (sheetTypes.every((t) => existing[t])) return { split: false, withdrawn, gaps };
+  const planSet = db.get<{ uploaded_at: string }>(
+    "SELECT uploaded_at FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set' ORDER BY uploaded_at DESC LIMIT 1",
+    [projectId],
+  );
+  const splitSince = planSet
+    ? Number(db.get<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM project_documents WHERE project_id = ? AND source = 'split' AND uploaded_at >= ?",
+        [projectId, planSet.uploaded_at],
+      )?.n ?? 0)
+    : 0;
+  if (splitSince > 0 && gaps.length === 0) return { split: false, withdrawn, gaps };
+  await buildUtilityPackage(db, projectId, target);
+  return { split: true, withdrawn, gaps };
 }
