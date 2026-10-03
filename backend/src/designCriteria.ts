@@ -243,8 +243,20 @@ const BOUND_AFTER = /^\s*(?:psf|mph)?\s*(?:or\s+(?:less|lower|below|greater|more
 const MAX_AFTER = /^\s*(?:psf|mph)?\s*max(?:imum)?\b/i;
 /** A product rating printed after the value: "115 MPH RATED", "140 MPH UPLIFT CAPACITY". */
 const RATING_AFTER = /^\s*(?:psf|mph)?\s*\(?\s*(?:rat(?:ed|ing)|tested|certified|(?:uplift\s+)?capacity)\b/i;
-function boundAfter(after: string, assigned: boolean): boolean {
-  return BOUND_AFTER.test(after) || RATING_AFTER.test(after) || (!assigned && MAX_AFTER.test(after));
+/** An assigned value that opens a RANGE: "Basic Wind Speed: 110.00 mph - 150.00 mph", "Ground Snow
+ *  Load: 0 - 100.00 psf", "Wind Speed: 110 to 150 mph" — a product's applicability, not the site's
+ *  value (a racking report's boilerplate "Design Parameters" block, #68). A dash or "to" and then a
+ *  second NUMBER; a dash followed by a word opens the next field ("110 MPH - EXPOSURE C"). */
+const RANGE_AFTER = /^\s*(?:psf|mph)?\s*(?:[-–—]|to\b)\s*(\d+(?:\.\d+)?)(?![\d.])/i;
+/** The second number must exceed the first: a range ascends, while "25 PSF - 2. WIND SPEED …" is
+ *  the next list item's number. Refuses the RANGE, never a lone value: "GROUND SNOW LOAD: 0 PSF". */
+function rangeAfter(after: string, value: number | null): boolean {
+  const r = RANGE_AFTER.exec(after);
+  return !!r && value != null && Number(r[1]) > value;
+}
+function boundAfter(after: string, assigned: boolean, value: number | null = null): boolean {
+  return BOUND_AFTER.test(after) || RATING_AFTER.test(after) || (!assigned && MAX_AFTER.test(after))
+    || (assigned && rangeAfter(after, value));
 }
 /** "psf 25" / "mph V 120" split by a PDF: "2 5 PSF", "ASCE 7-1 6". Joined ONLY right after a
  *  field separator and right before the unit — anywhere else two numbers are two numbers. */
@@ -284,7 +296,7 @@ function extractWind(text: string, source: string, out: StatedDesignCriterion[])
     const label = lastDigit >= 0 ? pre.slice(lastDigit + 1) : pre;
     const post = text.slice(end, end + 30);
     if (RATING_CONTEXT.test(pre.slice(-30))) continue;
-    if (boundAfter(text.slice(end, end + 30), ASSIGNED_BEFORE.test(pre))) continue;
+    if (boundAfter(text.slice(end, end + 30), ASSIGNED_BEFORE.test(pre), toNumber(m[1]))) continue;
     if (!ASSIGNED_BEFORE.test(pre) && limitGoverns(text, start)) continue;
     const labelBefore = /wind|\bv\s*[_(]?\s*(?:ult|asd)\b|\bv(?:ult|asd)\b|\bv\s*[:=]\s*$|\bv\s*$/i.test(label);
     // "120 MPH ultimate wind speed", "110 mph (3-sec gust) basic wind" — the label after the value,
@@ -354,7 +366,7 @@ function extractWind(text: string, source: string, out: StatedDesignCriterion[])
     const value = toNumber(lf[4]);
     if (value == null || value < 60 || value > 250) continue;
     const before = text.slice(Math.max(0, lf.index - 30), lf.index);
-    if (RATING_CONTEXT.test(before) || boundAfter(after, !!lf[3])) continue;
+    if (RATING_CONTEXT.test(before) || boundAfter(after, !!lf[3], value)) continue;
     out.push({
       criterion: "windSpeedMph",
       value,
@@ -776,7 +788,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
     // A bound, not a value: "Is the ground snow load 70 psf or less?"; and an UNASSIGNED value
     // under a limit earlier in its sentence ("… not exceeding a ground snow load of 50 psf").
     const assigned = new RegExp(SEP).test(m[0]);
-    if (boundAfter(text.slice(end, end + 30), assigned)) return;
+    if (boundAfter(text.slice(end, end + 30), assigned, value)) return;
     if (!assigned && limitGoverns(text, m.index)) return;
     out.push({ criterion, value, qualifier, source, derived: false, excerpt: excerptAt(text, m.index, end) });
   };
