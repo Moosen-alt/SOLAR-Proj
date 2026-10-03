@@ -2453,6 +2453,22 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       }
     },
   },
+  {
+    version: 44,
+    name: "project_metrics_package_complete_at",
+    up: (db) => {
+      // WHEN THE CLIENT'S PACKAGE BECAME COMPLETE (#48): the later of every required intake document
+      // present and QC passed — the start of Keelix's own package→submitted SLA. Derived by
+      // touchProjectMetrics (kpi.ts) from project_documents and the QC facts in audit_logs, never
+      // written from anywhere else. NULL = not complete yet, or nothing on record says when. Nothing
+      // is backfilled here: the next touch derives it from history — the QC facts, or, for a project
+      // already at qc_passed whose pass came through a door that wrote no fact (updateProject, a
+      // workflow, humanVerify), its latest qc_results run. A project already past qc_passed with no
+      // pass fact stays NULL: nothing on record says when its package was complete. project_metrics
+      // is CREATEd in the base schema, so this addColumnIfMissing comes after it.
+      addColumnIfMissing(db, "project_metrics", "package_complete_at", "TEXT");
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

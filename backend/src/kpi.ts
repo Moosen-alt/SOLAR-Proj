@@ -5,6 +5,9 @@ import type { CorrectionTrack } from "../../shared/src/types";
 import { HttpError } from "./httpError";
 import { findKnowledgeForLearn, knowledgeProfileKey, seededDeficiencyCureDays } from "./knowledgeBase";
 import { trackForTarget } from "./timelineSamples";
+import { documentInventory, isApplicationFormRow } from "./requiredDocuments";
+import { DOC_TYPE_ALIASES } from "./projectDocuments";
+import { parseJson } from "./json";
 
 type Row = Record<string, SqlParam>;
 
@@ -50,6 +53,20 @@ export interface StagingQuality {
   driftingPortals: Array<{ portal: string; runs: number }>;
 }
 
+/** A cycle-time distribution in days. Every number carries its n; median/p90 are null when n = 0. */
+export interface CycleStat {
+  median: number | null;
+  p90: number | null;
+  n: number;
+}
+
+/** Complete packages not yet submitted, and how many have waited longer than `olderThanDays`. */
+export interface AwaitingSubmit {
+  n: number;
+  olderThanDays: number;
+  overAge: number;
+}
+
 export interface KpiReport {
   period: { start: string; end: string };
   projectsSubmitted: number;
@@ -69,6 +86,18 @@ export interface KpiReport {
   overdueCorrections: number;
   slaBreachRate: number;
   throughputPerWeek: number;         // handoffs per week in period
+  /** Complete package received → submitted (package_complete_at → submitted_at), for projects
+   *  SUBMITTED in the period. Keelix's own turnaround SLA. */
+  packageToSubmitDays: CycleStat;
+  /** Complete packages with no submission yet — outside the cycle above, counted here instead. */
+  packageAwaitingSubmit: AwaitingSubmit;
+  /** Per client: a client who trickles documents owns that delay, so it is theirs to see. */
+  byClient: Array<{
+    clientId: string;
+    clientName: string;
+    packageToSubmitDays: CycleStat;
+    awaitingSubmit: AwaitingSubmit;
+  }>;
   /** How well the automation filled, not just how fast the business moved. */
   stagingQuality: StagingQuality;
   byUser: Array<{
@@ -88,6 +117,8 @@ export interface ProjectMetricsRecord {
   permitIssuedAt: string | null;
   nemApprovedAt: string | null;
   ptoAt: string | null;
+  /** When the client's package became complete (#48): see derivePackageCompleteAt. */
+  packageCompleteAt: string | null;
   firstCorrectionAt: string | null;
   lastCorrectionAt: string | null;
   correctionCount: number;
@@ -106,6 +137,7 @@ function mapMetrics(row: Row): ProjectMetricsRecord {
     permitIssuedAt: row.permit_issued_at == null ? null : String(row.permit_issued_at),
     nemApprovedAt: row.nem_approved_at == null ? null : String(row.nem_approved_at),
     ptoAt: row.pto_at == null ? null : String(row.pto_at),
+    packageCompleteAt: row.package_complete_at == null ? null : String(row.package_complete_at),
     firstCorrectionAt: row.first_correction_at == null ? null : String(row.first_correction_at),
     lastCorrectionAt: row.last_correction_at == null ? null : String(row.last_correction_at),
     correctionCount: Number(row.correction_count ?? 0),
@@ -116,6 +148,10 @@ function mapMetrics(row: Row): ProjectMetricsRecord {
     assignedUserId: row.assigned_user_id == null ? null : String(row.assigned_user_id),
     updatedAt: String(row.updated_at),
   };
+}
+
+function daysBetweenIso(a: string, b: string): number {
+  return Math.round(((new Date(b).getTime() - new Date(a).getTime()) / 86_400_000) * 10) / 10;
 }
 
 function avg(values: number[]): number | null {
@@ -270,6 +306,131 @@ function touchFilingMetrics(db: AppDb, projectId: string, now: string): void {
   }
 }
 
+/** Nearest-rank percentile of an ascending-sorted list, to one decimal. */
+function percentile(sorted: number[], p: number): number | null {
+  if (!sorted.length) return null;
+  const v = sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))];
+  return Math.round(v * 10) / 10;
+}
+
+function cycleStat(values: number[]): CycleStat {
+  const sorted = [...values].sort((a, b) => a - b);
+  return { median: percentile(sorted, 50), p90: percentile(sorted, 90), n: sorted.length };
+}
+
+/** Audit action written whenever QC moves a project's status (qc.ts): details `{ from, to }`. */
+export const QC_STATUS_WRITTEN_ACTION = "project.qc_status_written";
+
+/**
+ * WHEN QC LAST CAME TO "PASSED", or null when its latest verdict is a failure (or none is on
+ * record). Read from the audit log because projects.status keeps only the latest verdict and
+ * qc_results is replaced on every run. Facts, oldest first: the status QC wrote
+ * (QC_STATUS_WRITTEN_ACTION), an operator's override to qc_passed / qc_failed, and — for history
+ * written before that action existed — the qc_completed / qc_rerun rows that say QC moved the
+ * status (statusWritten) and with how many failures. Only facts at or before `cutoff` count.
+ */
+function qcPassedAt(db: AppDb, projectId: string, cutoff: string | null): string | null {
+  const facts = qcVerdictFacts(db, projectId, cutoff);
+  if (facts.passedAt) return facts.passedAt;
+  // LEGACY PASSES. A project at qc_passed whose pass came through a door that writes no fact
+  // (updateProject, a workflow, humanVerify — or any pass before QC_STATUS_WRITTEN_ACTION existed)
+  // would otherwise never be stamped. Its latest QC run (qc_results is replaced on every run) is the
+  // best evidence on record of when it passed — but only a run after the last verdict fact, since a
+  // run before a recorded failure cannot be the pass that followed it.
+  const status = db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId])?.status;
+  if (status !== "qc_passed") return null;
+  const lastRun = db.get<Row>(
+    `SELECT MAX(created_at) AS t FROM qc_results WHERE project_id = ?${cutoff ? " AND created_at <= ?" : ""}`,
+    [projectId, ...(cutoff ? [cutoff] : [])],
+  )?.t;
+  if (lastRun == null) return null;
+  return facts.lastVerdictAt && String(lastRun) <= facts.lastVerdictAt ? null : String(lastRun);
+}
+
+/** The QC verdict facts in the audit log: when the current pass began (null if the latest verdict
+ *  is a failure or there is none) and when the latest verdict of either kind was written. */
+function qcVerdictFacts(db: AppDb, projectId: string, cutoff: string | null): { passedAt: string | null; lastVerdictAt: string | null } {
+  const rows = db.query<Row>(
+    `SELECT action, details, created_at FROM audit_logs
+      WHERE project_id = ? AND action IN (?, 'project.status_overridden', 'project.qc_completed', 'project.qc_rerun')
+        ${cutoff ? "AND created_at <= ?" : ""}
+      ORDER BY created_at ASC`,
+    [projectId, QC_STATUS_WRITTEN_ACTION, ...(cutoff ? [cutoff] : [])],
+  );
+  let passedAt: string | null = null;
+  let lastVerdictAt: string | null = null;
+  for (const row of rows) {
+    const d = parseJson<Record<string, unknown>>(String(row.details ?? "{}"), {});
+    let verdict: "pass" | "fail" | null = null;
+    if (row.action === QC_STATUS_WRITTEN_ACTION || row.action === "project.status_overridden") {
+      verdict = d.to === "qc_passed" ? "pass" : d.to === "qc_failed" ? "fail" : null;
+    } else if (d.statusWritten === true) {
+      verdict = Number(d.failCount ?? 0) > 0 ? "fail" : "pass";
+    }
+    if (verdict) lastVerdictAt = String(row.created_at);
+    if (verdict === "fail") passedAt = null;
+    // A pass written while already passing (a legacy row beside the new one) is the same moment's news.
+    else if (verdict === "pass" && passedAt === null) passedAt = String(row.created_at);
+  }
+  return { passedAt, lastVerdictAt };
+}
+
+/**
+ * WHEN EVERY REQUIRED INTAKE DOCUMENT WAS PRESENT, or null when one is missing now.
+ *
+ * WHICH documents: the inventory's own blocking rows (documentInventory — the one answer the QC
+ * rows, the packet and the staging gate already give), minus the permit APPLICATIONS, which Keelix
+ * builds and fills; they are not something the client hands over. WHEN: the newest upload among the
+ * document types that satisfy each row — so a replaced document re-times its row — and the latest
+ * of those across rows. A row satisfied inside the plan set is timed by the plan set. A row with no
+ * upload behind it contributes no time. Only uploads at or before `cutoff` count.
+ */
+function intakeCompleteAt(db: AppDb, projectId: string, cutoff: string | null): string | null {
+  const row = db.get<Row>("SELECT id, parser_json, ahj, state, utility, system_size_dc_kw FROM projects WHERE id = ?", [projectId]);
+  if (!row) return null;
+  const payload = parseJson<Record<string, unknown>>(String(row.parser_json ?? "{}"), {});
+  // The same project shape QC hands documentInventory, so the two cannot disagree about the list.
+  const projectLike = {
+    id: projectId,
+    ahj: String(row.ahj ?? "") || String(payload.ahj ?? ""),
+    state: String(row.state ?? "") || String(payload.state ?? ""),
+    utility: String(row.utility ?? "") || String(payload.utility ?? ""),
+    systemSizeDcKw: row.system_size_dc_kw == null ? null : Number(row.system_size_dc_kw),
+    parserSnapshot: payload,
+  } as never;
+  // An unreadable knowledge base refuses (503) rather than reporting "nothing missing": no answer,
+  // no stamp — the existing stamp, if any, stands.
+  let inv;
+  try { inv = documentInventory(db, projectLike); } catch { return null; }
+  const intake = inv.presence.filter((p) => p.blocking && !isApplicationFormRow(p));
+  if (!intake.length || intake.some((p) => !p.present)) return null;
+  const planSet = ["plan_set", ...(DOC_TYPE_ALIASES.plan_set ?? [])];
+  let latest: string | null = null;
+  for (const p of intake) {
+    const types = new Set([p.docType, ...(p.altDocTypes ?? []), ...(DOC_TYPE_ALIASES[p.docType] ?? [])]);
+    if (/plan set/i.test(p.via)) for (const t of planSet) types.add(t);
+    const sameAs = /^same file as (.+?) —/.exec(p.via)?.[1];
+    if (sameAs) types.add(sameAs.replace(/ /g, "_"));
+    const list = [...types];
+    const t = db.get<Row>(
+      `SELECT MAX(uploaded_at) AS t FROM project_documents
+        WHERE project_id = ? AND doc_type IN (${list.map(() => "?").join(", ")})${cutoff ? " AND uploaded_at <= ?" : ""}`,
+      [projectId, ...list, ...(cutoff ? [cutoff] : [])],
+    )?.t;
+    if (t != null && (latest === null || String(t) > latest)) latest = String(t);
+  }
+  return latest;
+}
+
+/** The later of intake complete and QC passed; null until both hold. */
+function derivePackageCompleteAt(db: AppDb, projectId: string, cutoff: string | null): string | null {
+  const docsAt = intakeCompleteAt(db, projectId, cutoff);
+  if (!docsAt) return null;
+  const qcAt = qcPassedAt(db, projectId, cutoff);
+  if (!qcAt) return null;
+  return docsAt > qcAt ? docsAt : qcAt;
+}
+
 export function touchProjectMetrics(db: AppDb, projectId: string): void {
   const now = new Date().toISOString();
 
@@ -318,17 +479,31 @@ export function touchProjectMetrics(db: AppDb, projectId: string): void {
   // total cycle = submit → handoff_ready (permit issued + NEM approved — our actual completion)
   const totalCycleDays = daysBetween(submittedAt, handoffAt);
 
+  // COMPLETE PACKAGE RECEIVED (#48). It moves LATER on a new completion (a replaced document, a
+  // QC re-pass after a failure) and never earlier: a regression keeps the last stamp until the
+  // package completes again. Once submitted it is frozen — what changes after that is the
+  // correction cycle, not the intake SLA — and a first stamp after submission reads only the facts
+  // from before it.
+  const prevPackage = db.get<Row>("SELECT package_complete_at AS t FROM project_metrics WHERE project_id = ?", [projectId])?.t;
+  const prevPackageAt = prevPackage == null ? null : String(prevPackage);
+  let packageCompleteAt = prevPackageAt;
+  if (!(submittedAt && prevPackageAt)) {
+    const derived = derivePackageCompleteAt(db, projectId, submittedAt);
+    if (derived && (!prevPackageAt || derived > prevPackageAt)) packageCompleteAt = derived;
+  }
+
   db.run(
     `INSERT INTO project_metrics
-      (project_id, submitted_at, permit_issued_at, nem_approved_at, pto_at,
+      (project_id, submitted_at, permit_issued_at, nem_approved_at, pto_at, package_complete_at,
        first_correction_at, last_correction_at, correction_count,
        permit_cycle_days, nem_cycle_days, total_cycle_days, sla_breaches, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(project_id) DO UPDATE SET
        submitted_at = excluded.submitted_at,
        permit_issued_at = excluded.permit_issued_at,
        nem_approved_at = excluded.nem_approved_at,
        pto_at = excluded.pto_at,
+       package_complete_at = excluded.package_complete_at,
        first_correction_at = excluded.first_correction_at,
        last_correction_at = excluded.last_correction_at,
        correction_count = excluded.correction_count,
@@ -338,7 +513,7 @@ export function touchProjectMetrics(db: AppDb, projectId: string): void {
        sla_breaches = excluded.sla_breaches,
        updated_at = excluded.updated_at`,
     [
-      projectId, submittedAt, permitIssuedAt, nemApprovedAt, null /* pto outside our scope */,
+      projectId, submittedAt, permitIssuedAt, nemApprovedAt, null /* pto outside our scope */, packageCompleteAt,
       firstCorrectionAt, lastCorrectionAt, correctionCount,
       permitCycleDays, nemCycleDays, totalCycleDays, slaBreaches, now,
     ],
@@ -359,7 +534,7 @@ function breachedSla(c: Row): boolean {
 
 export function getKpiReport(
   db: AppDb,
-  options: { startDate?: string; endDate?: string; orgId?: string | null } = {},
+  options: { startDate?: string; endDate?: string; orgId?: string | null; awaitingSubmitDays?: number } = {},
 ): KpiReport {
   // Tenant scope. `null` reads across every org (superadmin); omitting it means the
   // default tenant, so a forgotten filter under-reports rather than leaking.
@@ -468,6 +643,48 @@ export function getKpiReport(
     };
   });
 
+  // PACKAGE → SUBMITTED. The cycle covers projects submitted in the period that have a stamp; a
+  // complete package with no submission is not a cycle and is counted apart, with its age. "Not
+  // submitted" is the snapshot's own submitted_at (#47: a person sent it) — one definition, the
+  // same one the cycle above and touchProjectMetrics use, never a second predicate here.
+  const awaitingSubmitDays = options.awaitingSubmitDays ?? 7;
+  const clientOf = new Map(db.query<Row>(
+    `SELECT m.project_id, p.client_id FROM project_metrics m
+       JOIN projects p ON p.id = m.project_id${orgId ? " AND p.org_id = ?" : ""}
+      WHERE m.package_complete_at IS NOT NULL`,
+    orgP,
+  ).map((r) => [String(r.project_id), r.client_id == null ? "" : String(r.client_id)]));
+  const cycles = metrics
+    .filter((m) => m.packageCompleteAt && m.submittedAt)
+    .map((m) => ({ clientId: clientOf.get(m.projectId) ?? "", days: daysBetweenIso(m.packageCompleteAt!, m.submittedAt!) }))
+    .filter((c) => c.days >= 0);
+  const awaitingRows = db.query<Row>(
+    `SELECT m.package_complete_at AS t, p.client_id AS client_id FROM project_metrics m
+       JOIN projects p ON p.id = m.project_id${orgId ? " AND p.org_id = ?" : ""}
+      WHERE m.package_complete_at IS NOT NULL
+        AND m.submitted_at IS NULL`,
+    orgP,
+  );
+  const nowMs = Date.now();
+  const awaiting = (rows: Row[]): AwaitingSubmit => ({
+    n: rows.length,
+    olderThanDays: awaitingSubmitDays,
+    overAge: rows.filter((r) => (nowMs - new Date(String(r.t)).getTime()) / 86_400_000 > awaitingSubmitDays).length,
+  });
+  const clients = db.query<Row>(
+    `SELECT id, company_name FROM clients WHERE 1 = 1${orgAnd("org_id")} ORDER BY company_name`,
+    orgP,
+  );
+  const byClient = clients.map((c) => {
+    const cid = String(c.id);
+    return {
+      clientId: cid,
+      clientName: String(c.company_name ?? ""),
+      packageToSubmitDays: cycleStat(cycles.filter((x) => x.clientId === cid).map((x) => x.days)),
+      awaitingSubmit: awaiting(awaitingRows.filter((r) => String(r.client_id ?? "") === cid)),
+    };
+  });
+
   return {
     period: { start, end },
     projectsSubmitted: metrics.length,
@@ -488,6 +705,9 @@ export function getKpiReport(
       ? Math.round((totalSlaBreaches / allCorrections.length) * 100)
       : 0,
     throughputPerWeek: Math.round((handoffCount / periodDays) * 7 * 10) / 10,
+    packageToSubmitDays: cycleStat(cycles.map((c) => c.days)),
+    packageAwaitingSubmit: awaiting(awaitingRows),
+    byClient,
     stagingQuality: getStagingQuality(db, { start, end, orgId }),
     byUser,
   };

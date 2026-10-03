@@ -343,7 +343,7 @@ export function projectDocsByType(db: AppDb, projectId: string): Record<string, 
   return out;
 }
 
-const DOC_TYPE_ALIASES: Record<string, string[]> = {
+export const DOC_TYPE_ALIASES: Record<string, string[]> = {
   structural_letter: ["stamped_plans", "engineering_letter"],
   plan_set: ["combined_plan_set", "full_plan_set", "plan", "plan_pdf"],
 };
