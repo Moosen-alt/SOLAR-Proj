@@ -32,7 +32,7 @@
 import type { CitedFact, LLMProvider, PermitFeeAnswer, PermitProcessDiscipline, PermitProcessLookup, PermitProcessPermitAnswer, WebLookupResult } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import { hostFitsTrackAndEntity, isInformationalPageUrl, isPathTenantedHost, isPermitPlatformUrl, isVendorDomain, isVendorRootOrMarketing, portalHostOf, portalTenantKey, portalTenantOf, salesforceTenantKind, trackSafeUrl, type PortalEntity } from "./portalChannel";
-import { ahjNameCore, getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stateRulesFor } from "./permitProcess";
+import { ahjNameCore, getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stateRulesFor, trackIssuer } from "./permitProcess";
 import { CONNECTOR_WORDS, DEPARTMENT_WORDS, GENERIC_ORG_WORDS, agencyNameKey, sameAgencyName, stripDepartmentPhrase } from "./agencyName";
 // Re-exported: the agency-name identity helpers moved to agencyName.ts (pure, no lookup stack) so
 // permitProcess can ask the same question without importing this module back (a cycle).
@@ -1501,14 +1501,51 @@ export function applyLookupFees(db: AppDb, lookup: PermitProcessLookup): Array<{
  * a hand-written profile, or a seeded row whose words settle the structure) — when a model key and the
  * job worker are available. Returns true when a lookup was queued (the caller then leaves fee
  * research to the lookup job, which knows WHICH agency to research).
+ *
+ * AND FOR THE STATE ISSUER OF ITS PERMIT TRACKS (#59): where a cited state rule names the agency that
+ * issues this AHJ's building / electrical permits (permitProcess.trackIssuer → source "state_rule":
+ * New Mexico CID for Valencia County), the lookup keyed on the AHJ never asks how THAT agency takes
+ * applications, and the track card — which reads the issuer's view (projectForTrack) — stayed
+ * "Unknown". The issuer gets its own lookup, keyed on its own name, through the same gates (an
+ * existing row, a person-verified row — rule 3 —, an authoritative shipped profile, the 24 h dedupe):
+ * one lookup per issuer serves every project it issues for (shared knowledge, landing seeded).
  */
 export async function ensurePermitProcessLookedUp(
   db: AppDb,
-  project: { id: string; state: string; ahj: string; utility?: string; parserSnapshot?: Record<string, unknown> },
+  project: { id: string; state: string; ahj: string; utility?: string; parserSnapshot?: Record<string, unknown>; trackIssuers?: Record<string, string> },
 ): Promise<boolean> {
   if (process.env.PERMIT_PROCESS_LOOKUP === "off" || !process.env.ANTHROPIC_API_KEY) return false;
   const ahj = str(project.ahj);
   if (!ahj || !str(project.state)) return false;
+  let queued = await queueProcessLookup(db, project, ahj);
+  for (const issuer of stateIssuersToLookUp(project)) {
+    if (await queueProcessLookup(db, { ...project, ahj: issuer }, issuer)) queued = true;
+  }
+  return queued;
+}
+
+/** The STATE agencies (a cited state rule's issuer — trackIssuer's "state_rule" layer) that issue
+ *  this project's permit tracks, other than the AHJ itself. An operator's or a lookup's issuer is
+ *  not one: those are answered by the project's own lookup (permitAnswerForTrack). */
+function stateIssuersToLookUp(project: { state: string; ahj: string; parserSnapshot?: Record<string, unknown>; trackIssuers?: Record<string, string> }): string[] {
+  const out: string[] = [];
+  try {
+    for (const track of ["building", "electrical"]) {
+      const issuer = trackIssuer(project as never, track);
+      const name = str(issuer.name);
+      if (issuer.source !== "state_rule" || !name || sameAgencyName(name, project.ahj)) continue;
+      if (!out.some((n) => normalizeAhjName(n) === normalizeAhjName(name))) out.push(name);
+    }
+  } catch { /* an unreadable issuer is simply not looked up */ }
+  return out;
+}
+
+/** One agency's lookup through the trigger's gates; true when one is queued (or already pending). */
+async function queueProcessLookup(
+  db: AppDb,
+  project: { id: string; state: string; ahj: string; utility?: string; parserSnapshot?: Record<string, unknown> },
+  ahj: string,
+): Promise<boolean> {
   // A row whose portal / documents-fees part was NEVER ASKED (an aborted call, F-b) is re-asked —
   // bounded by the 24 h dedupe below, which counts the run that wrote it.
   const existing = getPermitProcessLookup(db, project.state, ahj);
@@ -1519,7 +1556,7 @@ export async function ensurePermitProcessLookedUp(
     // row, a hedged note, a state issuer like New Mexico CID) is no reason to skip: the cited lookup
     // outranks it, and it lands seeded. Dynamic: applicationDocs sits in this module's import cycle.
     const { shippedProfileIsAuthoritative } = await import("./applicationDocs");
-    if (shippedProfileIsAuthoritative(project as never)) return false;
+    if (shippedProfileIsAuthoritative({ ...project, ahj } as never)) return false;
     const jobQueue = await import("./jobQueue");
     if (!jobQueue.jobWorkerRunning()) return false;
     const key = `${str(project.state).toLowerCase()}|${normalizeAhjName(ahj)}`;
