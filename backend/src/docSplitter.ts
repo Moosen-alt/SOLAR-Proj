@@ -6,7 +6,7 @@ import { extractPdfPages } from "./batchImport";
 import { portalUploadCapBytes } from "../../portal-bot/src/uploadCap";
 import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
-import { saveProjectDocument, listProjectDocuments, projectDocsByType } from "./projectDocuments";
+import { saveProjectDocument, listProjectDocuments, projectDocsByType, documentTypesDeletedSince } from "./projectDocuments";
 
 // Sheet/content patterns → upload doc category. Ported from the parser's detectSplitPages;
 // pages are scored against each category and assigned to the best match. The categories are
@@ -257,6 +257,10 @@ async function classifyPlanSetPages(planSetPath: string, total: number): Promise
  * winner-take-all scoring (site plan filed as structural, #29) would never get its site_plan
  * part without a re-upload. Read-only: extracts text, writes nothing. Empty when there is no
  * plan set or nothing has been split from it yet (the ordinary split path owns that case).
+ *
+ * A type a PERSON deleted since this plan set landed is never a gap: removing a split part is an
+ * operator's ruling on it (wrong sheet, bad cut), and re-cutting it behind their back would undo
+ * that and hide the "not attached" verdict QC owes them (qcRejudgedOnDocs 2c).
  */
 export async function splitSheetGaps(db: AppDb, projectId: string): Promise<string[]> {
   const latest = db.get<{ stored_path: string; uploaded_at: string }>(
@@ -269,6 +273,7 @@ export async function splitSheetGaps(db: AppDb, projectId: string): Promise<stri
     [projectId, latest.uploaded_at],
   ).map((r) => r.doc_type));
   if (splitTypes.size === 0) return [];
+  for (const t of documentTypesDeletedSince(db, projectId, latest.uploaded_at)) splitTypes.add(t);
   // Every sheet type already split: nothing a re-classification could add, skip the text pass.
   if (CATEGORY_PATTERNS.every((c) => splitTypes.has(c.docType))) return [];
   const total = (await PDFDocument.load(fs.readFileSync(latest.stored_path))).getPageCount();

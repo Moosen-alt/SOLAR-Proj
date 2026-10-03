@@ -195,6 +195,24 @@ console.log("\n6. THE PLAN-SET FALLBACK READS THE PARSER PAGE'S REAL split-map F
   check("6b. \"02 Site + plot plan: missing\" does not", !miss?.present, JSON.stringify(miss));
 }
 
+// ---------------------------------------------------------------------------
+console.log("\n7. A PART A PERSON DELETED IS NOT RE-CUT BEHIND THEIR BACK");
+{
+  const { deleteProjectDocument } = await import("../src/projectDocuments");
+  const d = mk();
+  saveProjectDocument(db, d.id, {
+    filename: "deleted-part.pdf", docType: "plan_set", contentType: "application/pdf",
+    buffer: await mkPlanPdf(FULL), source: "upload",
+  });
+  db.run("UPDATE projects SET status = 'qc_passed' WHERE id = ?", [d.id]);
+  await captureLog(() => processStageStep(db, d.id));
+  const site = db.get<{ id: string }>("SELECT id FROM project_documents WHERE project_id = ? AND doc_type = 'site_plan' AND source = 'split'", [d.id]);
+  if (site) deleteProjectDocument(db, d.id, site.id);
+  const o = await captureLog(() => processStageStep(db, d.id));
+  check("7a. MUST-EXCLUDE: deleting the split site plan does not trigger a re-split",
+    !o.ran.some((x) => x.startsWith("split(")) && !splitRows(d.id).some((x) => x.doc_type === "site_plan"), JSON.stringify(o.ran));
+}
+
 db.close();
 fs.rmSync(dir, { recursive: true, force: true });
 if (failures) { console.error(`\n${failures} split-site-plan check(s) FAILED.`); process.exit(1); }
