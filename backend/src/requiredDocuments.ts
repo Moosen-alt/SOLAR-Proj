@@ -245,8 +245,11 @@ function sheetInPlanSet(project: ProjectRecord, docType: string, docsByType: Rec
   const readyLine = readiness
     .split(/\n+/)
     .some((line) => hint.test(line) && /\bREADY\b/i.test(line) && !/\bMISSING\b/i.test(line));
-  // split map lines look like "02 SLD 3-Line ...: page 3".
-  const splitLine = split.split(/\n+/).some((line) => hint.test(line) && /\bpages?\b/i.test(line));
+  // split map lines look like "02 SLD 3-Line ...: page 3", or — what the parser page actually
+  // writes (parser.html splitPagesText) — "02 Site + plot plan: 2, 3" / "...: missing". A line
+  // ending in a page list counts; "missing" / "not detected" never does.
+  const splitLine = split.split(/\n+/).some((line) =>
+    hint.test(line) && (/\bpages?\b/i.test(line) || /:\s*\d+(?:\s*,\s*\d+)*\s*$/.test(line)));
   return readyLine || splitLine;
 }
 

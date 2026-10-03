@@ -309,6 +309,18 @@ export function documentsChangedAt(db: AppDb, projectId: string): string | null 
   return newest || null;
 }
 
+/** Doc types a person deleted from this project at or after `since` (the audit facts above). */
+export function documentTypesDeletedSince(db: AppDb, projectId: string, since: string): Set<string> {
+  const out = new Set<string>();
+  for (const row of db.query<Row>(
+    "SELECT details FROM audit_logs WHERE project_id = ? AND action = ? AND created_at >= ?",
+    [projectId, DOCUMENT_DELETED_ACTION, since],
+  )) {
+    try { const t = s(JSON.parse(s(row.details)).docType); if (t) out.add(t); } catch { /* unreadable fact: skip */ }
+  }
+  return out;
+}
+
 // docType -> stored file path map for a project (latest per type), for the submittal
 // package and the portal bot to attach the right files.
 export function projectDocsByType(db: AppDb, projectId: string): Record<string, string> {
