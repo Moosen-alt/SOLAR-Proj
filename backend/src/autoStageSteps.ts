@@ -123,13 +123,32 @@ export async function processStageStep(db: AppDb, projectId: string, opts: Stage
           [projectId, planSet.uploaded_at],
         )?.n ?? 0)
       : 0;
-    if (planSet && splitNewer === 0) {
+    // RE-SPLIT ON REPAIR (#29). An existing split is still re-cut when the current classifier
+    // finds a sheet type in this plan set that none of its split rows carry — a project split by
+    // the old scoring (site plan filed as structural) otherwise kept owing a site plan it had
+    // until someone re-uploaded the plan set. Idempotent: once re-split, the gap is closed.
+    let gaps: string[] = [];
+    if (planSet && splitNewer > 0) {
+      try {
+        const { splitSheetGaps } = await import("./docSplitter");
+        gaps = await splitSheetGaps(db, projectId);
+      } catch { gaps = []; /* a failed check leaves the existing split standing */ }
+    }
+    if (planSet && (splitNewer === 0 || gaps.length > 0)) {
       step("split");
       try {
         const { buildUtilityPackage } = await import("./docSplitter");
         const pkg = await buildUtilityPackage(db, projectId, "all");
         ran.push(`split(${(pkg.parts || []).length})`);
-        logger.info("stage-auto", "plan set split automatically", { project: projectId, parts: (pkg.parts || []).length });
+        // Name what the split did NOT produce: "parts=5" alone hid that the site plan was never
+        // cut out, and the gate's "missing site plan" then looked unrelated to the split.
+        logger.info("stage-auto", "plan set split automatically", {
+          project: projectId,
+          parts: (pkg.parts || []).length,
+          missing: (pkg.missingSheetTypes || []).join(",") || "none",
+          unclassifiedPages: (pkg.unclassifiedPages || []).join(",") || "none",
+          ...(gaps.length ? { resplitFor: gaps.join(",") } : {}),
+        });
       } catch (err) {
         logger.warn("stage-auto", "auto-split failed; document gates rule on what exists", {
           project: projectId, err: err instanceof Error ? err.message : String(err),

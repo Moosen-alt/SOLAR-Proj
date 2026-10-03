@@ -18,15 +18,25 @@ import { saveProjectDocument, listProjectDocuments, projectDocsByType } from "./
 // MORE THAN ONE category (e.g. Infinity's "PV MODULE / INV SPECIFICATION SHEET" is both the
 // module spec and the inverter spec). The general-notes / sheet-index page lists every sheet
 // name, so it would match everything — it is detected and skipped before classification.
-const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegExp[] }> = [
+//
+// `vocabulary` patterns are words a sheet USES rather than the sheet's NAME, and together they
+// count as at most ONE hit. The roof words (RAFTER / TRUSS / ROOF SECTION) are the case: the
+// site plan's roof legend ("= RAFTER"), its "ROOF SECTION(S)" block and a "TRUSS SIZE &
+// SPACING" note carry all three, so as full patterns they out-scored SITE PLAN + PV 1.0 (3 to 2)
+// and the winner-take-all below filed the site plan as structural — no site_plan part was
+// written and the submit gate owed a sheet the plan set contained (#29). A real structural
+// sheet still wins on its name (MOUNT/ATTACHMENT DETAIL, S 1.x, STRUCTURAL).
+const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegExp[]; vocabulary?: RegExp[] }> = [
   // "ELECTRICAL LINE DIAGRAM" is how the Basson-style sets title their SLD (sheet PV-6) —
   // neither "one-line" nor "3-line" appears anywhere on the sheet, so the whole electrical
   // diagram went unsplit and the submit gate reported the SLD missing from a plan set that
   // plainly contains one. Anchored on LINE DIAGRAM with an electrical qualifier; a bare
   // /LINE DIAGRAM/ is deliberately NOT used ("property line", "setback line" prose risk).
   { docType: "sld", label: "SLD / one-line", patterns: [/\b3-?LINE DIAGRAM\b/i, /\bONE-?LINE\b/i, /\bSINGLE-?LINE\b/i, /\bELECTRICAL\s+LINE\s+DIAGRAM\b/i, /\bE\s*1\.1\b/i] },
-  { docType: "site_plan", label: "Site / plot plan", patterns: [/\bSITE PLAN\b/i, /\bPLOT PLAN\b/i, /\bPV\s*1\.[01]\b/i] },
-  { docType: "structural", label: "Structural / roof framing", patterns: [/\bMOUNT DETAIL\b/i, /\bATTACHMENT DETAIL\b/i, /\bROOF SECTION\b/i, /\bRAFTER\b/i, /\bTRUSS\b/i, /\bS\s*1\.\d\b/i, /STRUCTURAL/i] },
+  // Fire access pathways / setbacks are drawn and labeled on the site plan (the fire-access
+  // sheet the gate asks for), so they identify it alongside the sheet name.
+  { docType: "site_plan", label: "Site / plot plan", patterns: [/\bSITE PLAN\b/i, /\bPLOT PLAN\b/i, /\bPV\s*1\.[01]\b/i, /\bFIRE\s+(?:PATHWAYS?|SETBACKS?|ACCESS)\b/i] },
+  { docType: "structural", label: "Structural / roof framing", patterns: [/\bMOUNT DETAIL\b/i, /\bATTACHMENT DETAIL\b/i, /\bS\s*1\.\d\b/i, /STRUCTURAL/i], vocabulary: [/\bROOF SECTION\b/i, /\bRAFTER\b/i, /\bTRUSS\b/i] },
   // Match the dedicated SPEC SHEET by its title-block Sheet Name only. Model strings
   // (Q.TRON, Q.MI) and the word "PV MODULE" appear in the spec-callout block on the site
   // plan, SLD, etc., so they are NOT reliable — only the sheet name "… SPECIFICATION SHEET"
@@ -65,7 +75,8 @@ function classifyPage(text: string): string[] {
   if (isIndexOrNotesPage(text)) return [];
   let best: { docType: string; score: number } | null = null;
   for (const cat of CATEGORY_PATTERNS) {
-    const score = cat.patterns.reduce((n, re) => (re.test(text) ? n + 1 : n), 0);
+    const score = cat.patterns.reduce((n, re) => (re.test(text) ? n + 1 : n), 0)
+      + (cat.vocabulary?.some((re) => re.test(text)) ? 1 : 0);
     if (score > 0 && (!best || score > best.score)) best = { docType: cat.docType, score };
   }
   if (!best) return [];
@@ -116,6 +127,10 @@ export interface UtilityPackageResult {
   missingDocTypes: string[];
   zipDocumentId: string;
   unclassifiedPages: number[];
+  /** Plan-set sheet types this target wanted that no page classified as — the split log names
+   *  them, so a sheet the classifier missed is visible where the split ran, not only later as a
+   *  gate's "missing" (#29). Never includes separately-uploaded types (meter photo, bill). */
+  missingSheetTypes: string[];
 }
 
 // Find the project's stored plan set (doc_type plan_set, else the largest PDF upload).
@@ -139,25 +154,9 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
   const wanted = PACKAGE_SETS[target] ?? PACKAGE_SETS.all;
   const planSet = findPlanSet(db, projectId);
 
-  const pageTexts = await extractPdfPages(planSet.path, 80);
   const source = await PDFDocument.load(fs.readFileSync(planSet.path));
   const total = source.getPageCount();
-
-  // Assign each page to a category.
-  const byCategory = new Map<string, number[]>();
-  const unclassified: number[] = [];
-  for (let i = 0; i < total; i++) {
-    const docTypes = classifyPage(pageTexts[i] ?? "");
-    if (docTypes.length) {
-      for (const docType of docTypes) {
-        const arr = byCategory.get(docType) ?? [];
-        arr.push(i);
-        byCategory.set(docType, arr);
-      }
-    } else {
-      unclassified.push(i + 1);
-    }
-  }
+  const { byCategory, unclassified } = await classifyPlanSetPages(planSet.path, total);
 
   const baseName = planSet.name.replace(/\.pdf$/i, "");
   const parts: UtilityPackageResult["parts"] = [];
@@ -225,5 +224,56 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
     source: "split",
   });
 
-  return { target, planSetDocId: planSet.id, pages: total, parts, packagedDocTypes: packaged, missingDocTypes: missing, zipDocumentId: zipDoc.id, unclassifiedPages: unclassified };
+  const missingSheetTypes = CATEGORY_PATTERNS
+    .map((c) => c.docType)
+    .filter((t) => wanted.includes(t) && !parts.some((p) => p.docType === t));
+  return { target, planSetDocId: planSet.id, pages: total, parts, packagedDocTypes: packaged, missingDocTypes: missing, zipDocumentId: zipDoc.id, unclassifiedPages: unclassified, missingSheetTypes };
+}
+
+// Assign each page of the plan set to its categories (classifyPage). 1-based unclassified pages.
+async function classifyPlanSetPages(planSetPath: string, total: number): Promise<{ byCategory: Map<string, number[]>; unclassified: number[] }> {
+  const pageTexts = await extractPdfPages(planSetPath, 80);
+  const byCategory = new Map<string, number[]>();
+  const unclassified: number[] = [];
+  for (let i = 0; i < total; i++) {
+    const docTypes = classifyPage(pageTexts[i] ?? "");
+    if (docTypes.length) {
+      for (const docType of docTypes) {
+        const arr = byCategory.get(docType) ?? [];
+        arr.push(i);
+        byCategory.set(docType, arr);
+      }
+    } else {
+      unclassified.push(i + 1);
+    }
+  }
+  return { byCategory, unclassified };
+}
+
+/**
+ * Sheet types the CURRENT classifier finds in the newest plan set that no split row cut from
+ * that plan set carries — i.e. the existing split is stale against a classifier fix. The auto
+ * chain dedupes "already split" by recency, so without this a project split by the old
+ * winner-take-all scoring (site plan filed as structural, #29) would never get its site_plan
+ * part without a re-upload. Read-only: extracts text, writes nothing. Empty when there is no
+ * plan set or nothing has been split from it yet (the ordinary split path owns that case).
+ */
+export async function splitSheetGaps(db: AppDb, projectId: string): Promise<string[]> {
+  const latest = db.get<{ stored_path: string; uploaded_at: string }>(
+    "SELECT stored_path, uploaded_at FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set' ORDER BY uploaded_at DESC LIMIT 1",
+    [projectId],
+  );
+  if (!latest?.stored_path || !fs.existsSync(latest.stored_path)) return [];
+  const splitTypes = new Set(db.query<{ doc_type: string }>(
+    "SELECT DISTINCT doc_type FROM project_documents WHERE project_id = ? AND source = 'split' AND uploaded_at >= ?",
+    [projectId, latest.uploaded_at],
+  ).map((r) => r.doc_type));
+  if (splitTypes.size === 0) return [];
+  // Every sheet type already split: nothing a re-classification could add, skip the text pass.
+  if (CATEGORY_PATTERNS.every((c) => splitTypes.has(c.docType))) return [];
+  const total = (await PDFDocument.load(fs.readFileSync(latest.stored_path))).getPageCount();
+  const { byCategory } = await classifyPlanSetPages(latest.stored_path, total);
+  return CATEGORY_PATTERNS
+    .map((c) => c.docType)
+    .filter((t) => PACKAGE_SETS.all.includes(t) && (byCategory.get(t)?.length ?? 0) > 0 && !splitTypes.has(t));
 }
