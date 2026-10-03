@@ -26,7 +26,16 @@ import { saveProjectDocument, listProjectDocuments, projectDocsByType, documentT
 // and the winner-take-all below filed the site plan as structural — no site_plan part was
 // written and the submit gate owed a sheet the plan set contained (#29). A real structural
 // sheet still wins on its name (MOUNT/ATTACHMENT DETAIL, S 1.x, STRUCTURAL).
-const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegExp[]; vocabulary?: RegExp[] }> = [
+//
+// `words` are full hits on most pages, but on an ELECTRICAL sheet (an E x.x sheet number) they —
+// and the vocabulary — are words the sheet uses, not its name, and do not count. The electrical
+// NOTES sheet (E 1.2) carries a "STRUCTURAL NOTES" block (design loads, rafter spacing, truss
+// capacity); the bare STRUCTURAL plus that vocabulary scored it structural, and with no
+// electrical category naming E 1.2 it was filed into the structural upload (#33). On an E sheet
+// only a structural sheet NAME (MOUNT/ATTACHMENT DETAIL, S 1.x) pulls it into structural;
+// otherwise it stays in its named category or unclassified.
+const ELECTRICAL_SHEET = /\bE\s*-?\s*\d+\.\d+\b/i;
+const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegExp[]; words?: RegExp[]; vocabulary?: RegExp[] }> = [
   // "ELECTRICAL LINE DIAGRAM" is how the Basson-style sets title their SLD (sheet PV-6) —
   // neither "one-line" nor "3-line" appears anywhere on the sheet, so the whole electrical
   // diagram went unsplit and the submit gate reported the SLD missing from a plan set that
@@ -36,7 +45,7 @@ const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegEx
   // Fire access pathways / setbacks are drawn and labeled on the site plan (the fire-access
   // sheet the gate asks for), so they identify it alongside the sheet name.
   { docType: "site_plan", label: "Site / plot plan", patterns: [/\bSITE PLAN\b/i, /\bPLOT PLAN\b/i, /\bPV\s*1\.[01]\b/i, /\bFIRE\s+(?:PATHWAYS?|SETBACKS?|ACCESS)\b/i] },
-  { docType: "structural", label: "Structural / roof framing", patterns: [/\bMOUNT DETAIL\b/i, /\bATTACHMENT DETAIL\b/i, /\bS\s*1\.\d\b/i, /STRUCTURAL/i], vocabulary: [/\bROOF SECTION\b/i, /\bRAFTER\b/i, /\bTRUSS\b/i] },
+  { docType: "structural", label: "Structural / roof framing", patterns: [/\bMOUNT DETAIL\b/i, /\bATTACHMENT DETAIL\b/i, /\bS\s*1\.\d\b/i], words: [/STRUCTURAL/i], vocabulary: [/\bROOF SECTION\b/i, /\bRAFTER\b/i, /\bTRUSS\b/i] },
   // Match the dedicated SPEC SHEET by its title-block Sheet Name only. Model strings
   // (Q.TRON, Q.MI) and the word "PV MODULE" appear in the spec-callout block on the site
   // plan, SLD, etc., so they are NOT reliable — only the sheet name "… SPECIFICATION SHEET"
@@ -73,10 +82,12 @@ function isIndexOrNotesPage(text: string): boolean {
 // so that single sheet is added to both — and nothing else fans out.
 function classifyPage(text: string): string[] {
   if (isIndexOrNotesPage(text)) return [];
+  const electricalSheet = ELECTRICAL_SHEET.test(text);
   let best: { docType: string; score: number } | null = null;
   for (const cat of CATEGORY_PATTERNS) {
-    const score = cat.patterns.reduce((n, re) => (re.test(text) ? n + 1 : n), 0)
-      + (cat.vocabulary?.some((re) => re.test(text)) ? 1 : 0);
+    const hits = (res: RegExp[] | undefined) => (res ?? []).reduce((n, re) => (re.test(text) ? n + 1 : n), 0);
+    const score = hits(cat.patterns)
+      + (electricalSheet ? 0 : hits(cat.words) + (cat.vocabulary?.some((re) => re.test(text)) ? 1 : 0));
     if (score > 0 && (!best || score > best.score)) best = { docType: cat.docType, score };
   }
   if (!best) return [];
