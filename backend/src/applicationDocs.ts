@@ -5,6 +5,7 @@ import type {
   GeneratedApplicationDocument,
   ProjectRecord,
 } from "../../shared/src/types";
+import { isBillHolderName } from "./accountHolders";
 import { nowIso } from "./time";
 import { hasMpuScope } from "./serviceScope";
 import { findAhjProcessProfile, ahjProcessKnowledgeStatus, jurisdictionCore, registryTermMatches } from "./processProfiles";
@@ -1447,6 +1448,12 @@ Contract value / bid amount: [enter from signed contract]
   );
 }
 
+/** The bill's account holder, when the read is one (accountHolders.isBillHolderName, #28). */
+function billHolder(project: ProjectRecord): string {
+  const holder = payload(project, "ubAccountHolder");
+  return isBillHolderName(holder, project.utility) ? holder : "";
+}
+
 function buildUtilityWorksheet(project: ProjectRecord): GeneratedApplicationDocument {
   return doc(
     "utility-nem",
@@ -1457,7 +1464,7 @@ function buildUtilityWorksheet(project: ProjectRecord): GeneratedApplicationDocu
     `# Utility / NEM Application Worksheet
 
 Utility: ${project.utility || "[verify]"}
-Customer/account holder: ${payload(project, "ubAccountHolder") || project.homeownerName || "[verify]"}
+Customer/account holder: ${billHolder(project) || project.homeownerName || "[verify]"}
 Service address: ${payload(project, "ubServiceAddress") || project.projectAddress || "[verify]"}
 Account number: ${project.accountNumber || "[verify]"}
 Meter number: ${project.meterNumber || "[verify]"}

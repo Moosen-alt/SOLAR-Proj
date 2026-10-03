@@ -1,5 +1,6 @@
 import type { ExistingSystemInfo, IssuerTrackKey, ParserPayload, ProjectRecord, ProjectStatus, TrackIssuerOverrides } from "../../shared/src/types";
 import { nowIso } from "./time";
+import { isBillHolderName } from "./accountHolders";
 
 /** THE OPERATOR'S PER-TRACK ISSUER, as it is stored: flat parser-snapshot keys, written by
  *  PUT /api/projects/:id exactly like permitPathOverride / structureTypeOverride (updateProject merges
@@ -40,7 +41,9 @@ function num(payload: ParserPayload, key: string): number | null {
 function first(payload: ParserPayload, keys: string[]): string {
   for (const key of keys) {
     const value = str(payload, key);
-    if (value) return value;
+    // The bill's holder stands in for the homeowner only when it IS a holder: never the utility's
+    // website or its own name off the bill (#28, "Pnm.Com"). An empty name gets asked for.
+    if (value && (key !== "ubAccountHolder" || isBillHolderName(value, str(payload, "utility")))) return value;
   }
   return "";
 }
