@@ -570,6 +570,67 @@ check("WA: a bare 'CODES:' heading is a code-basis block; a state-amendment tail
   assert.deepEqual(basisOf("LABEL LOCATION: AC DISCONNECT PER CODE: NEC 2020 690.54"), []);
 });
 
+// ---------------------------------------------------------------------------------------
+// #68 — an ASSIGNED product RANGE is not a stated value. A ballasted-racking design report
+// states the site's loads once ("WIND SPEED 105.00 mph GROUND SNOW LOAD 5.00 psf") and then, in a
+// boilerplate "Design Parameters" block, the PRODUCT's applicability ranges ("Basic Wind Speed:
+// 110.00 mph - 150.00 mph", "Ground Snow Load: 0 - 100.00 psf"). Read as values they raised a
+// false conflict warning and — in a verified AHJ above 110 mph — a false below-AHJ blocker.
+// ---------------------------------------------------------------------------------------
+const statedOf = (text: string, crit: string): unknown[] => {
+  const s = extractStatedDesignCriteria(project({}), [{ label: "Structural letter", text }]);
+  return [...new Set(s.criteria.filter((c) => c.criterion === crit && c.source === "Structural letter").map((c) => c.value))];
+};
+const RANGE_BLOCK = "Design Parameters 1. Risk Category I to IV 2. Wind Design a. Basic Wind Speed:110.00 mph - 150.00 mph (ASCE 7-10)/90.00 mph - 180.00 mph (ASCE 7-16) "
+  + "b. Exposure: B, C or D (ASCE 7-10/ASCE 7-16) 3. Snow Design a. Ground Snow Load: 0 - 100.00 psf (ASCE 7-10/ASCE 7-16)";
+
+check("#68 MUST-EXCLUDE: an assigned wind-speed range is refused, with or without the unit repeated, dash or 'to'", () => {
+  for (const t of ["Basic Wind Speed:110.00 mph - 150.00 mph (ASCE 7-10)", "Basic Wind Speed: 110 mph - 150 mph", "Basic Wind Speed: 110 to 150 mph",
+    "Basic Wind Speed: 110 - 150 mph", "wind speed 110 to 150 mph"]) {
+    assert.deepEqual(statedOf(t, "windSpeedMph"), [], t);
+  }
+});
+
+check("#68 MUST-EXCLUDE: an assigned ground-snow range is refused — the range, not the zero", () => {
+  for (const t of ["Ground Snow Load: 0 - 100.00 psf (ASCE 7-10/ASCE 7-16)", "Ground Snow Load: 20 - 30 psf", "Ground Snow Load: 20 psf - 30 psf", "Ground snow load 20-30 psf"]) {
+    assert.deepEqual(statedOf(t, "groundSnowPsf"), [], t);
+  }
+});
+
+check("#68 MUST-PASS: a lone 0 psf, a dash label, and a dash followed by a WORD are still values", () => {
+  assert.deepEqual(statedOf("GROUND SNOW LOAD: 0 PSF", "groundSnowPsf"), [0]);
+  assert.deepEqual(statedOf("GROUND SNOW LOAD - 36 PSF", "groundSnowPsf"), [36]);
+  assert.deepEqual(statedOf("36 PSF – GROUND SNOW LOAD", "groundSnowPsf"), [36]);
+  assert.deepEqual(statedOf("ROOF DEAD LOAD - 3 PSF GROUND SNOW LOAD - 36 PSF", "groundSnowPsf"), [36]);
+  assert.deepEqual(statedOf("WIND SPEED: 110 MPH - EXPOSURE C", "windSpeedMph"), [110]);
+  assert.deepEqual(statedOf("WIND SPEED: 110 MPH - EXPOSURE C", "windExposure"), ["C"]);
+  const ult = extractStatedDesignCriteria(project({}), [{ label: "Structural letter", text: "Ult Wind Speed: 120 mph - Risk Category II" }]).criteria
+    .filter((c) => c.criterion === "windSpeedMph" && c.source === "Structural letter");
+  assert.deepEqual(ult.map((c) => [c.value, c.qualifier]), [[120, "ultimate"]]);
+});
+
+check("#68 MUST-PASS: the report's site loads are read; its Design Parameters ranges are not", () => {
+  const text = `Loads Used for Design BUILDING CODE ASCE 7-16 WIND SPEED 105.00 mph GROUND SNOW LOAD 5.00 psf WIND EXPOSURE B RISK CATEGORY II ${RANGE_BLOCK}`;
+  assert.deepEqual(statedOf(text, "windSpeedMph"), [105]);
+  assert.deepEqual(statedOf(text, "groundSnowPsf"), [5]);
+});
+
+check("#68 MUST-PASS: a Design Parameters block that states SITE values is not refused wholesale", () => {
+  const text = "DESIGN PARAMETERS: GROUND SNOW LOAD: 25 PSF WIND SPEED: 115 MPH EXPOSURE CATEGORY: C RISK CATEGORY: II";
+  assert.deepEqual(statedOf(text, "groundSnowPsf"), [25]);
+  assert.deepEqual(statedOf(text, "windSpeedMph"), [115]);
+});
+
+check("#68 gate: a correct letter plus the range block raises no conflict and no below-AHJ blocker in a verified 115 mph AHJ", () => {
+  const letter = `Loads Used for Design BUILDING CODE ASCE 7-16 WIND SPEED 120.00 mph GROUND SNOW LOAD 25.00 psf WIND EXPOSURE C RISK CATEGORY II ${RANGE_BLOCK}`;
+  const p = project({ snow: "25", windSpeed: "120", wind: "C", riskCategory: "II" });
+  const ctx = ctxFor({ confidence: "verified", verifiedBy: "operator", verifiedAt: "2026-09-20T00:00:00Z",
+    designCriteria: { windSpeedMph: 115, groundSnowLoadPsf: 25, windExposure: "C" } });
+  const fs = run(p, ctx, [{ label: "Structural letter", text: letter }]);
+  assert.ok(!get(fs, BELOW), `no below-ahj: ${get(fs, BELOW)?.message}`);
+  assert.ok(!get(fs, CONFLICT), `no conflict: ${get(fs, CONFLICT)?.message}`);
+});
+
 if (failures) {
   console.error(`\n${failures} design-criteria check(s) FAILED`);
   process.exit(1);
