@@ -1497,7 +1497,8 @@ export function applyLookupFees(db: AppDb, lookup: PermitProcessLookup): Array<{
 
 /**
  * THE TRIGGER (project creation / first QC): enqueue the lookup for an AHJ that has no process of its
- * own — no lookup row, no hand-written profile, no seeded process profile — when a model key and the
+ * own — no lookup row, and no AUTHORITATIVE shipped profile (applicationDocs.shippedProfileIsAuthoritative:
+ * a hand-written profile, or a seeded row whose words settle the structure) — when a model key and the
  * job worker are available. Returns true when a lookup was queued (the caller then leaves fee
  * research to the lookup job, which knows WHICH agency to research).
  */
@@ -1513,8 +1514,12 @@ export async function ensurePermitProcessLookedUp(
   const existing = getPermitProcessLookup(db, project.state, ahj);
   if (existing && !(existing.confidence === "seeded" && lookupHasUnaskedPart(existing))) return false;
   try {
-    const { findAhjProcessProfile } = await import("./processProfiles");
-    if (findAhjProcessProfile(project as never)) return false;
+    // THE ONE PREDICATE (#70): skip only when a shipped profile ANSWERS the process — a hand-written
+    // profile, or a seeded row whose words settle the structure. A seeded row that does not (a bare
+    // row, a hedged note, a state issuer like New Mexico CID) is no reason to skip: the cited lookup
+    // outranks it, and it lands seeded. Dynamic: applicationDocs sits in this module's import cycle.
+    const { shippedProfileIsAuthoritative } = await import("./applicationDocs");
+    if (shippedProfileIsAuthoritative(project as never)) return false;
     const jobQueue = await import("./jobQueue");
     if (!jobQueue.jobWorkerRunning()) return false;
     const key = `${str(project.state).toLowerCase()}|${normalizeAhjName(ahj)}`;

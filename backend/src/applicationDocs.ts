@@ -233,8 +233,8 @@ function permitStructureParts(a: PermitStructureAnswer): { core: string; pre: st
 }
 
 /**
- * FOR THE LOOKUP TRIGGER (permitProcessLookup.ensurePermitProcessLookedUp — not this module's file,
- * which today skips the per-job lookup for ANY AHJ with a seeded process profile): does a shipped
+ * FOR THE LOOKUP TRIGGER (permitProcessLookup.ensurePermitProcessLookedUp, via
+ * shippedProfileIsAuthoritative below): does a shipped
  * profile leave this AHJ's permit process unanswered? True when no hand-written profile matches and
  * the one answer is UNKNOWN — the seeded row has flags but no words, and no cited state rule covers
  * it (Scottsdale's "Looks like combo permit (?)", Santa Fe County's bare "In-person: appointment
@@ -252,11 +252,12 @@ export function shippedProfileNeedsPerJobLookup(project: ProjectRecord): boolean
 /**
  * THE ONE PREDICATE FOR THE LOOKUP TRIGGER (e2e-gap close, 2026-09-26): is a shipped process
  * profile AUTHORITATIVE for this AHJ — i.e. may the per-job lookup be skipped on its account?
- * ensurePermitProcessLookedUp (permitProcessLookup.ts) today skips the lookup for ANY AHJ that has
+ * ensurePermitProcessLookedUp (permitProcessLookup.ts) once skipped the lookup for ANY AHJ that had
  * a seeded profile, so Santa Fe County's bare "In-person: appointment only" row kept the lookup
  * from ever running. Authoritative = a shipped profile exists AND it answers the process (a
- * hand-written profile, or a seeded row whose words settle the structure). The trigger's line
- * becomes: `if (shippedProfileIsAuthoritative(project as never)) return false;`
+ * hand-written profile, or a seeded row whose words settle the structure). The trigger's line is
+ * `if (shippedProfileIsAuthoritative(project as never)) return false;` (#70; pinned by
+ * permitProcessLookupTrigger.test).
  */
 export function shippedProfileIsAuthoritative(project: ProjectRecord): boolean {
   let hasProfile = false;
