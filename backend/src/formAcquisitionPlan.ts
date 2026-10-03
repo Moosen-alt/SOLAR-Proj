@@ -24,7 +24,7 @@ import { documentFetchDisabled } from "./documentFetch";
 import { loadStoredTemplates, storedApplicationKind } from "./ahjForms";
 import { findApplicationProfile, permitStructureForProject } from "./applicationDocs";
 import {
-  agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, applicationKindForPath, formAuthorityFor,
+  agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, applicationKindForPath, formAuthorityFor, localReviewSlotTypes,
   rowBelongsToAuthority, TRACK_FORM_TYPES, type AgencyApplicationForm, type FormAuthority,
 } from "./applicationDocsAgency";
 import { curatedFormSource, curatedFormSourcesFor } from "./curatedAhjForms";
@@ -191,7 +191,14 @@ export function acceptedFormTypes(formType: string, structure: "separate" | "com
 /** acceptedFormTypes for this project's permit structure (unknown when it cannot be read). */
 export function acceptedFormTypesFor(project: ProjectRecord, formType: string): string[] {
   let structure: "separate" | "combo" | "unknown" = "unknown";
-  if (formType === "permit_application") { try { structure = permitStructureForProject(project); } catch { /* unknown */ } }
+  if (formType === "permit_application") {
+    // A state issuer's project: the generic slot is the AHJ's local review application, held under
+    // whatever type the AHJ's own blank was stored as (applicationDocsAgency.applicationSlotFor) —
+    // hasStoredTemplateOfType reads the AHJ's own rows only, so an issuer's form never counts here.
+    const local = localReviewSlotTypes(project);
+    if (local.length) return local;
+    try { structure = permitStructureForProject(project); } catch { /* unknown */ }
+  }
   return acceptedFormTypes(formType, structure);
 }
 

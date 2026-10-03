@@ -41,7 +41,7 @@ import { iowaPvWorksheetValues } from "./iowaPvWorksheet";
 import { documentFetchDisabled } from "./documentFetch";
 import {
   agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce,
-  agencyTrackFormTypes, applicationKindForPath, explicitSingleFamilyAnswer, formApplicationKind, formAuthorityFor, rowBelongsToAuthority, structureMeaningOf,
+  agencyTrackFormTypes, applicationKindForPath, applicationSlotFor, stateIssuerKeepsGenericSlot, explicitSingleFamilyAnswer, formApplicationKind, formAuthorityFor, rowBelongsToAuthority, structureMeaningOf,
   structureDescriptionOf,
   TRACK_FORM_TYPES, trackForFormType, tracksIssuedByOther,
 } from "./applicationDocsAgency";
@@ -2634,6 +2634,11 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string, opts:
   for (const other of tracksIssuedByOther({ state, ahj })) {
     // A state issuer's project keeps the generic slot for the AHJ's local review application.
     const types = agencyTrackFormTypes({ state, ahj }, other.track);
+    // ...and the AHJ's OWN rows are never displaced by the state issuer's (Helm's review of #64): the
+    // county's blank, whatever type it was stored under, is the local review application
+    // (applicationDocsAgency.applicationSlotFor), not a competing copy of the issuer's form.
+    const keepOwn = stateIssuerKeepsGenericSlot({ state, ahj });
+    const displaced = (t: StoredTemplate): boolean => !keepOwn && !t.issuedBy && types.includes(t.formType);
     // C1 THE AMPLIFIER (agency-contain): the agency's rows THIS job may use — curated, person-placed, or
     // on a site this job's own lookup anchors (applicationDocsAgency.agencyRowAppliesToJob). A row of the
     // agency's that the AHJ's name happens to contain ("Unincorporated Kestrel County") is held to the
@@ -2649,8 +2654,8 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string, opts:
       .map((row) => storedTemplateFromRow(row, other.name))
       .filter((t): t is StoredTemplate => Boolean(t));
     if (!agency.length) continue;
-    if (out.some((t) => !t.issuedBy && types.includes(t.formType) && t.verified)) continue;
-    out = out.filter((t) => t.issuedBy || !types.includes(t.formType));
+    if (out.some((t) => displaced(t) && t.verified)) continue;
+    out = out.filter((t) => !displaced(t));
     for (const t of agency) if (!out.some((x) => x.templateId === t.templateId)) out.push(t);
   }
   return out;
@@ -2781,8 +2786,8 @@ export function filledApplicationForms(db: AppDb, projectId: string, permitPath?
     let formName = "";
     let kind: "prescriptive" | "structural" | null = null;
     const tmpl = formId.startsWith("tmpl-")
-      ? db.get<{ form_type?: string; original_filename?: string; field_map?: string }>(
-          "SELECT form_type, original_filename, field_map FROM ahj_form_templates WHERE id = ?", [formId.slice(5)])
+      ? db.get<{ form_type?: string; ahj_name?: string; original_filename?: string; field_map?: string }>(
+          "SELECT form_type, ahj_name, original_filename, field_map FROM ahj_form_templates WHERE id = ?", [formId.slice(5)])
       : null;
     // AN ORPHANED FILL IS NOT AN APPLICATION. A filled PDF counts only when the form it was
     // filled FROM still exists: its ahj_form_templates row (tmpl-<id>) or its registry def.
@@ -2793,7 +2798,9 @@ export function filledApplicationForms(db: AppDb, projectId: string, permitPath?
     // and pass docs.complete on a form nobody can identify, re-fill, or verify.
     if (formId.startsWith("tmpl-") && !tmpl) continue;
     if (tmpl) {
-      if (tmpl.form_type) docType = String(tmpl.form_type);
+      // WHOSE SLOT, by AUTHORITY (applicationSlotFor): under a state issuer the AHJ's own fill keys to
+      // the local review slot whatever its stored type, and only the issuer's own fill to its row.
+      if (tmpl.form_type) docType = applicationSlotFor(projectMatch, String(tmpl.form_type), String(tmpl.ahj_name || ""));
       formName = String(parseJson<{ formName?: string }>(String(tmpl.field_map || "{}"), {}).formName || tmpl.original_filename || "");
       kind = storedApplicationKind(tmpl);
     } else {

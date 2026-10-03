@@ -50,6 +50,35 @@ export function stateIssuerKeepsGenericSlot(project: Pick<ProjectRecord, "state"
   try { return Boolean(stateIssuerFormFor(project)); } catch { return false; }
 }
 
+/** WHOSE SLOT A STORED APPLICATION FILLS under a state issuer (issue #53, Helm's review of PR #64): its
+ *  AUTHORITY, never its form_type. The pre-#45 pass asked the county for `building_application`, and
+ *  classifyFormType keeps that fallback for "…Multi-Purpose Permit Application.pdf" — so the AHJ's OWN
+ *  blank is stored typed building_application. Keyed by type, that row (and its fill) satisfied the
+ *  issuer's row and never the local one. Here:
+ *   - a row whose authority is the ISSUER keeps its track type (a generic-typed one is the issuer's
+ *     first covered track) — only the issuer's own form fills the issuer's row;
+ *   - any other row of a covered track's types (or the generic type) is the AHJ's own application:
+ *     the local zoning / site-development review slot, `permit_application`.
+ *  Every other project, and every other type (checklists, worksheets), is returned unchanged. */
+export function applicationSlotFor(project: Pick<ProjectRecord, "state" | "ahj">, formType: string, authority: string): string {
+  let form: ReturnType<typeof stateIssuerFormFor> = null;
+  try { form = stateIssuerFormFor(project); } catch { form = null; }
+  if (!form) return formType;
+  const covered = new Set<string>(["permit_application", ...form.tracks.flatMap((t) => TRACK_FORM_TYPES[t])]);
+  if (!covered.has(formType)) return formType;
+  if (rowBelongsToAuthority(authority, form.agency)) return formType === "permit_application" ? TRACK_FORM_TYPES[form.tracks[0]][0] : formType;
+  return "permit_application";
+}
+
+/** The stored types the AHJ's OWN rows may carry and still be the local review application
+ *  (applicationSlotFor) — what acquisition counts as "held" for the generic slot. [] when no state
+ *  issuer applies. */
+export function localReviewSlotTypes(project: Pick<ProjectRecord, "state" | "ahj">): string[] {
+  let form: ReturnType<typeof stateIssuerFormFor> = null;
+  try { form = stateIssuerFormFor(project); } catch { form = null; }
+  return form ? [...new Set(["permit_application", ...form.tracks.flatMap((t) => TRACK_FORM_TYPES[t])])] : [];
+}
+
 /** The stored form types an issuing agency's rows replace for a track (ahjForms.loadStoredTemplates):
  *  TRACK_FORM_TYPES, less the generic slot where it is the AHJ's local review application. */
 export function agencyTrackFormTypes(project: Pick<ProjectRecord, "state" | "ahj">, track: FormTrack): readonly string[] {

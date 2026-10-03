@@ -48,7 +48,7 @@ import { applicationProfiles, findApplicationProfile, namedApplicationForm, perm
 import { normalizeAhjName, permitProcessFor, stateIssuerFormFor, stateRulesFor } from "./permitProcess";
 import { namesPvWorksheet, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import {
-  agencyApplicationForms, agencyListNamesDocument, agencyListReplacesLine, agencyRowAppliesToJob, anchorSitesOnce, issuingAgencyDocumentList, prerequisiteSettled, rowBelongsToAuthority, tracksIssuedByOther, TRACK_FORM_TYPES,
+  agencyApplicationForms, applicationSlotFor, agencyListNamesDocument, agencyListReplacesLine, agencyRowAppliesToJob, anchorSitesOnce, issuingAgencyDocumentList, prerequisiteSettled, rowBelongsToAuthority, tracksIssuedByOther, TRACK_FORM_TYPES,
   type AgencyApplicationForm, type AgencyLineStatus, type AgencyLineStatusOf, type FormTrack,
 } from "./applicationDocsAgency";
 import { filledApplicationForms, heldUnfillableAgencyBlanks } from "./ahjForms";
@@ -1027,8 +1027,10 @@ export function agencyListStatusResolver(db: AppDb, project: ProjectRecord): Age
       return "not_on_file";
     }
     if (types.some((t) => filled[t])) return "filled";
-    if (stored.some((t) => types.includes(t.formType || "permit_application") && !formContradictsPath(t.def.formName, permitPath, t.applicationKind))) return "on_file";
-    if (blanks.some((b) => types.includes(b.formType) && !formContradictsPath(b.formName, permitPath, b.applicationKind))) return "held_not_fillable";
+    // The slot a stored row fills is its AUTHORITY's (applicationSlotFor) — the key filledApplicationForms
+    // gives its fill — so a state issuer's line is never "on file" off the AHJ's own blank, nor the reverse.
+    if (stored.some((t) => types.includes(applicationSlotFor(project, t.formType || "permit_application", t.authority)) && !formContradictsPath(t.def.formName, permitPath, t.applicationKind))) return "on_file";
+    if (blanks.some((b) => types.includes(applicationSlotFor(project, b.formType, b.agency)) && !formContradictsPath(b.formName, permitPath, b.applicationKind))) return "held_not_fillable";
     return "not_on_file";
   };
 }
@@ -1217,7 +1219,7 @@ export function missingFilledAtStaging(db: AppDb, project: ProjectRecord, missin
     const formType = new Map(db.query<{ id: string; form_type: string }>("SELECT id, form_type FROM ahj_form_templates").map((r) => [String(r.id), String(r.form_type || "permit_application")]));
     for (const t of stored) {
       if (!formAllowedForPath(t.def.formName, permitPath, t.applicationKind)) continue;
-      const docType = formType.get(t.templateId) ?? "";
+      const docType = applicationSlotFor(project, formType.get(t.templateId) ?? "", t.authority);
       if (APPLICATION_DOC_TYPES.has(docType) && !willFill[docType]) willFill[docType] = t.def.formName;
     }
   }

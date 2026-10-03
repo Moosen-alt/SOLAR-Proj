@@ -106,6 +106,117 @@ await check("Albuquerque (full-service city): unchanged — no state form, no CI
   assert(issuingAgencyDocumentList(abq) === null, "agency list for Albuquerque");
 });
 
+
+// ── THE REALISTIC STORED STATE (Helm's review of PR #64) ────────────────────────────────────────────
+// The pre-#45 pass asked Valencia County for `building_application`, and classifyFormType keeps the
+// caller's fallback for "…Multi-Purpose Permit Application.pdf" — so the county's OWN blank (and its
+// fill) is stored as building_application. Whose slot a template fills is its AUTHORITY, never its
+// form_type: the county's row is the local review application; only a CID-authored row fills CID's.
+const { PDFDocument, StandardFonts } = await import("pdf-lib");
+const repo = await import("../src/repository");
+const forms = await import("../src/ahjForms");
+const reqDocs = await import("../src/requiredDocuments");
+async function acroPdf(title: string): Promise<Buffer> {
+  const d = await PDFDocument.create();
+  const pg = d.addPage([612, 792]);
+  pg.drawText(title, { x: 40, y: 740, size: 12, font: await d.embedFont(StandardFonts.Helvetica) });
+  d.getForm().createTextField("Owner name").addToPage(pg, { x: 40, y: 600, width: 200, height: 18 });
+  return Buffer.from(await d.save());
+}
+const mapFor = (formName: string) => ({ formName, sourceUrl: "", fillMode: "acroform", textFields: { "Owner name": "project.homeownerName" }, checkboxes: {}, notes: "" });
+// Read off #45's issuer answer (on main too), so a pre-fix run fails these checks on BEHAVIOUR.
+const { stateTradeIssuerFor } = await import("../src/permitProcess");
+const CID_NAME = String(stateTradeIssuerFor(valencia)?.value ?? "");
+const job = repo.createProject(db, {
+  owner: "Example Owner", street: "100 Example Rd", city: "Los Lunas", state: "NM", zip: "87031", ahj: "Valencia County", utility: "Example Utility",
+  dcKw: "8.2", acKw: "7.6", homeownerPhone: "5050000000", mounting: "Roof Mount", structureDescription: "Single-family dwelling",
+} as never).project as ProjectRecord;
+const filledDir = path.resolve(process.cwd(), "backend/data/filled", job.id);
+const writeFill = async (templateId: string) => {
+  fs.mkdirSync(filledDir, { recursive: true });
+  fs.writeFileSync(path.join(filledDir, `tmpl-${templateId}.pdf`), await acroPdf("filled"));
+};
+const presence = () => {
+  const inv = reqDocs.documentInventory(db, job);
+  const local = inv.presence.find((d) => d.docType === "permit_application");
+  const cid = inv.presence.find((d) => CID.test(d.label));
+  return { local, cid, all: inv.presence.filter((d) => reqDocs.APPLICATION_DOC_TYPES.has(d.docType)).map((d) => `${d.docType}:${d.present}:${d.via}`) };
+};
+try {
+  const countyId = auto.storeAhjFormTemplate(db, { ahjName: "Valencia County", state: "NM", formType: "building_application", filename: "Valencia County Multi-Purpose Permit Application.pdf",
+    bytes: await acroPdf("Valencia County Multi-Purpose Permit Application"), map: mapFor("Valencia County Multi-Purpose Permit Application") } as never);
+  await check("setup: the county's own blank is stored typed building_application (the pre-#45 pass)", () => {
+    const t = db.get<{ form_type: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [countyId]);
+    assert(t?.form_type === "building_application", JSON.stringify(t));
+  });
+  await check("before the fill: the staging forecast fills the LOCAL row off the county's blank, never CID's", () => {
+    const inv = reqDocs.documentInventory(db, job);
+    const rowsOf = inv.presence.filter((d) => d.docType === "permit_application" || CID.test(d.label)).map((d) => ({ ...d, present: false }));
+    const forecast = reqDocs.missingFilledAtStaging(db, { ...job, parserSnapshot: { ...(job.parserSnapshot ?? {}), permitPathOverride: "engineered" } } as ProjectRecord, rowsOf);
+    const local = [...forecast].some((d) => d.docType === "permit_application");
+    const cid = [...forecast].some((d) => CID.test(d.label));
+    assert(local && !cid, JSON.stringify({ local, cid, rows: rowsOf.map((d) => d.docType) }));
+  });
+  await writeFill(countyId);
+  await check("the county's building_application-typed fill satisfies the LOCAL row and never CID's", () => {
+    const { local, cid, all } = presence();
+    assert(local?.present === true, `local: ${JSON.stringify(all)}`);
+    assert(cid && cid.present === false, `CID counted present off the county's fill: ${JSON.stringify(all)}`);
+  });
+  await check("the job's list: the county line filled, CID's line not on file", () => {
+    const status = reqDocs.agencyListStatusResolver(db, job);
+    const items = issuingAgencyDocumentList(job, status)?.items ?? [];
+    const cidLine = items.find((i) => i.role === "application" && CID.test(String(i.agency)));
+    const localLine = items.find((i) => i.docTypes.includes("permit_application") && /Valencia County/.test(i.text));
+    assert(localLine?.status === "filled", `local line: ${JSON.stringify(localLine)}`);
+    assert(cidLine && cidLine.status !== "filled" && cidLine.status !== "on_file", `CID line: ${JSON.stringify(cidLine)}`);
+  });
+  await check("acquisition: the local slot counts the county's own blank as held (no re-acquire)", async () => {
+    const res = await auto.ensureAhjFormTemplate(db, noModel, job, "permit_application", { allowResearch: false });
+    assert(res.status === "exists", JSON.stringify(res));
+  });
+  await check("acquisition: CID's slot is NOT satisfied by the county's building_application blank", async () => {
+    const res = await auto.ensureAhjFormTemplate(db, noModel, job, "building_application", { allowResearch: false });
+    assert(res.status === "not_found" && CID.test(res.message), JSON.stringify(res));
+  });
+
+  // A person uploads CID's blank (no source URL — the upload route stores none) and it is filled.
+  const cidId = auto.storeAhjFormTemplate(db, { ahjName: CID_NAME, state: "NM", formType: "building_application", filename: "CID Permit Application.pdf",
+    bytes: await acroPdf("CID Permit Application"), map: mapFor("CID Permit Application") } as never);
+  await check("a CID upload never displaces the county's own row from the fill list", () => {
+    const loaded = forms.loadStoredTemplates(db, "Valencia County", "NM").map((t) => t.templateId);
+    assert(loaded.includes(countyId) && loaded.includes(cidId), JSON.stringify(loaded));
+  });
+  await writeFill(cidId);
+  await check("after CID's blank is uploaded and filled: the local row AND CID's row are present", () => {
+    const { local, cid, all } = presence();
+    assert(local?.present === true && cid?.present === true, JSON.stringify(all));
+  });
+  // CONTRAST (fails on main on behaviour, not an import): the SAME building_application-typed own blank
+  // keys to the city's own building row in Albuquerque (unchanged) and to the local review slot only
+  // where a state agency issues the trade permits.
+  await check("Albuquerque control vs Valencia: an own building_application fill stays building in Albuquerque, local review in Valencia", async () => {
+    const abq = repo.createProject(db, {
+      owner: "Example Owner", street: "200 Example Ave", city: "Albuquerque", state: "NM", zip: "87102", ahj: "Albuquerque", utility: "Example Utility",
+      dcKw: "8.2", acKw: "7.6", homeownerPhone: "5050000000", mounting: "Roof Mount", structureDescription: "Single-family dwelling",
+    } as never).project as ProjectRecord;
+    const abqId = auto.storeAhjFormTemplate(db, { ahjName: "Albuquerque", state: "NM", formType: "building_application", filename: "Albuquerque Building Permit Application.pdf",
+      bytes: await acroPdf("Albuquerque Building Permit Application"), map: mapFor("Albuquerque Building Permit Application") } as never);
+    const dir = path.resolve(process.cwd(), "backend/data/filled", abq.id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `tmpl-${abqId}.pdf`), await acroPdf("filled"));
+    try {
+      const filled = forms.filledApplicationForms(db, abq.id);
+      assert(filled.length === 1 && filled[0].docType === "building_application", JSON.stringify(filled));
+      const county = forms.filledApplicationForms(db, job.id).find((f) => f.filePath.endsWith(`tmpl-${countyId}.pdf`));
+      assert(county?.docType === "permit_application", `Valencia's own fill keyed ${county?.docType}`);
+      assert(forms.loadStoredTemplates(db, "Albuquerque", "NM").some((t) => t.templateId === abqId), "city row loaded");
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+} finally {
+  fs.rmSync(filledDir, { recursive: true, force: true });
+}
+
 if (failures) { console.error(`\n${failures} NM state-issuer form check(s) FAILED.`); process.exit(1); }
 console.log("\nAll NM state-issuer form checks passed.");
 process.exit(0);
