@@ -2353,6 +2353,46 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
     },
   },
   {
+    // Kept beside v39 (the other corrections column) rather than at the end of the list: the list
+    // runs sorted by version, and parallel PRs appending here collide on the same lines.
+    version: 43,
+    name: "corrections_filing_track",
+    up: (db) => {
+      // EVERY CORRECTION KNOWS WHICH FILING IT ANSWERS (#47). Corrections were per PROJECT, so a
+      // utility deficiency counted as a permit correction and a notice with eight items as eight
+      // cycles. track: 'building' | 'electrical' | 'combo' | 'mpu' | 'nem', '' = unknown (reported
+      // as unknown, never guessed from prose). submission_id: the filing it answers, when known.
+      // notice_id groups the items of one notice; noticed_at is the AHJ's / utility's own date (the
+      // cure clock starts there; NULL = falls back to created_at). The corrections and
+      // permit_utility_knowledge CREATE blocks run in the base schema, so these come after them.
+      addColumnIfMissing(db, "corrections", "track", "TEXT NOT NULL DEFAULT ''");
+      addColumnIfMissing(db, "corrections", "submission_id", "TEXT");
+      addColumnIfMissing(db, "corrections", "notice_id", "TEXT");
+      addColumnIfMissing(db, "corrections", "noticed_at", "TEXT");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_corrections_submission ON corrections(submission_id);");
+      // A utility's cure window for an interconnection deficiency, in days. NULL = not on record
+      // (kpi.utilityDeficiencyCureDays falls back to the seed, then the 5-day default).
+      addColumnIfMissing(db, "permit_utility_knowledge", "deficiency_cure_days", "INTEGER");
+      // PER-FILING KPI, keyed by the submissions row a person sent. Counts and dates only — never
+      // a correction's text (rule 2 has no business in a metrics table, and neither do addresses).
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS filing_metrics (
+          submission_id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          track TEXT NOT NULL DEFAULT '',
+          submitted_at TEXT,
+          finished_at TEXT,
+          first_notice_at TEXT,
+          notice_count INTEGER NOT NULL DEFAULT 0,
+          item_count INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_filing_metrics_project ON filing_metrics(project_id);
+      `);
+    },
+  },
+  {
     version: 40,
     name: "signatures_client_scope",
     up: (db) => {

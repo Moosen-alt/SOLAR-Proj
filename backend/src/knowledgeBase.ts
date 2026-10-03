@@ -30,7 +30,7 @@ import { logger } from "./logger";
 import { inferPlatform, isRecognizedPlatform, looksLikeBareUrl } from "./portalPlatformRules";
 import { isInformationalPageUrl, isUtilityPlatformUrl, portalHostOf } from "./portalChannel";
 import { HttpError } from "./httpError";
-import { KNOWN_POWERCLERK_PORTALS, foreignKnownTenant, knownPowerClerkUtility, knownTenantOwner, provablyDifferentUtility, sameUtilityEntity } from "./utilityIdentity";
+import { KNOWN_POWERCLERK_PORTALS, foreignKnownTenant, knownPowerClerkUtility, knownTenantOwner, provablyDifferentUtility, sameUtilityEntity, utilityIdentityOf, type UtilityIdentity } from "./utilityIdentity";
 
 type Row = Record<string, unknown>;
 
@@ -2731,7 +2731,32 @@ export function seedInitialKnowledgeBase(db: AppDb): void {
   seedOfficialKnowledge(db);
   seedSanitizedAhjProfiles(db);
   seedOperatorRulings(db);
+  seedDeficiencyCureWindows(db);
   backfillExistingProjectLearning(db);
+}
+
+// A UTILITY'S CURE WINDOW for an interconnection deficiency, in days, by the one state-gated
+// identity (utilityIdentityOf). Seed data: it lands on a utility row only where that row has no
+// window yet, so a window a person typed is never overwritten (rule 3), and the KPI resolver
+// (kpi.utilityDeficiencyCureDays) reads the row first and this table only for a row it has not
+// reached. Every other utility takes the 5-day default until its record says otherwise.
+export const SEEDED_DEFICIENCY_CURE_DAYS: Partial<Record<UtilityIdentity, number>> = {
+  pacific_gas_electric: 10,
+};
+
+export function seededDeficiencyCureDays(state: unknown, utility: unknown): number | null {
+  const identity = utilityIdentityOf(state, utility);
+  return (identity && SEEDED_DEFICIENCY_CURE_DAYS[identity]) || null;
+}
+
+function seedDeficiencyCureWindows(db: AppDb): void {
+  const rows = db.query<{ id: string; state: string; utility: string }>(
+    "SELECT id, state, utility FROM permit_utility_knowledge WHERE ahj = '' AND utility <> '' AND deficiency_cure_days IS NULL",
+  );
+  for (const row of rows) {
+    const days = seededDeficiencyCureDays(row.state, row.utility);
+    if (days) db.run("UPDATE permit_utility_knowledge SET deficiency_cure_days = ? WHERE id = ? AND deficiency_cure_days IS NULL", [days, row.id]);
+  }
 }
 
 // ---------------------------------------------------------------------------

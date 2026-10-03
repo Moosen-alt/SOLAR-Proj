@@ -1527,7 +1527,12 @@ app.patch("/api/corrections/:id/sla", (req, res) => {
 app.post("/api/projects/:id/corrections", asyncHandler(async (req, res) => {
   const correctionText = String(req.body?.correctionText || "").trim();
   if (!correctionText) throw new HttpError(400, "correctionText is required.");
-  addManualCorrection(db, String(req.params.id), correctionText, req.body?.source || "manual");
+  // The filing it answers and the notice it belongs to (#47); a submissionId off this project is a 404.
+  addManualCorrection(db, String(req.params.id), correctionText, req.body?.source || "manual", {
+    submissionId: typeof req.body?.submissionId === "string" ? req.body.submissionId : null,
+    noticeId: typeof req.body?.noticeId === "string" ? req.body.noticeId : null,
+    noticedAt: typeof req.body?.noticedAt === "string" ? req.body.noticedAt : null,
+  });
   // Generate the advisory AI draft reply (human reviews before sending). The
   // correction-handling agent (data-update proposals + richer bucket) runs
   // asynchronously as a correction_triage job enqueued by addManualCorrection.

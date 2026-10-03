@@ -974,6 +974,10 @@ export interface HumanReviewItem {
  *  stored before extraction existed — sourceText is "". */
 export type CorrectionExtraction = "items" | "whole_text" | "not_extracted";
 
+/** The filing a correction answers, by track (migration v43): from the submissions row or the
+ *  tracking target it was read on, never from its prose. '' = unknown. */
+export type CorrectionTrack = "" | "building" | "electrical" | "combo" | "mpu" | "nem";
+
 export interface CorrectionRecord {
   id: string;
   projectId: string;
@@ -993,6 +997,13 @@ export interface CorrectionRecord {
   humanApproved: boolean;
   resubmitted: boolean;
   newRuleRecommended: boolean;
+  track: CorrectionTrack;
+  /** The submissions row this answers, when one could be named. */
+  submissionId: string | null;
+  /** Groups the items of one notice: one notice is one correction cycle. */
+  noticeId: string;
+  /** The AHJ's / utility's own date for the notice; null = only the ingestion time is known. */
+  noticedAt: string | null;
   createdAt: string;
   closedAt: string | null;
   dueAt: string | null;
