@@ -38,7 +38,7 @@ process.env.AHJ_PROCESS_REFERENCE_PATH = REFERENCE;
 
 const { openDatabase } = await import("../src/db");
 const { getSubmittalTracks } = await import("../src/submittalTracks");
-const { ensurePermitProcessLookedUp, acceptPortalForPermit } = await import("../src/permitProcessLookup");
+const { ensurePermitProcessLookedUp, acceptPortalForPermit, lookupPortalEntity } = await import("../src/permitProcessLookup");
 const { savePermitProcessLookup, trackIssuer, getPermitProcessLookup, normalizeAhjName } = await import("../src/permitProcess");
 const { hostFitsTrackAndEntity } = await import("../src/portalChannel");
 const jobQueue = await import("../src/jobQueue");
@@ -73,8 +73,13 @@ const card = (p: never, type: string) => getSubmittalTracks(db, p).find((t) => t
 const queuedFor = (ahj: string): number =>
   db.query<{ id: string }>("SELECT id FROM job_queue WHERE job_type = 'permit_process_lookup' AND payload LIKE ?", [`%"ahj":${JSON.stringify(ahj)}%`]).length;
 // Runs the trigger, then — synchronously, before the enqueue kick's macrotask — retires the jobs.
+// `statuses` gets every lookup job's status as it stands the moment the trigger's await resumes:
+// the trigger enqueues in one synchronous pass, so none can have been started by the kick yet.
+let statuses: Array<{ ahj: string; status: string }> = [];
 const trigger = async (p: never): Promise<boolean> => {
   const queued = await ensurePermitProcessLookedUp(db, p);
+  statuses = db.query<{ payload: string; status: string }>("SELECT payload, status FROM job_queue WHERE job_type = 'permit_process_lookup' AND status IN ('pending','running')")
+    .map((r) => ({ ahj: JSON.parse(r.payload).ahj, status: r.status }));
   db.run("UPDATE job_queue SET status = 'failed' WHERE job_type = 'permit_process_lookup' AND status IN ('pending','running')");
   return queued;
 };
@@ -120,10 +125,17 @@ await check("(c2) MUST-PASS: CID's own looked-up portal reaches the card, labell
     assert.equal(c.issuer?.source, "state_rule");
   }
 });
-await check("(c3) MUST-EXCLUDE (rule 5): an information page / document on CID's site is never the card's portal", () => {
+await check("(c3) MUST-EXCLUDE (rule 5): an information page / document on CID's site is never the card's portal", async () => {
+  // The entity CID's own lookup job judges portals against (runPermitProcessLookup keys it on the
+  // job's ahj): CID's, never Valencia County's.
+  const entity = await lookupPortalEntity(db, "NM", CID);
+  assert.ok(entity, "CID has a portal entity");
+  assert.equal(entity!.scope, "ahj");
+  assert.equal(entity!.name, CID);
   for (const u of [CID_INFO, CID_PDF]) {
     assert.equal(hostFitsTrackAndEntity("building", null, u, "research").fits, false, u);
-    assert.equal(acceptPortalForPermit(cited(u, u, "Apply for a permit online"), "process part", { seenUrls: [u] }).code, "rule5", u);
+    assert.equal(hostFitsTrackAndEntity("building", entity, u, "research").fits, false, u);
+    assert.equal(acceptPortalForPermit(cited(u, u, "Apply for a permit online"), "process part", { seenUrls: [u], entity }).code, "rule5", u);
     savePermitProcessLookup(db, {
       state: "NM", ahj: CID, lookedUpAt: new Date().toISOString(), issuingAgency: none(), permitStructure: none(),
       permits: [permit("structural", "Building permit", cited(u, u, "Apply for a permit online")), permit("electrical", "Electrical permit", cited(u, u, "Apply for a permit online"))],
@@ -135,6 +147,21 @@ await check("(c3) MUST-EXCLUDE (rule 5): an information page / document on CID's
       assert.match(c.channel, CID_RE, `${t}: ${c.channel}`);
     }
   }
+});
+await check("(c3b) the AHJ's OWN lookup answering for CID is credited to the AHJ, naming CID — never 'per-job lookup for CID'", () => {
+  db.run("DELETE FROM permit_process_lookups");
+  getPermitProcessLookup(db, "NM", CID);
+  const COUNTY_SRC = "https://www.co.valencia.nm.us/building";
+  savePermitProcessLookup(db, {
+    state: "NM", ahj: "Valencia County", lookedUpAt: new Date().toISOString(), issuingAgency: none(), permitStructure: none(),
+    permits: [{ ...permit("structural", "Building permit", cited(CID_PORTAL, COUNTY_SRC, "Building permits are issued by CID at nmrld.my.site.com")),
+      issuingAgency: cited(CID, COUNTY_SRC, "Building permits are issued by the state Construction Industries Division") }],
+  } as never);
+  const c = card(valencia, "building");
+  assert.equal(c.channelBasis, "cited", c.channel);
+  assert.ok(c.channel.includes(CID_PORTAL), c.channel);
+  assert.match(c.channel, new RegExp(`per-job lookup for Valencia County, naming ${CID_RE.source}, cited: ${COUNTY_SRC.replace(/[.\/]/g, "\\$&")}`), c.channel);
+  assert.doesNotMatch(c.channel, new RegExp(`per-job lookup for ${CID_RE.source}`), c.channel);
 });
 await check("(c4) Albuquerque (the city issues): unchanged — no CID, the AHJ's own wording", () => {
   for (const t of ["building", "electrical", "combo", "permit"]) {
@@ -154,6 +181,9 @@ try {
   await check("(t1) MUST-PASS: a Valencia County project queues the lookup for CID, the issuer, beside the AHJ's own", async () => {
     const q = await trigger(valencia);
     assert.equal(q, true);
+    // Enqueued in one synchronous pass after every gate: both still pending when the await resumes.
+    assert.deepEqual(statuses.map((r) => r.status), ["pending", "pending"], JSON.stringify(statuses));
+    assert.deepEqual(statuses.map((r) => r.ahj).sort(), [CID, "Valencia County"].sort());
     assert.equal(queuedFor(CID), 1, `CID rows: ${queuedFor(CID)}`);
     assert.equal(queuedFor("Valencia County"), 1);
     const payload = JSON.parse(db.get<{ payload: string }>("SELECT payload FROM job_queue WHERE payload LIKE ?", [`%"ahj":${JSON.stringify(CID)}%`])!.payload);
@@ -179,6 +209,21 @@ try {
     await trigger(abq);
     assert.equal(queuedFor(CID), 0);
     assert.equal(queuedFor("Albuquerque"), 1);
+  });
+  await check("(t5) an OPERATOR's issuer (NM and Oregon) adds no extra lookup — the project's own lookup answers for it", async () => {
+    db.run("DELETE FROM job_queue WHERE job_type = 'permit_process_lookup'");
+    db.run("DELETE FROM permit_process_lookups");
+    const losLunasIssues = { ...(valencia as object), id: `iss-${++seq}`, trackIssuers: { building: "Village of Los Lunas", electrical: "Village of Los Lunas" } } as never;
+    assert.equal(trackIssuer(losLunasIssues, "building").source, "operator");
+    await trigger(losLunasIssues);
+    assert.equal(queuedFor(CID), 0);
+    assert.equal(queuedFor("Village of Los Lunas"), 0);
+    assert.equal(queuedFor("Valencia County"), 1);
+    const newberg = { ...project("City of Newberg", "Newberg"), state: "OR", zip: "97132", utility: "Portland General Electric", trackIssuers: { electrical: "Yamhill County" } } as never;
+    assert.equal(trackIssuer(newberg, "electrical").source, "operator");
+    await trigger(newberg);
+    assert.equal(queuedFor("Yamhill County"), 0);
+    assert.ok(queuedFor("City of Newberg") <= 1);
   });
 } finally {
   delete process.env.ANTHROPIC_API_KEY;

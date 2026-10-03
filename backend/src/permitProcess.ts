@@ -440,17 +440,25 @@ export type IssuerProject = Pick<ProjectRecord, "state" | "ahj"> & Partial<Pick<
  *  lookup keyed on Marion County itself — without this the view would lose every cited answer the
  *  per-job lookup found for this job. Otherwise the issuer's own lookup answers. */
 export function permitAnswerForTrack(project: Pick<ProjectRecord, "state" | "ahj"> & Partial<Pick<ProjectRecord, "trackView">>, track: string | null | undefined): PermitProcessPermitAnswer | null {
+  return permitAnswerForTrackFrom(project, track)?.answer ?? null;
+}
+
+/** permitAnswerForTrack, saying WHOSE ROW answered (#59): "project" — on a track view, the project
+ *  AHJ's own lookup whose permit cites the issuer (the Marion case); "issuer" — the row keyed on
+ *  project.ahj (on a view, the issuer's own lookup). The card names the agency whose lookup it is. */
+export function permitAnswerForTrackFrom(project: Pick<ProjectRecord, "state" | "ahj"> & Partial<Pick<ProjectRecord, "trackView">>, track: string | null | undefined): { answer: PermitProcessPermitAnswer; from: "issuer" | "project" } | null {
   const want = track === "building" ? "structural" : track === "electrical" || track === "mpu" ? "electrical" : track === "combo" || track === "permit" ? "combo" : "";
   if (!want) return null;
   const view = project.trackView;
   if (view && String(view.projectAhj ?? "").trim()) {
     const base = permitProcessFor({ state: project.state, ahj: view.projectAhj });
     const fromBase = base?.permits?.find((p) => p.discipline === want) ?? null;
-    if (fromBase && answered(fromBase.issuingAgency) && sameAgencyName(fromBase.issuingAgency.value, project.ahj)) return fromBase;
+    if (fromBase && answered(fromBase.issuingAgency) && sameAgencyName(fromBase.issuingAgency.value, project.ahj)) return { answer: fromBase, from: "project" };
   }
   const lk = permitProcessFor(project);
   if (!lk?.permits?.length) return null;
-  return lk.permits.find((p) => p.discipline === want) ?? null;
+  const own = lk.permits.find((p) => p.discipline === want);
+  return own ? { answer: own, from: "issuer" } : null;
 }
 
 /** The agency that issues this track's permit: the OPERATOR's per-track issuer (trackIssuer's first

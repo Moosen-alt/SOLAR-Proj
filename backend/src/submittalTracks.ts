@@ -30,7 +30,7 @@ import { detectPlatform } from "./publicPermitStatus";
 import { NEM_APPROVAL_OUTCOME, isNemApprovalOutcome, trackKind } from "./permitMonitor";
 import { HttpError } from "./httpError";
 import { isInformationalPageUrl, isUtilityPlatformUrl, portalHostOf, recipeDisciplineForTrack, trackSafeUrl } from "./portalChannel";
-import { classifyChannelWords, normalizeAhjName, permitAnswerForTrack, permitChannelLabel, permitProcessFor, projectForTrack, trackIssuer } from "./permitProcess";
+import { classifyChannelWords, normalizeAhjName, permitAnswerForTrackFrom, permitChannelLabel, permitProcessFor, projectForTrack, trackIssuer } from "./permitProcess";
 import { statewideDecisionFor, statewideUrlRefusal } from "./statewideEvidence";
 import { utilityTrackPresentation } from "./utilityFilingLookup";
 import { nowIso } from "./time";
@@ -160,11 +160,13 @@ export function requiredTracks(project: ProjectRecord): SubmittalTrackType[] {
 /** A permit track's portal as the per-job lookup found it (cited): this track's own permit, or —
  *  for the single combo/unknown filing — the one portal every looked-up permit agrees on. A URL
  *  that is a utility portal (rule 5) or an information page is never a permit channel. */
-function lookedUpPermitPortal(project: ProjectRecord, track: SubmittalTrackType): { url: string; sourceUrl: string; recordType: string } | null {
+function lookedUpPermitPortal(project: ProjectRecord, track: SubmittalTrackType): { url: string; sourceUrl: string; recordType: string; from: "issuer" | "project" } | null {
   const lk = permitProcessFor(project);
   // On a track view (projectForTrack) the permit's cited answer can come from the PROJECT's own
   // lookup while the issuer has none of its own — ask for it before giving up on an empty lookup.
-  const own = permitAnswerForTrack(project, track);
+  // `from` says whose row answered, so the card credits the right lookup (#59).
+  const sourced = permitAnswerForTrackFrom(project, track);
+  const own = sourced?.answer ?? null;
   if (!own && !lk?.permits?.length) return null;
   const pool = own ? [own] : track === "combo" || track === "permit" ? (lk?.permits ?? []) : [];
   const found = pool
@@ -172,7 +174,7 @@ function lookedUpPermitPortal(project: ProjectRecord, track: SubmittalTrackType)
     .filter(({ p, url }) => url && /^https?:\/\//i.test(p.portalUrl.sourceUrl || "") && trackSafeUrl(track, url) && !isInformationalPageUrl(url));
   if (!found.length || new Set(found.map((f) => portalHostOf(f.url))).size !== 1) return null;
   const recordTypes = [...new Set(found.map(({ p }) => (typeof p.recordType?.value === "string" ? p.recordType.value.trim() : "")).filter(Boolean))];
-  return { url: found[0].url, sourceUrl: found[0].p.portalUrl.sourceUrl, recordType: recordTypes.length === 1 ? recordTypes[0] : "" };
+  return { url: found[0].url, sourceUrl: found[0].p.portalUrl.sourceUrl, recordType: recordTypes.length === 1 ? recordTypes[0] : "", from: sourced?.from ?? "issuer" };
 }
 
 /** The AHJ's knowledge-base row, EXACT name (a fuzzy bridge is how a county inherits a city). */
@@ -237,6 +239,11 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
   const issuerName = project.trackView ? String(project.ahj ?? "").trim() : "";
   const lookupFor = issuerName ? `per-job lookup for ${issuerName}` : "per-job lookup";
   const site = issuerName ? `the ${issuerName} site` : "the AHJ site";
+  // The project AHJ's own lookup can answer for the issuer (its permit cites the issuer — the Marion
+  // case, permitAnswerForTrackFrom): that is the AHJ's lookup, NAMING the issuer, not the issuer's.
+  const projectAhjName = String(project.trackView?.projectAhj ?? "").trim();
+  const foundLookupFor = (from: "issuer" | "project") =>
+    issuerName && from === "project" && projectAhjName ? `per-job lookup for ${projectAhjName}, naming ${issuerName}` : lookupFor;
   // A PERSON'S VERIFIED PORTAL FOR THIS AHJ OUTRANKS every derived answer (hard rule 3 — the same
   // precedence the stage's fitUrl gives it). Corvallis's card read "Oregon ePermitting (Accela)"
   // beside a verified row naming the city's own tenant.
@@ -247,7 +254,7 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
   const found = lookedUpPermitPortal(project, track);
   if (found) {
     return {
-      channel: `${labelFor(found.url)}: ${found.url}${found.recordType ? ` — record type "${found.recordType}"` : ""} (${lookupFor}, cited: ${found.sourceUrl})`,
+      channel: `${labelFor(found.url)}: ${found.url}${found.recordType ? ` — record type "${found.recordType}"` : ""} (${foundLookupFor(found.from)}, cited: ${found.sourceUrl})`,
       basis: "cited",
       portalUrl: found.url,
     };
