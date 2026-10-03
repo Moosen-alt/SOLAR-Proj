@@ -1744,7 +1744,8 @@ export async function fillLoadedForm(
         if (hasTextLayer(raw)) {
           frameTools = await import("./formRowGeometry");
           let items = raw;
-          for (const [index, pg] of pages.entries()) {
+          // (FLAT_FORM_ROW_SNAP=0 is release #11 in full: no reading frame either.)
+          if (rowSnapOn) for (const [index, pg] of pages.entries()) {
             const f = frameTools.pageFrame(raw, index, pg.getWidth(), pg.getHeight());
             frames.set(index, f);
             items = frameTools.itemsInFrame(items, f);
@@ -1935,11 +1936,11 @@ export async function fillLoadedForm(
           while (t.length > 0 && widthOf(t, size) > field.maxWidth) t = t.slice(0, -1);
           t = t.trimEnd();
           if (t.length < Math.min(3, text.trim().length)) {
-            if (printed) operatorItems.push({ label: `${printed} (the value does not fit its box on the form — complete it by hand)` });
+            withhold("the value does not fit its box", "the value does not fit its box on the form — complete it by hand");
             continue;
           }
           text = t;
-          if (printed) operatorItems.push({ label: `${printed} (the value is longer than the form's box — check it on the filled form and complete it by hand)` });
+          operatorItems.push({ label: `${printed || `placement ${index + 1}`} (the value is longer than the form's box — check it on the filled form and complete it by hand)` });
         }
       }
       // Prefer the label-anchored baseline; else the stored x/y. Calibration:

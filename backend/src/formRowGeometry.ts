@@ -597,7 +597,9 @@ export function rowSnapPlacement(input: SnapInput): SnapResult | null {
       const xStart = Math.max(line.x0 + 2, reach + 3);
       const over = ruleOver(g, line.yTop, xStart + 1, 4, 40);
       const top = over ? over.yBottom : L.y + lh + 4;
-      const xEnd = rowEnd(g, items, xStart, line.yTop, top, line.x1);
+      // The row's free run ends at text on the VALUE's own line — not at the next row's label, which
+      // on these open forms (no rule between rows) sits within the rule-to-rule span.
+      const xEnd = rowEnd(g, items, xStart, line.yTop, Math.min(top, line.yTop + BASE_MAX + CAP * size0 + 1), line.x1);
       const r = inRow(line, top, xStart, xEnd, null, "line");
       if (r) return r;
     }
@@ -649,7 +651,8 @@ export interface MarkInput {
  * caption, the box on the caption's own line just LEFT of it (or, failing that, just right — "YES
  * [ ]"); without one, the box the map's mark falls in. A caption whose line has no box is not
  * guessed from the map's point: on the ABQ E-Plan form the map's marks sat a line off, so the
- * nearest box was the wrong answer. null when no box qualifies — the caller withholds the mark.
+ * nearest box was the wrong answer. A caption followed by an underscore blank takes the X on the
+ * blank. null when nothing qualifies — the caller withholds the mark.
  */
 export function markPlacement(input: MarkInput): SnapLine | null {
   const { geometry: g, label: L, point, widthOf } = input;
@@ -667,6 +670,15 @@ export function markPlacement(input: MarkInput): SnapLine | null {
     const cx = point.x + widthOf(text, s) / 2, cy = point.y + (CAP * s) / 2;
     box = boxes.filter((b) => cx >= b.x0 - 3 && cx <= b.x1 + 3 && cy >= b.y0 - 3 && cy <= b.y1 + 3)
       .sort((a, b) => Math.hypot((a.x0 + a.x1) / 2 - cx, (a.y0 + a.y1) / 2 - cy) - Math.hypot((b.x0 + b.x1) / 2 - cx, (b.y0 + b.y1) / 2 - cy))[0];
+  }
+  if (!box && L) {
+    // A tick-by-underscore ("RESIDENTIAL ____ / COMMERCIAL ____", Valencia County): the X sits on
+    // the blank right after its caption.
+    const blank = input.items.find((b) => b.page === g.page && b.blank && Math.abs(b.y - L.y) <= 0.6 && b.x >= L.x + L.width - 1 && b.x - (L.x + L.width) <= 8);
+    if (blank) {
+      const size = Math.min(input.size > 0 ? input.size : 9, L.height > 0 ? L.height : 9);
+      return { text, x: blank.x + blank.width / 2 - widthOf(text, size) / 2, y: blank.y + 1, size };
+    }
   }
   if (!box) return null;
   const inner = Math.min(box.x1 - box.x0, box.y1 - box.y0) - 2;
