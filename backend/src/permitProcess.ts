@@ -38,6 +38,7 @@ import { sameAgencyName } from "./agencyName";
 import { trackIssuersFromSnapshot } from "./normalize";
 import { namedKnownUtility, UTILITY_IDENTITY_LABEL } from "./utilityIdentity";
 import { hostAliasesOf } from "./portalCredentials";
+import { structureType } from "./codeReviewRules";
 
 // ── Keys ────────────────────────────────────────────────────────────────────────────────
 /** "City of Jefferson, OR" / "city of  jefferson" → "city of jefferson". A trailing state code
@@ -181,6 +182,16 @@ export interface StatePermitRules {
    *  PHOTOVOLTAIC WORKSHEET). `requiredAt` = normalized AHJ names whose own application REQUIRES
    *  it as an attachment (observed); elsewhere in the state it is advisory. */
   pvWorksheet?: CitedFact<{ formName: string; requiredAt: string[] }>;
+  /** A STATE agency issues the building + electrical permits wherever the local jurisdiction has no
+   *  building department of its own (New Mexico CID); the local office only reviews zoning / the
+   *  site plan first. `served` = names (localAhjName) of the jurisdictions a source says the state
+   *  serves — an AHJ not on it keeps its own answer (unknown stays unknown); `manufactured` = the agency for a manufactured home instead; `localStep` = the cited
+   *  words for the local review. Seeded (a state rule), never verified. */
+  stateTradeIssuer?: CitedFact<string> & {
+    served: string[];
+    manufactured: CitedFact<string>;
+    localStep: { sourceUrl: string; quote: string };
+  };
 }
 
 const IOWA_CITY_ENERGOV = "https://energovapp.civic.iowa-city.org/energovprod/";
@@ -250,7 +261,61 @@ STATE_PERMIT_RULES.IA = {
     origin: "operator",
   },
 };
+// NEW MEXICO (issue #32, owner's Los Lunas test 2026-10-02). The Construction Industries Division
+// is the building official for every jurisdiction that has not taken on its own building program:
+// there the Village / County does zoning-compliance / site-development review only, and the
+// building + electrical permits are pulled from CID (a manufactured home's from the Manufactured
+// Housing Division). Applied ONLY to the jurisdictions a source names as CID-served (the issue, and
+// the operator's NM reference rows: "Apply electrical permits here for: Los Lunas, Valencia County…
+// and Rio Communities", Bosque Farms "Email submissions through NM CID", Tyrone "Pull permits … through
+// NM CID") — never guessed for an AHJ nothing names, which keeps its own (or the per-job lookup's)
+// answer; full-service cities (Albuquerque, Rio Rancho, Las Cruces, Santa Fe, Bernalillo County…) are
+// simply not on it. Mixed rows (Belen, Grant County, Santa Fe County: one permit at CID, the other
+// local) are left to their own answers. SEEDED; a cited lookup, a person's verified row or the
+// operator's per-track issuer outranks it.
+STATE_PERMIT_RULES.NM = {
+  stateTradeIssuer: {
+    value: "New Mexico Construction Industries Division (CID)",
+    sourceUrl: "https://www.rld.nm.gov/construction-industries/",
+    quote: "Valencia County Multi-Purpose Permit Application: \"Prior to any construction, you are responsible for taking all plans and documents to Construction Industries Department (CID) in Albuquerque to obtain building inspection permit… CID will be responsible for all inspections and final occupancy certificate.\"",
+    origin: "state_rule",
+    served: ["los lunas", "valencia county", "rio communities", "bosque farms", "tyrone"],
+    manufactured: {
+      value: "New Mexico Manufactured Housing Division (MHD)",
+      sourceUrl: "https://www.rld.nm.gov/manufactured-housing/",
+      quote: "Roof-mount PV on a manufactured home is permitted by the Manufactured Housing Division (MHD), not CID (issue #32, owner's NM research)",
+      origin: "state_rule",
+    },
+    localStep: {
+      sourceUrl: "https://loslunasnm.gov/995/Building-Permits",
+      quote: "Village of Los Lunas Planning Division / Valencia County Community Development: zoning compliance and site-development review on a site plan; the building and electrical permits come from CID",
+    },
+  },
+};
 export const BCD_5952_URL = BCD_5952;
+
+/** "City of Albuquerque" / "Albuquerque, NM" → "albuquerque"; a county keeps its "county". */
+function localAhjName(ahj: string): string {
+  return normalizeAhjName(ahj).replace(/^(?:the )?(?:city|town|village) of /, "").replace(/ (?:city|town|village)$/, "").trim();
+}
+
+/** THE STATE AGENCY that issues this project's building + electrical permits, when its state says
+ *  one does (New Mexico: CID, or MHD for a manufactured home — codeReviewRules.structureType, the one
+ *  manufactured-home predicate) and the AHJ is one a source names as state-served. `localReviewer`
+ *  is the AHJ whose zoning / site review comes first. null = no source says so (or no rule). */
+export function stateTradeIssuerFor(project: IssuerProject): (CitedFact<string> & { value: string; localReviewer: string; manufactured: boolean }) | null {
+  const base = baseOfView(project);
+  const rule = stateRulesFor(base.state).stateTradeIssuer;
+  const ahj = String(base.ahj ?? "").trim();
+  if (!rule || !ahj) return null;
+  const local = localAhjName(ahj);
+  // The project names the state office itself ("NM CID") — there is no local step to add.
+  if (!local || /\bcid\b|\bmhd\b|construction industries|manufactured housing/.test(local)) return null;
+  if (!rule.served.includes(local)) return null;
+  const manufactured = structureType({ parserSnapshot: base.parserSnapshot ?? {} } as unknown as ProjectRecord).kind === "manufactured_home";
+  const fact = manufactured ? rule.manufactured : rule;
+  return { value: String(fact.value), sourceUrl: fact.sourceUrl, quote: fact.quote, origin: fact.origin, localReviewer: ahj, manufactured };
+}
 
 export function stateRulesFor(state: string | null | undefined): StatePermitRules {
   return STATE_PERMIT_RULES[String(state ?? "").trim().toUpperCase()] ?? {};
@@ -345,7 +410,14 @@ export function permitAnswerForTrack(project: Pick<ProjectRecord, "state" | "ahj
 export function issuingAgencyFor(project: IssuerProject, track: string | null | undefined): CitedFact<string> | null {
   const op = operatorIssuerFact(project, track);
   if (op) return op;
-  return lookedUpIssuingAgency(project, track);
+  return lookedUpIssuingAgency(project, track) ?? stateIssuerFact(project, track);
+}
+
+/** The cited state rule's issuer for a permit track (stateTradeIssuerFor), as a plain CitedFact. */
+function stateIssuerFact(project: IssuerProject, track: string | null | undefined): CitedFact<string> | null {
+  if (!issuerTrackKey(track)) return null;
+  const st = stateTradeIssuerFor(project);
+  return st ? { value: st.value, sourceUrl: st.sourceUrl, quote: st.quote, origin: st.origin } : null;
 }
 
 /** issuingAgencyFor without the operator layer: the per-job lookup's answer only. */
@@ -480,7 +552,9 @@ function baseOfView<T extends IssuerProject>(project: T): T {
  *      permit's own answer, else the AHJ-wide one) when it clears the cited bar AND names another
  *      agency than the project AHJ (sameAgencyName — "City of Salem Permit Center" is Salem, a
  *      department suffix never re-keys a project) AND is not a known utility's name;
- *   c. the project AHJ.
+ *   c. a cited STATE rule naming a state issuer for this AHJ (stateTradeIssuerFor: New Mexico CID,
+ *      or MHD for a manufactured home, where the AHJ has no building department);
+ *   d. the project AHJ.
  * NEM, a trackless stage and an unknown track are always (c): the NEM track never reads it.
  */
 export function trackIssuer(project: IssuerProject, track: string | null | undefined): TrackIssuerAnswer {
@@ -511,6 +585,8 @@ export function trackIssuer(project: IssuerProject, track: string | null | undef
       override, ...(refused ? { refused } : {}),
     };
   }
+  const st = ahj ? stateTradeIssuerFor(base) : null;
+  if (st) return { name: st.value, source: "state_rule", sourceUrl: st.sourceUrl, quote: st.quote, override, ...(refused ? { refused } : {}) };
   return { name: ahj, source: "project", override, ...(refused ? { refused } : {}) };
 }
 
@@ -538,7 +614,7 @@ export function projectForTrack<T extends IssuerProject>(project: T, track: stri
     ...base,
     ahj: issuer.name,
     ...(snap !== undefined ? { parserSnapshot: snap } : {}),
-    trackView: { track: key, projectAhj: ahj, source: issuer.source },
+    trackView: { track: key, projectAhj: ahj, source: issuer.source as "operator" | "lookup" | "state_rule" },
   } as T;
 }
 

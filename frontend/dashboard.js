@@ -4593,6 +4593,7 @@ const TRACK_ISSUER_KEY = { building: "trackIssuerBuilding", electrical: "trackIs
 const TRACK_ISSUER_SOURCE = {
   operator: { badge: "badge-info", label: "set by an operator" },
   lookup: { badge: "badge-info", label: "per-job lookup, cited" },
+  state_rule: { badge: "badge-info", label: "state rule, seeded" },
   project: { badge: "badge-none", label: "the project's AHJ" },
 };
 // The line sits on the card's FACE (above the channel); its set/clear control is a collapsed
@@ -4602,7 +4603,7 @@ function trackIssuerHtml(t) {
   if (t.category !== "permit" || !t.issuer || !TRACK_ISSUER_KEY[t.type]) return "";
   const i = t.issuer;
   const src = TRACK_ISSUER_SOURCE[i.source];
-  const cited = i.source === "lookup" && httpUrl(i.sourceUrl) ? ` — ${linkifyText(httpUrl(i.sourceUrl))}` : "";
+  const cited = (i.source === "lookup" || i.source === "state_rule") && httpUrl(i.sourceUrl) ? ` — ${linkifyText(httpUrl(i.sourceUrl))}` : "";
   const refused = i.refused ? `<div style="margin-top:2px;color:var(--warning)">${esc(i.refused)}</div>` : "";
   return `<div class="track-issuer" style="margin:0 0 6px;font-size:12px">
     <strong>Issued by:</strong> ${esc(i.name || "—")}${src ? ` <span class="badge ${src.badge}">${esc(src.label)}</span>` : ""}${cited}

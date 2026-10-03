@@ -9,7 +9,7 @@ import { isBillHolderName } from "./accountHolders";
 import { nowIso } from "./time";
 import { hasMpuScope } from "./serviceScope";
 import { findAhjProcessProfile, ahjProcessKnowledgeStatus, jurisdictionCore, registryTermMatches } from "./processProfiles";
-import { describeCited, isStatewidePortalUrl, permitChannelLabel, permitProcessFor, statePermitStructure } from "./permitProcess";
+import { describeCited, isStatewidePortalUrl, permitChannelLabel, permitProcessFor, statePermitStructure, stateRulesFor, stateTradeIssuerFor } from "./permitProcess";
 import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, usStateCode, type PermitPathResolution } from "./permitPath";
 // Functions only, called at run time: this module sits inside the permitProcessLookup ->
 // feeSchedules -> knowledgeBase -> applicationDocs import cycle (see applicationDocsAgency's header).
@@ -66,6 +66,8 @@ export interface PermitStructureAnswer {
   hint: string;
   /** Steps at another office before (or beside) the filing, each cited. */
   prerequisites: PermitPrerequisiteStep[];
+  /** A STATE agency issues the permits instead of the AHJ (stateTradeIssuerFor: New Mexico CID / MHD). */
+  issuer?: string;
 }
 
 const HEDGED = /\?|\blooks like\b|\bmaybe\b|\bmight\b|\bpossibly\b|\bprobably\b|\bnot sure\b|\bunclear\b|\bi think\b|\bseems\b/i;
@@ -157,6 +159,22 @@ export function permitStructureAnswer(
   const proc = findAhjProcessProfile(project);
   const ownPortalProfile = handWritten && !/e-?permitting|accela/i.test(`${profile.submissionMethod ?? ""} ${profile.portalName ?? ""}`)
     && !proc?.requiresElectricalPermitApplication;
+  // 4a. A STATE issuer (New Mexico CID, or MHD for a manufactured home) where the AHJ has no building
+  //     department: the AHJ's zoning / site review comes FIRST, then the state's building and
+  //     electrical permits, each its own permit on the state's application.
+  const trade = stateTradeIssuerFor(project);
+  if (trade) {
+    const method = String(proc?.submissionMethod ?? "").trim();
+    const asked = String(project.parserSnapshot?.incorporatedStatus ?? "").trim();
+    const where = asked ? ` (operator: ${asked})` : " — confirm whether the address is inside its incorporated limits or in the unincorporated county (portal question)";
+    const step = `Zoning compliance / site-development review on a site plan at ${trade.localReviewer}, submitted ${method ? `by ${method}` : "as its own page says (verify on the AHJ site)"}${where}; ${trade.localReviewer} issues no building permit`;
+    const rule = stateRulesFor(project.state).stateTradeIssuer!;
+    return {
+      ...settle("separate", "state_rule", `Permit structure: separate building + electrical permits from ${trade.value} — state rule, ${trade.sourceUrl} ("${trade.quote.slice(0, 160)}")`, trade.sourceUrl, trade.quote),
+      prerequisites: [{ step, sourceUrl: rule.localStep.sourceUrl, quote: rule.localStep.quote }, ...prerequisites],
+      issuer: trade.value,
+    };
+  }
   const stateRule = ownPortalProfile ? null : statePermitStructure(project);
   if (stateRule?.value) return settle(stateRule.value, "state_rule", describeCited("Permit structure", stateRule), stateRule.sourceUrl, stateRule.quote);
 
@@ -203,7 +221,9 @@ function permitStructureParts(a: PermitStructureAnswer): { core: string; pre: st
   const firm = permitStructureIsCitedOrVerified(a);
   const where = a.level === "state_rule" ? "state rule" : a.level === "cited" ? "cited agency page" : a.level === "verified" ? "verified by a person"
     : a.level === "curated" ? "hand-written AHJ profile" : "operator's seeded note — not confirmed on an agency page";
-  const core = a.structure === "separate"
+  const core = a.issuer && a.structure === "separate"
+    ? `Separate building (BLD) + electrical (ELE) permits issued by ${a.issuer} on the state's application, not by the local AHJ — both must be filed (${where})`
+    : a.structure === "separate"
     ? (firm ? `Separate building (BLD) + electrical (ELE) permits — both must be filed (${where})` : `Separate building + electrical permits per the ${where}`)
     : a.structure === "combo"
       ? `One combined building + electrical permit (${where})`
@@ -223,7 +243,10 @@ function permitStructureParts(a: PermitStructureAnswer): { core: string; pre: st
 export function shippedProfileNeedsPerJobLookup(project: ProjectRecord): boolean {
   const profile = findApplicationProfile(project);
   if (applicationProfiles.includes(profile) && profile.id !== "oregon-generic-epermitting") return false;
-  return permitStructureAnswer(project).level === "unknown";
+  // A STATE issuer (New Mexico CID) rests on a seeded list of state-served jurisdictions — never a
+  // reason to skip asking about this AHJ: a cited lookup outranks it.
+  const a = permitStructureAnswer(project);
+  return a.level === "unknown" || Boolean(a.issuer);
 }
 
 /**
