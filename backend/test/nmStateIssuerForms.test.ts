@@ -7,9 +7,13 @@
 //   - the required set = the LOCAL review application (the AHJ's own, the prerequisite step) + CID's
 //     building application + CID's electrical application: three rows, each CID row satisfied only
 //     by a CID form of that type (no altDocTypes between them);
-//   - the form finder looks for CID's forms on the ISSUER's forms page (rld.nm.gov), and a not_found
-//     names CID, the page and that the form is a Word document filled by hand until #60; no
-//     fabricated URL (the state rule's forms are seeded, url "");
+//   - the form finder looks for CID's forms on the ISSUER's forms page (rld.nm.gov). Issue #60 seeded
+//     the two Word documents the state page's RealFile widget serves (URL + SHA-256 + bytes, opened
+//     by worker-local with the owner watching; seeded, never verified): the finder returns
+//     needs_manual (the form filler is PDF-only — download, fill by hand, upload the filled PDF),
+//     never not_found, never a download; a hand-uploaded filled PDF satisfies each CID row, its own
+//     row only, and a .docx upload is refused (the slot needs a PDF). Pinned by URL and hash strings
+//     only — no test fetches the files;
 //   - a manufactured home (MHD) has no CID rows; Albuquerque (a full-service city) is unchanged.
 //   npx tsx backend/test/nmStateIssuerForms.test.ts
 import fs from "node:fs";
@@ -81,31 +85,47 @@ await check("the job's own list names CID's two applications (one per track) and
   assert(cid.some((i) => JSON.stringify(i.docTypes) === JSON.stringify(["electrical_application"]) && /Electrical Permit Application/.test(i.text)), JSON.stringify(cid));
   assert(items.filter((i) => i.docTypes.includes("permit_application") && /Valencia County/.test(i.text)).length === 1, JSON.stringify(items.map((i) => i.text)));
 });
-await check("the state rule's two forms are seeded on CID's forms page with NO fabricated URL (rules 3, 5)", () => {
+// Issue #60: the two applications worker-local opened on CID's forms page (2026-10-03, owner watching).
+const CID_SEEDS = {
+  building: {
+    url: "https://api.realfile.rtsclients.com/PublicFiles/1ee897135beb4b1c82715d36398de4c5/9b7ef935-4881-420d-9b33-b808a69039a0/General%20Building%20Permit%20Application.docx",
+    sha256: "9578c63347cf1700901c7285e445088dc43b2d41ccae8f91162ab52e2cafc219",
+    bytes: 69246,
+  },
+  electrical: {
+    url: "https://api.realfile.rtsclients.com/PublicFiles/1ee897135beb4b1c82715d36398de4c5/894fd6e3-1671-459a-a9d0-425281b8811a/Electrical%20Permit%20Application.docx",
+    sha256: "ba01083b72117804eb6d963fcb346db968de341072fb854d72eb57b77b4804a7",
+    bytes: 71735,
+  },
+} as const;
+await check("the state rule's two forms are seeded (#60): the Word download URL, SHA-256 and size, sourced to CID's forms page (rules 3, 5)", () => {
   const issuer = stateIssuerFormsFor(valencia);
   assert(issuer, "no state issuer forms");
   assert(JSON.stringify(issuer!.tracks) === JSON.stringify(["building", "electrical"]), JSON.stringify(issuer!.tracks));
   for (const f of issuer!.forms) {
-    assert(f.url === "", `a form URL was set: ${f.url}`);
+    const seed = CID_SEEDS[f.track];
+    assert(f.url === seed.url, `${f.track}: url ${f.url}`);
+    assert(f.sha256 === seed.sha256 && f.bytes === seed.bytes, `${f.track}: ${f.sha256} / ${f.bytes}`);
+    assert(f.format === "docx" && f.fill === "by_hand", `${f.track}: format ${f.format}, fill ${f.fill} — the form filler is PDF-only`);
     assert(f.searchUrl === "https://www.rld.nm.gov/construction-industries/forms-and-applications/" && f.sourceUrl === f.searchUrl, f.searchUrl);
     assert(f.origin === "state_rule", `${f.track}: origin ${f.origin} (seeded, never verified)`);
-    assert(/Word document; download and fill by hand until #60 lands/.test(f.notFound), f.notFound);
+    assert(!/until #60/.test(f.note), `stale note: ${f.note}`);
+    assert(/Word document/.test(f.note) && /by hand/.test(f.note) && /PDF/.test(f.note), f.note);
   }
-  assert((stateRulesFor("NM").stateTradeIssuer?.issuerForms ?? []).every((f) => f.url === ""), "seed carries a URL");
 });
 
 const db = await openDatabase();
 const noModel = new Proxy({}, { get() { throw new Error("a state issuer's form must not call a model"); } }) as never;
-for (const [formType, formName] of [["building_application", "Multi-Purpose State Building Application"], ["electrical_application", "Electrical Permit Application"]] as const) {
-  await check(`find-ahj-form for CID's ${formType} looks on CID's forms page; not_found names CID, the page and the Word note`, async () => {
+for (const [formType, formName, track] of [["building_application", "Multi-Purpose State Building Application", "building"], ["electrical_application", "Electrical Permit Application", "electrical"]] as const) {
+  await check(`find-ahj-form for CID's ${formType}: needs_manual (a Word document filled by hand), naming CID, its forms page and the download; nothing fetched`, async () => {
     const res = await auto.ensureAhjFormTemplate(db, noModel, valencia, formType, { allowResearch: false });
-    assert(res.status === "not_found", JSON.stringify(res));
+    assert(res.status === "needs_manual", JSON.stringify(res));
     assert(CID.test(res.message) && res.message.includes(formName), res.message);
     assert(res.message.includes("rld.nm.gov/construction-industries/forms-and-applications/"), res.message);
-    assert(/CID application is a Word document; download and fill by hand until #60 lands/.test(res.message), res.message);
-    assert(!res.sourceUrl, `a URL was attempted: ${res.sourceUrl}`);
-    const urls = res.message.match(/https?:\/\/[^\s),;]+/g) ?? [];
-    assert(urls.every((u) => /^https:\/\/www\.rld\.nm\.gov\//.test(u)), `a non-state URL in the message: ${urls.join(", ")}`);
+    assert(res.message.includes(CID_SEEDS[track].url) && res.message.includes(CID_SEEDS[track].sha256), res.message);
+    assert(/Word document/.test(res.message) && /by hand/.test(res.message) && /upload the filled PDF/i.test(res.message), res.message);
+    assert(res.sourceUrl === CID_SEEDS[track].url, `sourceUrl ${res.sourceUrl}`);
+    assert(!db.get("SELECT id FROM ahj_form_templates WHERE form_type = ?", [formType]), "a template row was stored for a Word document");
   });
 }
 await check("the pass asks for the local application + CID's building AND electrical applications", async () => {
@@ -199,7 +219,7 @@ try {
   await check("acquisition: CID's slots are NOT satisfied by the county's building_application blank", async () => {
     for (const formType of ["building_application", "electrical_application"]) {
       const res = await auto.ensureAhjFormTemplate(db, noModel, job, formType, { allowResearch: false });
-      assert(res.status === "not_found" && CID.test(res.message), `${formType}: ${JSON.stringify(res)}`);
+      assert(res.status === "needs_manual" && CID.test(res.message), `${formType}: ${JSON.stringify(res)}`);
     }
   });
 
@@ -216,7 +236,7 @@ try {
     assert(local?.present === true && cidBuilding?.present === true, JSON.stringify(all));
     assert(cidElectrical?.present === false, `CID's building form satisfied the electrical row: ${JSON.stringify(all)}`);
     const res = await auto.ensureAhjFormTemplate(db, noModel, job, "electrical_application", { allowResearch: false });
-    assert(res.status === "not_found" && CID.test(res.message), `electrical acquisition: ${JSON.stringify(res)}`);
+    assert(res.status === "needs_manual" && CID.test(res.message), `electrical acquisition: ${JSON.stringify(res)}`);
   });
   // CONTRAST (fails on main on behaviour, not an import): the SAME building_application-typed own blank
   // keys to the city's own building row in Albuquerque (unchanged) and to the local review slot only
@@ -242,6 +262,46 @@ try {
 } finally {
   fs.rmSync(filledDir, { recursive: true, force: true });
 }
+
+// ── A HAND-FILLED CID APPLICATION, UPLOADED (#60) ───────────────────────────────────────────────────
+// The operator downloads CID's Word document, fills it by hand, saves it as a PDF and uploads it to
+// the row's slot. That upload satisfies THAT CID row only; a .docx is refused (the slot needs a PDF).
+const docs = await import("../src/projectDocuments");
+const handJob = repo.createProject(db, {
+  owner: "Example Owner", street: "300 Example Ln", city: "Los Lunas", state: "NM", zip: "87031", ahj: "Valencia County", utility: "Example Utility",
+  dcKw: "8.2", acKw: "7.6", homeownerPhone: "5050000000", mounting: "Roof Mount", structureDescription: "Single-family dwelling",
+} as never).project as ProjectRecord;
+const handPresence = () => {
+  const inv = reqDocs.documentInventory(db, handJob);
+  const of = (t: string) => inv.presence.find((d) => CID.test(d.label) && d.docType === t);
+  return { building: of("building_application"), electrical: of("electrical_application"), local: inv.presence.find((d) => d.docType === "permit_application"),
+    all: inv.presence.filter((d) => reqDocs.APPLICATION_DOC_TYPES.has(d.docType)).map((d) => `${d.docType}:${d.present}:${d.via}`) };
+};
+await check("before any upload: both CID rows owed and blocking", () => {
+  const { building, electrical, all } = handPresence();
+  assert(building?.present === false && building.blocking && electrical?.present === false && electrical.blocking, JSON.stringify(all));
+});
+await check("a hand-filled CID application saved as .docx is refused — the slot needs a PDF", () => {
+  let refused = "";
+  try { docs.saveProjectDocument(db, handJob.id, { docType: "electrical_application", filename: "Electrical Permit Application.docx", contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: Buffer.from("PK\u0003\u0004 synthetic docx", "binary") }); }
+  catch (err) { refused = err instanceof Error ? err.message : String(err); }
+  assert(/needs a PDF/.test(refused), `not refused: ${refused}`);
+});
+await check("a hand-filled CID ELECTRICAL application uploaded as a PDF satisfies CID's electrical row only", async () => {
+  docs.saveProjectDocument(db, handJob.id, { docType: "electrical_application", filename: "CID Electrical Permit Application (filled).pdf", contentType: "application/pdf", buffer: await acroPdf("CID Electrical Permit Application") });
+  const { building, electrical, local, all } = handPresence();
+  assert(electrical?.present === true, JSON.stringify(all));
+  assert(building?.present === false && local?.present === false, `another row counted the electrical upload: ${JSON.stringify(all)}`);
+  const lines = issuingAgencyDocumentList(handJob, reqDocs.agencyListStatusResolver(db, handJob))?.items.filter((i) => i.role === "application" && CID.test(String(i.agency))) ?? [];
+  const e = lines.find((i) => i.docTypes.includes("electrical_application"));
+  const b = lines.find((i) => i.docTypes.includes("building_application"));
+  assert(e?.status === "attached" && b?.status !== "attached", JSON.stringify(lines.map((l) => [l.docTypes, l.status])));
+});
+await check("a hand-filled CID BUILDING application uploaded as a PDF satisfies CID's building row; both CID rows now present", async () => {
+  docs.saveProjectDocument(db, handJob.id, { docType: "building_application", filename: "CID Multi-Purpose State Building Application (filled).pdf", contentType: "application/pdf", buffer: await acroPdf("CID Multi-Purpose State Building Application") });
+  const { building, electrical, all } = handPresence();
+  assert(building?.present === true && electrical?.present === true, JSON.stringify(all));
+});
 
 if (failures) { console.error(`\n${failures} NM state-issuer form check(s) FAILED.`); process.exit(1); }
 console.log("\nAll NM state-issuer form checks passed.");
