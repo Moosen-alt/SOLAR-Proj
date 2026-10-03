@@ -30,7 +30,7 @@ import { detectPlatform } from "./publicPermitStatus";
 import { NEM_APPROVAL_OUTCOME, isNemApprovalOutcome, trackKind } from "./permitMonitor";
 import { HttpError } from "./httpError";
 import { isInformationalPageUrl, isUtilityPlatformUrl, portalHostOf, recipeDisciplineForTrack, trackSafeUrl } from "./portalChannel";
-import { classifyChannelWords, normalizeAhjName, permitAnswerForTrack, permitChannelLabel, permitProcessFor, projectForTrack, trackIssuer } from "./permitProcess";
+import { classifyChannelWords, normalizeAhjName, permitAnswerForTrackFrom, permitChannelLabel, permitProcessFor, projectForTrack, trackIssuer } from "./permitProcess";
 import { statewideDecisionFor, statewideUrlRefusal } from "./statewideEvidence";
 import { utilityTrackPresentation } from "./utilityFilingLookup";
 import { nowIso } from "./time";
@@ -160,11 +160,13 @@ export function requiredTracks(project: ProjectRecord): SubmittalTrackType[] {
 /** A permit track's portal as the per-job lookup found it (cited): this track's own permit, or —
  *  for the single combo/unknown filing — the one portal every looked-up permit agrees on. A URL
  *  that is a utility portal (rule 5) or an information page is never a permit channel. */
-function lookedUpPermitPortal(project: ProjectRecord, track: SubmittalTrackType): { url: string; sourceUrl: string; recordType: string } | null {
+function lookedUpPermitPortal(project: ProjectRecord, track: SubmittalTrackType): { url: string; sourceUrl: string; recordType: string; from: "issuer" | "project" } | null {
   const lk = permitProcessFor(project);
   // On a track view (projectForTrack) the permit's cited answer can come from the PROJECT's own
   // lookup while the issuer has none of its own — ask for it before giving up on an empty lookup.
-  const own = permitAnswerForTrack(project, track);
+  // `from` says whose row answered, so the card credits the right lookup (#59).
+  const sourced = permitAnswerForTrackFrom(project, track);
+  const own = sourced?.answer ?? null;
   if (!own && !lk?.permits?.length) return null;
   const pool = own ? [own] : track === "combo" || track === "permit" ? (lk?.permits ?? []) : [];
   const found = pool
@@ -172,7 +174,7 @@ function lookedUpPermitPortal(project: ProjectRecord, track: SubmittalTrackType)
     .filter(({ p, url }) => url && /^https?:\/\//i.test(p.portalUrl.sourceUrl || "") && trackSafeUrl(track, url) && !isInformationalPageUrl(url));
   if (!found.length || new Set(found.map((f) => portalHostOf(f.url))).size !== 1) return null;
   const recordTypes = [...new Set(found.map(({ p }) => (typeof p.recordType?.value === "string" ? p.recordType.value.trim() : "")).filter(Boolean))];
-  return { url: found[0].url, sourceUrl: found[0].p.portalUrl.sourceUrl, recordType: recordTypes.length === 1 ? recordTypes[0] : "" };
+  return { url: found[0].url, sourceUrl: found[0].p.portalUrl.sourceUrl, recordType: recordTypes.length === 1 ? recordTypes[0] : "", from: sourced?.from ?? "issuer" };
 }
 
 /** The AHJ's knowledge-base row, EXACT name (a fuzzy bridge is how a county inherits a city). */
@@ -231,6 +233,17 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
   // "Oregon ePermitting (Accela)" only on the statewide host; an AHJ's own Accela tenant is
   // "Accela Citizen Access (<AHJ>'s own portal)"; anything else keeps "Online portal".
   const labelFor = (url: string) => permitChannelLabel(project.state, project.ahj, url) ?? "Online portal";
+  // WHOSE ANSWER IT IS (#59). On a track view (projectForTrack: another agency issues this permit —
+  // New Mexico CID for Valencia County) every answer below is the ISSUER's: the lookup was run for it
+  // and the site to verify on is its own. Saying "the AHJ site" sent the operator to the county.
+  const issuerName = project.trackView ? String(project.ahj ?? "").trim() : "";
+  const lookupFor = issuerName ? `per-job lookup for ${issuerName}` : "per-job lookup";
+  const site = issuerName ? `the ${issuerName} site` : "the AHJ site";
+  // The project AHJ's own lookup can answer for the issuer (its permit cites the issuer — the Marion
+  // case, permitAnswerForTrackFrom): that is the AHJ's lookup, NAMING the issuer, not the issuer's.
+  const projectAhjName = String(project.trackView?.projectAhj ?? "").trim();
+  const foundLookupFor = (from: "issuer" | "project") =>
+    issuerName && from === "project" && projectAhjName ? `per-job lookup for ${projectAhjName}, naming ${issuerName}` : lookupFor;
   // A PERSON'S VERIFIED PORTAL FOR THIS AHJ OUTRANKS every derived answer (hard rule 3 — the same
   // precedence the stage's fitUrl gives it). Corvallis's card read "Oregon ePermitting (Accela)"
   // beside a verified row naming the city's own tenant.
@@ -241,7 +254,7 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
   const found = lookedUpPermitPortal(project, track);
   if (found) {
     return {
-      channel: `${labelFor(found.url)}: ${found.url}${found.recordType ? ` — record type "${found.recordType}"` : ""} (per-job lookup, cited: ${found.sourceUrl})`,
+      channel: `${labelFor(found.url)}: ${found.url}${found.recordType ? ` — record type "${found.recordType}"` : ""} (${foundLookupFor(found.from)}, cited: ${found.sourceUrl})`,
       basis: "cited",
       portalUrl: found.url,
     };
@@ -254,7 +267,7 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
     // report, not a statement that there is no portal.
     .find((nf) => /\bno online (?:application )?portal\b|\bno (?:application )?portal (?:exists|is available|available)\b|\bdoes not (?:have|offer|use) an? (?:online )?(?:application )?portal\b|\bnot (?:accepted|available|submitted) online\b|\bno online (?:application|submission|filing)\b|\b(?:must|are to) be (?:dropped off|submitted in[- ]person|mailed)\b|\bin[- ]person (?:only|drop[- ]?off|submittal)\b|\bdrop[- ]off only\b/i.test(nf));
   if (noPortal) {
-    return { channel: `No online application portal found — ${noPortal.slice(0, 200)} (per-job lookup; verify on the AHJ site)`, basis: "researched", portalUrl: "" };
+    return { channel: `No online application portal found — ${noPortal.slice(0, 200)} (${lookupFor}; verify on ${site})`, basis: "researched", portalUrl: "" };
   }
   // THE STATEWIDE PORTAL, ONLY ON EVIDENCE (portal-truth D1) — the same decision the stage makes, so
   // the card and the stage can never disagree. Withheld → the card falls through to what is known.
@@ -262,7 +275,7 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
   if (statewide && statewide.url !== null && trackSafeUrl(track, statewide.url)) {
     const cited = statewide.basis.origin === "lookup";
     return {
-      channel: `${labelFor(statewide.url)}: ${statewide.url} (${cited ? `per-job lookup, cited: ${statewide.basis.sourceUrl}` : `${String(statewide.basis.quote).slice(0, 160)} — verify`})`,
+      channel: `${labelFor(statewide.url)}: ${statewide.url} (${cited ? `${lookupFor}, cited: ${statewide.basis.sourceUrl}` : `${String(statewide.basis.quote).slice(0, 160)} — verify`})`,
       basis: cited ? "cited" : "profile",
       portalUrl: statewide.url,
     };
@@ -288,13 +301,13 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
       : isStatewideClaimWithoutUrl(project.state, words) ? "" : words;
     if (safeUrl || how) {
       return {
-        channel: `${how || "Online portal"}${safeUrl ? `: ${safeUrl}` : ""} (${verified ? "verified by a person" : "researched — verify on the AHJ site"})`,
+        channel: `${how || "Online portal"}${safeUrl ? `: ${safeUrl}` : ""} (${verified ? "verified by a person" : `researched — verify on ${site}`})`,
         basis: verified ? "verified" : "researched",
         portalUrl: safeUrl,
       };
     }
   }
-  return { channel: "Unknown — verify on the AHJ site", basis: "unknown", portalUrl: "" };
+  return { channel: `Unknown — verify on ${site}`, basis: "unknown", portalUrl: "" };
 }
 
 /** HOW THIS TRACK IS FILED, AS A KIND (operator 09-28: "City of Waltham only does in-person permit
@@ -628,8 +641,8 @@ function statusLabelFor(status: SubmittalTrackStatus, category: "utility" | "per
   return permitLabels[status];
 }
 
-function nextActionFor(status: SubmittalTrackStatus, channel: string, type: SubmittalTrackType, prerequisites: PermitPrerequisiteStep[] = []): string {
-  const base = nextActionCore(status, channel, type);
+function nextActionFor(status: SubmittalTrackStatus, channel: string, type: SubmittalTrackType, prerequisites: PermitPrerequisiteStep[] = [], issuerName = ""): string {
+  const base = nextActionCore(status, channel, type, issuerName);
   // A PREREQUISITE OFFICE IS ITS OWN STEP, BEFORE this filing (Waltham: "ALL Plans need to go to
   // Fire Prevention Prior to Building Department drop off"). Said first, cited, until filed.
   if (!prerequisites.length || !(status === "not_started" || status === "staged")) return base;
@@ -637,7 +650,9 @@ function nextActionFor(status: SubmittalTrackStatus, channel: string, type: Subm
   return `FIRST, at another office: ${steps}. THEN: ${base}`;
 }
 
-function nextActionCore(status: SubmittalTrackStatus, channel: string, type: SubmittalTrackType): string {
+/** `issuerName`: the agency that issues this permit when it is not the AHJ (a track view, #59) —
+ *  the unresolved channel is then that agency's portal, verified on its site, never "the AHJ's". */
+function nextActionCore(status: SubmittalTrackStatus, channel: string, type: SubmittalTrackType, issuerName = ""): string {
   // Accela (Oregon ePermitting) instant-issues most ELECTRICAL/renewable-energy permits
   // right after the fee is paid and the final submit is clicked — the approval arrives by
   // email, which the email tracker already detects. Set that expectation on those tracks.
@@ -652,7 +667,9 @@ function nextActionCore(status: SubmittalTrackStatus, channel: string, type: Sub
     case "not_started": return /^\s*(unknown|$)|not yet identified/i.test(channel)
       ? (type === "nem"
         ? "Find where this utility takes interconnection applications (its interconnection / contractor page), stage it there, submit manually, then record the number here."
-        : "Stage in the AHJ portal (not yet identified — verify it on the AHJ's website), submit manually, then record the number here.")
+        : issuerName
+          ? `Stage in ${issuerName}'s portal (not yet identified — verify it on ${issuerName}'s website), submit manually, then record the number here.`
+          : "Stage in the AHJ portal (not yet identified — verify it on the AHJ's website), submit manually, then record the number here.")
       : `Stage in ${channel}, submit manually, then record the number here.${accelaInstantNote}`;
     case "staged": return `Review the staged portal, submit manually, then mark it submitted below.${accelaInstantNote}`;
     case "submitted": return `Add the public status URL so the poller can track it to approval.${accelaInstantNote}`;
@@ -788,7 +805,7 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
       // (one pooled target cannot finish two tracks), where they would contradict the status.
       statusLabel: (!state.done && (state.outcome === "issued" || state.outcome === "nem_approved") ? "" : state.statusLabel)
         || statusLabelFor(status, category),
-      nextAction: nextActionFor(status, channel, type, prerequisites),
+      nextAction: nextActionFor(status, channel, type, prerequisites, issuerProject.trackView ? issuerProject.ahj : ""),
       captureFields: captureFieldsFor(type),
       applicationNumber: state.applicationNumber,
       permitNumber: state.permitNumber,
