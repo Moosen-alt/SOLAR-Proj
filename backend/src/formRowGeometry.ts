@@ -22,7 +22,9 @@ export interface HRule { page: number; y: number; yTop: number; yBottom: number;
 export interface VRule { page: number; x: number; y0: number; y1: number }
 /** A filled, non-white rectangle. `header` = it carries printed header text (see headerBands). */
 export interface Band { page: number; x0: number; y0: number; x1: number; y1: number; luma: number }
-export interface PageGeometry { page: number; width: number; height: number; hRules: HRule[]; vRules: VRule[]; bands: Band[] }
+/** A small stroked square (6-14pt a side): a checkbox. Its edges are not rules. */
+export interface Box { page: number; x0: number; y0: number; x1: number; y1: number }
+export interface PageGeometry { page: number; width: number; height: number; hRules: HRule[]; vRules: VRule[]; bands: Band[]; boxes: Box[] }
 
 type Mat = [number, number, number, number, number, number];
 const IDENTITY: Mat = [1, 0, 0, 1, 0, 0];
@@ -37,6 +39,62 @@ const apply = (m: Mat, x: number, y: number): [number, number] => [m[0] * x + m[
 const RULE_MAX_THICKNESS = 2.5;
 /** Shorter horizontal strokes are checkbox edges and glyph pieces, not rows. */
 const RULE_MIN_LENGTH = 12;
+/** A checkbox's side (ABQ's E-Plan boxes are 9.8pt, Yamhill's 8.1pt). */
+const BOX_MIN = 6;
+const BOX_MAX = 14;
+
+// ---------------------------------------------------------------------------
+// THE READING FRAME. A form can be laid on its side on an upright page (/Rotate 0, every text
+// matrix [0, s, -s, 0, e, f] — the owner's copy of the ABQ E-Plan application): "right of the
+// label" is then UP the page, and a writing line is a vertical stroke. Everything here works in the
+// frame the form is READ in — the page turned so its text is upright — and the caller turns the
+// result back (toPage) and draws its glyphs at the text's angle.
+// ---------------------------------------------------------------------------
+
+/** A page's reading frame: `angle` (0/90/180/270) is the printed text's direction on the page;
+ *  width/height are the PAGE's own (unturned) size. */
+export interface PageFrame { page: number; angle: number; width: number; height: number }
+
+/** The reading-frame matrix [a b c d e f] (pdfjs's row-vector convention): page point → reading point. */
+function frameMatrix(f: PageFrame): Mat {
+  const r = (f.angle * Math.PI) / 180;
+  const c = Math.round(Math.cos(r)), s = Math.round(Math.sin(r));
+  const e = f.angle === 180 ? f.width : f.angle === 270 ? f.height : 0;
+  const k = f.angle === 90 ? f.width : f.angle === 180 ? f.height : 0;
+  return [c, -s, s, c, e, k];
+}
+export function toReading(f: PageFrame, x: number, y: number): { x: number; y: number } {
+  const [X, Y] = apply(frameMatrix(f), x, y);
+  return { x: X, y: Y };
+}
+export function toPage(f: PageFrame, X: number, Y: number): { x: number; y: number } {
+  const m = frameMatrix(f);
+  // The matrix is a rotation (det 1): its inverse is its transpose.
+  const dx = X - m[4], dy = Y - m[5];
+  return { x: m[0] * dx + m[1] * dy, y: m[2] * dx + m[3] * dy };
+}
+/** The direction most of a page's printed text runs in (by characters), as a quarter turn. */
+export function pageFrame(items: LabelItem[], page: number, width: number, height: number): PageFrame {
+  const weight = new Map<number, number>();
+  for (const it of items) {
+    if (it.page !== page) continue;
+    const a = ((Math.round((it.angle ?? 0) / 90) * 90) % 360 + 360) % 360;
+    weight.set(a, (weight.get(a) ?? 0) + it.str.trim().length);
+  }
+  const angle = [...weight.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
+  return { page, angle, width, height };
+}
+/** A page's text items in its reading frame (other pages' items unchanged). */
+export function itemsInFrame(items: LabelItem[], f: PageFrame): LabelItem[] {
+  if (!f.angle) return items;
+  return items.map((it) => {
+    if (it.page !== f.page) return it;
+    const p = toReading(f, it.x, it.y);
+    const angle = ((((it.angle ?? 0) - f.angle) % 360) + 360) % 360;
+    const { angle: _drop, ...rest } = it;
+    return { ...rest, x: p.x, y: p.y, ...(angle ? { angle } : {}) };
+  });
+}
 
 /** Luma (0..1) of a pdfjs fill colour: "#rrggbb", or an [r,g,b] 0-255 array. null when unknown. */
 function lumaOf(color: unknown): number | null {
@@ -119,8 +177,9 @@ const CACHE_MAX = 24;
  * Every page's rules and bands, read once per blank (cached by the blank's sha256). [] on any
  * failure — the caller then places values exactly as before.
  */
-export async function extractPageGeometry(pdfBytes: Uint8Array): Promise<PageGeometry[]> {
-  const key = createHash("sha256").update(pdfBytes).digest("hex");
+export async function extractPageGeometry(pdfBytes: Uint8Array, angles: Record<number, number> = {}): Promise<PageGeometry[]> {
+  const turned = Object.entries(angles).filter(([, a]) => a).map(([p, a]) => `${p}:${a}`).join(",");
+  const key = `${createHash("sha256").update(pdfBytes).digest("hex")}|${turned}`;
   const hit = cache.get(key);
   if (hit) return hit;
   let pages: PageGeometry[] = [];
@@ -134,9 +193,13 @@ export async function extractPageGeometry(pdfBytes: Uint8Array): Promise<PageGeo
       const hRules: HRule[] = [];
       const vRules: VRule[] = [];
       const bands: Band[] = [];
+      const boxes: Box[] = [];
       const stack: Array<{ m: Mat; fill: unknown; lw: number }> = [];
-      let state = { m: IDENTITY as Mat, fill: "#000000" as unknown, lw: 1 };
       const pageIndex = n - 1;
+      // Read in the page's reading frame (identity for an upright form).
+      const frame: PageFrame = { page: pageIndex, angle: angles[pageIndex] ?? 0, width: vp.width, height: vp.height };
+      const turnedSize = frame.angle === 90 || frame.angle === 270;
+      let state = { m: (frame.angle ? frameMatrix(frame) : IDENTITY) as Mat, fill: "#000000" as unknown, lw: 1 };
       const addStrokeSeg = (a: [number, number], b: [number, number], lw: number) => {
         const dx = Math.abs(b[0] - a[0]), dy = Math.abs(b[1] - a[1]);
         const half = Math.max(0.25, lw / 2);
@@ -183,6 +246,15 @@ export async function extractPageGeometry(pdfBytes: Uint8Array): Promise<PageGeo
           const xs = sp.pts.map((p) => p[0]), ys = sp.pts.map((p) => p[1]);
           const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
           const w = x1 - x0, h = y1 - y0;
+          // A CHECKBOX: a closed, stroked, axis-aligned square of 6-14pt. Kept as a box (a check mark
+          // is drawn inside it), never as rules — its sides would read as cell dividers.
+          const corners = sp.pts.filter((p, k) => k === 0 || Math.abs(p[0] - sp.pts[k - 1][0]) + Math.abs(p[1] - sp.pts[k - 1][1]) > 0.01);
+          const closedRect = (sp.closed || (corners.length === 5 && Math.abs(corners[4][0] - corners[0][0]) + Math.abs(corners[4][1] - corners[0][1]) < 0.01))
+            && corners.length >= 4 && corners.length <= 5 && corners.every((p) => (Math.abs(p[0] - x0) < 0.3 || Math.abs(p[0] - x1) < 0.3) && (Math.abs(p[1] - y0) < 0.3 || Math.abs(p[1] - y1) < 0.3));
+          if (isStroke && closedRect && w >= BOX_MIN && w <= BOX_MAX && h >= BOX_MIN && h <= BOX_MAX && Math.abs(w - h) <= 4) {
+            if (!boxes.some((b) => Math.abs((b.x0 + b.x1) / 2 - (x0 + x1) / 2) < 1.5 && Math.abs((b.y0 + b.y1) / 2 - (y0 + y1) / 2) < 1.5)) boxes.push({ page: pageIndex, x0, y0, x1, y1 });
+            continue;
+          }
           if (isFill) {
             if (h <= RULE_MAX_THICKNESS && w >= RULE_MIN_LENGTH) {
               hRules.push({ page: pageIndex, y: (y0 + y1) / 2, yTop: y1, yBottom: y0, x0, x1 });
@@ -203,7 +275,10 @@ export async function extractPageGeometry(pdfBytes: Uint8Array): Promise<PageGeo
           }
         }
       }
-      pages.push({ page: pageIndex, width: vp.width, height: vp.height, hRules: mergeH(hRules), vRules: mergeV(vRules), bands });
+      pages.push({
+        page: pageIndex, width: turnedSize ? vp.height : vp.width, height: turnedSize ? vp.width : vp.height,
+        hRules: mergeH(hRules), vRules: mergeV(vRules), bands, boxes,
+      });
     }
     try { await (doc as unknown as { destroy?: () => Promise<void> }).destroy?.(); } catch { /* best effort */ }
   } catch {
@@ -237,9 +312,30 @@ const endsLikeLabel = (s: string): boolean => /[:#]\s*$/.test(String(s || "").tr
  * is an input area). A value is never drawn inside one.
  */
 export function headerBands(g: PageGeometry, items: LabelItem[]): Band[] {
+  const highlights = new Set(captionHighlights(g, items));
   return g.bands.filter((b) => {
+    if (highlights.has(b)) return false;
     const inside = items.filter((it) => it.page === g.page && it.y >= b.y0 - 1 && it.y <= b.y1 && it.x >= b.x0 - 2 && it.x < b.x1);
     return inside.length > 0 && !inside.some((it) => endsLikeLabel(it.str));
+  });
+}
+
+/**
+ * CAPTION HIGHLIGHTS: a filled rectangle hugging exactly ONE caption — its width, its line.
+ * Valencia County's Multi-Purpose Permit Application highlights every cell caption in yellow
+ * (luma 0.93): read as section headers, "PHONE" and "STATE" were confined to their 17-19pt
+ * highlights (no room → the value fell back onto the row above) and "PROPOSED PROJECT" was squeezed
+ * to its highlight's 69pt. A highlight marks a caption; it is never a header and its edges are not
+ * rules.
+ */
+export function captionHighlights(g: PageGeometry, items: LabelItem[]): Band[] {
+  return g.bands.filter((b) => {
+    const inside = items.filter((it) => it.page === g.page && it.y >= b.y0 - 1 && it.y <= b.y1 && it.x >= b.x0 - 2 && it.x < b.x1);
+    if (inside.length < 1) return false;
+    const x0 = Math.min(...inside.map((it) => it.x)), x1 = Math.max(...inside.map((it) => it.x + it.width));
+    const h = Math.max(...inside.map((it) => it.height || 9));
+    const oneLine = inside.every((it) => Math.abs(it.y - inside[0].y) < 0.6);
+    return oneLine && Math.abs(x0 - b.x0) <= 3 && Math.abs(x1 - b.x1) <= 4 && b.y1 - b.y0 <= 1.6 * h;
   });
 }
 
@@ -258,7 +354,7 @@ const intersects = (a: { x0: number; y0: number; x1: number; y1: number }, b: { 
   a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
 
 export interface SnapLine { text: string; x: number; y: number; size: number }
-export interface SnapResult { lines: SnapLine[]; how: "row" | "rows-below" | "above-line" | "point-row"; truncated: boolean }
+export interface SnapResult { lines: SnapLine[]; how: "row" | "rows-below" | "above-line" | "point-row" | "blank" | "cell" | "line"; truncated: boolean }
 export interface SnapInput {
   geometry: PageGeometry;
   /** The page's printed text (formTextLayer.extractLabels; other pages are ignored). */
@@ -279,11 +375,16 @@ function fitSize(text: string, width: number, start: number, widthOf: SnapInput[
   while (s > MIN_SIZE && widthOf(text, s) > width) s = Math.max(MIN_SIZE, s - 0.25);
   return { size: s, fits: widthOf(text, s) <= width };
 }
-/** Cut `text` to what fits `width` at `size`. */
-function cut(text: string, width: number, size: number, widthOf: SnapInput["widthOf"]): string {
+/** Fewer characters than this left of a longer value is not the value (Valencia's owner row came
+ *  back with a lone "R"): such a cut is refused, never drawn. */
+export const MIN_CUT_CHARS = 3;
+/** Cut `text` to what fits `width` at `size` — "" when what is left would be under MIN_CUT_CHARS
+ *  characters of a value that had more. */
+export function cut(text: string, width: number, size: number, widthOf: SnapInput["widthOf"]): string {
   let t = text;
-  while (t.length > 1 && widthOf(t, size) > width) t = t.slice(0, -1);
-  return t.trimEnd();
+  while (t.length > 0 && widthOf(t, size) > width) t = t.slice(0, -1);
+  t = t.trimEnd();
+  return t.length < Math.min(MIN_CUT_CHARS, text.trim().length) ? "" : t;
 }
 /** Greedy word wrap at one size. */
 function wrap(text: string, width: number, size: number, widthOf: SnapInput["widthOf"]): string[] {
@@ -323,11 +424,15 @@ function rowEnd(g: PageGeometry, items: LabelItem[], xStart: number, bottom: num
  * keeps the map's own position.
  */
 export function rowSnapPlacement(input: SnapInput): SnapResult | null {
-  const { geometry: g, label: L, point, widthOf } = input;
-  const items = input.items.filter((it) => it.page === g.page);
+  const { label: L, point, widthOf } = input;
+  const items = input.items.filter((it) => it.page === input.geometry.page);
   const text = String(input.text || "").replace(/\s+/g, " ").trim();
   if (!text) return null;
   const size0 = input.size > 0 ? input.size : 9;
+  // A caption's highlight is not a row: its edges are dropped from the rules this placement reads.
+  const highlights = captionHighlights(input.geometry, items);
+  const edgeOf = (r: HRule) => r.band && highlights.some((b) => Math.abs(r.x0 - b.x0) < 0.5 && Math.abs(r.x1 - b.x1) < 0.5 && (Math.abs(r.y - b.y0) < 0.5 || Math.abs(r.y - b.y1) < 0.5));
+  const g: PageGeometry = { ...input.geometry, hRules: input.geometry.hRules.filter((r) => !edgeOf(r)) };
   const headers = headerBands(g, items);
   const clear = (lines: SnapLine[]): boolean => lines.every((l) => {
     const box = { x0: l.x, y0: l.y - DESC * l.size, x1: l.x + widthOf(l.text, l.size), y1: l.y + CAP * l.size };
@@ -344,7 +449,34 @@ export function rowSnapPlacement(input: SnapInput): SnapResult | null {
     if (byHeight < MIN_SIZE) return null;
     const fit = fitSize(text, room, Math.min(size0, byHeight), widthOf);
     const t = fit.fits ? text : cut(text, room, fit.size, widthOf);
+    if (!t) return null;
     return done([{ text: t, x: xStart, y, size: fit.size }], how, !fit.fits);
+  };
+
+  /** Lines in a box [x0, x1] × [bottom, top]: one line 2-3pt above `bottom` when it fits, else
+   *  shrunk and wrapped (down to MIN_SIZE) upward from there; cut (and flagged) only at MIN_SIZE. */
+  const inBox = (x0: number, x1: number, bottom: number, top: number, how: SnapResult["how"]): SnapResult | null => {
+    const width = x1 - x0;
+    if (width < MIN_ROOM) return null;
+    const base = bottom + (BASE_MIN + BASE_MAX) / 2;
+    const pitch = (s: number) => s * (CAP + DESC) + 1;
+    const fitsAt = (s: number, n: number) => base + (n - 1) * pitch(s) + CAP * s <= top - 0.5;
+    if (!fitsAt(MIN_SIZE, 1)) return null;
+    let s = Math.min(size0, (top - 0.5 - base) / CAP);
+    let lines = wrap(text, width, s, widthOf);
+    while (s > MIN_SIZE && (!fitsAt(s, lines.length) || lines.some((l) => widthOf(l, s) > width))) {
+      s = Math.max(MIN_SIZE, s - 0.25);
+      lines = wrap(text, width, s, widthOf);
+    }
+    let truncated = false;
+    while (lines.length > 1 && !fitsAt(s, lines.length)) { lines = lines.slice(0, -1); truncated = true; }
+    lines = lines.map((l) => {
+      if (widthOf(l, s) <= width) return l;
+      truncated = true;
+      return cut(l, width, s, widthOf);
+    });
+    if (lines.some((l) => !l)) return null;
+    return done(lines.map((l, i) => ({ text: l, x: x0, y: base + (lines.length - 1 - i) * pitch(s), size: s })), how, truncated);
   };
 
   /** The blank rows stacked under startY (a header band's bottom, a full label row), within [x0, x1]. */
@@ -384,7 +516,28 @@ export function rowSnapPlacement(input: SnapInput): SnapResult | null {
       truncated = true;
       return cut(l, width, s, widthOf);
     });
+    if (lines.some((l) => !l)) return null;
     return done(lines.map((l, i) => ({ text: l, x: x0 + 4, y: rows[i].bottom + (BASE_MIN + BASE_MAX) / 2, size: s })), "rows-below", truncated);
+  };
+
+  /** The cell a caption heads: a rule just over the caption, a divider just left of it spanning
+   *  the cell, a rule under it with a value's room between, and nothing else printed in that room. */
+  const captionCell = (cap: LabelItem, lh: number): SnapResult | null => {
+    const hl = highlights.find((b) => cap.y >= b.y0 - 1 && cap.y <= b.y1 && cap.x >= b.x0 - 2 && cap.x < b.x1);
+    const roomTop = Math.min(cap.y - DESC * lh, hl ? hl.y0 : Infinity) - 0.5;
+    const top = ruleOver(g, cap.y, cap.x + 1, 0, lh + 6);
+    if (!top) return null;
+    const bottom = g.hRules
+      .filter((r) => !r.band && covers(r, cap.x + 1) && r.yTop <= roomTop - (MIN_SIZE * CAP + BASE_MIN) && r.yTop >= cap.y - 60)
+      .sort((a, b) => b.yTop - a.yTop)[0];
+    if (!bottom) return null;
+    const mid = (bottom.yTop + roomTop) / 2;
+    const left = g.vRules.find((v) => v.x <= cap.x + 1 && v.x >= cap.x - 10 && v.y0 <= mid && v.y1 >= cap.y);
+    if (!left) return null;
+    const xStart = cap.x;
+    const xEnd = rowEnd(g, items, xStart, bottom.yTop, roomTop, bottom.x1);
+    if (items.some((it) => it !== cap && it.y > bottom.yTop && it.y < roomTop && it.x + Math.max(1, it.width) > xStart && it.x < xEnd)) return null;
+    return inBox(xStart, xEnd, bottom.yTop, roomTop, "cell");
   };
 
   if (L) {
@@ -402,6 +555,19 @@ export function rowSnapPlacement(input: SnapInput): SnapResult | null {
       }
       return rowsBelow(band.y0, band.x0, band.x1);
     }
+    // A WRITING LINE PRINTED AS UNDERSCORES right after the label ("NAME ____ PHONE ____", split by
+    // formTextLayer.splitBlankRuns): the value is written on that line, from its start to its end.
+    const blank = items.find((b) => b.blank && Math.abs(b.y - L.y) <= 0.6 && b.x >= L.x + L.width - 1 && b.x - (L.x + L.width) <= 8);
+    if (blank) {
+      const over = ruleOver(g, L.y, blank.x + 2, Math.max(4, 0.6 * lh), 40);
+      const top = over ? over.yBottom : L.y + lh + 4;
+      const xStart = blank.x + 2;
+      const xEnd = rowEnd(g, items, xStart, L.y - 1, top, blank.x + blank.width + 1);
+      // The baseline sits just over the printed underscores (they run ~1pt under the label's own).
+      const line: HRule = { page: g.page, y: L.y - 1, yTop: L.y - 1, yBottom: L.y - 1, x0: blank.x, x1: blank.x + blank.width };
+      const r = inRow(line, top, xStart, xEnd, null, "blank");
+      if (r) return r;
+    }
     const under = ruleUnder(g, L.y, L.x + 1, 7, 0.5);
     if (under) {
       const over = ruleOver(g, L.y, L.x + 1, Math.max(4, 0.6 * lh), 40);
@@ -410,6 +576,32 @@ export function rowSnapPlacement(input: SnapInput): SnapResult | null {
       const xEnd = rowEnd(g, items, xStart, under.yTop, top, over ? Math.min(under.x1, over.x1) : under.x1);
       if (xEnd - xStart >= MIN_ROOM) return inRow(under, top, xStart, xEnd, L.y, "row");
       return rowsBelow(under.yBottom, under.x0, under.x1);
+    }
+    // A CAPTION AT THE TOP OF ITS CELL (Valencia County: "CITY", "STATE", "PHONE" sit top-left in
+    // ruled cells, the space under them left to write in): the cell's own rules and dividers bound
+    // the value, written from the caption's x along the cell's bottom.
+    const cell = captionCell(L, lh);
+    if (cell) return cell;
+    // A WRITING LINE THAT STARTS RIGHT OF ITS LABEL (City of Albuquerque's E-Plan application:
+    // "CONSTRUCTION ADDRESS:" ends at x 165, its line runs 169-470 under the label's baseline), or
+    // after a printed tail on the label's line ("ABQ. BUSINESS REG. # FA").
+    const labelEnd = L.x + L.width;
+    let reach = labelEnd;
+    for (const it of [...items].sort((a, b) => a.x - b.x)) {
+      if (it !== L && !it.blank && Math.abs(it.y - L.y) < 0.6 && it.x >= reach - 1 && it.x - reach <= 12) reach = Math.max(reach, it.x + it.width);
+    }
+    const line = g.hRules
+      .filter((r) => !r.band && r.x0 >= labelEnd - 2 && r.x0 <= reach + 14 && r.yTop <= L.y + 0.5 && r.yTop >= L.y - 7 && r.x1 - r.x0 >= MIN_ROOM)
+      .sort((a, b) => a.x0 - b.x0 || b.yTop - a.yTop)[0];
+    if (line) {
+      const xStart = Math.max(line.x0 + 2, reach + 3);
+      const over = ruleOver(g, line.yTop, xStart + 1, 4, 40);
+      const top = over ? over.yBottom : L.y + lh + 4;
+      // The row's free run ends at text on the VALUE's own line — not at the next row's label, which
+      // on these open forms (no rule between rows) sits within the rule-to-rule span.
+      const xEnd = rowEnd(g, items, xStart, line.yTop, Math.min(top, line.yTop + BASE_MAX + CAP * size0 + 1), line.x1);
+      const r = inRow(line, top, xStart, xEnd, null, "line");
+      if (r) return r;
     }
     if (!endsLikeLabel(L.str)) {
       // A bare caption printed under its writing line.
@@ -437,3 +629,72 @@ export function rowSnapPlacement(input: SnapInput): SnapResult | null {
   const xEnd = rowEnd(g, items, xStart, under.yTop, over.yBottom, Math.min(under.x1, over.x1));
   return inRow(under, over.yBottom, xStart, xEnd, point.y, "point-row");
 }
+
+// ---------------------------------------------------------------------------
+// CHECK MARKS — inside the box the page draws.
+// ---------------------------------------------------------------------------
+
+export interface MarkInput {
+  geometry: PageGeometry;
+  items: LabelItem[];
+  /** The printed caption the mark belongs to ("RESIDENTIAL"), or null. */
+  label: LabelItem | null;
+  /** The map's own position (the mark's start x, baseline y). */
+  point: { x: number; y: number };
+  text: string;
+  size: number;
+  widthOf: (text: string, size: number) => number;
+}
+
+/**
+ * Where a check mark goes: centred in the checkbox the page draws (formRowGeometry boxes). With a
+ * caption, the box on the caption's own line just LEFT of it (or, failing that, just right — "YES
+ * [ ]"); without one, the box the map's mark falls in. A caption whose line has no box is not
+ * guessed from the map's point: on the ABQ E-Plan form the map's marks sat a line off, so the
+ * nearest box was the wrong answer. A caption followed by an underscore blank takes the X on the
+ * blank. null when nothing qualifies — the caller withholds the mark.
+ */
+export function markPlacement(input: MarkInput): SnapLine | null {
+  const { geometry: g, label: L, point, widthOf } = input;
+  const text = String(input.text || "").trim() || "X";
+  const boxes = g.boxes.filter((b) => b.page === g.page);
+  let box: Box | undefined;
+  if (L) {
+    const lh = L.height > 0 ? L.height : 9;
+    const mid = L.y + 0.3 * lh;
+    const onLine = (b: Box) => Math.abs((b.y0 + b.y1) / 2 - mid) <= Math.max(3, 0.6 * lh);
+    box = boxes.filter((b) => onLine(b) && b.x1 <= L.x + 1 && L.x - b.x1 <= 24).sort((a, b) => b.x1 - a.x1)[0]
+      ?? boxes.filter((b) => onLine(b) && b.x0 >= L.x + L.width - 1 && b.x0 - (L.x + L.width) <= 12).sort((a, b) => a.x0 - b.x0)[0];
+  } else {
+    const s = input.size > 0 ? input.size : 9;
+    const cx = point.x + widthOf(text, s) / 2, cy = point.y + (CAP * s) / 2;
+    box = boxes.filter((b) => cx >= b.x0 - 3 && cx <= b.x1 + 3 && cy >= b.y0 - 3 && cy <= b.y1 + 3)
+      .sort((a, b) => Math.hypot((a.x0 + a.x1) / 2 - cx, (a.y0 + a.y1) / 2 - cy) - Math.hypot((b.x0 + b.x1) / 2 - cx, (b.y0 + b.y1) / 2 - cy))[0];
+  }
+  if (!box && L) {
+    // A tick-by-underscore ("RESIDENTIAL ____ / COMMERCIAL ____", Valencia County): the X sits on
+    // the blank right after its caption.
+    const blank = input.items.find((b) => b.page === g.page && b.blank && Math.abs(b.y - L.y) <= 0.6 && b.x >= L.x + L.width - 1 && b.x - (L.x + L.width) <= 8);
+    if (blank) {
+      const size = Math.min(input.size > 0 ? input.size : 9, L.height > 0 ? L.height : 9);
+      return { text, x: blank.x + blank.width / 2 - widthOf(text, size) / 2, y: blank.y + 1, size };
+    }
+  }
+  if (!box) return null;
+  const inner = Math.min(box.x1 - box.x0, box.y1 - box.y0) - 2;
+  let size = Math.min(input.size > 0 ? input.size : 9, inner / CAP);
+  while (size > 3 && widthOf(text, size) > inner) size -= 0.25;
+  const cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2;
+  return { text, x: cx - widthOf(text, size) / 2, y: cy - (CAP * size) / 2, size };
+}
+
+/** A drawn line's glyph box (Helvetica cap height over the baseline, descent under it). */
+export function glyphBox(line: SnapLine, widthOf: (text: string, size: number) => number): { x0: number; y0: number; x1: number; y1: number } {
+  return { x0: line.x, y0: line.y - DESC * line.size, x1: line.x + widthOf(line.text, line.size), y1: line.y + CAP * line.size };
+}
+/** A printed item's glyph box, the same convention. */
+export function itemBox(it: LabelItem): { x0: number; y0: number; x1: number; y1: number } {
+  const h = it.height > 0 ? it.height : 9;
+  return { x0: it.x, y0: it.y - DESC * h, x1: it.x + it.width, y1: it.y + CAP * h };
+}
+export { intersects as boxesIntersect };
