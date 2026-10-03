@@ -41,7 +41,7 @@ import { iowaPvWorksheetValues } from "./iowaPvWorksheet";
 import { documentFetchDisabled } from "./documentFetch";
 import {
   agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce,
-  applicationKindForPath, explicitSingleFamilyAnswer, formApplicationKind, formAuthorityFor, rowBelongsToAuthority, structureMeaningOf,
+  agencyTrackFormTypes, applicationKindForPath, explicitSingleFamilyAnswer, formApplicationKind, formAuthorityFor, rowBelongsToAuthority, structureMeaningOf,
   structureDescriptionOf,
   TRACK_FORM_TYPES, trackForFormType, tracksIssuedByOther,
 } from "./applicationDocsAgency";
@@ -2632,7 +2632,8 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string, opts:
   }
   if (opts.ownOnly) return out;
   for (const other of tracksIssuedByOther({ state, ahj })) {
-    const types = TRACK_FORM_TYPES[other.track];
+    // A state issuer's project keeps the generic slot for the AHJ's local review application.
+    const types = agencyTrackFormTypes({ state, ahj }, other.track);
     // C1 THE AMPLIFIER (agency-contain): the agency's rows THIS job may use — curated, person-placed, or
     // on a site this job's own lookup anchors (applicationDocsAgency.agencyRowAppliesToJob). A row of the
     // agency's that the AHJ's name happens to contain ("Unincorporated Kestrel County") is held to the

@@ -45,7 +45,7 @@ import { findAhjProcessProfile, ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE
 import { findKnowledgeForLearn } from "./knowledgeBase";
 import { HttpError } from "./httpError";
 import { applicationProfiles, findApplicationProfile, namedApplicationForm, permitStructureForProject } from "./applicationDocs";
-import { normalizeAhjName, permitProcessFor, stateRulesFor } from "./permitProcess";
+import { normalizeAhjName, permitProcessFor, stateIssuerFormFor, stateRulesFor } from "./permitProcess";
 import { namesPvWorksheet, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import {
   agencyApplicationForms, agencyListNamesDocument, agencyListReplacesLine, agencyRowAppliesToJob, anchorSitesOnce, issuingAgencyDocumentList, prerequisiteSettled, rowBelongsToAuthority, tracksIssuedByOther, TRACK_FORM_TYPES,
@@ -173,6 +173,9 @@ export interface ApplicationDocContext {
    * agency's own published application.
    */
   issuingAgencies?: Partial<Record<FormTrack, IssuingAgencyForms>>;
+  /** A STATE agency issues these tracks on ONE application (permitProcess.stateIssuerFormFor — New
+   *  Mexico CID, issue #53); the AHJ's own application is then its local zoning / site review. */
+  stateIssuerForm?: ReturnType<typeof stateIssuerFormFor>;
 }
 
 export interface IssuingAgencyForms {
@@ -513,6 +516,38 @@ export function requiredApplicationDocs(
     });
   }
 
+  // A STATE ISSUER FILES ONE APPLICATION FOR EVERY TRACK IT ISSUES (issue #53, NM CID): its building
+  // and electrical rows collapse into ONE row its one form satisfies — the gate never demands two
+  // forms the agency does not have — and the AHJ's OWN application stays required as what it is
+  // here: the local zoning / site-development review that comes first (the generic slot,
+  // applicationDocsAgency.stateIssuerKeepsGenericSlot), acquired and filled as before #45.
+  const stateForm = ctx.stateIssuerForm;
+  const covered = stateForm ? out.filter((r) => stateForm.tracks.some((t) => TRACK_FORM_TYPES[t][0] === r.docType)) : [];
+  if (stateForm && covered.length) {
+    const at = out.indexOf(covered[0]);
+    const [first, ...rest] = covered.map((r) => r.docType);
+    const tracksWord = stateForm.tracks.join(" and ");
+    const local: RequiredApplicationDoc = {
+      docType: "permit_application",
+      label: `${stateForm.localReviewer}'s own application for the local zoning / site-development review (the first step), filled`,
+      why: `${stateForm.localReviewer} has no building department of its own: it reviews zoning and the site plan FIRST, on its own application, and ${stateForm.agency} then issues the ${tracksWord} permits.${portalOnly ? portalNote : ""}`,
+      lane: "permit",
+      blocking: separate && path !== "unknown" && !portalOnly,
+      discipline: "structural",
+    };
+    const issuerRow: RequiredApplicationDoc = {
+      docType: first,
+      ...(rest.length ? { altDocTypes: rest } : {}),
+      label: `${stateForm.agency}: ${stateForm.formName}, filled`,
+      why: `${stateForm.agency} issues the ${tracksWord} permit${stateForm.tracks.length > 1 ? "s" : ""} for ${where} (state rule, seeded — ${stateForm.sourceUrl}) on ONE application, so this one form satisfies ${stateForm.tracks.length > 1 ? "both the building and the electrical requirement; no second form is owed" : "the requirement"}. It is ${stateForm.agency}'s form, looked for on its own site (${stateForm.searchUrl}), never ${where}'s.`,
+      lane: "permit",
+      blocking: covered.some((r) => r.blocking),
+      discipline: stateForm.tracks.length > 1 ? "combo" : covered[0].discipline,
+    };
+    out.splice(at, 0, local, issuerRow);
+    for (const r of covered) out.splice(out.indexOf(r), 1);
+  }
+
   // THE PRESCRIPTIVE CHECKLIST IS THE PRESCRIPTIVE PATH'S SEALED LETTER.
   //
   // The two building-side paths are mutually exclusive, and each carries its OWN evidence
@@ -646,6 +681,7 @@ export function applicationDocContext(project: ProjectRecord): ApplicationDocCon
     ctx.requiresPrescriptiveChecklist = Boolean(profile.requiresPrescriptiveChecklist);
     ctx.requiresPortalEntryOnly = Boolean(profile.requiresPortalEntryOnly);
   } catch { /* the AHJ's own name for the form is a nicety, not a requirement */ }
+  try { ctx.stateIssuerForm = stateIssuerFormFor(project); } catch { /* state rule optional */ }
   // WHOSE APPLICATIONS (applicationDocsAgency.formAuthorityFor): a track the per-job lookup cites
   // ANOTHER agency for carries that agency and its known forms, and the building-side name is the
   // agency's own form's.

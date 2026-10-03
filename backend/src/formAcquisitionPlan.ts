@@ -31,6 +31,8 @@ import { curatedFormSource, curatedFormSourcesFor } from "./curatedAhjForms";
 
 type CuratedSource = ReturnType<typeof curatedFormSourcesFor>[number];
 import { resolvePermitPath } from "./permitPath";
+import { stateIssuerFormFor } from "./permitProcess";
+import { sameAgencyName } from "./agencyName";
 
 export interface EnsureFormResult {
   status: "exists" | "acquired" | "needs_manual" | "not_found";
@@ -283,6 +285,13 @@ export function issuingAgencyFormPlan(
     };
   }
   const candidates = agencyApplicationForms(project, formType, want);
+  // A STATE ISSUER'S FORM is looked for on the ISSUER's site, never the AHJ's (issue #53): the state
+  // rule names where, and a form whose URL nobody has confirmed there stays not_found with the rule's
+  // own reason — never a guessed URL, never a search under the AHJ's name.
+  const stateForm = !candidates.length ? stateIssuerFormFor(project) : null;
+  if (stateForm && sameAgencyName(agency, stateForm.agency) && track && stateForm.tracks.includes(track)) {
+    return { ...base, steps: [], settled: { status: "not_found", message: `${agency} issues the ${stateForm.tracks.join(" and ")} permits for ${project.ahj} on one application (state rule, seeded — ${stateForm.sourceUrl}). Its ${stateForm.formName} was looked for on ${agency}'s own site (${stateForm.searchUrl}), not ${project.ahj}'s: ${stateForm.notFound}. Upload ${agency}'s blank (Find official form → upload); it has not been counted as present.` } };
+  }
   if (!candidates.length) {
     return { ...base, steps: [], settled: { status: "not_found", message: `${whose}, but no ${label} of ${agency}'s is held, seeded or cited. Upload ${agency}'s blank (Find official form → upload); it has not been counted as present.` } };
   }
