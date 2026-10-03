@@ -1901,13 +1901,19 @@ export async function fillLoadedForm(
           .filter((it) => { const o = it.str.toLowerCase().replace(/[^a-z0-9]/g, ""); return o.length >= 2 && want.endsWith(o); })
           .sort((a, b) => Math.abs(a.x - point.x) - Math.abs(b.x - point.x))[0] ?? null;
         const L = found && own.length >= 2 && want.includes(own) ? found : tail;
-        const mark = snapTools.markPlacement({ geometry: pageGeometry, items: textItems, label: L, point, text, size, widthOf });
+        let mark = snapTools.markPlacement({ geometry: pageGeometry, items: textItems, label: L, point, text, size, widthOf });
+        // A label naming a whole choice line ("RESIDENTIAL ____ / COMMERCIAL ____", "BP/DP(50.00)",
+        // Valencia County, live 2026-10-03): the chosen option's caption, read off that line.
+        if (!mark) {
+          const choice = snapTools.choiceCaption({ items: textItems, page: field.page, label: printed, point });
+          if (choice) mark = snapTools.markPlacement({ geometry: pageGeometry, items: textItems, label: choice, point, text, size, widthOf });
+        }
         if (mark && !overprints(field.page, [mark])) {
           drawLines(field.page, [mark]);
           drawn += 1;
           continue;
         }
-        withhold("no checkbox found for the mark", mark ? "its box is already marked — tick it by hand" : "no box for it could be found on the form — tick it by hand");
+        withhold("no checkbox found for the mark", mark ? "its box is already marked — tick it by hand" : "no box for it could be found on the form — tick it by hand; looked for a checkbox beside its caption and a ____ blank after it");
         continue;
       }
       if (pageGeometry && snapTools && !isMark) {

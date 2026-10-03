@@ -704,6 +704,50 @@ export function markPlacement(input: MarkInput): SnapLine | null {
   return { text, x: cx - widthOf(text, size) / 2, y: cy - (CAP * size) / 2, size };
 }
 
+/**
+ * A CHOICE CAPTION THAT CARRIES ITS OWN BLANKS (Valencia County, live 2026-10-03): a map label that
+ * names a whole printed choice line — "RESIDENTIAL ____ / COMMERCIAL ____" (two options, one label) or
+ * "BP/DP(50.00)" (one option printed as two items, "BP/DP" and "(50.00)") — matches no single text
+ * item, so markPlacement had no caption and found no blank. Read the line near the map's point as
+ * options: each run of printed words ending right at an underscore blank, whose letters the label
+ * names. The chosen option is the one the map's point is on (caption start to blank end, a few points
+ * of slack); returned as ONE caption item spanning the run, so markPlacement's own rule puts the X on
+ * the blank right after it. null when no option qualifies, or the point is on none of them or
+ * equally near two — the caller withholds the mark, never picks a neighbour.
+ */
+export function choiceCaption(input: { items: LabelItem[]; page: number; label: string; point: { x: number; y: number } }): LabelItem | null {
+  const { point } = input;
+  const loose = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const want = loose(input.label.replace(/_+/g, " "));
+  if (want.length < 2) return null;
+  const near = input.items.filter((it) => it.page === input.page && !it.angle && Math.abs(it.y - point.y) <= 9);
+  const options: Array<{ caption: LabelItem; end: number }> = [];
+  for (const blank of near.filter((b) => b.blank)) {
+    // The words just left of this blank, on its own line, back to the previous blank.
+    const line = near.filter((it) => Math.abs(it.y - blank.y) <= 0.6 && it.x < blank.x).sort((a, b) => b.x - a.x);
+    const run: LabelItem[] = [];
+    let edge = blank.x;
+    for (const it of line) {
+      if (it.blank || edge - (it.x + it.width) > 8) break;
+      run.unshift(it);
+      edge = it.x;
+    }
+    // The longest tail of the run the label names ("BP/DP (50.00)", not the whole line before it).
+    while (run.length && !(loose(run.map((r) => r.str).join("")).length >= 2 && want.includes(loose(run.map((r) => r.str).join(""))))) run.shift();
+    if (!run.length) continue;
+    const first = run[0], last = run[run.length - 1];
+    options.push({
+      caption: { ...first, str: run.map((r) => r.str.trim()).join(" "), width: last.x + last.width - first.x, height: Math.max(...run.map((r) => r.height || 0)) },
+      end: blank.x + blank.width,
+    });
+  }
+  if (!options.length) return null;
+  const dist = (o: { caption: LabelItem; end: number }) => (point.x < o.caption.x ? o.caption.x - point.x : point.x > o.end ? point.x - o.end : 0);
+  const ranked = options.map((o) => ({ o, d: dist(o) })).filter((r) => r.d <= 6).sort((a, b) => a.d - b.d);
+  if (!ranked.length || (ranked.length > 1 && ranked[1].d === ranked[0].d)) return null;
+  return ranked[0].o.caption;
+}
+
 /** A drawn line's glyph box (Helvetica cap height over the baseline, descent under it). */
 export function glyphBox(line: SnapLine, widthOf: (text: string, size: number) => number): { x0: number; y0: number; x1: number; y1: number } {
   return { x0: line.x, y0: line.y - DESC * line.size, x1: line.x + widthOf(line.text, line.size), y1: line.y + CAP * line.size };
