@@ -45,10 +45,10 @@ import { findAhjProcessProfile, ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE
 import { findKnowledgeForLearn } from "./knowledgeBase";
 import { HttpError } from "./httpError";
 import { applicationProfiles, findApplicationProfile, namedApplicationForm, permitStructureForProject } from "./applicationDocs";
-import { normalizeAhjName, permitProcessFor, stateRulesFor } from "./permitProcess";
+import { normalizeAhjName, permitProcessFor, stateIssuerFormsFor, stateRulesFor } from "./permitProcess";
 import { namesPvWorksheet, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import {
-  agencyApplicationForms, agencyListNamesDocument, agencyListReplacesLine, agencyRowAppliesToJob, anchorSitesOnce, issuingAgencyDocumentList, prerequisiteSettled, rowBelongsToAuthority, tracksIssuedByOther, TRACK_FORM_TYPES,
+  agencyApplicationForms, applicationSlotFor, agencyListNamesDocument, agencyListReplacesLine, agencyRowAppliesToJob, anchorSitesOnce, issuingAgencyDocumentList, prerequisiteSettled, rowBelongsToAuthority, tracksIssuedByOther, TRACK_FORM_TYPES,
   type AgencyApplicationForm, type AgencyLineStatus, type AgencyLineStatusOf, type FormTrack,
 } from "./applicationDocsAgency";
 import { filledApplicationForms, heldUnfillableAgencyBlanks } from "./ahjForms";
@@ -173,6 +173,9 @@ export interface ApplicationDocContext {
    * agency's own published application.
    */
   issuingAgencies?: Partial<Record<FormTrack, IssuingAgencyForms>>;
+  /** A STATE agency issues these tracks, on its own application per track (permitProcess.stateIssuerFormsFor
+   *  — New Mexico CID, issue #53); the AHJ's own application is then its local zoning / site review. */
+  stateIssuer?: ReturnType<typeof stateIssuerFormsFor>;
 }
 
 export interface IssuingAgencyForms {
@@ -513,6 +516,37 @@ export function requiredApplicationDocs(
     });
   }
 
+  // A STATE ISSUER FILES ITS OWN APPLICATION PER TRACK (issue #53, NM CID; Helm's decision on PR #64):
+  // CID takes a building application and a SEPARATE electrical application, so each track it issues
+  // keeps its own blocking row, satisfied only by CID's form of that type — no altDocTypes between
+  // them, and no generic alias (the generic slot is the AHJ's). The AHJ's OWN application stays
+  // required as what it is here: the local zoning / site-development review that comes first
+  // (applicationDocsAgency.stateIssuerKeepsGenericSlot), acquired and filled as before #45.
+  const stateIssuer = ctx.stateIssuer;
+  const covered = stateIssuer ? out.filter((r) => stateIssuer.tracks.some((t) => TRACK_FORM_TYPES[t][0] === r.docType)) : [];
+  if (stateIssuer && covered.length) {
+    const at = out.indexOf(covered[0]);
+    const owed = covered.some((r) => r.blocking);
+    const local: RequiredApplicationDoc = {
+      docType: "permit_application",
+      label: `${stateIssuer.localReviewer}'s own application for the local zoning / site-development review (the first step), filled`,
+      why: `${stateIssuer.localReviewer} has no building department of its own: it reviews zoning and the site plan FIRST, on its own application, and ${stateIssuer.agency} then issues the ${stateIssuer.tracks.join(" and ")} permit${stateIssuer.tracks.length > 1 ? "s" : ""}, each on its own application.${portalOnly ? portalNote : ""}`,
+      lane: "permit",
+      blocking: separate && path !== "unknown" && !portalOnly,
+      discipline: "structural",
+    };
+    const issuerRows: RequiredApplicationDoc[] = stateIssuer.forms.map((f) => ({
+      docType: TRACK_FORM_TYPES[f.track][0],
+      label: `${stateIssuer.agency}: ${f.formName}, filled`,
+      why: `${stateIssuer.agency} issues the ${f.track} permit for ${where} (state rule, seeded — ${f.sourceUrl}) on its own ${f.formName}; only ${stateIssuer.agency}'s ${f.track} form satisfies this row. It is ${stateIssuer.agency}'s form, looked for on its own forms page (${f.searchUrl}), never ${where}'s.`,
+      lane: "permit",
+      blocking: owed,
+      discipline: f.track === "building" ? "structural" : "electrical",
+    }));
+    for (const r of covered) out.splice(out.indexOf(r), 1);
+    out.splice(Math.min(at, out.length), 0, local, ...issuerRows);
+  }
+
   // THE PRESCRIPTIVE CHECKLIST IS THE PRESCRIPTIVE PATH'S SEALED LETTER.
   //
   // The two building-side paths are mutually exclusive, and each carries its OWN evidence
@@ -646,6 +680,7 @@ export function applicationDocContext(project: ProjectRecord): ApplicationDocCon
     ctx.requiresPrescriptiveChecklist = Boolean(profile.requiresPrescriptiveChecklist);
     ctx.requiresPortalEntryOnly = Boolean(profile.requiresPortalEntryOnly);
   } catch { /* the AHJ's own name for the form is a nicety, not a requirement */ }
+  try { ctx.stateIssuer = stateIssuerFormsFor(project); } catch { /* state rule optional */ }
   // WHOSE APPLICATIONS (applicationDocsAgency.formAuthorityFor): a track the per-job lookup cites
   // ANOTHER agency for carries that agency and its known forms, and the building-side name is the
   // agency's own form's.
@@ -991,8 +1026,10 @@ export function agencyListStatusResolver(db: AppDb, project: ProjectRecord): Age
       return "not_on_file";
     }
     if (types.some((t) => filled[t])) return "filled";
-    if (stored.some((t) => types.includes(t.formType || "permit_application") && !formContradictsPath(t.def.formName, permitPath, t.applicationKind))) return "on_file";
-    if (blanks.some((b) => types.includes(b.formType) && !formContradictsPath(b.formName, permitPath, b.applicationKind))) return "held_not_fillable";
+    // The slot a stored row fills is its AUTHORITY's (applicationSlotFor) — the key filledApplicationForms
+    // gives its fill — so a state issuer's line is never "on file" off the AHJ's own blank, nor the reverse.
+    if (stored.some((t) => types.includes(applicationSlotFor(project, t.formType || "permit_application", t.authority)) && !formContradictsPath(t.def.formName, permitPath, t.applicationKind))) return "on_file";
+    if (blanks.some((b) => types.includes(applicationSlotFor(project, b.formType, b.agency)) && !formContradictsPath(b.formName, permitPath, b.applicationKind))) return "held_not_fillable";
     return "not_on_file";
   };
 }
@@ -1181,7 +1218,7 @@ export function missingFilledAtStaging(db: AppDb, project: ProjectRecord, missin
     const formType = new Map(db.query<{ id: string; form_type: string }>("SELECT id, form_type FROM ahj_form_templates").map((r) => [String(r.id), String(r.form_type || "permit_application")]));
     for (const t of stored) {
       if (!formAllowedForPath(t.def.formName, permitPath, t.applicationKind)) continue;
-      const docType = formType.get(t.templateId) ?? "";
+      const docType = applicationSlotFor(project, formType.get(t.templateId) ?? "", t.authority);
       if (APPLICATION_DOC_TYPES.has(docType) && !willFill[docType]) willFill[docType] = t.def.formName;
     }
   }

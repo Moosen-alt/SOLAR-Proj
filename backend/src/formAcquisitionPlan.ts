@@ -24,13 +24,15 @@ import { documentFetchDisabled } from "./documentFetch";
 import { loadStoredTemplates, storedApplicationKind } from "./ahjForms";
 import { findApplicationProfile, permitStructureForProject } from "./applicationDocs";
 import {
-  agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, applicationKindForPath, formAuthorityFor,
+  agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, applicationKindForPath, formAuthorityFor, localReviewSlotTypes,
   rowBelongsToAuthority, TRACK_FORM_TYPES, type AgencyApplicationForm, type FormAuthority,
 } from "./applicationDocsAgency";
 import { curatedFormSource, curatedFormSourcesFor } from "./curatedAhjForms";
 
 type CuratedSource = ReturnType<typeof curatedFormSourcesFor>[number];
 import { resolvePermitPath } from "./permitPath";
+import { stateIssuerFormsFor } from "./permitProcess";
+import { sameAgencyName } from "./agencyName";
 
 export interface EnsureFormResult {
   status: "exists" | "acquired" | "needs_manual" | "not_found";
@@ -189,7 +191,14 @@ export function acceptedFormTypes(formType: string, structure: "separate" | "com
 /** acceptedFormTypes for this project's permit structure (unknown when it cannot be read). */
 export function acceptedFormTypesFor(project: ProjectRecord, formType: string): string[] {
   let structure: "separate" | "combo" | "unknown" = "unknown";
-  if (formType === "permit_application") { try { structure = permitStructureForProject(project); } catch { /* unknown */ } }
+  if (formType === "permit_application") {
+    // A state issuer's project: the generic slot is the AHJ's local review application, held under
+    // whatever type the AHJ's own blank was stored as (applicationDocsAgency.applicationSlotFor) —
+    // hasStoredTemplateOfType reads the AHJ's own rows only, so an issuer's form never counts here.
+    const local = localReviewSlotTypes(project);
+    if (local.length) return local;
+    try { structure = permitStructureForProject(project); } catch { /* unknown */ }
+  }
   return acceptedFormTypes(formType, structure);
 }
 
@@ -283,6 +292,15 @@ export function issuingAgencyFormPlan(
     };
   }
   const candidates = agencyApplicationForms(project, formType, want);
+  // A STATE ISSUER'S FORM is looked for on the ISSUER's forms page, never the AHJ's (issue #53): the
+  // state rule names where — ONE form per track (Helm's decision on PR #64) — and a form whose download
+  // nobody has seeded stays not_found with the rule's own reason: never a guessed URL, never a search
+  // under the AHJ's name.
+  const stateIssuer = !candidates.length ? stateIssuerFormsFor(project) : null;
+  const stateForm = stateIssuer && sameAgencyName(agency, stateIssuer.agency) && track ? stateIssuer.forms.find((f) => f.track === track) : undefined;
+  if (stateForm) {
+    return { ...base, steps: [], settled: { status: "not_found", message: `${agency} issues the ${track} permit for ${project.ahj} (state rule, seeded — ${stateForm.sourceUrl}) on its own ${stateForm.formName}. It was looked for on ${agency}'s forms page (${stateForm.searchUrl}), not ${project.ahj}'s: ${stateForm.notFound}. Upload ${agency}'s blank (Find official form → upload); it has not been counted as present.` } };
+  }
   if (!candidates.length) {
     return { ...base, steps: [], settled: { status: "not_found", message: `${whose}, but no ${label} of ${agency}'s is held, seeded or cited. Upload ${agency}'s blank (Find official form → upload); it has not been counted as present.` } };
   }
