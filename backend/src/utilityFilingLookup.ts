@@ -24,7 +24,7 @@
 
 import type { AppDb } from "./db";
 import type { CitedFact, LLMProvider, ProjectRecord, WebLookupResult } from "../../shared/src/types";
-import { hostFitsTrackAndEntity, isInformationalPageUrl, portalHostOf } from "./portalChannel";
+import { hostFitsTrackAndEntity, isInformationalPageUrl, namedInterconnectionPlatforms, portalHostOf } from "./portalChannel";
 import { logger } from "./logger";
 import { knownPowerClerkUtility } from "./utilityIdentity";
 
@@ -157,14 +157,16 @@ function cited<T>(raw: RawFact, seenUrls: string[], coerce: (v: unknown) => T | 
 }
 
 /** A filing URL is kept only when it is a real application portal on the NEM track whose OWN host
- *  the search attested. Otherwise the location keeps its name and loses the URL. */
-export function acceptFilingUrl(url: string, seenUrls: string[]): { url: string | null; why: string } {
+ *  the search attested — and, when the answer names an interconnection platform (its name or its
+ *  quote says PowerClerk…), on that platform's domain (issue #31). Otherwise the location keeps its
+ *  name and loses the URL. */
+export function acceptFilingUrl(url: string, seenUrls: string[], namedPlatform: string[] = []): { url: string | null; why: string } {
   const u = str(url);
   if (!/^https?:\/\//i.test(u)) return { url: null, why: "no URL" };
   const host = portalHostOf(u);
   if (!seenUrls.some((s) => portalHostOf(s) === host)) return { url: null, why: `${host} is not a host the search returned` };
   if (isInformationalPageUrl(u)) return { url: null, why: `${u} is an information page, not an application portal` };
-  const fit = hostFitsTrackAndEntity("nem", null, u, "research");
+  const fit = hostFitsTrackAndEntity("nem", null, u, "research", { namedPlatform });
   if (!fit.fits) return { url: null, why: fit.reason };
   return { url: u, why: "" };
 }
@@ -183,8 +185,11 @@ export function parseUtilityFilingAnswer(text: string, seenUrls: string[]): { fi
     rawFiling, seenUrls,
     (v) => {
       const o = (v && typeof v === "object" ? v : { name: v }) as Record<string, unknown>;
-      const name = str(o.name);
-      const accepted = acceptFilingUrl(str(o.url), seenUrls);
+      const named = [str(o.name), str(rawFiling?.quote)];
+      // A nameless answer whose quote names the platform is filed under that platform's name, so a
+      // dropped off-platform URL still leaves "PowerClerk — tenant URL unconfirmed" on the card.
+      const name = str(o.name) || namedInterconnectionPlatforms(named)[0] || "";
+      const accepted = acceptFilingUrl(str(o.url), seenUrls, named);
       if (str(o.url) && !accepted.url) dropped.push(`filing URL ${str(o.url)} dropped: ${accepted.why}`);
       if (!name && !accepted.url) return null;
       return { name: name || portalHostOf(accepted.url!), url: accepted.url };
@@ -203,7 +208,7 @@ export function parseUtilityFilingAnswer(text: string, seenUrls: string[]): { fi
 // ── The lookup ───────────────────────────────────────────────────────────────────────────────
 export const UTILITY_FILING_SYSTEM = `You find, for ONE electric utility in the United States, WHERE a residential rooftop solar installer files that utility's interconnection application, and WHAT the utility's customer-generation program is.
 
-1. filing — where the interconnection / net-metering application is SUBMITTED: the online application portal (a PowerClerk tenant, the utility's own interconnection portal, an installer portal) or, when the utility takes it another way, that way (e.g. email to an address, a paper form). value: {"name": "<the portal or method, as the utility names it>", "url": "<the portal's own entry URL, or null>"}. NEVER a city or county PERMIT portal, never a help page or a PDF. Prefer the utility's own interconnection / "for contractors" / "for installers" page.
+1. filing — where the interconnection / net-metering application is SUBMITTED: the online application portal (a PowerClerk tenant, the utility's own interconnection portal, an installer portal) or, when the utility takes it another way, that way (e.g. email to an address, a paper form). value: {"name": "<the portal or method, as the utility names it>", "url": "<the portal's own entry URL, or null>"}. NEVER a city or county PERMIT portal, never a help page or a PDF. Prefer the utility's own interconnection / "for contractors" / "for installers" page. When the utility files on PowerClerk (or another platform), the url is the utility's OWN tenant login on that platform's domain (e.g. <tenant>.powerclerk.com/MvcAccount/Login) — search for it and give it only when a search result or a page you opened shows that host; a program, resource or info page on the utility's own website is never the url. If you cannot find the tenant's host, give the name (e.g. "PowerClerk") with "url": null.
 2. program — "net_metering" when the utility credits exported energy under a net-metering tariff or rider; "net_billing" when exports are credited at a set export / buyback rate or price plan that is not net metering; "interconnection_only" when the utility only interconnects and does not itself credit exports (e.g. a wires-only distribution utility whose customers' retail electric provider sets any buyback). Also give "programName" in the utility's own words.
 
 EVERY value carries "sourceUrl" (a page your search returned or you opened) and "quote" (the exact words on that page that state it, under 250 characters, containing the answer itself: the portal's name or link for the filing; the words net metering / export credit / retail provider for the program). If no page states it, "value": null and say what you searched in "notFound". Never answer from memory. Never guess.
@@ -401,8 +406,11 @@ export function utilityTrackPresentation(db: AppDb | null, project: Pick<Project
   const filing = lookup?.filing?.value ?? null;
   const tag = verified ? "verified by a person" : "cited";
   const status = filing || known ? null : utilityFilingLookupStatus(project.state, project.utility);
+  // A named platform with no tenant URL (issue #31: the answer said PowerClerk but gave the utility's
+  // own page, which acceptFilingUrl dropped) says so — never a silent bare "PowerClerk".
+  const tenantUnconfirmed = filing && !filing.url && namedInterconnectionPlatforms(filing.name).length ? " — tenant URL unconfirmed, verify" : "";
   const channel = filing
-    ? `${filing.name}${filing.url ? ` — ${filing.url}` : ""} (${tag}: ${lookup!.filing.sourceUrl})`
+    ? `${filing.name}${filing.url ? ` — ${filing.url}` : tenantUnconfirmed} (${tag}: ${lookup!.filing.sourceUrl})`
     : known
       ? known.channel
       : status

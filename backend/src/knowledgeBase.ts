@@ -2928,6 +2928,20 @@ function seedOfficialKnowledge(db: AppDb): void {
       confidence: "seeded",
       notes: "Official Pacific Power seed for customer generation/NEM path. Smart inverter settings work like PGE: a Yes/No election to use the utility's recommended smart inverter settings — answer Yes for UL 1741-SB listed inverters, plus an inverter spec/cut-sheet upload (not a grid-profile drawing). Witness test + meter exchange may apply; some projects exceed 70 business days when equipment upgrades are needed.",
     },
+    {
+      // Issue #31: research kept PNM's program page (www.pnm.com/customer-solar-program1) as the NEM
+      // portal while naming PowerClerk; the owner confirmed PNM's own PowerClerk tenant live
+      // (2026-10-02). SEEDED, never verified (rule 3): the owner verifies it in the UI.
+      state: "NM",
+      ahj: "",
+      utility: "PNM",
+      portalName: "PowerClerk",
+      portalPlatform: "PowerClerk",
+      portalUrl: "https://pnminterconnect.powerclerk.com/MvcAccount/Login",
+      sources: [officialSource("PNM Customer Solar Program", "https://www.pnm.com/customer-solar-program1")],
+      confidence: "seeded",
+      notes: "PNM (Public Service Company of New Mexico) takes residential interconnection applications on its PowerClerk tenant (pnminterconnect.powerclerk.com); www.pnm.com pages are program information, not the portal. Seeded — verify before relying on it.",
+    },
   ];
 
   for (const seed of officialSeeds) upsertKnowledge(db, seed);

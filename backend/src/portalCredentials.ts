@@ -229,6 +229,10 @@ const HOSTNAME_ALIASES: Record<string, string[]> = {
   "pgenm.powerclerk.com": ["portlandgeneral.com", "www.portlandgeneral.com"],
   "portlandgeneral.com": ["pgenm.powerclerk.com", "www.portlandgeneral.com"],
   "www.portlandgeneral.com": ["pgenm.powerclerk.com", "portlandgeneral.com"],
+  // PNM (NM) NEM — PowerClerk at pnminterconnect.powerclerk.com; operators may store pnm.com (issue #31).
+  "pnminterconnect.powerclerk.com": ["pnm.com", "www.pnm.com"],
+  "pnm.com": ["pnminterconnect.powerclerk.com", "www.pnm.com"],
+  "www.pnm.com": ["pnminterconnect.powerclerk.com", "pnm.com"],
 };
 
 /** The known aliases of a host (lowercase, "www." kept as stored) — THE one alias list: the

@@ -20,10 +20,11 @@ export function researchedUrlRefusal(
   track: "permit" | "nem",
   entity: { state?: string; name?: string },
   url: string | null | undefined,
+  namedPlatform: string[] = [],
 ): string {
   const value = String(url ?? "").trim();
   if (!value) return "";
-  const fit = hostFitsTrackAndEntity(track, portalEntityEvidence(db, { scope: scopeForTrack(track), state: entity.state, name: entity.name }), value, "research");
+  const fit = hostFitsTrackAndEntity(track, portalEntityEvidence(db, { scope: scopeForTrack(track), state: entity.state, name: entity.name }), value, "research", { namedPlatform });
   let code: string = fit.code;
   let reason = fit.reason;
   if (fit.fits) {
@@ -48,7 +49,7 @@ export function researchedUrlRefusal(
  * launched it unconfirmed. The rest of the research (documents, steps, notes) is still saved. The
  * caller's research object is untouched, so it still sees (and reports) what was found.
  */
-export function researchWithFittedUrl<T extends { portalUrl: string; notes: string }>(
+export function researchWithFittedUrl<T extends { portalUrl: string; notes: string; portalName?: string; portalPlatform?: string; tips?: string[] }>(
   db: AppDb,
   track: "permit" | "nem",
   entity: { state?: string; name?: string },
@@ -57,13 +58,13 @@ export function researchWithFittedUrl<T extends { portalUrl: string; notes: stri
   const url = String(research.portalUrl || "").trim();
   if (!url) return research;
   let reason = "";
-  if (researchSaysPortalUnconfirmed(research.notes)) {
+  if (researchSaysPortalUnconfirmed(research.notes) || researchSaysPortalUnconfirmed((research.tips ?? []).join(" | "))) {
     reason = RESEARCH_UNCONFIRMED_REASON;
     addAuditLog(db, null, "system", "kb research", "knowledge.researched_url_not_saved", {
       track, state: entity.state ?? "", entity: entity.name ?? "", url, code: "unconfirmed", reason,
     });
   } else {
-    reason = researchedUrlRefusal(db, track, entity, url);
+    reason = researchedUrlRefusal(db, track, entity, url, researchNamedPlatform(research));
   }
   if (!reason) return research;
   // Not lost: the savers keep it as a REFERENCE link (a note segment), never as portal_url.
@@ -77,6 +78,18 @@ export function researchWithFittedUrl<T extends { portalUrl: string; notes: stri
 // hostFitsTrackAndEntity's): when the research disclaims the URL, it is kept as a reference link.
 const UNCONFIRMED_PORTAL_NOTE = /\b(?:portal|login|application)(?: login)? (?:url|link|page|address)\b[^.]{0,80}?\b(?:was|is|could|has) not (?:be |been )?(?:confirmed|verified|found)\b|\bno exact (?:deep )?link\b/i;
 export const RESEARCH_UNCONFIRMED_REASON = "the research itself says this URL was not confirmed as the application portal";
+/** What the research says the portal runs on — the words hostFitsTrackAndEntity's `namedPlatform`
+ *  judges the URL's host against (issue #31: "PowerClerk" beside a pnm.com program page). */
+export function researchNamedPlatform(research: { portalName?: string; portalPlatform?: string }): string[] {
+  return [research.portalName, research.portalPlatform].map((s) => String(s ?? "").trim()).filter(Boolean);
+}
+
+/** The sentence the research provider appends to its notes when the model's own JSON says the
+ *  portal URL is not confirmed (`portalUrlConfirmed: false`). The provider's notes are otherwise a
+ *  FIXED sentence and the research JSON had no notes key, so before issue #31 the guard below could
+ *  only fire in a test that injected notes by hand. It must match UNCONFIRMED_PORTAL_NOTE. */
+export const RESEARCH_PORTAL_UNCONFIRMED_NOTE = "The portal login URL was not confirmed by this research; the URL returned is a reference link only.";
+
 /** True when the research's notes disclaim the portal URL it returned. */
 export function researchSaysPortalUnconfirmed(notes: string | null | undefined): boolean {
   return UNCONFIRMED_PORTAL_NOTE.test(String(notes ?? ""));
