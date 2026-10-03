@@ -243,8 +243,8 @@ function permitStructureParts(a: PermitStructureAnswer): { core: string; pre: st
 export function shippedProfileNeedsPerJobLookup(project: ProjectRecord): boolean {
   const profile = findApplicationProfile(project);
   if (applicationProfiles.includes(profile) && profile.id !== "oregon-generic-epermitting") return false;
-  // A STATE issuer (New Mexico CID) is the state's DEFAULT for a jurisdiction not on the seeded
-  // full-service list — never a reason to skip asking about this AHJ: a cited lookup outranks it.
+  // A STATE issuer (New Mexico CID) rests on a seeded list of state-served jurisdictions — never a
+  // reason to skip asking about this AHJ: a cited lookup outranks it.
   const a = permitStructureAnswer(project);
   return a.level === "unknown" || Boolean(a.issuer);
 }

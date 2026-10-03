@@ -184,11 +184,11 @@ export interface StatePermitRules {
   pvWorksheet?: CitedFact<{ formName: string; requiredAt: string[] }>;
   /** A STATE agency issues the building + electrical permits wherever the local jurisdiction has no
    *  building department of its own (New Mexico CID); the local office only reviews zoning / the
-   *  site plan first. `fullService` = names (localAhjName) of the jurisdictions that DO issue their
-   *  own; `manufactured` = the agency for a manufactured home instead; `localStep` = the cited
+   *  site plan first. `served` = names (localAhjName) of the jurisdictions a source says the state
+   *  serves — an AHJ not on it keeps its own answer (unknown stays unknown); `manufactured` = the agency for a manufactured home instead; `localStep` = the cited
    *  words for the local review. Seeded (a state rule), never verified. */
   stateTradeIssuer?: CitedFact<string> & {
-    fullService: string[];
+    served: string[];
     manufactured: CitedFact<string>;
     localStep: { sourceUrl: string; quote: string };
   };
@@ -265,19 +265,21 @@ STATE_PERMIT_RULES.IA = {
 // is the building official for every jurisdiction that has not taken on its own building program:
 // there the Village / County does zoning-compliance / site-development review only, and the
 // building + electrical permits are pulled from CID (a manufactured home's from the Manufactured
-// Housing Division). The full-service list is SEEDED from the issue and the operator's NM reference
-// rows; a cited per-job lookup, a person's verified row or the operator's per-track issuer outranks it.
+// Housing Division). Applied ONLY to the jurisdictions a source names as CID-served (the issue, and
+// the operator's NM reference rows: "Apply electrical permits here for: Los Lunas, Valencia County…
+// and Rio Communities", Bosque Farms "Email submissions through NM CID", Tyrone "Pull permits … through
+// NM CID") — never guessed for an AHJ nothing names, which keeps its own (or the per-job lookup's)
+// answer; full-service cities (Albuquerque, Rio Rancho, Las Cruces, Santa Fe, Bernalillo County…) are
+// simply not on it. Mixed rows (Belen, Grant County, Santa Fe County: one permit at CID, the other
+// local) are left to their own answers. SEEDED; a cited lookup, a person's verified row or the
+// operator's per-track issuer outranks it.
 STATE_PERMIT_RULES.NM = {
   stateTradeIssuer: {
     value: "New Mexico Construction Industries Division (CID)",
     sourceUrl: "https://www.rld.nm.gov/construction-industries/",
     quote: "Valencia County Multi-Purpose Permit Application: \"Prior to any construction, you are responsible for taking all plans and documents to Construction Industries Department (CID) in Albuquerque to obtain building inspection permit… CID will be responsible for all inspections and final occupancy certificate.\"",
     origin: "state_rule",
-    fullService: [
-      "albuquerque", "bernalillo county", "rio rancho", "las cruces", "santa fe", "los alamos county", "farmington",
-      "hobbs", "roswell", "clovis", "alamogordo", "carlsbad", "gallup", "corrales", "los ranchos", "los ranchos de albuquerque",
-      "belen", "ruidoso", "sandoval county",
-    ],
+    served: ["los lunas", "valencia county", "rio communities", "bosque farms", "tyrone"],
     manufactured: {
       value: "New Mexico Manufactured Housing Division (MHD)",
       sourceUrl: "https://www.rld.nm.gov/manufactured-housing/",
@@ -299,8 +301,8 @@ function localAhjName(ahj: string): string {
 
 /** THE STATE AGENCY that issues this project's building + electrical permits, when its state says
  *  one does (New Mexico: CID, or MHD for a manufactured home — codeReviewRules.structureType, the one
- *  manufactured-home predicate) and the AHJ is not a listed full-service jurisdiction. `localReviewer`
- *  is the AHJ whose zoning / site review comes first. null = the AHJ issues its own (or no rule). */
+ *  manufactured-home predicate) and the AHJ is one a source names as state-served. `localReviewer`
+ *  is the AHJ whose zoning / site review comes first. null = no source says so (or no rule). */
 export function stateTradeIssuerFor(project: IssuerProject): (CitedFact<string> & { value: string; localReviewer: string; manufactured: boolean }) | null {
   const base = baseOfView(project);
   const rule = stateRulesFor(base.state).stateTradeIssuer;
@@ -309,7 +311,7 @@ export function stateTradeIssuerFor(project: IssuerProject): (CitedFact<string> 
   const local = localAhjName(ahj);
   // The project names the state office itself ("NM CID") — there is no local step to add.
   if (!local || /\bcid\b|\bmhd\b|construction industries|manufactured housing/.test(local)) return null;
-  if (rule.fullService.includes(local)) return null;
+  if (!rule.served.includes(local)) return null;
   const manufactured = structureType({ parserSnapshot: base.parserSnapshot ?? {} } as unknown as ProjectRecord).kind === "manufactured_home";
   const fact = manufactured ? rule.manufactured : rule;
   return { value: String(fact.value), sourceUrl: fact.sourceUrl, quote: fact.quote, origin: fact.origin, localReviewer: ahj, manufactured };

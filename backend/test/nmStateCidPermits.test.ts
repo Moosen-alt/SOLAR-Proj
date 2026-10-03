@@ -86,6 +86,13 @@ check("Albuquerque (full-service city): unchanged — the city issues, no state 
   assert.equal(a.prerequisites.length, 0);
   assert.ok(!formFactQuestions(abq, { checklistApplies: false }).some((x) => x.key === "incorporatedStatus"));
 });
+check("an NM AHJ no source names as state-served is never guessed onto CID (unknown stays unknown)", () => {
+  const p = project("City of Example Mesa", "Example Mesa");
+  assert.equal(stateTradeIssuerFor(p), null);
+  assert.equal(trackIssuer(p, "building").source, "project");
+  assert.equal(permitStructureAnswer(p).structure, "unknown");
+  assert.ok(!formFactQuestions(p, { checklistApplies: false }).some((x) => x.key === "incorporatedStatus"));
+});
 check("City of Albuquerque spelling is the same full-service city", () => {
   assert.equal(stateTradeIssuerFor(project("City of Albuquerque", "Albuquerque")), null);
 });
