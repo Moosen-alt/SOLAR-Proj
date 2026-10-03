@@ -27,6 +27,8 @@ import type { CitedFact, LLMProvider, ProjectRecord, WebLookupResult } from "../
 import { hostFitsTrackAndEntity, isInformationalPageUrl, namedInterconnectionPlatforms, portalHostOf } from "./portalChannel";
 import { logger } from "./logger";
 import { knownPowerClerkUtility } from "./utilityIdentity";
+import { isVerifiedKnowledge, knowledgeProfileKey } from "./knowledgeBase";
+import { portalEntityEvidence } from "./portalRecipes";
 
 export type UtilityProgramKind = "net_metering" | "net_billing" | "interconnection_only";
 export interface UtilityFilingLocation {
@@ -281,14 +283,31 @@ export async function runUtilityFilingLookup(
   if (r.error && !parsed.filing.value && !parsed.program.value) {
     return { saved: false, reason: `lookup failed: ${r.error.slice(0, 160)} (nothing usable in its partial results)`, lookup: existing, grounded: r.groundedSearches, dropped: parsed.dropped, error: r.error, timedOut };
   }
+  // A RE-RUN NEVER LOSES A CITED ANSWER IT ALREADY HAD (issue #54: an incomplete row is looked up
+  // again; a second search that finds less keeps the first one's filing / program).
+  const keepFiling = !parsed.filing.value && existing?.filing?.value;
+  const keepProgram = !parsed.program.value && existing?.program?.value;
+  const programName = keepProgram ? existing?.programName ?? "" : parsed.programName;
   const save = saveUtilityFilingLookup(db, {
     state: input.state, utility: input.utility,
-    filing: parsed.filing as CitedFact<UtilityFilingLocation>, program: parsed.program as CitedFact<UtilityProgramKind>,
-    ...(parsed.programName ? { programName: parsed.programName } : {}),
+    filing: (keepFiling ? existing!.filing : parsed.filing) as CitedFact<UtilityFilingLocation>,
+    program: (keepProgram ? existing!.program : parsed.program) as CitedFact<UtilityProgramKind>,
+    ...(programName ? { programName } : {}),
     lookedUpAt: new Date().toISOString(),
   });
   return { saved: save.saved, reason: r.error ? `${save.reason} (partial results kept after: ${r.error.slice(0, 120)})` : save.reason, lookup: save.lookup, grounded: r.groundedSearches, dropped: parsed.dropped,
     ...(r.error ? { error: r.error, timedOut } : {}) };
+}
+
+/** INCOMPLETE for the retry rule: nothing found at all, OR a named interconnection platform with
+ *  no tenant URL (issue #54: PNM's "PowerClerk — tenant URL unconfirmed" was otherwise permanent).
+ *  A method answer with no URL ("email to …") is complete. A verified row is never re-looked-up —
+ *  the caller checks that first. */
+export function isIncompleteFilingLookup(lookup: Pick<UtilityFilingLookup, "filing" | "program"> | null | undefined): boolean {
+  if (!lookup) return true;
+  const filing = lookup.filing?.value ?? null;
+  if (!filing && !lookup.program?.value) return true;
+  return Boolean(filing && !filing.url && namedInterconnectionPlatforms(filing.name).length);
 }
 
 const inFlight = new Map<string, number>();
@@ -321,9 +340,9 @@ export function ensureUtilityFilingLookedUp(
   const stored = getUtilityFilingLookup(db, project.state, project.utility);
   // A grounded search that found NOTHING is stored (the same utility is not searched on every
   // project) — but not forever: with no route to re-run a row, one bad search day would pin a
-  // utility to "not yet confirmed" for good. An empty seeded row older than EMPTY_RETRY_MS is
-  // looked up again; an answered or verified row never is.
-  const emptyAndStale = stored && stored.confidence !== "verified" && !stored.filing?.value && !stored.program?.value
+  // utility to "not yet confirmed" for good. An INCOMPLETE seeded row older than EMPTY_RETRY_MS is
+  // looked up again; a complete or verified row never is (rule 3).
+  const emptyAndStale = stored && stored.confidence !== "verified" && isIncompleteFilingLookup(stored)
     && Date.now() - Date.parse(stored.lookedUpAt || "") > EMPTY_RETRY_MS;
   if (stored && !emptyAndStale) return false;
   const last = inFlight.get(key);
@@ -379,8 +398,8 @@ export interface UtilityTrackPresentation {
   /** The filing portal URL (cited) when one is known — for the credential chip / recorder. */
   portalUrl: string;
   program: UtilityProgramKind | "unknown";
-  /** "cited" | "verified" | "known" | "unknown" — how the label/channel are known. */
-  basis: "cited" | "verified" | "known" | "unknown";
+  /** "cited" | "verified" | "known" | "profile" (a seeded KB row) | "unknown" — how the label/channel are known. */
+  basis: "cited" | "verified" | "known" | "profile" | "unknown";
 }
 
 export const UTILITY_TRACK_LABELS: Record<UtilityProgramKind | "unknown", string> = {
@@ -398,12 +417,64 @@ export const UTILITY_LOOKUP_STATUS_TEXT: Record<UtilityFilingLookupStatus["state
   failed: "lookup failed — retry: \"Find official form\" (or the next research pass) looks it up again",
 };
 
+/**
+ * THE UTILITY'S OWN KB ROW (permit_utility_knowledge, utility-wide: no AHJ, exact profile key) as a
+ * filing channel — only its portal URL that FITS the NEM track and this utility by the one rule-5
+ * predicate, hostFitsTrackAndEntity, with every platform the row AND the lookup name (issue #31's
+ * `namedPlatform`: a lookup that says PowerClerk never takes the utility's info page). Read-only.
+ */
+function utilityKbChannel(db: AppDb, project: Pick<ProjectRecord, "state" | "utility">, lookupNames: string[]): { url: string; name: string; verified: boolean; source: string } | null {
+  if (!str(project.utility)) return null;
+  let row: Record<string, unknown> | null | undefined;
+  try {
+    row = db.get<Record<string, unknown>>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [knowledgeProfileKey({ state: project.state, utility: project.utility })]);
+  } catch {
+    return null;
+  }
+  if (!row || str(row.ahj)) return null;
+  const named = [str(row.portal_name), str(row.portal_platform), ...lookupNames];
+  const entity = portalEntityEvidence(db, { scope: "utility", state: project.state, name: project.utility });
+  // Both columns: reference imports file the link in portal_name (as the stage's KB read does).
+  const url = [str(row.portal_url), str(row.portal_name)]
+    .filter((u) => /^https?:\/\/\S+$/i.test(u))
+    .find((u) => hostFitsTrackAndEntity("nem", entity, u, "kb", { namedPlatform: named }).fits);
+  if (!url) return null;
+  let source = "";
+  try {
+    const sources = JSON.parse(str(row.sources_json) || "[]") as unknown;
+    if (Array.isArray(sources)) source = sources.map((x) => (typeof x === "string" ? x : str((x as { url?: unknown })?.url))).find((x) => /^https?:\/\//i.test(x)) ?? "";
+  } catch { /* no citation — the tag still says seeded / verified */ }
+  const platform = str(row.portal_platform) || namedInterconnectionPlatforms(named)[0] || "";
+  const name = str(row.portal_name) && !/^https?:/i.test(str(row.portal_name)) ? str(row.portal_name) : platform || "Utility interconnection portal";
+  return { url, name, verified: isVerifiedKnowledge(row), source };
+}
+
 export function utilityTrackPresentation(db: AppDb | null, project: Pick<ProjectRecord, "state" | "utility">): UtilityTrackPresentation {
   const lookup = db ? getUtilityFilingLookup(db, project.state, project.utility) : null;
   const verified = lookup?.confidence === "verified";
   const known = knownOregonNemUtility(project);
   const program: UtilityProgramKind | "unknown" = lookup?.program?.value ?? (known ? "net_metering" : "unknown");
-  const filing = lookup?.filing?.value ?? null;
+  const lookupFiling = lookup?.filing?.value ?? null;
+  // WHICH SOURCE NAMES THE PORTAL (issue #54): verified KB beats seeded lookup beats unconfirmed
+  // research. The utility's KB row is consulted when the lookup has no URL ("PowerClerk — tenant URL
+  // unconfirmed" from research, while #36's seeded row holds the tenant login), or when a PERSON
+  // verified the KB row. A person's verified lookup gives way only to a person's verified KB URL,
+  // and only when it has none of its own; nothing here writes (rule 3).
+  const kb = db && !(verified && lookupFiling?.url)
+    ? utilityKbChannel(db, project, lookupFiling ? [lookupFiling.name, str(lookup?.filing?.quote)] : [])
+    : null;
+  if (kb && (verified ? kb.verified && !lookupFiling?.url : kb.verified || !lookupFiling?.url)) {
+    const tag = kb.verified ? "verified by a person" : "seeded knowledge base — verify";
+    const programLabel = UTILITY_TRACK_LABELS[program];
+    return {
+      label: lookup?.program?.value && lookup.programName ? `${programLabel} — ${lookup.programName}` : programLabel,
+      channel: `${kb.name} — ${kb.url} (${tag}${kb.source ? `: ${kb.source}` : ""})`,
+      portalUrl: kb.url,
+      program,
+      basis: kb.verified ? "verified" : "profile",
+    };
+  }
+  const filing = lookupFiling;
   const tag = verified ? "verified by a person" : "cited";
   const status = filing || known ? null : utilityFilingLookupStatus(project.state, project.utility);
   // A named platform with no tenant URL (issue #31: the answer said PowerClerk but gave the utility's
