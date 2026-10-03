@@ -1,6 +1,10 @@
 import { DEFAULT_ORG_ID } from "./db";
 import type { AppDb, SqlParam } from "./db";
 import { mergeStepReport, MIN_CONFIRMED_FIELDS } from "./replayBenchmark";
+import type { CorrectionTrack } from "../../shared/src/types";
+import { HttpError } from "./httpError";
+import { findKnowledgeForLearn, knowledgeProfileKey, seededDeficiencyCureDays } from "./knowledgeBase";
+import { trackForTarget } from "./timelineSamples";
 
 type Row = Record<string, SqlParam>;
 
@@ -53,8 +57,14 @@ export interface KpiReport {
   avgPermitCycleDays: number | null; // submit → permit issued
   avgNemCycleDays: number | null;    // submit → NEM approved
   avgTotalCycleDays: number | null;  // submit → handoff_ready (both complete)
+  /** PROJECT-LEVEL: % of submitted projects with any correction on any filing. Not a per-filing
+   *  first-pass rate — that reads filing_metrics / correctionsByTrack. */
   correctionRate: number;
+  /** Correction ITEMS per project, all tracks together (a notice of eight items counts eight). */
   avgCorrectionsPerProject: number;
+  /** Corrections in the period by filing track ("unknown" when no filing could be named):
+   *  notices = cycles (distinct notice_id), items = rows. */
+  correctionsByTrack: Array<{ track: string; notices: number; items: number }>;
   openCorrections: number;
   overdueCorrections: number;
   slaBreachRate: number;
@@ -113,12 +123,162 @@ function avg(values: number[]): number | null {
   return Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 10) / 10;
 }
 
+// ---------------------------------------------------------------------------
+// WHICH FILING A CORRECTION ANSWERS (#47).
+//
+// A project files building, electrical and NEM separately; a first-pass rate per permit and a
+// deficiency rate per interconnection need a per-filing denominator, and a utility deficiency
+// must never count as a permit correction. The track comes from the FILING — the submissions row
+// a person sent (submission_type / permit_type), or the tracking target the notice was read on —
+// never from the notice's prose. Nothing to say which filing it is: '' (unknown), reported so.
+// ---------------------------------------------------------------------------
+
+/** The 5-day default every correction carried before cure windows came from the utility. */
+export const DEFAULT_CORRECTION_SLA_DAYS = 5;
+
+/** The track of one submissions row. 'permit' is the legacy one-permit filing (trackPermitTypes
+ *  files it with combo); a permit_type nothing knows is unknown, not a guess. */
+export function filingTrackOf(submissionType: unknown, permitType: unknown): CorrectionTrack {
+  const pt = String(permitType ?? "").trim().toLowerCase();
+  if (String(submissionType ?? "") === "interconnection" || pt === "nem") return "nem";
+  if (pt === "building" || pt === "structural") return "building";
+  if (pt === "electrical" || pt === "mpu") return pt;
+  if (pt === "combo" || pt === "permit") return "combo";
+  return "";
+}
+
+export interface CorrectionFilingInput {
+  /** The filing a person named (the corrections route). Must be this project's. */
+  submissionId?: string | null;
+  /** The tracking target the notice was read on (the permit monitor / email tracker). */
+  targetType?: string;
+  permitType?: string;
+  /** The notice's own date — picks the filing that was out when it arrived. */
+  noticedAt?: string | null;
+}
+
+export function resolveCorrectionFiling(
+  db: AppDb,
+  projectId: string,
+  input: CorrectionFilingInput,
+): { track: CorrectionTrack; submissionId: string | null } {
+  if (input.submissionId) {
+    const named = db.get<Row>(
+      "SELECT id, submission_type, permit_type FROM submissions WHERE id = ? AND project_id = ?",
+      [input.submissionId, projectId],
+    );
+    // Another project's filing is not found, never named (rule 6: out of scope is a 404).
+    if (!named) throw new HttpError(404, "Submission not found on this project.");
+    return { track: filingTrackOf(named.submission_type, named.permit_type), submissionId: String(named.id) };
+  }
+  if (!input.targetType && !input.permitType) return { track: "", submissionId: null };
+
+  // The target's track by the ONE target answer (trackForTarget → trackKind). "permit" is an AHJ
+  // target tagged to no discipline: it answers whichever permit filing the project has, if only one.
+  const hinted = trackForTarget(String(input.targetType ?? ""), String(input.permitType ?? ""));
+  const hintedTrack: CorrectionTrack = hinted === "permit" ? "" : filingTrackOf("", hinted);
+  const sent = db.query<Row>(
+    `SELECT id, submission_type, permit_type, submitted_at FROM submissions
+      WHERE project_id = ? AND submitted_at IS NOT NULL AND TRIM(submitted_at) <> '' AND status <> 'failed'
+      ORDER BY submitted_at DESC`,
+    [projectId],
+  ).map((r) => ({ id: String(r.id), track: filingTrackOf(r.submission_type, r.permit_type), submittedAt: String(r.submitted_at) }));
+  const matching = sent.filter((f) => (hinted === "permit" ? f.track !== "" && f.track !== "nem" : f.track === hintedTrack));
+  const tracks = new Set(matching.map((f) => f.track));
+  if (!matching.length || tracks.size > 1) return { track: hintedTrack, submissionId: null };
+  // The filing that was out when the notice arrived: the latest one sent at or before it.
+  const at = input.noticedAt ? Date.parse(input.noticedAt) : Date.now();
+  const answered = matching.find((f) => Date.parse(f.submittedAt) <= at) ?? matching[matching.length - 1];
+  return { track: answered.track, submissionId: answered.id };
+}
+
+/**
+ * A utility's cure window for an interconnection deficiency: the utility's own knowledge record
+ * (permit_utility_knowledge.deficiency_cure_days), then the seed for a utility whose row has not
+ * been stamped yet, then the 5-day default. Never a number written at the correction insert.
+ */
+export function utilityDeficiencyCureDays(db: AppDb, project: { state?: string; utility?: string }): number {
+  // The UTILITY's row (state|—|utility, the key timeline samples and the utility resolver use),
+  // exact first, then the fuzzy name match (operator short names) — but only a utility-only row:
+  // an AHJ+utility project profile is the jurisdiction's record, not the utility's.
+  const readDays = (where: string, param: string): number =>
+    Number(db.get<Row>(`SELECT deficiency_cure_days AS d FROM permit_utility_knowledge WHERE ${where} AND ahj = ''`, [param])?.d ?? 0);
+  if (project.utility) {
+    const exact = readDays("profile_key = ?", knowledgeProfileKey({ state: project.state, ahj: "", utility: project.utility }));
+    if (exact > 0) return exact;
+    const fuzzy = findKnowledgeForLearn(db, { state: project.state, utility: project.utility }).utility;
+    const matched = fuzzy ? readDays("id = ?", fuzzy.id) : 0;
+    if (matched > 0) return matched;
+  }
+  return seededDeficiencyCureDays(project.state, project.utility) ?? DEFAULT_CORRECTION_SLA_DAYS;
+}
+
+/** What every corrections INSERT stamps beside the text: the filing, the notice, the cure clock. */
+export function correctionFilingStamp(
+  db: AppDb,
+  project: { id: string; state?: string; utility?: string },
+  correctionId: string,
+  createdAt: string,
+  input: CorrectionFilingInput & { noticeId?: string | null },
+): { track: CorrectionTrack; submissionId: string | null; noticeId: string; noticedAt: string | null; slaDays: number; dueAt: string } {
+  const parsed = input.noticedAt ? Date.parse(input.noticedAt) : NaN;
+  const noticedAt = Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  const { track, submissionId } = resolveCorrectionFiling(db, project.id, { ...input, noticedAt });
+  const slaDays = track === "nem" ? utilityDeficiencyCureDays(db, project) : DEFAULT_CORRECTION_SLA_DAYS;
+  // The clock starts on the notice's own date, not when we happened to ingest it.
+  const dueAt = new Date(Date.parse(noticedAt ?? createdAt) + slaDays * 86_400_000).toISOString().slice(0, 10);
+  // One insert is one notice unless the caller groups several items under the notice's own id.
+  const noticeId = String(input.noticeId ?? "").trim().slice(0, 120) || correctionId;
+  return { track, submissionId, noticeId, noticedAt, slaDays, dueAt };
+}
+
+/** Per-filing metrics: one row per submissions row a person sent. Counts and dates only. */
+function touchFilingMetrics(db: AppDb, projectId: string, now: string): void {
+  const filings = db.query<Row>(
+    `SELECT id, submission_type, permit_type, submitted_at FROM submissions
+      WHERE project_id = ? AND submitted_at IS NOT NULL AND TRIM(submitted_at) <> '' AND status <> 'failed'`,
+    [projectId],
+  );
+  // The readings that finish a track, with the track of the target each was read on.
+  const finishes = db.query<Row>(
+    `SELECT c.outcome, c.created_at, t.target_type, t.permit_type FROM permit_status_checks c
+       JOIN permit_check_targets t ON t.id = c.target_id
+      WHERE c.project_id = ? AND c.outcome IN ('issued', 'nem_approved') ORDER BY c.created_at ASC`,
+    [projectId],
+  ).map((r) => ({ outcome: String(r.outcome), at: String(r.created_at), target: trackForTarget(String(r.target_type ?? ""), String(r.permit_type ?? "")) }));
+  for (const f of filings) {
+    const track = filingTrackOf(f.submission_type, f.permit_type);
+    const submittedAt = String(f.submitted_at);
+    const finished = track ? finishes.find((r) =>
+      r.outcome === (track === "nem" ? "nem_approved" : "issued") && r.at >= submittedAt
+      && (filingTrackOf("", r.target) === track || (r.target === "permit" && track !== "nem"))) : undefined;
+    const notices = db.get<Row>(
+      `SELECT MIN(COALESCE(noticed_at, created_at)) AS first_at, COUNT(DISTINCT COALESCE(notice_id, id)) AS notices, COUNT(*) AS items
+         FROM corrections WHERE submission_id = ?`,
+      [String(f.id)],
+    );
+    db.run(
+      `INSERT INTO filing_metrics (submission_id, project_id, track, submitted_at, finished_at, first_notice_at, notice_count, item_count, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(submission_id) DO UPDATE SET
+         track = excluded.track, submitted_at = excluded.submitted_at, finished_at = excluded.finished_at,
+         first_notice_at = excluded.first_notice_at, notice_count = excluded.notice_count,
+         item_count = excluded.item_count, updated_at = excluded.updated_at`,
+      [String(f.id), projectId, track, submittedAt, finished?.at ?? null, notices?.first_at == null ? null : String(notices.first_at),
+        Number(notices?.notices ?? 0), Number(notices?.items ?? 0), now],
+    );
+  }
+}
+
 export function touchProjectMetrics(db: AppDb, projectId: string): void {
   const now = new Date().toISOString();
 
-  // Pull lifecycle timestamps from permit_status_checks and corrections
+  // SUBMITTED IS WHEN A PERSON SENT IT (#47): the earliest submissions.submitted_at — never a
+  // portal run's start, which is when staging BEGAN and runs early by however long the filing sat
+  // in awaiting_human_submit. No sent filing, no submitted_at.
   const submitRow = db.get<Row>(
-    "SELECT MIN(started_at) as t FROM portal_runs WHERE project_id = ? AND status NOT IN ('failed')",
+    `SELECT MIN(submitted_at) as t FROM submissions
+      WHERE project_id = ? AND submitted_at IS NOT NULL AND TRIM(submitted_at) <> '' AND status <> 'failed'`,
     [projectId],
   );
   const permitRow = db.get<Row>(
@@ -130,7 +290,7 @@ export function touchProjectMetrics(db: AppDb, projectId: string): void {
     [projectId],
   );
   const corrRows = db.query<Row>(
-    "SELECT created_at, closed_at, sla_days FROM corrections WHERE project_id = ? ORDER BY created_at ASC",
+    "SELECT created_at, noticed_at, due_at, closed_at, sla_days FROM corrections WHERE project_id = ? ORDER BY created_at ASC",
     [projectId],
   );
 
@@ -148,13 +308,7 @@ export function touchProjectMetrics(db: AppDb, projectId: string): void {
   const correctionCount = corrRows.length;
 
   let slaBreaches = 0;
-  for (const c of corrRows) {
-    const slaDays = Number(c.sla_days ?? 5);
-    const created = new Date(String(c.created_at));
-    const due = new Date(created.getTime() + slaDays * 86_400_000);
-    const closed = c.closed_at ? new Date(String(c.closed_at)) : new Date();
-    if (closed > due) slaBreaches++;
-  }
+  for (const c of corrRows) if (breachedSla(c)) slaBreaches++;
 
   const daysBetween = (a: string | null, b: string | null) =>
     a && b ? Math.round((new Date(b).getTime() - new Date(a).getTime()) / 86_400_000 * 10) / 10 : null;
@@ -189,6 +343,18 @@ export function touchProjectMetrics(db: AppDb, projectId: string): void {
       permitCycleDays, nemCycleDays, totalCycleDays, slaBreaches, now,
     ],
   );
+  touchFilingMetrics(db, projectId, now);
+}
+
+/** Past its cure window: due_at when stamped, else the notice's own date (falling back to
+ *  ingestion) plus sla_days, against when it closed (or now). */
+function breachedSla(c: Row): boolean {
+  const start = Date.parse(String(c.noticed_at ?? c.created_at));
+  const due = c.due_at
+    ? Date.parse(`${String(c.due_at).slice(0, 10)}T23:59:59Z`)
+    : start + Number(c.sla_days ?? DEFAULT_CORRECTION_SLA_DAYS) * 86_400_000;
+  const closed = c.closed_at ? Date.parse(String(c.closed_at)) : Date.now();
+  return closed > due;
 }
 
 export function getKpiReport(
@@ -236,12 +402,17 @@ export function getKpiReport(
   );
 
   const projectsWithCorrections = new Set(allCorrections.map((c) => String(c.project_id))).size;
-  const totalSlaBreaches = allCorrections.filter((c) => {
-    const slaDays = Number(c.sla_days ?? 5);
-    const due = new Date(new Date(String(c.created_at)).getTime() + slaDays * 86_400_000);
-    const closed = c.closed_at ? new Date(String(c.closed_at)) : new Date();
-    return closed > due;
-  }).length;
+  const totalSlaBreaches = allCorrections.filter(breachedSla).length;
+  // Per filing track: a notice is one cycle however many items it carries. '' = no filing could be
+  // named for it, reported as "unknown" rather than folded into the permit side.
+  const byTrack = new Map<string, { notices: Set<string>; items: number }>();
+  for (const c of allCorrections) {
+    const track = String(c.track ?? "") || "unknown";
+    const entry = byTrack.get(track) ?? { notices: new Set<string>(), items: 0 };
+    entry.notices.add(String(c.notice_id ?? c.id));
+    entry.items++;
+    byTrack.set(track, entry);
+  }
 
   const permitCycles = metrics.map((m) => m.permitCycleDays).filter((v): v is number => v !== null);
   const nemCycles = metrics.map((m) => m.nemCycleDays).filter((v): v is number => v !== null);
@@ -304,6 +475,9 @@ export function getKpiReport(
     avgPermitCycleDays: avg(permitCycles),
     avgNemCycleDays: avg(nemCycles),
     avgTotalCycleDays: avg(totalCycles),
+    correctionsByTrack: [...byTrack.entries()]
+      .map(([track, e]) => ({ track, notices: e.notices.size, items: e.items }))
+      .sort((a, b) => a.track.localeCompare(b.track)),
     correctionRate: metrics.length > 0 ? Math.round((projectsWithCorrections / metrics.length) * 100) : 0,
     avgCorrectionsPerProject: metrics.length > 0
       ? Math.round((allCorrections.length / metrics.length) * 10) / 10

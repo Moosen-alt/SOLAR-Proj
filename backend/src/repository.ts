@@ -63,7 +63,7 @@ import type {
   SubmittalTrack,
   SubmittalTrackType,
 } from "../../shared/src/types";
-import { touchProjectMetrics } from "./kpi";
+import { correctionFilingStamp, touchProjectMetrics, type CorrectionFilingInput } from "./kpi";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -384,7 +384,7 @@ export function mapCorrection(row: Row): CorrectionRecord {
   const slaDays = Number(row.sla_days ?? 5);
   const dueAt = row.due_at == null
     ? (() => {
-        const d = new Date(createdAt);
+        const d = new Date(row.noticed_at == null ? createdAt : text(row.noticed_at));
         d.setDate(d.getDate() + slaDays);
         return d.toISOString().slice(0, 10);
       })()
@@ -403,6 +403,10 @@ export function mapCorrection(row: Row): CorrectionRecord {
     extraction: !text(row.source_text).trim()
       ? "not_extracted"
       : text(row.correction_text).trim() === text(row.source_text).trim() ? "whole_text" : "items",
+    track: text(row.track) as CorrectionRecord["track"],
+    submissionId: row.submission_id == null ? null : text(row.submission_id),
+    noticeId: text(row.notice_id) || text(row.id),
+    noticedAt: row.noticed_at == null ? null : text(row.noticed_at),
     bucketLabel: humanizeBucket(text(row.correction_bucket)),
     correctionBucket: text(row.correction_bucket) as CorrectionRecord["correctionBucket"],
     rootCause: text(row.root_cause),
@@ -1315,6 +1319,7 @@ export function deleteProject(db: AppDb, projectId: string): { deleted: true; pr
     db.run("DELETE FROM operation_steps WHERE project_id = ?", [projectId]);
     // Project-scoped tables added later — must also be cleared or the FK on projects fails.
     db.run("DELETE FROM project_metrics WHERE project_id = ?", [projectId]);
+    db.run("DELETE FROM filing_metrics WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM project_documents WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM project_intake_requests WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM submission_payments WHERE project_id = ?", [projectId]);
@@ -4603,6 +4608,7 @@ export async function runEmailTracker(
           rawStatusText: emailStatusText(message),
           applicationNumber,
           permitNumber,
+          noticedAt: message.record.occurredAt || null,
         });
         const statusCheck = updated.permitStatusChecks[0] || null;
         const beforeCorrectionIds = new Set(before.corrections.map((item) => item.id));
@@ -5186,7 +5192,16 @@ function correctionFromReading(readText: string, isPortalPage: boolean): { corre
   return { correctionText: reading.method === "items" ? reading.text : readText, sourceText: readText };
 }
 
-export function addManualCorrection(db: AppDb, projectId: string, submittedText: string, source = "manual"): ProjectDetail {
+export function addManualCorrection(
+  db: AppDb,
+  projectId: string,
+  submittedText: string,
+  source = "manual",
+  // WHICH FILING AND WHICH NOTICE (#47): the filing a person named, the notice's own id (items of
+  // one notice share it — one notice is one cycle) and its date. None given: track unknown, the
+  // row is its own notice, the clock starts now.
+  notice: { submissionId?: string | null; noticeId?: string | null; noticedAt?: string | null } = {},
+): ProjectDetail {
   const detail = getProjectDetail(db, projectId);
   // A PORTAL page handed in through this door is read like the monitor's (correctionText below);
   // a typed note or an email is the correction as written.
@@ -5194,13 +5209,15 @@ export function addManualCorrection(db: AppDb, projectId: string, submittedText:
   const classification = classifyCorrection(correctionText, detail.project);
   const correctionId = id();
   const ts = nowIso();
+  const stamp = correctionFilingStamp(db, detail.project, correctionId, ts, notice);
 
   db.transaction(() => {
     db.run(
       `INSERT INTO corrections (
         id, project_id, source, correction_text, source_text, correction_bucket, root_cause, required_action,
-        assigned_to, draft_response, human_approved, resubmitted, new_rule_recommended, created_at, closed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        assigned_to, draft_response, human_approved, resubmitted, new_rule_recommended, created_at, closed_at,
+        track, submission_id, notice_id, noticed_at, sla_days, due_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         correctionId,
         projectId,
@@ -5217,6 +5234,7 @@ export function addManualCorrection(db: AppDb, projectId: string, submittedText:
         classification.newRuleRecommended ? 1 : 0,
         ts,
         null,
+        stamp.track, stamp.submissionId, stamp.noticeId, stamp.noticedAt, stamp.slaDays, stamp.dueAt,
       ],
     );
 
@@ -5640,7 +5658,7 @@ export function listOverdueCorrections(db: AppDb, orgId: string | null = DEFAULT
 export function setCorrectionsSlaDays(db: AppDb, correctionId: string, slaDays: number): void {
   const ts = nowIso();
   db.run(
-    `UPDATE corrections SET sla_days = ?, due_at = date(created_at, '+' || ? || ' days') WHERE id = ?`,
+    `UPDATE corrections SET sla_days = ?, due_at = date(COALESCE(noticed_at, created_at), '+' || ? || ' days') WHERE id = ?`,
     [slaDays, slaDays, correctionId],
   );
 }
@@ -6163,6 +6181,9 @@ export async function recordPermitStatusCheck(
     rawStatusText?: string;
     applicationNumber?: string;
     permitNumber?: string;
+    /** The notice's own date (an email's Date header, a portal's status date) — the cure clock of
+     *  any correction this reading raises starts there, not at ingestion. */
+    noticedAt?: string | null;
   },
 ): Promise<ProjectDetail> {
   const detail = getProjectDetail(db, projectId);
@@ -6284,7 +6305,7 @@ export async function recordPermitStatusCheck(
         jurisdiction: text(target?.jurisdiction),
         recordNumber: input.permitNumber || text(target?.permit_number) || input.applicationNumber || text(target?.application_number),
         readingSource: source,
-      });
+      }, input.noticedAt ?? null);
     } else if (recordCheck && refused) {
       // THE REFUSED READING'S OWN ROW — issue_type names it, parser_value carries what the text
       // said (outcome + label), notes carry why it was not trusted. This is the item an operator
@@ -6519,16 +6540,21 @@ function insertMonitorCorrection(
   ts: string,
   source: CorrectionRecord["source"],
   origin: CorrectionReadingOrigin,
+  noticedAt: string | null = null,
 ): string {
   // A portal reading is the record PAGE; the correction is what that page asks for.
   const { correctionText, sourceText } = correctionFromReading(readText, source === "portal");
   const classification = classifyCorrection(correctionText);
   const correctionId = id();
+  // The filing is the TARGET's (its target_type / permit_type), never the page's words.
+  const filing: CorrectionFilingInput = origin.targetId ? { targetType: origin.targetType, permitType: origin.permitType, noticedAt } : { noticedAt };
+  const stamp = correctionFilingStamp(db, project, correctionId, ts, filing);
   db.run(
     `INSERT INTO corrections (
       id, project_id, source, correction_text, source_text, correction_bucket, root_cause, required_action,
-      assigned_to, draft_response, human_approved, resubmitted, new_rule_recommended, created_at, closed_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      assigned_to, draft_response, human_approved, resubmitted, new_rule_recommended, created_at, closed_at,
+      track, submission_id, notice_id, noticed_at, sla_days, due_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       correctionId,
       project.id,
@@ -6545,6 +6571,7 @@ function insertMonitorCorrection(
       classification.newRuleRecommended ? 1 : 0,
       ts,
       null,
+      stamp.track, stamp.submissionId, stamp.noticeId, stamp.noticedAt, stamp.slaDays, stamp.dueAt,
     ],
   );
 
