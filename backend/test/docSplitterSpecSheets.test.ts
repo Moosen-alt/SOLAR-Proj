@@ -37,7 +37,11 @@ const run = (label: string, ok: boolean, detail = "") => {
 
 // The title block every sheet carries (synthetic contractor/site). An EQUIPMENT SPECIFICATION
 // page has nothing else: its body is a raster datasheet, drawn here as a filled box.
-const titleBlock = (sheet: string, name: string) => ["SYNTH SOLAR CO  123 FIXTURE RD", `SHEET NAME: ${name}`, `SHEET NUMBER: ${sheet}`];
+// The text layer joins the title block's lines, so whether "SHEET NUMBER" lands right after the
+// sheet name depends on the block's layout; `numberFirst` flips it so no check leans on that.
+const titleBlock = (sheet: string, name: string, numberFirst = false) => numberFirst
+  ? ["SYNTH SOLAR CO  123 FIXTURE RD", `SHEET NUMBER: ${sheet}`, `SHEET NAME: ${name}`]
+  : ["SYNTH SOLAR CO  123 FIXTURE RD", `SHEET NAME: ${name}`, `SHEET NUMBER: ${sheet}`];
 type Sheet = { lines: string[]; image?: boolean };
 const mkPdf = async (sheets: Sheet[]): Promise<Buffer> => {
   const pdf = await PDFDocument.create();
@@ -109,22 +113,38 @@ for (const target of ["all", "nem"] as const) {
 }
 
 // ---------------------------------------------------------------------------
-console.log("\n2. NAMED SPEC SHEETS STILL SPLIT (the sheet name is the signal)");
+console.log("\n2. A CALCS SHEET WHOSE SPEC-TABLE HEADING IS FOLLOWED BY THE WORD SHEET (title block after the body)");
 {
   const pid = await projectWith([
     { lines: [...titleBlock("PV-6", "ELECTRICAL LINE DIAGRAM"), "MICROINVERTER BRANCH CIRCUIT"] },
-    { lines: titleBlock("PV-9", "PV MODULE SPECIFICATION SHEET"), image: true },
-    { lines: titleBlock("PV-10", "MICROINVERTER SPECIFICATION SHEET"), image: true },
-    { lines: titleBlock("PV-11", "INVERTER SPEC SHEET"), image: true },
-    { lines: titleBlock("PV-12", "PV MODULE / INV SPECIFICATION SHEET"), image: true },
-    { lines: titleBlock("PV-13", "EQUIPMENT SPECIFICATION"), image: true },
+    { lines: ["ELECTRICAL NOTES", "CONDUCTOR AMPACITY: 10 AWG THWN-2 @ 90C = 40 A", "PV MODULE / INVERTER SPECIFICATIONS",
+      "INVERTER SPECIFICATIONS", ...titleBlock("PV-7", "WIRING CALCULATIONS")] },
+    { lines: ["MICROINVERTER SPECIFICATIONS", ...titleBlock("PV-8", "ELECTRICAL CALCULATIONS")] },
+  ]);
+  const result = await buildUtilityPackage(db, pid, "all");
+  const parts = JSON.stringify(result.parts.map((p) => [p.docType, p.pages]));
+  run("MUST-EXCLUDE: neither calcs sheet is in a spec part", !result.parts.some((p) => (p.docType === "module_spec" || p.docType === "inverter_spec")), parts);
+  run("a calcs sheet is not reported as an undecided spec page", (result.undecidedSpecPages ?? []).length === 0, JSON.stringify(result.undecidedSpecPages));
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n3. NAMED SPEC SHEETS STILL SPLIT, whatever the title-block layout (the sheet name is the signal)");
+for (const numberFirst of [false, true]) {
+  console.log(`  [${numberFirst ? "sheet number before name" : "sheet name before number"}]`);
+  const pid = await projectWith([
+    { lines: [...titleBlock("PV-6", "ELECTRICAL LINE DIAGRAM", numberFirst), "MICROINVERTER BRANCH CIRCUIT"] },
+    { lines: titleBlock("PV-9", "PV MODULE SPECIFICATION SHEET", numberFirst), image: true },
+    { lines: titleBlock("PV-10", "MICROINVERTER SPECIFICATIONS", numberFirst), image: true },
+    { lines: titleBlock("PV-11", "INVERTER SPECIFICATIONS", numberFirst), image: true },
+    { lines: titleBlock("PV-12", "PV MODULE / INV SPECIFICATION SHEET", numberFirst), image: true },
+    { lines: titleBlock("PV-13", "EQUIPMENT SPECIFICATION", numberFirst), image: true },
   ]);
   const result = await buildUtilityPackage(db, pid, "all");
   const pages = (t: string) => result.parts.find((p) => p.docType === t)?.pages ?? [];
   const parts = JSON.stringify(result.parts.map((p) => [p.docType, p.pages]));
   run("PV MODULE SPECIFICATION SHEET -> module_spec", pages("module_spec").includes(2), parts);
-  run("MICROINVERTER SPECIFICATION SHEET -> inverter_spec", pages("inverter_spec").includes(3), parts);
-  run("INVERTER SPEC SHEET -> inverter_spec", pages("inverter_spec").includes(4), parts);
+  run("a bare-named MICROINVERTER SPECIFICATIONS sheet -> inverter_spec", pages("inverter_spec").includes(3), parts);
+  run("a bare-named INVERTER SPECIFICATIONS sheet -> inverter_spec", pages("inverter_spec").includes(4), parts);
   run("the combined MODULE / INV SPECIFICATION SHEET -> both", pages("module_spec").includes(5) && pages("inverter_spec").includes(5), parts);
   run("only the title-only EQUIPMENT SPECIFICATION page is undecided", JSON.stringify(result.undecidedSpecPages) === JSON.stringify([6]), JSON.stringify(result.undecidedSpecPages));
   run("nothing spec-shaped is missing here", !result.missingSheetTypes.includes("module_spec") && !result.missingSheetTypes.includes("inverter_spec"), JSON.stringify(result.missingSheetTypes));

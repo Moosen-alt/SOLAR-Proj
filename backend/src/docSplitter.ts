@@ -52,30 +52,39 @@ const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegEx
   // identifies the actual cut-sheet page. The combined "MODULE / INV SPECIFICATION SHEET"
   // counts as BOTH module and inverter spec.
   //
-  // The single-equipment names REQUIRE the word SHEET (#66). "INVERTER SPECIFICATIONS" and
-  // "PV MODULE SPECIFICATIONS" are also the headings of the spec TABLES in a WIRING
-  // CALCULATIONS sheet's body; as patterns they were that calcs sheet's only hit, so
-  // winner-take-all had nothing to rescue it with and it shipped as the inverter spec.
+  // A WIRING CALCULATIONS sheet carries text TABLES headed "INVERTER SPECIFICATIONS" and
+  // "PV MODULE SPECIFICATIONS" — the same words as a spec sheet's name, and that sheet's only
+  // hit, so winner-take-all had nothing to rescue it with and it shipped as the inverter spec
+  // (#66). It is excluded by what the sheet IS (CALCS_SHEET below), not by tightening the names:
+  // the text layer joins the title block's lines, so "… SPECIFICATION SHEET" vs "… SPECIFICATIONS"
+  // only tests what label happens to follow the name ("SHEET NUMBER" or not).
   //
   // "EQUIPMENT SPECIFICATION(S)" is deliberately NOT a pattern here (#66). Those pages (Basson
   // PV-11+) are image cut-sheets whose only text is the title block, and the section holds the
   // module, the combiner, the racking brochure… all with the same text. Filing them as
   // module_spec (and "counting as both") put a combiner and a racking brochure in the spec parts
-  // with no way to tell. They are reported as undecided instead (EQUIPMENT_SPEC_SHEET below).
-  { docType: "module_spec", label: "Module spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MODULE\s+SPECIFICATION\s+SHEET/i, /\bPV\s+MODULE\s+SPEC(?:IFICATION)?S?\s+SHEETS?\b/i] },
+  // with no way to tell. They are reported as undecided instead (SPEC_SHEET_NAME below).
+  { docType: "module_spec", label: "Module spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MODULE\s+SPECIFICATION\s+SHEET/i, /PV MODULE SPEC/i] },
   // NOTE: do NOT match on the UL listing standard (/UL 1741/) — that number is cited on the
   // SLD, general notes, and most electrical sheets, so it pulled those dense pages into the
   // inverter_spec split and bloated it past PowerClerk's 5 MB upload limit. Match the dedicated
   // SPEC SHEET by its title-block name only, per this file's stated discipline.
-  { docType: "inverter_spec", label: "Inverter spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MICRO-?INVERTERS?\s+SPEC(?:IFICATION)?S?\s+SHEETS?\b/i, /\bINVERTERS?\s+SPEC(?:IFICATION)?S?\s+SHEETS?\b/i] },
+  { docType: "inverter_spec", label: "Inverter spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MICRO-?INVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bINVERTER\s+SPEC(?:IFICATION)?S?\b/i] },
   { docType: "labels", label: "Labels / placards", patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i, /\bE\s*1\.3\b/i] },
 ];
 
-// A title-block "EQUIPMENT SPECIFICATION" sheet: a cut-sheet whose equipment its text does not
-// name. When no category claims such a page it is reported in `undecidedSpecPages` — the split
-// says it could not tell the module datasheet from the combiner or racking brochure rather than
-// guessing one into a spec part (#66).
-const EQUIPMENT_SPEC_SHEET = /\bEQUIPMENT\s+SPECIFICATIONS?\b/i;
+// A calculations sheet (WIRING CALCULATIONS, ELECTRICAL CALCULATIONS). Its body tabulates the
+// module and inverter specs, so it is never a spec part — the spec categories and the combined
+// MODULE / INV fan-out do not apply to it (#66). Other categories still score as before.
+const CALCS_SHEET = /\b(?:WIR(?:E|ING)|ELECTRICAL)\s+CALC(?:ULATION)?S?\b/i;
+const SPEC_DOC_TYPES = new Set(["module_spec", "inverter_spec"]);
+
+// A page that NAMES a spec sheet. One that no category claimed is reported in
+// `undecidedSpecPages`, so a spec-named page is never dropped silently: a title-only
+// "EQUIPMENT SPECIFICATION" cut-sheet (module datasheet? combiner? racking brochure?) is the
+// expected case, and the split says it could not decide rather than guessing (#66). A
+// calculations sheet is not undecided — it is known not to be a spec sheet.
+const SPEC_SHEET_NAME = /(?:MICRO-?)?(?:INVERTERS?|MODULES?|EQUIPMENT)\s+SPEC(?:IFICATION)?S?\b/i;
 
 // The general-notes / sheet-index cover page lists every sheet name and would otherwise
 // match every category. It is never an uploadable single-category doc, so skip it.
@@ -95,8 +104,10 @@ function isIndexOrNotesPage(text: string): boolean {
 function classifyPage(text: string): string[] {
   if (isIndexOrNotesPage(text)) return [];
   const electricalSheet = ELECTRICAL_SHEET.test(text);
+  const calcsSheet = CALCS_SHEET.test(text);
   let best: { docType: string; score: number } | null = null;
   for (const cat of CATEGORY_PATTERNS) {
+    if (calcsSheet && SPEC_DOC_TYPES.has(cat.docType)) continue;
     const hits = (res: RegExp[] | undefined) => (res ?? []).reduce((n, re) => (re.test(text) ? n + 1 : n), 0);
     const score = hits(cat.patterns)
       + (electricalSheet ? 0 : hits(cat.words) + (cat.vocabulary?.some((re) => re.test(text)) ? 1 : 0));
@@ -104,7 +115,7 @@ function classifyPage(text: string): string[] {
   }
   if (!best) return [];
   const out = [best.docType];
-  if (/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i.test(text)) {
+  if (!calcsSheet && /MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i.test(text)) {
     if (!out.includes("module_spec")) out.push("module_spec");
     if (!out.includes("inverter_spec")) out.push("inverter_spec");
   }
@@ -154,9 +165,9 @@ export interface UtilityPackageResult {
    *  them, so a sheet the classifier missed is visible where the split ran, not only later as a
    *  gate's "missing" (#29). Never includes separately-uploaded types (meter photo, bill). */
   missingSheetTypes: string[];
-  /** 1-based pages titled "EQUIPMENT SPECIFICATION" that no category claimed: image cut-sheets
-   *  whose text is only the title block, so module / inverter / combiner / racking cannot be told
-   *  apart (#66). Never filed into a spec part; a person (or a vision read) decides. */
+  /** 1-based pages that name a spec sheet but that no category claimed — typically a title-only
+   *  "EQUIPMENT SPECIFICATION" cut-sheet, whose text cannot tell module / inverter / combiner /
+   *  racking apart (#66). Never filed into a spec part; a person (or a vision read) decides. */
   undecidedSpecPages: number[];
 }
 
@@ -258,7 +269,7 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
 }
 
 // Assign each page of the plan set to its categories (classifyPage). 1-based unclassified pages;
-// the unclassified EQUIPMENT SPECIFICATION pages are also listed as undecided spec pages.
+// the unclassified pages that name a spec sheet are also listed as undecided spec pages.
 async function classifyPlanSetPages(planSetPath: string, total: number): Promise<{ byCategory: Map<string, number[]>; unclassified: number[]; undecidedSpec: number[] }> {
   const pageTexts = await extractPdfPages(planSetPath, 80);
   const byCategory = new Map<string, number[]>();
@@ -275,7 +286,7 @@ async function classifyPlanSetPages(planSetPath: string, total: number): Promise
       }
     } else {
       unclassified.push(i + 1);
-      if (EQUIPMENT_SPEC_SHEET.test(text) && !isIndexOrNotesPage(text)) undecidedSpec.push(i + 1);
+      if (SPEC_SHEET_NAME.test(text) && !CALCS_SHEET.test(text) && !isIndexOrNotesPage(text)) undecidedSpec.push(i + 1);
     }
   }
   return { byCategory, unclassified, undecidedSpec };
