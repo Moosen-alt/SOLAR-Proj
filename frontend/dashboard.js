@@ -3859,6 +3859,11 @@ async function buildDocumentSplit() {
     if (res.missingDocTypes && res.missingDocTypes.length) {
       rows.push(`<div class="record-data-row"><span class="muted">Not found in plan set</span><strong style="color:var(--warning,#b45309)">${esc(res.missingDocTypes.join(", "))}</strong></div>`);
     }
+    // Spec-named pages the splitter could not assign (title-only EQUIPMENT SPECIFICATION
+    // cut-sheets, #66): a person picks the module / inverter datasheet from these.
+    if (res.undecidedSpecPages && res.undecidedSpecPages.length) {
+      rows.push(`<div class="record-data-row"><span class="muted">Spec pages undecided</span><strong style="color:var(--warning,#b45309)">p. ${esc(res.undecidedSpecPages.join(", "))}</strong></div>`);
+    }
     if (resultsEl) resultsEl.innerHTML = rows.join("") || `<p class="muted">No documents produced.</p>`;
     if (statusEl) { statusEl.textContent = `Built ${(res.parts || []).length} split doc(s); ${(res.packagedDocTypes || []).length} packaged into the ZIP.`; statusEl.className = ""; }
   } catch (err) {
