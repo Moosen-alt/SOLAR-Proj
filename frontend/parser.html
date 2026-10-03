@@ -299,7 +299,7 @@
   <script src="/vendor/tesseract-5.1.1.min.js"></script>
   <!-- The review-list rules (meter cross-check, notes, resolution, scope callout, locates)
        live in their own DOM-free file so the backend unit test loads the SAME code. -->
-  <script src="parser-review.js?v=7"></script>
+  <script src="parser-review.js?v=8"></script>
 </head>
 
 <body>
@@ -2669,9 +2669,12 @@ function parseUBData(ubDoc){
     if (pacService) service = title(pacService[1]);
   }
 
+  // A holder is a person or business, never the utility's website / email / phone or its own
+  // name printed at the top of the bill (#28: a PNM bill's "PNM.COM" line came back as "Pnm.Com").
+  const isHolder = (v) => ParserReview.isBillHolderName(v, utility);
   const accountHolder = (() => {
     const pgeHolder = /PGE|PORTLAND\s*GENERAL|PORTLANDGENERAL/i.test(`${text} ${utility}`) ? parsePgeAccountHolder(text) : '';
-    if (pgeHolder) return pgeHolder;
+    if (pgeHolder && isHolder(pgeHolder)) return pgeHolder;
     const lines = text.split(/\n+/).map(x => x.trim()).filter(Boolean);
     const topNameLines = [];
     for (let i=0; i<Math.min(lines.length,28); i++){
@@ -2680,7 +2683,7 @@ function parseUBData(ubDoc){
       if (/^\d{2,6}\s+[A-Z0-9]/i.test(line)) continue;
       if (/^[A-Z][A-Z0-9 &.'\-]{4,}$/i.test(line) &&
           !/PACIFIC POWER|PGE|PORTLANDGENERAL|PORTLAND GENERAL|BILLING DATE|ACCOUNT NUMBER|AMOUNT DUE|DATE DUE|YOUR BALANCE|ACTION NEEDED|QUESTIONS|CALL|PRESORT|POSTAGE|PAID/i.test(line)){
-        topNameLines.push(title(line));
+        if (isHolder(line)) topNameLines.push(title(line));
       }
     }
     return uniq(topNameLines)[0] || '';
@@ -5612,7 +5615,8 @@ function buildSystemPayload() {
     // backend's nemApplicantName picks the plan-set owner when listed, else the primary holder;
     // operator ruling 2026-09-28). The OCR path fills the box; the vision path's bill reading of the
     // customer name block is the fallback, so a photo bill no longer loses the holder.
-    ubAccountHolder: getVal('ubAccountHolder') || ParserReview.billHolderBlock((state.llmEvidence || []).find((e) => e.field === 'owner' && e.source === 'utility_bill')),
+    // A vision "owner" off the bill that is no holder (the utility's website or name, #28) is dropped.
+    ubAccountHolder: getVal('ubAccountHolder') || [ParserReview.billHolderBlock((state.llmEvidence || []).find((e) => e.field === 'owner' && e.source === 'utility_bill'))].filter((v) => ParserReview.isBillHolderName(v, getVal('utility')))[0] || '',
     account: getVal('account') || getVal('ubAccountNumber'),
     meter: getVal('meter') || getVal('planMeterNumber') || getVal('ubMeterNumber'),
     meterNumber: getVal('meter') || getVal('planMeterNumber') || getVal('ubMeterNumber'),

@@ -1,7 +1,7 @@
 import type { ParserPayload, QcStatus, Severity } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
 import { knownPowerClerkUtility } from "./utilityIdentity";
-import { nemApplicantName } from "./accountHolders";
+import { isBillHolderName, nemApplicantName } from "./accountHolders";
 
 export interface BaselineRuleDefinition {
   id: string;
@@ -465,7 +465,24 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
   // Utility-agnostic: every interconnection portal asks who holds the account.
   const applicantName = str(payload, "homeownerName") || str(payload, "owner");
   const accountHolder = str(payload, "ubAccountHolder");
-  if (applicantName && accountHolder && !namesAgree(applicantName, accountHolder)) {
+  const utilityName = str(payload, "utility");
+  // A bill read that is not a holder at all — the utility's website ("Pnm.Com", #28), a phone or
+  // number line, the utility's own name, a bill label — is not a different person: comparing it
+  // told the operator the application would be filed in the name of a web address. Ask for the
+  // holder instead. The rejected read is NOT echoed: it may be a number line off the bill.
+  if (accountHolder && !isBillHolderName(accountHolder, utilityName)) {
+    out.push(result(
+      "xcheck-nem-account-holder",
+      "Applicant vs utility account holder",
+      "warning",
+      "warning",
+      `Utility account holder not read from the bill — verify. What the bill reader returned is not a person or ` +
+        `business (a web address, email, phone or number line, the utility's own name, or a bill label), so it is ` +
+        `ignored. Enter the account holder exactly as the bill's customer block prints it: the interconnection ` +
+        `application names the account holder${applicantName ? `, and until one is entered it names ${applicantName}` : ""}.`,
+      "ubAccountHolder",
+    ));
+  } else if (applicantName && accountHolder && !namesAgree(applicantName, accountHolder)) {
     out.push(result(
       "xcheck-nem-account-holder",
       "Applicant vs utility account holder",
@@ -474,7 +491,7 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
       `The application names ${applicantName}, but the utility bill's account holder is ${accountHolder}. ` +
         `An interconnection request from someone not listed on the account gets suspended. Before filing, either add ` +
         `the applicant to the account as a co-customer, put the service in their name, or name ${accountHolder} on the ` +
-        `application as the account holder. As filed, the interconnection application names ${nemApplicantName(accountHolder, applicantName)} ` +
+        `application as the account holder. As filed, the interconnection application names ${nemApplicantName(accountHolder, applicantName, utilityName)} ` +
         `(the bill's primary holder — operator ruling 2026-09-28); the permits keep ${applicantName}.`,
       "ubAccountHolder",
     ));

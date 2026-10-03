@@ -312,6 +312,33 @@
     const pa = namePersons(a); const pb = namePersons(b);
     return pa.some((x) => pb.some((y) => personsMatch(x, y)));
   }
+  /** Can this bill read be the account holder at all (#28: a PNM bill's "PNM.COM" line became the
+   *  holder "Pnm.Com")? Not a web address, email, phone/number/address line, the project utility's
+   *  own name (whole words, either way) or bill boilerplate. MIRROR of backend/src/accountHolders.ts
+   *  isBillHolderName — keep the two in step; backend/test/billHolderName.test.ts pins both. */
+  const HOLDER_WEB = /@|https?:|\bwww\.|[a-z0-9-]\.(?:com|net|org|gov|edu|us|coop|biz|info|energy|co|io)\b/i;
+  const HOLDER_BOILERPLATE = new RegExp([
+    'account (?:summary|number|no|holder|name|information|activity|balance|details?)',
+    'service (?:address|location|period|agreement|for|from|to)',
+    'amount (?:due|enclosed|paid)', '(?:payment|total) due', 'due (?:date|by)',
+    'billing (?:date|period|summary|address|statement)', 'statement (?:date|period)', 'bill date',
+    'your (?:balance|bill|account|usage|energy)', 'customer (?:service|name|number|care|information)',
+    'remit(?:tance)?', 'pay (?:online|by|your bill)', 'p\\.? ?o\\.? box', 'presort', 'postage', 'questions',
+    'meter (?:number|reading|read)', 'kwh', '(?:electric|energy|utility) (?:bill|service|statement|usage)',
+    'new charges', 'previous balance', 'current charges', 'autopay', 'paperless', 'thank you',
+  ].map((p) => `\\b${p}\\b`).join('|'), 'i');
+  const holderWords = (s) => String(s ?? '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  function isBillHolderName(value, utility) {
+    const v = clean(value);
+    if (!/[a-z]/i.test(v)) return false;
+    if (HOLDER_WEB.test(v) || /\d/.test(v) || HOLDER_BOILERPLATE.test(v)) return false;
+    const u = holderWords(utility);
+    if (u.length) {
+      const h = holderWords(v);
+      if (h.every((t) => u.includes(t)) || u.every((t) => h.includes(t))) return false;
+    }
+    return true;
+  }
   /** The bill's customer name block as printed — every holder of a joint account ("ROBIN L SAMPLE /
    *  DURWOOD W SAMPLE") — when the reading's quoted excerpt is a name list that includes its value;
    *  else the reading's value. The excerpt is used only when it is nothing but names (letters,
@@ -720,7 +747,9 @@
    */
   function resolveReviewItems({ passes, attached, planText, meterVerdict }) {
     passes = passes || []; attached = attached || [];
-    const readings = readingsFor(passes);
+    // A bill "owner" that is no holder at all (the utility's website, a label: isBillHolderName, #28)
+    // is not a reading of the owner: it neither resolves the owner nor conflicts with the plan set.
+    const readings = readingsFor(passes).filter((r) => !(r.field === 'owner' && r.source === 'utility_bill' && !isBillHolderName(r.value)));
     const byField = (f) => readings.filter((r) => r.field === f);
     const resolved = []; const unsure = []; const missing = []; const conflicts = [];
     const done = new Set();
@@ -1146,7 +1175,7 @@
   return {
     compareMeters, meterTargets, meterInText,
     mergeNotes, assertsMissingAttached,
-    resolveReviewItems, rsdConflict, singleFamilyBasis, namesMatch, billHolderBlock,
+    resolveReviewItems, rsdConflict, singleFamilyBasis, namesMatch, billHolderBlock, isBillHolderName,
     structureBasis, structureFromPlan, structureOption, STRUCTURE_OPTIONS,
     otherStructureEvidence, outbuildingBesideWork, otherBuildingWords,
     licenseLabel, installerLine, identifyUtility,

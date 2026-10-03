@@ -1910,7 +1910,7 @@ export function resolveRecipeFieldValues(
   // correct output when they differ.
   // A JOINT ACCOUNT names the plan-set owner when the bill lists them, else the bill's primary holder
   // (operator ruling 2026-09-28 — accountHolders.nemApplicantName).
-  const ubHolder = nemApplicantName(String(snapshotFlat.ubAccountHolder || ""), String(project.homeownerName || ""));
+  const ubHolder = nemApplicantName(String(snapshotFlat.ubAccountHolder || ""), String(project.homeownerName || ""), project.utility);
   // A billing name often carries a title ("PROF CHRIS A IVY"). Keep the full string for the
   // account-name field — it should match the bill — but drop the title before splitting, or
   // the first-name box gets "PROF".
