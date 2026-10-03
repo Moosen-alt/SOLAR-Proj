@@ -10,7 +10,10 @@
 //   MUST-EXCLUDE busy (job running/due, portal run staged or paused for a human, filing
 //                awaiting_human_submit, lookup in flight) -> no stop, no pull; dirty tree / not on
 //                main / diverged -> nothing; lockfile unchanged -> no npm ci; failed pull -> the
-//                install is restarted unchanged; dry-run -> no side effect.
+//                install is restarted unchanged; dry-run -> no side effect; a `to` that already
+//                failed -> no retry until origin/main moves; a fresh lock is never taken over.
+//   BOOKKEEPING  the lock is touched before every long step; pre-update snapshots capped at 3;
+//                /health counts only a git-sourced sha.
 //
 // Run: npx tsx backend/test/localAutoUpdate.test.ts
 import { ISOLATED_CWD, REPO } from "./_isolate";
@@ -21,7 +24,10 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(path.join(REPO, "scripts", "local-auto-update.mjs")).href);
-const { runCycle, busyReasons, readBusyCounts, BUSY_PORTAL_RUN_STATUSES } = mod;
+const {
+  runCycle, busyReasons, readBusyCounts, BUSY_PORTAL_RUN_STATUSES, readFailedMarker, preUpdateSnapshotsToPrune,
+  takeLock, touchLock, LOCK_STALE_MS, healthReportsCommit,
+} = mod;
 
 let failures = 0;
 const check = async (label: string, fn: () => void | Promise<void>): Promise<void> => {
@@ -36,6 +42,7 @@ type World = {
   branch?: string; dirty?: boolean; head?: string; remote?: string; diverged?: boolean;
   lockfileChanged?: boolean; mergeFails?: boolean; npmCiFails?: boolean; busy?: string[];
   supervisor?: boolean; serverRunning?: boolean; healthy?: boolean; paused?: boolean; snapshotFails?: boolean;
+  stopFails?: boolean; failedTo?: string | null;
 };
 
 /** A fake checkout + server. `calls` records every side effect in order. */
@@ -44,6 +51,8 @@ function harness(w: World) {
   const lines: string[] = [];
   let head = w.head ?? OLD;
   let npmCiRuns = 0;
+  // The failure marker, held in memory the way data/auto-update.failed holds it on disk.
+  const marker: { to: string | null } = { to: w.failedTo ?? null };
   const git = (args: string[]) => {
     const [cmd] = args;
     if (cmd !== "rev-parse" && cmd !== "status" && cmd !== "diff" && cmd !== "merge-base") calls.push(`git ${args.join(" ")}`);
@@ -62,19 +71,25 @@ function harness(w: World) {
     log: (m: string) => lines.push(m),
     now: () => 0,
     paused: () => !!w.paused,
+    heartbeat: () => { calls.push("beat"); },
+    failedTo: () => marker.to,
+    markFailed: (to: string) => { marker.to = to; },
+    clearFailed: () => { marker.to = null; },
     git,
     npmCi: () => { calls.push("npm ci"); npmCiRuns++; return { code: w.npmCiFails && npmCiRuns === 1 ? 1 : 0, out: "" }; },
     busy: async () => w.busy ?? [],
     supervisorRunning: () => !!w.supervisor,
     snapshot: async () => { calls.push("snapshot"); return w.snapshotFails ? { ok: false, detail: "disk full" } : { ok: true, file: "autopilot-pre-update-x.sqlite" }; },
-    stopServer: () => { calls.push("stop"); return { ok: true, stopped: w.serverRunning === false ? 0 : 1 }; },
+    stopServer: () => { calls.push("stop"); return w.stopFails ? { ok: false, detail: "port held" } : { ok: true, stopped: w.serverRunning === false ? 0 : 1 }; },
     startServer: () => { calls.push("start"); },
     waitForBuild: async (sha: string) => { calls.push(`health ${sha.slice(0, 7)}`); return w.healthy !== false; },
   };
-  return { deps, calls, lines, head: () => head };
+  return { deps, calls, lines, head: () => head, marker };
 }
 
-const mutating = (calls: string[]) => calls.filter((c) => !c.startsWith("git fetch"));
+// Heartbeats touch only the lock file; they are not side effects on the install.
+const mutating = (calls: string[]) => calls.filter((c) => !c.startsWith("git fetch") && c !== "beat");
+const actions = mutating;
 
 console.log("local auto-update: decision logic");
 
@@ -82,7 +97,7 @@ await check("idle and behind: snapshot -> stop -> fast-forward -> start -> healt
   const h = harness({});
   const r = await runCycle(h.deps, {});
   assert.equal(r.outcome, "updated");
-  assert.deepEqual(h.calls, ["git fetch --quiet origin main", "snapshot", "stop", `git merge --ff-only --quiet ${NEW}`, "start", `health ${NEW.slice(0, 7)}`]);
+  assert.deepEqual(actions(h.calls), ["snapshot", "stop", `git merge --ff-only --quiet ${NEW}`, "start", `health ${NEW.slice(0, 7)}`]);
   assert.equal(h.head(), NEW);
 });
 
@@ -196,6 +211,102 @@ await check("dry-run -> reports the plan, no side effect beyond the fetch", asyn
   assert.equal(r.outcome, "would-update");
   assert.deepEqual(mutating(h.calls), []);
   assert.ok(h.lines.some((l) => l.startsWith("dry-run:") && l.includes("run npm ci")));
+});
+
+console.log("local auto-update: no retry loop on a failed origin/main");
+
+for (const [label, w, outcome] of [
+  ["pull failed", { mergeFails: true }, "pull-failed"],
+  ["npm ci failed", { lockfileChanged: true, npmCiFails: true }, "npm-ci-failed"],
+  ["stop failed", { stopFails: true }, "stop-failed"],
+] as const) {
+  await check(`${label} -> marker records origin/main; the next tick on the same sha does nothing`, async () => {
+    const h = harness(w);
+    assert.equal((await runCycle(h.deps, {})).outcome, outcome);
+    assert.equal(h.marker.to, NEW, "failure recorded against the `to` sha");
+    h.calls.length = 0;
+    const again = await runCycle(h.deps, {});
+    assert.equal(again.outcome, "failed-before");
+    assert.deepEqual(actions(h.calls), [], `no snapshot, no stop, no pull on the retry: ${h.calls.join(", ")}`);
+    assert.ok(h.lines.at(-1)!.includes("previous cycle already failed"));
+  });
+}
+
+await check("origin/main moved past the failed sha -> the cycle runs again and success clears the marker", async () => {
+  const h = harness({ failedTo: "c".repeat(40) });
+  assert.equal((await runCycle(h.deps, {})).outcome, "updated");
+  assert.equal(h.marker.to, null);
+});
+
+await check("busy / snapshot failure / dry-run never write the marker (nothing was bounced)", async () => {
+  for (const w of [{ busy: ["1 job(s) running or due"] }, { snapshotFails: true }]) {
+    const h = harness(w);
+    await runCycle(h.deps, {});
+    assert.equal(h.marker.to, null);
+  }
+  const d = harness({});
+  await runCycle(d.deps, { dryRun: true });
+  assert.equal(d.marker.to, null);
+});
+
+await check("readFailedMarker: reads the sha, null when absent", () => {
+  const f = path.join(ISOLATED_CWD, "auto-update.failed");
+  assert.equal(readFailedMarker(f), null);
+  fs.writeFileSync(f, `${NEW} npm-ci-failed\n`);
+  assert.equal(readFailedMarker(f), NEW);
+  fs.unlinkSync(f);
+});
+
+await check("pre-update snapshots: keep the newest 3 by stamp, ignore everything else", () => {
+  const snap = (sha: string, day: number) => `autopilot-pre-update-${sha}-2026-10-0${day}T10-00-00-000Z.sqlite`;
+  const names = [snap("aaaaaaa", 1), snap("bbbbbbb", 4), "autopilot-2026-10-01T00-00-00-000Z.sqlite", snap("ccccccc", 2),
+    "autopilot-manual-keep.sqlite", snap("ddddddd", 5), `${snap("aaaaaaa", 1)}.sha256`, snap("eeeeeee", 3)];
+  assert.deepEqual(preUpdateSnapshotsToPrune(names).sort(), [snap("aaaaaaa", 1), snap("ccccccc", 2)].sort());
+  assert.deepEqual(preUpdateSnapshotsToPrune(names.slice(0, 2)), []);
+});
+
+console.log("local auto-update: lock and health");
+
+await check("the lock is touched before every long step (snapshot, stop, pull, each npm ci, start)", async () => {
+  const h = harness({ lockfileChanged: true, npmCiFails: true });
+  assert.equal((await runCycle(h.deps, {})).outcome, "npm-ci-failed");
+  const g = harness({ lockfileChanged: true });
+  assert.equal((await runCycle(g.deps, {})).outcome, "updated");
+  for (const calls of [h.calls, g.calls]) {
+    calls.forEach((c, i) => {
+      if (c === "snapshot" || c === "stop" || c === "npm ci" || c === "start" || c.startsWith("git merge")) {
+        assert.equal(calls[i - 1], "beat", `no heartbeat right before "${c}": ${calls.join(", ")}`);
+      }
+    });
+  }
+});
+
+await check("lock: a held lock refuses; a heartbeat keeps it fresh; only a lock older than the threshold is taken over", () => {
+  const f = path.join(ISOLATED_CWD, "auto-update.lock");
+  const release = takeLock(f);
+  assert.ok(release, "first take succeeds");
+  assert.equal(takeLock(f), null, "second take refused while held");
+  // Age it to just past 30 min (the old threshold): with the worst cycle longer than that, it must
+  // still be held. Then touch it, as a heartbeat does, and age it past the real threshold.
+  const aged = (ms: number) => { const t = new Date(Date.now() - ms); fs.utimesSync(f, t, t); };
+  aged(31 * 60_000);
+  assert.equal(takeLock(f), null, "31 min old is not stale");
+  touchLock(f);
+  assert.ok(Date.now() - fs.statSync(f).mtimeMs < 5_000, "touch refreshes the mtime");
+  aged(LOCK_STALE_MS + 60_000);
+  const again = takeLock(f);
+  assert.ok(again, "a lock past the stale threshold is taken over");
+  again();
+  assert.ok(!fs.existsSync(f));
+  assert.ok(LOCK_STALE_MS > 15 * 60_000 + 3 * 60_000, "the longest gap between heartbeats (one npm ci, 15 min) fits with margin");
+});
+
+await check("health: only a git-sourced sha counts as the new commit", () => {
+  assert.equal(healthReportsCommit({ build: { source: "git", sha: NEW.slice(0, 12) } }, NEW), true);
+  assert.equal(healthReportsCommit({ build: { source: "git", sha: OLD.slice(0, 12) } }, NEW), false);
+  assert.equal(healthReportsCommit({ build: { source: "env", sha: NEW.slice(0, 12) } }, NEW), false, "an env stamp names a build, not this checkout");
+  assert.equal(healthReportsCommit({ build: { source: "fallback", sha: null } }, NEW), false);
+  assert.equal(healthReportsCommit(null, NEW), false);
 });
 
 console.log("local auto-update: idle predicate");

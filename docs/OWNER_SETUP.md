@@ -128,9 +128,12 @@ the difference. The constitution forbids them, and Helm treats any bot-applied a
 `scripts/local-auto-update.mjs` keeps this checkout on current `main` so you never have to
 `git pull` by hand. Every 15 minutes, if `main` has moved and nothing is in progress, it:
 snapshots the database into `BACKUP_DIR` (`autopilot-pre-update-<sha>-<time>.sqlite` plus its
-`.sha256`, a restore point rotation never deletes), stops this install's server, fast-forwards,
-runs `npm ci` only when `package-lock.json` changed, restarts `npm start` in its own minimized
-window, and waits for `/health` to report the new commit.
+`.sha256`; the normal backup rotation never deletes these, and the updater keeps the newest 3),
+stops this install's server, fast-forwards, runs `npm ci` only when `package-lock.json` changed,
+restarts `npm start` in its own minimized window, and waits for `/health` to report the new commit.
+
+The first update closes the `cmd /k "npm start"` window you started by hand and replaces it with a
+minimized window titled "SOLAR-Proj server"; read the server's output there from then on.
 
 **It does nothing (and says why in the log) when:**
 
@@ -140,13 +143,20 @@ window, and waits for `/health` to report the new commit.
   flight. It tries again 15 minutes later. A staged filing therefore holds updates until you submit
   or discard it: that is on purpose, since a restart would close the window you submit from;
 - the supervised server (`run-prod-supervised.ps1`) is running: that loop owns restarts;
-- the pause file exists (below), or the database snapshot fails.
+- the pause file exists (below), or the database snapshot fails;
+- a previous cycle already failed on the same `main` commit (pull, `npm ci` or server stop). It
+  records that in `data\auto-update.failed` and waits for `main` to move rather than bouncing the
+  server every 15 minutes. Delete that file to make it try the same commit again.
 
 If the pull or `npm ci` fails, it puts the checkout back on the old commit and restarts the old
 server. If the new server doesn't come up on the new commit within 3 minutes, it logs
 `HEALTH CHECK FAILED` and leaves it for you (no automatic rollback: the new version's migrations
 may already have run; the pre-update snapshot is the way back). It starts the server again only if
 one was running before the update.
+
+Do not set `BUILD_SHA`, `APP_VERSION` or `BUILD_DATE` in this install's `.env`. With those set
+`/health` reports the stamped build instead of the checkout's commit, and the updater only accepts
+a commit read from git, so every update would be logged `HEALTH CHECK FAILED`.
 
 Because it updates this folder in place, **never use `C:\Users\isobl\SOLAR-Proj` for branch work**:
 agents (your terminal Claude included) work in their own `git worktree`.
@@ -164,8 +174,9 @@ because the server window and the portal browser need your desktop):
 schtasks /Create /TN "SolarAutopilot-AutoUpdate" /SC MINUTE /MO 15 /IT /F /TR "cmd /c cd /d C:\Users\isobl\SOLAR-Proj && node scripts\local-auto-update.mjs"
 ```
 
-A console flashes briefly every 15 minutes while it checks. Overlapping runs can't happen: a cycle
-holds `data\auto-update.lock` until it finishes.
+A console flashes briefly every 15 minutes while it checks. A cycle holds `data\auto-update.lock`
+until it finishes and refreshes it before every step, so the next scheduled run skips instead of
+overlapping. A lock untouched for 45 minutes (a crashed cycle) is treated as stale and taken over.
 
 | To | Command |
 | --- | --- |

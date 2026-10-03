@@ -8,6 +8,9 @@
 //   2. not on `main`, or tracked changes in the tree        -> refuse
 //   3. `git fetch origin main`; HEAD == origin/main          -> nothing to do
 //   4. HEAD is not an ancestor of origin/main (diverged)     -> refuse (fast-forward only)
+//   4b. a cycle already failed for THIS origin/main sha (data/auto-update.failed) -> skip until
+//      origin/main moves; otherwise a failed pull/npm ci would bounce the server and copy the DB
+//      every tick
 //   5. NOT IDLE: a job running or due, a portal run queued/running/staged/paused for a human,
 //      a filing awaiting_human_submit, a lookup in flight   -> skip, try again next cycle
 //   6. the supervised server (run-prod-supervised.ps1) owns this install -> skip
@@ -17,8 +20,12 @@
 //  10. `npm ci` only when package-lock.json changed; failure -> `git reset --keep` back to the old
 //      commit and `npm ci` again, BEFORE any start (so no migration of the new code has run)
 //  11. restart `npm start` in its own minimized window (only if a server was running before) and
-//      wait for /health to report the new commit. Failure is logged loudly; no automatic
-//      rollback, because the new code's migrations may already have run.
+//      wait for /health to report the new commit (source "git" only: an env-stamped BUILD_SHA
+//      names a build, not this checkout). Failure is logged loudly; no automatic rollback,
+//      because the new code's migrations may already have run.
+//
+// Pre-update snapshots are capped at the newest PRE_UPDATE_KEEP. The lock is touched before every
+// long step, so a slow cycle (npm ci twice is up to 30 min) never looks stale to the next tick.
 //
 // Idle is read READ-ONLY: the SQLite DB opened with { readonly: true } (better-sqlite3, already a
 // dependency) plus the unauthenticated /health counter of in-flight jobs. No new dependencies.
@@ -47,6 +54,7 @@ export const DEFAULTS = {
   logFile: path.join(ROOT, "data", "logs", "auto-update.log"),
   pauseFile: path.join(ROOT, "data", "auto-update.pause"),
   lockFile: path.join(ROOT, "data", "auto-update.lock"),
+  failedFile: path.join(ROOT, "data", "auto-update.failed"),
   healthTimeoutMs: 180_000,
 };
 
@@ -86,17 +94,61 @@ export function busyReasons(counts, health) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Bookkeeping: the failure marker, the snapshot cap, the lock. Pure or file-local; tested directly.
+// ---------------------------------------------------------------------------------------------
+
+// Outcomes after which the install was (or may have been) bounced and is back at `from` while
+// origin/main is still `to`. Retrying the same `to` would repeat the same failure every tick.
+export const MARK_FAILED_OUTCOMES = ["stop-failed", "pull-failed", "npm-ci-failed"];
+
+/** The `to` sha a previous cycle failed on, or null. Format: "<sha> <outcome>\n". */
+export function readFailedMarker(file) {
+  try { return fs.readFileSync(file, "utf8").trim().split(/\s+/)[0] || null; } catch { return null; }
+}
+
+export const PRE_UPDATE_KEEP = 3;
+const PRE_UPDATE_RE = /^autopilot-pre-update-[0-9a-f]+-(.+)\.sqlite$/;
+
+/** Pre-update snapshot names to delete so only the newest `keep` remain (newest by name stamp). */
+export function preUpdateSnapshotsToPrune(names, keep = PRE_UPDATE_KEEP) {
+  const stamped = names.map((n) => ({ n, m: PRE_UPDATE_RE.exec(n) })).filter((x) => x.m);
+  stamped.sort((a, b) => (a.m[1] < b.m[1] ? 1 : a.m[1] > b.m[1] ? -1 : 0));
+  return stamped.slice(keep).map((x) => x.n);
+}
+
+// The worst cycle (npm ci 900 s, twice, plus the stop wait and the 180 s health wait) is longer than
+// any single step, so the lock is touched before every step (`deps.heartbeat`); the longest gap
+// between touches is one npm ci (15 min), well inside this.
+export const LOCK_STALE_MS = 45 * 60_000;
+
+/** Exclusive lock so a slow cycle and the next scheduled one do not overlap. */
+export function takeLock(lockFile, now = Date.now()) {
+  try {
+    fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+    if (fs.existsSync(lockFile) && now - fs.statSync(lockFile).mtimeMs > LOCK_STALE_MS) fs.unlinkSync(lockFile);
+    fs.writeFileSync(lockFile, `${process.pid}\n`, { flag: "wx" });
+    return () => { try { fs.unlinkSync(lockFile); } catch { /* already gone */ } };
+  } catch { return null; }
+}
+
+/** Mark the lock as still held (its mtime is what staleness reads). */
+export function touchLock(lockFile) {
+  try { const t = new Date(); fs.utimesSync(lockFile, t, t); } catch { /* lock gone: nothing to keep fresh */ }
+}
+
+// ---------------------------------------------------------------------------------------------
 // One cycle. Every side effect goes through `deps`, so the test drives it with mocks.
 // ---------------------------------------------------------------------------------------------
 
 /**
  * @returns {Promise<{ outcome: string, from?: string, to?: string, reasons?: string[] }>}
  * Outcomes: paused | refused | fetch-failed | up-to-date | busy | supervised | would-update |
- * snapshot-failed | stop-failed | pull-failed | npm-ci-failed | updated | unhealthy
+ * snapshot-failed | stop-failed | pull-failed | npm-ci-failed | updated | unhealthy | failed-before
  */
 export async function runCycle(deps, opts = {}) {
   const { branch = "main", remote = "origin", dryRun = false } = opts;
   const log = deps.log;
+  const beat = () => deps.heartbeat?.();
   const git = (...args) => deps.git(args);
   const t0 = deps.now();
   const took = () => `${((deps.now() - t0) / 1000).toFixed(1)}s`;
@@ -126,6 +178,12 @@ export async function runCycle(deps, opts = {}) {
     return { outcome: "refused", from, to, reasons: ["diverged"] };
   }
 
+  const failedTo = deps.failedTo?.() ?? null;
+  if (failedTo === to) {
+    log(`skipped: a previous cycle already failed on ${short(to)} (see earlier lines); waiting for ${remote}/${branch} to move. Delete data/auto-update.failed to retry now`);
+    return { outcome: "failed-before", from, to };
+  }
+
   const busy = await deps.busy();
   if (busy.length) { log(`busy, skipping ${short(from)} -> ${short(to)}: ${busy.join("; ")}`); return { outcome: "busy", from, to, reasons: busy }; }
   if (deps.supervisorRunning()) {
@@ -141,6 +199,10 @@ export async function runCycle(deps, opts = {}) {
     return { outcome: "would-update", from, to, lockfileChanged };
   }
 
+  // From here every early return after a bounce records the failure, so the next tick skips `to`.
+  const fail = (outcome) => { deps.markFailed?.(to, outcome); return { outcome, from, to }; };
+
+  beat();
   const snap = await deps.snapshot(short(from));
   if (!snap.ok) { log(`snapshot failed: ${snap.detail}; no snapshot, no pull`); return { outcome: "snapshot-failed", from, to }; }
   log(`snapshot ${snap.file} verified`);
@@ -149,38 +211,44 @@ export async function runCycle(deps, opts = {}) {
   const busyAgain = await deps.busy();
   if (busyAgain.length) { log(`busy after snapshot, skipping: ${busyAgain.join("; ")}`); return { outcome: "busy", from, to, reasons: busyAgain }; }
 
+  beat();
   const stop = deps.stopServer();
-  if (!stop.ok) { log(`could not stop the server: ${stop.detail}; nothing pulled`); return { outcome: "stop-failed", from, to }; }
+  if (!stop.ok) { log(`could not stop the server: ${stop.detail}; nothing pulled`); return fail("stop-failed"); }
   const wasRunning = stop.stopped > 0;
   log(wasRunning ? `stopped server (${stop.stopped} process tree(s))` : "no server was running");
 
+  beat();
   const merge = git("merge", "--ff-only", "--quiet", to);
   if (merge.code !== 0 || git("rev-parse", "HEAD").out !== to) {
     // --ff-only either moves HEAD all the way or not at all; make sure it is where it started.
     const at = git("rev-parse", "HEAD").out;
     if (at !== from) git("reset", "--keep", from);
     log(`PULL FAILED (exit ${merge.code}); install left at ${short(from)}`);
-    if (wasRunning) { deps.startServer(); log("restarted server on the unchanged install"); }
-    return { outcome: "pull-failed", from, to };
+    if (wasRunning) { beat(); deps.startServer(); log("restarted server on the unchanged install"); }
+    return fail("pull-failed");
   }
   log(`fast-forwarded ${short(from)} -> ${short(to)}`);
 
   if (lockfileChanged) {
+    beat();
     const ci = deps.npmCi();
     if (ci.code !== 0) {
       log(`NPM CI FAILED (exit ${ci.code}); rolling back to ${short(from)} before any start`);
       git("reset", "--keep", from);
+      beat();
       const back = deps.npmCi();
       log(back.code === 0 ? `rolled back to ${short(from)} and reinstalled its dependencies` : `ROLLBACK npm ci ALSO FAILED (exit ${back.code}); run "npm ci" by hand`);
-      if (wasRunning && back.code === 0) { deps.startServer(); log("restarted server on the old install"); }
-      return { outcome: "npm-ci-failed", from, to };
+      if (wasRunning && back.code === 0) { beat(); deps.startServer(); log("restarted server on the old install"); }
+      return fail("npm-ci-failed");
     }
     log("npm ci done (package-lock.json changed)");
   } else {
     log("npm ci skipped (package-lock.json unchanged)");
   }
 
+  deps.clearFailed?.();
   if (!wasRunning) { log(`updated ${short(from)} -> ${short(to)} in ${took()}; server was not running, not started`); return { outcome: "updated", from, to }; }
+  beat();
   deps.startServer();
   log("started server");
   if (!(await deps.waitForBuild(to))) {
@@ -233,6 +301,12 @@ function inspectServer(cfg) {
   catch { return null; }
 }
 
+/** True when /health's build came from git (not an env stamp) and names `toSha`. */
+export function healthReportsCommit(health, toSha) {
+  const b = health?.build;
+  return !!(b && b.source === "git" && typeof b.sha === "string" && b.sha && toSha.startsWith(b.sha));
+}
+
 async function getHealth(port) {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(5000) });
@@ -260,6 +334,10 @@ function realDeps(cfg, log) {
     log,
     now: () => Date.now(),
     paused: () => fs.existsSync(cfg.pauseFile),
+    heartbeat: () => touchLock(cfg.lockFile),
+    failedTo: () => readFailedMarker(cfg.failedFile),
+    markFailed: (to, outcome) => { try { fs.writeFileSync(cfg.failedFile, `${to} ${outcome}\n`); } catch { /* the log line still says it failed */ } },
+    clearFailed: () => { try { fs.unlinkSync(cfg.failedFile); } catch { /* none */ } },
     git: (args) => run("git", args, cfg.root),
     npmCi: () => run("npm", ["ci"], cfg.root, 900_000),
     async busy() {
@@ -270,8 +348,8 @@ function realDeps(cfg, log) {
     supervisorRunning: () => inspectServer(cfg)?.supervisor ?? true, // unreadable = assume it is
     // Online backup from a read-only connection, then the sha256sum-format sidecar backup.ts
     // writes, then re-read both and run quick_check on the copy. Named `autopilot-pre-update-…`
-    // so it lists with the other snapshots but is a pinned restore point rotation never prunes
-    // (backup.ts isAutomaticSnapshot).
+    // so it lists with the other snapshots; backup.ts rotation never prunes it (isAutomaticSnapshot),
+    // so this keeps only the newest PRE_UPDATE_KEEP of them itself, after the new one verifies.
     async snapshot(fromShort) {
       try {
         const dir = path.resolve(cfg.root, process.env.BACKUP_DIR || "backend/data/backups");
@@ -286,6 +364,9 @@ function realDeps(cfg, log) {
         const copy = new Database(file, { readonly: true });
         try { if (copy.pragma("quick_check", { simple: true }) !== "ok") return { ok: false, detail: "quick_check failed on the snapshot" }; }
         finally { copy.close(); }
+        for (const old of preUpdateSnapshotsToPrune(fs.readdirSync(dir))) {
+          for (const f of [old, `${old}.sha256`]) { try { fs.unlinkSync(path.join(dir, f)); } catch { /* best effort */ } }
+        }
         return { ok: true, file: path.basename(file) };
       } catch (err) {
         return { ok: false, detail: err instanceof Error ? err.message.slice(0, 200) : String(err) };
@@ -314,8 +395,9 @@ function realDeps(cfg, log) {
       const deadline = Date.now() + cfg.healthTimeoutMs;
       while (Date.now() < deadline) {
         const h = await getHealth(cfg.port);
-        const sha = h?.build?.sha;
-        if (sha && toSha.startsWith(sha)) return true;
+        // Only a git-derived sha describes this checkout; BUILD_SHA/APP_VERSION/BUILD_DATE in .env
+        // (source "env") would never match and must not count as "the new commit is up".
+        if (healthReportsCommit(h, toSha)) return true;
         await new Promise((r) => setTimeout(r, 3000));
       }
       return false;
@@ -329,16 +411,6 @@ function makeLogger(logFile, echo = true) {
     if (echo) console.log(line);
     try { fs.mkdirSync(path.dirname(logFile), { recursive: true }); fs.appendFileSync(logFile, `${line}\n`); } catch { /* logging never stops a cycle */ }
   };
-}
-
-/** Exclusive lock so a slow cycle and the next scheduled one never overlap. Stale after 30 min. */
-function takeLock(lockFile) {
-  try {
-    fs.mkdirSync(path.dirname(lockFile), { recursive: true });
-    if (fs.existsSync(lockFile) && Date.now() - fs.statSync(lockFile).mtimeMs > 30 * 60_000) fs.unlinkSync(lockFile);
-    fs.writeFileSync(lockFile, `${process.pid}\n`, { flag: "wx" });
-    return () => { try { fs.unlinkSync(lockFile); } catch { /* already gone */ } };
-  } catch { return null; }
 }
 
 async function main() {
