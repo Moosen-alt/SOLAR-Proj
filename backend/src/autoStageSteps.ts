@@ -147,6 +147,9 @@ export async function processStageStep(db: AppDb, projectId: string, opts: Stage
           parts: (pkg.parts || []).length,
           missing: (pkg.missingSheetTypes || []).join(",") || "none",
           unclassifiedPages: (pkg.unclassifiedPages || []).join(",") || "none",
+          // Title-only EQUIPMENT SPECIFICATION cut-sheets the splitter could not tell apart (#66):
+          // why module_spec / inverter_spec may be "missing" from a set that has cut-sheets.
+          ...(pkg.undecidedSpecPages?.length ? { undecidedSpecPages: pkg.undecidedSpecPages.join(",") } : {}),
           ...(gaps.length ? { resplitFor: gaps.join(",") } : {}),
         });
       } catch (err) {

@@ -48,22 +48,34 @@ const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegEx
   { docType: "structural", label: "Structural / roof framing", patterns: [/\bMOUNT DETAIL\b/i, /\bATTACHMENT DETAIL\b/i, /\bS\s*1\.\d\b/i], words: [/STRUCTURAL/i], vocabulary: [/\bROOF SECTION\b/i, /\bRAFTER\b/i, /\bTRUSS\b/i] },
   // Match the dedicated SPEC SHEET by its title-block Sheet Name only. Model strings
   // (Q.TRON, Q.MI) and the word "PV MODULE" appear in the spec-callout block on the site
-  // plan, SLD, etc., so they are NOT reliable — only the sheet name "… SPECIFICATION SHEET"
+  // plan, SLD, etc., so they are NOT reliable — only the sheet name "… SPEC(IFICATION) SHEET"
   // identifies the actual cut-sheet page. The combined "MODULE / INV SPECIFICATION SHEET"
   // counts as BOTH module and inverter spec.
-  // "EQUIPMENT SPECIFICATION" pages (Basson PV-11+) are image cut-sheets whose only text is
-  // the title block — no model string survives extraction, so nothing else can classify them.
-  // The section carries BOTH module and inverter cut-sheets; like the combined
-  // "MODULE / INV SPECIFICATION SHEET" above, it counts as both. The 5 MB caution below still
-  // holds: these are the DEDICATED spec pages by sheet name, not UL-number matches.
-  { docType: "module_spec", label: "Module spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MODULE\s+SPECIFICATION\s+SHEET/i, /PV MODULE SPEC/i, /\bEQUIPMENT\s+SPECIFICATIONS?\b/i] },
+  //
+  // The single-equipment names REQUIRE the word SHEET (#66). "INVERTER SPECIFICATIONS" and
+  // "PV MODULE SPECIFICATIONS" are also the headings of the spec TABLES in a WIRING
+  // CALCULATIONS sheet's body; as patterns they were that calcs sheet's only hit, so
+  // winner-take-all had nothing to rescue it with and it shipped as the inverter spec.
+  //
+  // "EQUIPMENT SPECIFICATION(S)" is deliberately NOT a pattern here (#66). Those pages (Basson
+  // PV-11+) are image cut-sheets whose only text is the title block, and the section holds the
+  // module, the combiner, the racking brochure… all with the same text. Filing them as
+  // module_spec (and "counting as both") put a combiner and a racking brochure in the spec parts
+  // with no way to tell. They are reported as undecided instead (EQUIPMENT_SPEC_SHEET below).
+  { docType: "module_spec", label: "Module spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MODULE\s+SPECIFICATION\s+SHEET/i, /\bPV\s+MODULE\s+SPEC(?:IFICATION)?S?\s+SHEETS?\b/i] },
   // NOTE: do NOT match on the UL listing standard (/UL 1741/) — that number is cited on the
   // SLD, general notes, and most electrical sheets, so it pulled those dense pages into the
   // inverter_spec split and bloated it past PowerClerk's 5 MB upload limit. Match the dedicated
   // SPEC SHEET by its title-block name only, per this file's stated discipline.
-  { docType: "inverter_spec", label: "Inverter spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MICRO-?INVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bINVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bEQUIPMENT\s+SPECIFICATIONS?\b/i] },
+  { docType: "inverter_spec", label: "Inverter spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MICRO-?INVERTERS?\s+SPEC(?:IFICATION)?S?\s+SHEETS?\b/i, /\bINVERTERS?\s+SPEC(?:IFICATION)?S?\s+SHEETS?\b/i] },
   { docType: "labels", label: "Labels / placards", patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i, /\bE\s*1\.3\b/i] },
 ];
+
+// A title-block "EQUIPMENT SPECIFICATION" sheet: a cut-sheet whose equipment its text does not
+// name. When no category claims such a page it is reported in `undecidedSpecPages` — the split
+// says it could not tell the module datasheet from the combiner or racking brochure rather than
+// guessing one into a spec part (#66).
+const EQUIPMENT_SPEC_SHEET = /\bEQUIPMENT\s+SPECIFICATIONS?\b/i;
 
 // The general-notes / sheet-index cover page lists every sheet name and would otherwise
 // match every category. It is never an uploadable single-category doc, so skip it.
@@ -142,6 +154,10 @@ export interface UtilityPackageResult {
    *  them, so a sheet the classifier missed is visible where the split ran, not only later as a
    *  gate's "missing" (#29). Never includes separately-uploaded types (meter photo, bill). */
   missingSheetTypes: string[];
+  /** 1-based pages titled "EQUIPMENT SPECIFICATION" that no category claimed: image cut-sheets
+   *  whose text is only the title block, so module / inverter / combiner / racking cannot be told
+   *  apart (#66). Never filed into a spec part; a person (or a vision read) decides. */
+  undecidedSpecPages: number[];
 }
 
 // Find the project's stored plan set (doc_type plan_set, else the largest PDF upload).
@@ -167,7 +183,7 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
 
   const source = await PDFDocument.load(fs.readFileSync(planSet.path));
   const total = source.getPageCount();
-  const { byCategory, unclassified } = await classifyPlanSetPages(planSet.path, total);
+  const { byCategory, unclassified, undecidedSpec } = await classifyPlanSetPages(planSet.path, total);
 
   const baseName = planSet.name.replace(/\.pdf$/i, "");
   const parts: UtilityPackageResult["parts"] = [];
@@ -238,16 +254,19 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
   const missingSheetTypes = CATEGORY_PATTERNS
     .map((c) => c.docType)
     .filter((t) => wanted.includes(t) && !parts.some((p) => p.docType === t));
-  return { target, planSetDocId: planSet.id, pages: total, parts, packagedDocTypes: packaged, missingDocTypes: missing, zipDocumentId: zipDoc.id, unclassifiedPages: unclassified, missingSheetTypes };
+  return { target, planSetDocId: planSet.id, pages: total, parts, packagedDocTypes: packaged, missingDocTypes: missing, zipDocumentId: zipDoc.id, unclassifiedPages: unclassified, missingSheetTypes, undecidedSpecPages: undecidedSpec };
 }
 
-// Assign each page of the plan set to its categories (classifyPage). 1-based unclassified pages.
-async function classifyPlanSetPages(planSetPath: string, total: number): Promise<{ byCategory: Map<string, number[]>; unclassified: number[] }> {
+// Assign each page of the plan set to its categories (classifyPage). 1-based unclassified pages;
+// the unclassified EQUIPMENT SPECIFICATION pages are also listed as undecided spec pages.
+async function classifyPlanSetPages(planSetPath: string, total: number): Promise<{ byCategory: Map<string, number[]>; unclassified: number[]; undecidedSpec: number[] }> {
   const pageTexts = await extractPdfPages(planSetPath, 80);
   const byCategory = new Map<string, number[]>();
   const unclassified: number[] = [];
+  const undecidedSpec: number[] = [];
   for (let i = 0; i < total; i++) {
-    const docTypes = classifyPage(pageTexts[i] ?? "");
+    const text = pageTexts[i] ?? "";
+    const docTypes = classifyPage(text);
     if (docTypes.length) {
       for (const docType of docTypes) {
         const arr = byCategory.get(docType) ?? [];
@@ -256,9 +275,10 @@ async function classifyPlanSetPages(planSetPath: string, total: number): Promise
       }
     } else {
       unclassified.push(i + 1);
+      if (EQUIPMENT_SPEC_SHEET.test(text) && !isIndexOrNotesPage(text)) undecidedSpec.push(i + 1);
     }
   }
-  return { byCategory, unclassified };
+  return { byCategory, unclassified, undecidedSpec };
 }
 
 /**
