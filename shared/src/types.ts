@@ -468,6 +468,10 @@ export interface SubmissionPaymentQuote {
    *  Carrying the bracket is the point: a replayed filing that freezes the learn
    *  project's bracket bills a 20 kW job at the 15 kVA rate. */
   permitFeeBracketLabel: string | null;
+  /** WHO CHARGES THIS PERMIT FEE, when it is not the AHJ: a cited state rule's issuer (New Mexico
+   *  CID / MHD — submissionFees via feeIssuer.permitFeeProject), e.g. "Permit fee — New Mexico
+   *  Construction Industries Division (CID) (state schedule, cited)". Absent when the AHJ issues. */
+  permitFeeIssuerLabel?: string;
   permitFeeConfidence: FeeConfidence;
   /** THE PUBLISHED SCHEDULE WAS RE-READ BY A MACHINE AND THIS AMOUNT'S LINE IS PRINTED IN IT —
    *  label and fee on one row of the cited document. A qualifier on a `seeded` amount, never a
@@ -625,6 +629,13 @@ export interface ProjectFeeSheetLine {
   track: "permit" | "nem";
   /** Who is owed the money ("City of Coos Bay", "Ameren Illinois"). */
   jurisdiction: string;
+  /** "local_review" = the AHJ's own zoning / site-development review fee, a line of its own where a
+   *  STATE agency issues the permits (feeIssuer.localPermitReview; issue #56). Absent on the
+   *  permit and NEM lines. */
+  role?: "local_review";
+  /** The card's heading when the payee is not simply "the AHJ": the state issuer on the permit
+   *  line, the AHJ's review on the local_review line. Absent otherwise. */
+  issuerLabel?: string;
   feeUsd: number | null;
   source: PermitFeeSource;
   basis: string;

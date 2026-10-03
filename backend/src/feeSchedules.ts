@@ -84,6 +84,7 @@ import {
 import { placeHistoryCacheBreakpoint, recordLlmCall, sanitizeApiKey, webSearchRequestsOf } from "./llm";
 import { routeFor } from "./modelRouting";
 import { getPermitProcessLookup } from "./permitProcess";
+import { localPermitReview, permitFeeProject, trackForFeeDiscipline } from "./feeIssuer";
 import { logger } from "./logger";
 import { agencyKind } from "./recipeReplayBinding";
 import { id } from "./ids";
@@ -2792,7 +2793,10 @@ export function lookupLandedPermitFee(
  *  which the quote ladder's single "unknown" cannot. */
 export async function researchFeeSchedule(
   db: AppDb,
-  input: { state: string; ahj?: string; utility?: string; track?: string | null; discipline?: string },
+  input: { state: string; ahj?: string; utility?: string; track?: string | null; discipline?: string;
+    /** Which fee this pass is after, when the agency's name alone would mislead the researcher — a
+     *  state issuer's statewide schedule, or an AHJ's zoning review only (feeResearchTargets). */
+    focus?: string },
   options: { researcher?: FeeScheduleResearcher; ledger?: FeeDocumentLedger } = {},
 ): Promise<FeeScheduleResearchOutcome> {
   const track = feeTrack(input.track);
@@ -2827,6 +2831,8 @@ export async function researchFeeSchedule(
   try {
     knownContext = knowledgeResearchHint(db, { state: input.state, ahj: input.ahj, utility: input.utility }, track === "nem" ? "utility" : "ahj")?.text;
   } catch { /* non-fatal: research still runs unseeded */ }
+  const focus = clean(input.focus);
+  if (focus) knownContext = [focus, knownContext].filter(Boolean).join("\n");
 
   const researcher = options.researcher || claudeFeeScheduleResearcher;
   // ONE LEDGER FOR THE PASS, OWNED HERE — not "whatever the caller happened to
@@ -2903,19 +2909,21 @@ export function feeResearchNeedsForTracks(tracks: readonly string[]): FeeResearc
  *  With only one split row held, acquire only the missing discipline. */
 function missingFeeResearchNeeds(
   db: AppDb,
-  project: Pick<ProjectRecord, "state" | "ahj" | "utility">,
+  project: FeeResearchProject,
   tracks: readonly string[],
 ): FeeResearchNeed[] {
   const missing = new Map<string, FeeResearchNeed>();
+  // Each permit need is asked of the agency that ISSUES that permit (feeProjectForNeed) — a stored
+  // CID row answers a Los Lunas job; the village's own key never does.
+  const held = (n: FeeResearchNeed) => findFeeScheduleForProject(db, feeProjectForNeed(project, n), n.track, n.discipline);
   for (const need of feeResearchNeedsForTracks(tracks)) {
-    if (findFeeScheduleForProject(db, project, need.track, need.discipline)) continue;
+    if (held(need)) continue;
     if (need.track === "permit" && need.discipline === "combo") {
       const splitNeeds: FeeResearchNeed[] = [
         { track: "permit", discipline: "electrical" },
         { track: "permit", discipline: "structural" },
       ];
-      const missingSplit = splitNeeds.filter((split) =>
-        !findFeeScheduleForProject(db, project, split.track, split.discipline));
+      const missingSplit = splitNeeds.filter((split) => !held(split));
       if (missingSplit.length < splitNeeds.length) {
         for (const split of missingSplit) missing.set(`${split.track}|${split.discipline}`, split);
         continue;
@@ -2924,6 +2932,75 @@ function missingFeeResearchNeeds(
     missing.set(`${need.track}|${need.discipline}`, need);
   }
   return [...missing.values()];
+}
+
+/** A project as fee research reads it: enough to name the issuer of each permit (the state rule
+ *  reads the AHJ, the snapshot's structure type and any operator per-track issuer). */
+type FeeResearchProject = Pick<ProjectRecord, "state" | "ahj" | "utility"> & Partial<Pick<ProjectRecord, "parserSnapshot" | "trackIssuers" | "trackView">>;
+
+/** The project as this need's fee reads it: the state issuer's view for a permit a cited state
+ *  rule issues (feeIssuer.permitFeeProject), else the project. NEM is always the project. */
+function feeProjectForNeed<T extends FeeResearchProject>(project: T, need: FeeResearchNeed): T {
+  return need.track === "nem" ? project : permitFeeProject(project, trackForFeeDiscipline(need.discipline));
+}
+
+/** ONE fee_research job's target: who is researched, for which row, and how the job is deduped.
+ *  `role` "issuer" = the agency that charges this permit (or the utility, for NEM);
+ *  "local_review" = the AHJ's own zoning / site-development review fee, researched only where a
+ *  state agency issues the permits (feeIssuer.localPermitReview). `focus` tells the researcher
+ *  which fee it is after when the agency's name alone would mislead it. */
+export interface FeeResearchTarget extends FeeResearchNeed {
+  role: "issuer" | "local_review";
+  state: string;
+  ahj: string;
+  utility: string;
+  profileKey: string;
+  researchKey: string;
+  focus?: string;
+}
+
+/** WHAT FEE RESEARCH THIS PROJECT STILL NEEDS, AGAINST WHOM (issue #56). Each missing permit row is
+ *  researched against the agency that ISSUES that permit — for a CID-served New Mexico jurisdiction,
+ *  CID, keyed on CID (so one state schedule is researched once per state, not once per village) —
+ *  and the AHJ is researched only for its own zoning / site-development review line. Albuquerque
+ *  and every AHJ that issues its own permits are unchanged. Read-only; ensureFeeSchedulesResearched
+ *  enqueues these. */
+export function feeResearchTargets(db: AppDb, project: FeeResearchProject, tracks: readonly string[]): FeeResearchTarget[] {
+  const out: FeeResearchTarget[] = [];
+  const state = clean(project.state);
+  const utility = clean(project.utility);
+  const projectAhj = clean(project.ahj);
+  for (const need of missingFeeResearchNeeds(db, project, tracks)) {
+    const scoped = feeProjectForNeed(project, need);
+    const ahj = clean(scoped.ahj);
+    if (need.track === "nem" ? !utility : !ahj) continue;
+    const profileKey = feeScheduleProfileKey({ state, ahj, utility }, need.track);
+    const stateIssued = need.track === "permit" && scoped !== project;
+    out.push({
+      ...need, role: "issuer", state, ahj, utility, profileKey,
+      researchKey: `${need.track}|${profileKey}|${need.discipline}`,
+      ...(stateIssued ? {
+        focus: `${ahj} is the STATE agency that issues the ${need.discipline || "permit"} permit for ${projectAhj} (a cited ${state} state rule); `
+          + `its permit fees are a published STATE fee schedule. Research that state schedule — not ${projectAhj}'s own fees.`,
+      } : {}),
+    });
+  }
+  const review = localPermitReview(project);
+  if (review && tracks.some((t) => feeTrack(t) === "permit")) {
+    const profileKey = feeScheduleProfileKey({ state, ahj: review.ahj }, "permit");
+    // Only the EXACT undifferentiated row under the AHJ's own key is its review fee (it issues no
+    // permit here) — a stray structural/electrical row there is not (localReviewScheduleRow).
+    if (!localReviewScheduleRow(db, { state, ahj: review.ahj })) {
+      out.push({
+        track: "permit", discipline: "", role: "local_review", state, ahj: review.ahj, utility, profileKey,
+        researchKey: `permit|${profileKey}|local_review`,
+        focus: `${review.ahj} issues NO building or electrical permit here — ${review.issuer} does. Research ONLY ${review.ahj}'s own `
+          + `zoning compliance / site-development review fee (its planning or community-development office's charge for reviewing the site plan), `
+          + `not a building or electrical permit fee.`,
+      });
+    }
+  }
+  return out;
 }
 
 /** WHEN A PROJECT LANDS AT AN AHJ (OR UTILITY) WE HOLD NO FEE ROW FOR, QUEUE THE
@@ -2943,6 +3020,8 @@ function missingFeeResearchNeeds(
  *     (track, discipline) this project needs, or a combo need is covered by both
  *     electrical and structural schedules — including a delegation whose target
  *     is missing, which is a modelling question for a person, not a research gap;
+ *   · (each permit row is asked of the agency that ISSUES it — feeResearchTargets: a state
+ *     issuer's row for a CID-served job, the AHJ only for its own zoning review line)
  *   · an identical target (dedupe key `track|profileKey|discipline`, carried in the
  *     payload as researchKey) already has a pending/running fee_research job, or
  *     ANY fee_research attempt inside the backoff window above — a miss must not
@@ -2954,7 +3033,7 @@ function missingFeeResearchNeeds(
  *  moment a key appears research resumes with no code change. */
 export async function ensureFeeSchedulesResearched(
   db: AppDb,
-  project: Pick<ProjectRecord, "id" | "state" | "ahj" | "utility">,
+  project: Pick<ProjectRecord, "id"> & FeeResearchProject,
   tracks: readonly string[],
 ): Promise<number> {
   if (process.env.FEE_RESEARCH === "off") return 0;
@@ -2967,13 +3046,9 @@ export async function ensureFeeSchedulesResearched(
   }
   if (!jobQueue.jobWorkerRunning()) return 0;
   let enqueued = 0;
-  for (const need of missingFeeResearchNeeds(db, project, tracks)) {
+  for (const target of feeResearchTargets(db, project, tracks)) {
     try {
-      const subject = need.track === "nem" ? clean(project.utility) : clean(project.ahj);
-      if (!subject) continue;
-      if (findFeeScheduleForProject(db, project, need.track, need.discipline)) continue;
-      const profileKey = feeScheduleProfileKey(project, need.track);
-      const researchKey = `${need.track}|${profileKey}|${need.discipline}`;
+      const { researchKey, profileKey } = target;
       const recent = db.get<Row>(
         `SELECT id FROM job_queue
           WHERE job_type = 'fee_research' AND payload LIKE ?
@@ -2985,12 +3060,17 @@ export async function ensureFeeSchedulesResearched(
       // maxRetries 2: the worker's retry math (`retryCount+1 < maxRetries`) means
       // 1 yields ZERO retries — 2 gives the intended single retry (and the
       // researcher catches its own failures, so retries are rare anyway).
+      // `ahj` is the TARGET's agency (the state issuer for a state-issued permit), never blindly
+      // project.ahj — the handler researches and files the row under exactly this name.
       jobQueue.enqueueJob(db, "fee_research", {
-        state: clean(project.state), ahj: clean(project.ahj), utility: clean(project.utility),
-        track: need.track, discipline: need.discipline, profileKey, researchKey,
+        state: target.state, ahj: target.ahj, utility: target.utility,
+        track: target.track, discipline: target.discipline, profileKey, researchKey,
+        role: target.role, ...(target.focus ? { focus: target.focus } : {}),
       }, { priority: 3, maxRetries: 2, projectId: project.id });
       enqueued++;
-      logger.info("fees", `fee-schedule auto-research queued for ${subject} (${need.track}${need.discipline ? `/${need.discipline}` : ""})`);
+      const subject = target.track === "nem" ? target.utility : target.ahj;
+      const what = target.role === "local_review" ? "local zoning / site review" : target.discipline;
+      logger.info("fees", `fee-schedule auto-research queued for ${subject} (${target.track}${what ? `/${what}` : ""})`);
     } catch { /* autonomy is best-effort — never break the caller */ }
   }
   return enqueued;
@@ -3187,6 +3267,18 @@ function resolveLine(
 ): FeeScheduleLine | null {
   const raw = findRawScheduleForProject(db, project, track, discipline);
   if (!raw) return null;
+  return lineFromRaw(db, project, track, discipline, raw, inputs);
+}
+
+/** resolveLine for a row already chosen — the hop, the evaluation and the dangling-hop refusal. */
+function lineFromRaw(
+  db: AppDb,
+  project: Pick<ProjectRecord, "state" | "ahj" | "utility" | "systemSizeAcKw" | "systemSizeDcKw" | "parserSnapshot">,
+  track: FeeTrack,
+  discipline: FeeDiscipline,
+  raw: FeeScheduleRecord,
+  inputs?: FeeEvalInputs,
+): FeeScheduleLine {
   const hop = followCollectedBy(db, raw);
   const hoppedFrom = hop.collectedBy ? (track === "nem" ? raw.utility : raw.ahj) : "";
   // The filing is the discipline ASKED FOR — an undifferentiated row answering a
@@ -4460,6 +4552,27 @@ export function feeForProject(
   const lines = feeLinesForProject(db, project, track);
   if (!lines.length) return null;
   return { ...resolutionFrom(lines, track), lines };
+}
+
+/** THE AHJ'S OWN ZONING / SITE-DEVELOPMENT REVIEW ROW where a state agency issues the permits
+ *  (issue #56): EXACTLY the undifferentiated permit row under the AHJ's own key, and nothing else.
+ *  findRawScheduleForProject's fallbacks (the only row under the key, a fuzzy name) are refused on
+ *  purpose — a legacy "Building permit" row researched under the village before #56 is a permit
+ *  fee researched against the wrong agency, never its review fee. null = none on file. Read by
+ *  feeResearchTargets (is the review fee held?) and the fee sheet's review line (submissionFees). */
+export function localReviewFeeForProject(
+  db: AppDb,
+  project: Pick<ProjectRecord, "state" | "ahj" | "utility" | "systemSizeAcKw" | "systemSizeDcKw" | "parserSnapshot">,
+): ProjectFeeResolution | null {
+  const raw = localReviewScheduleRow(db, project);
+  if (!raw) return null;
+  const line = lineFromRaw(db, project, "permit", "", raw);
+  return { ...resolutionFrom([line], "permit"), lines: [line] };
+}
+
+function localReviewScheduleRow(db: AppDb, project: Pick<ProjectRecord, "state" | "ahj">): FeeScheduleRecord | null {
+  if (!clean(project.ahj)) return null;
+  return getFeeSchedule(db, feeScheduleProfileKey({ state: project.state, ahj: project.ahj }, "permit"), "permit", "");
 }
 
 /** Evaluate one already-resolved schedule into a line. */

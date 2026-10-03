@@ -2254,6 +2254,7 @@ function renderPaymentQuoteCard(quote) {
   return `
     <article class="item ${tone}" style="margin-bottom:8px">
       <div class="item-title"><span>${esc(trackLabel)} submission</span>${statusBadge(status)}</div>
+      ${quote.permitFeeIssuerLabel ? `<p class="muted" style="margin:2px 0;font-size:12px">${esc(quote.permitFeeIssuerLabel)}</p>` : ""}
       <table style="font-size:12px;margin:4px 0;border-collapse:collapse">
         <tr><td style="padding:1px 14px 1px 0">Permit fees</td><td style="text-align:right"><strong>${money(quote.permitFeeUsd)}</strong></td>
             <td style="padding-left:10px" class="muted">${esc(FEE_SOURCE_LABELS[quote.permitFeeSource] || "")}</td></tr>
@@ -2623,10 +2624,13 @@ function renderFeeSheetLine(line) {
   // fee is the interconnection application's either way (new-AHJ e2e gap 3).
   const trackLabel = line.track === "nem" ? "Utility interconnection" : "Permit (AHJ)";
   const url = httpUrl(line.sourceUrl);
+  // A STATE ISSUER (NM CID) or the AHJ's own zoning review names itself (issuerLabel, #56) —
+  // "Permit (AHJ) — Village of Los Lunas" over CID's fee was the defect.
+  const heading = line.issuerLabel || `${trackLabel} — ${line.jurisdiction || "jurisdiction not set"}`;
   return `
     <article class="item ${tone}" style="margin-bottom:8px">
       <div class="item-title">
-        <span>${esc(trackLabel)} — ${esc(line.jurisdiction || "jurisdiction not set")}</span>
+        <span>${esc(heading)}</span>
         <span class="badge ${conf.badge}">${esc(conf.label)}</span>
       </div>
       <p style="margin:2px 0;font-size:19px;font-weight:700">${feeMoney(line.feeUsd)}${line.paymentMethod === "none" && line.feeUsd != null
@@ -2725,7 +2729,7 @@ function renderFeeSheetPanel() {
   const foldMoney = (v) => (v == null ? "UNKNOWN" : `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
   const FOLD_QUALIFIER = { actual: "actual", verified: "verified", seeded: "provisional", estimated: "estimate", unknown: "unknown", schedule_match: "matches published schedule", portal_read: "actual, read from portal" };
   const trackParts = sheet.lines.map((line) => {
-    const name = line.track === "nem" ? "Utility" : "Permit";
+    const name = line.track === "nem" ? "Utility" : line.role === "local_review" ? "Zoning review" : "Permit";
     const q = FOLD_QUALIFIER[feeConfidenceKey(line)] || "unknown";
     // A schedule on file that did not resolve is still UNKNOWN — but it is not "nothing found".
     if (line.feeUsd == null) return `${name} UNKNOWN${httpUrl(line.sourceUrl) ? " (schedule on file, not resolved)" : ""}`;
