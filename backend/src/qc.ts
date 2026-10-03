@@ -8,6 +8,8 @@ import { logger } from "./logger";
 import { documentInventory, owedMissingDocuments, requiredListCheck } from "./requiredDocuments";
 import { startedAtLabel } from "./formAcquisitionPlan";
 import { nowIso } from "./time";
+import { addAuditLog } from "./audit";
+import { QC_STATUS_WRITTEN_ACTION, touchProjectMetrics } from "./kpi";
 import type { ParserPayload, ProjectRecord, QcStatus, Severity, StageDetail } from "../../shared/src/types";
 import { getCodeProfile, resolveEffectiveCodeContext } from "./codeProfiles";
 import { resolvePermitPath } from "./permitPath";
@@ -638,6 +640,12 @@ export function runQcForProject(db: AppDb, projectId: string, options: QcRunOpti
       nowIso(),
       projectId,
     ]);
+    // THE VERDICT'S MOMENT, KEPT. projects.status holds only the latest verdict and qc_results is
+    // replaced on every run, so "when did QC pass?" had no answer once the moment passed — and QC
+    // reaches a status from doors that write no audit row of their own (a parser update, the
+    // workflow view, a human-review edit). One fact per status QC actually moved, the from/to only;
+    // touchProjectMetrics reads it for package_complete_at (#48).
+    addAuditLog(db, projectId, "system", "qc gate", QC_STATUS_WRITTEN_ACTION, { from: currentStatus, to: nextStatus });
   });
 
   // THE FEE THIS FILING WILL COST, ASKED AT QC — the same day-the-plan-set-lands
@@ -685,6 +693,13 @@ export function runQcForProject(db: AppDb, projectId: string, options: QcRunOpti
     })().catch(() => null);
   } catch (err) {
     logger.warn("qc", "fee-research trigger failed", { projectId, err: err instanceof Error ? err.message : String(err) });
+  }
+
+  // A verdict can complete (or re-time) the client's package — package_complete_at (#48). QC is
+  // also what runs when a document lands, so this keeps the stamp current between submissions.
+  // Best-effort: a metrics snapshot must never break QC.
+  try { touchProjectMetrics(db, projectId); } catch (err) {
+    logger.warn("qc", "project metrics refresh failed", { projectId, err: err instanceof Error ? err.message : String(err) });
   }
 
   return { failCount, warningCount, statusWritten };
