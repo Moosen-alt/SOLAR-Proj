@@ -31,6 +31,8 @@ import { usStateCode } from "./permitPath";
 import { provablyDifferentUtility, sameUtilityEntity } from "./utilityIdentity";
 import { sameAgencyName } from "./permitProcessLookup";
 import { labelWords } from "../../shared/src/portalSafety";
+import { firstEmail, looksLikeEmail } from "../../shared/src/emailAddress";
+import { contactKeyRole } from "../../shared/src/contactRoles";
 import { mountAdjective, mountKindForProject } from "./codeReviewRules";
 import { DISCONNECT_DISTANCE_QUESTION, perJobAnswerKeyFor, perJobQuestionText, perJobStepEvidence } from "../../shared/src/perJobQuestions";
 
@@ -1990,11 +1992,14 @@ export function resolveRecipeFieldValues(
     // The account holder's own contact details when the bill carries them; otherwise the
     // homeowner's, which is who the utility would reach about this address anyway. Never
     // blank — an empty required contact field fails the submission outright.
-    ubAccountHolderEmail: String(snapshotFlat.ubAccountHolderEmail || snapshotFlat.homeownerEmail || ""),
+    // …EXCEPT when nothing on file is an email address (looksLikeEmail, #71): a name stored in the
+    // email slot is blank here, so the box is left for the human (the reviewer callout asks for
+    // it) instead of carrying the name into the utility's Email box.
+    ubAccountHolderEmail: firstEmail(snapshotFlat.ubAccountHolderEmail, snapshotFlat.homeownerEmail, snapshotFlat.ownerEmail),
     ubAccountHolderPhone: String(snapshotFlat.ubAccountHolderPhone || "").trim() || homeownerPhoneOrNone(snapshotFlat),
     homeownerFirstName,
     homeownerLastName,
-    homeownerEmail: String(snapshotFlat.homeownerEmail || snapshotFlat.ownerEmail || ""),
+    homeownerEmail: firstEmail(snapshotFlat.homeownerEmail, snapshotFlat.ownerEmail),
     homeownerPhone: homeownerPhoneOrNone(snapshotFlat),
     street: streetOnly || project.projectAddress,
     // Accela-style address SEARCH forms take the number and CORE street name in separate
@@ -2305,6 +2310,14 @@ export function resolveRecipeFieldValues(
     if (!/phone$/i.test(k) || !v) continue;
     const digits = String(v).replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
     if (digits.length === 10) merged[k] = `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+  // AN OWNER EMAIL BOX TAKES AN EMAIL ADDRESS OR NOTHING (looksLikeEmail, #71). The canonical keys
+  // are resolved above; this catches the same value under an alias (ownerEmail, an overlay) so no
+  // owner-email key forwards a name stored in the email slot. Blank, never the name: the human
+  // fills it, and the reviewer's homeowner-email callout asks for it.
+  for (const [k, v] of Object.entries(merged)) {
+    const role = v ? contactKeyRole(k) : null;
+    if (role?.role === "owner" && role.kind === "email" && !looksLikeEmail(v)) merged[k] = "";
   }
   // THE COMPANY FACTS BESIDE THE LICENCE — insurance / bond carrier and expiry, the installer's street
   // number and name — from THIS project's own client, every key present ("" when not on file), so a
