@@ -1,6 +1,7 @@
 import type { ProjectRecord } from "../../shared/src/types";
 import { assumedRoofLayersNote, classifyRoofCovering, oregonRoofingRow, oregonRoofingRowQualifies } from "./roofCovering";
 import { structureDescriptionOf } from "./applicationDocsAgency";
+import { stateTradeIssuerFor } from "./permitProcess";
 type Answer = "Yes" | "No" | "";
 type Fact = boolean | null;
 const all = (...v: Fact[]): Fact => v.includes(false) ? false : v.includes(null) ? null : true;
@@ -251,6 +252,20 @@ export function formFactQuestions(
       key: "zoningApproval",
       label: `${agency} issues the permits for ${project.ahj}. Did ${project.ahj} require a zoning sign-off for this job?`,
       options: ["Not required", "Required — approval attached", "Required — not yet obtained"],
+      kind: "form-fact",
+    });
+  }
+  // A STATE-ISSUED PERMIT (New Mexico CID / MHD) after a LOCAL zoning review: which office reviews
+  // depends on whether the address is inside the village / city limits or in the unincorporated
+  // county — a mailing city ("Los Lunas") covers both, and nothing the parser reads settles it.
+  // Asked, never guessed (issue #32).
+  const trade = stateTradeIssuerFor(project);
+  if (trade && !has("incorporatedStatus") && !/\bunincorporated\b/i.test(String(project.ahj ?? ""))) {
+    const place = String(project.city ?? "").trim() || trade.localReviewer;
+    out.push({
+      key: "incorporatedStatus",
+      label: `${trade.value} issues the building and electrical permits; the zoning / site review is local. Is this ${place} address inside the incorporated limits of ${place}, or in the unincorporated county?`,
+      options: [`Inside the incorporated limits of ${place}`, "Unincorporated county"],
       kind: "form-fact",
     });
   }

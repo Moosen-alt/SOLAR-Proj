@@ -816,7 +816,7 @@ export interface ProjectRecord {
    *  the track's issuer) — never persisted, never mapped from a row. It names the project's own AHJ
    *  so the per-job lookup's cited answer about this permit still reaches the view, and makes the
    *  view idempotent (a view of a view is itself). */
-  trackView?: { track: string; projectAhj: string; source: "operator" | "lookup" };
+  trackView?: { track: string; projectAhj: string; source: "operator" | "lookup" | "state_rule" };
 }
 
 /** The permit tracks an issuing agency can be named for. NEM is never one: a utility files it. */
@@ -824,11 +824,12 @@ export type IssuerTrackKey = "building" | "electrical" | "combo" | "mpu";
 export type TrackIssuerOverrides = Partial<Record<IssuerTrackKey, string>>;
 /** THE ONE ANSWER to "which agency issues THIS track's permit" (permitProcess.trackIssuer):
  *  the operator's per-track issuer, else the per-job lookup's cited per-permit agency when it names
- *  another agency than the project AHJ, else the project AHJ. */
+ *  another agency than the project AHJ, else a cited state rule naming a STATE issuer (New Mexico
+ *  CID / MHD where the AHJ has no building department), else the project AHJ. */
 export interface TrackIssuerAnswer {
   name: string;
-  source: "operator" | "lookup" | "project";
-  /** The lookup's source page and words (source "lookup"). */
+  source: "operator" | "lookup" | "state_rule" | "project";
+  /** The lookup's (or state rule's) source page and words (source "lookup" / "state_rule"). */
   sourceUrl?: string;
   quote?: string;
   /** The operator's value on file for this track ("" when none) — what the card's input shows. */
