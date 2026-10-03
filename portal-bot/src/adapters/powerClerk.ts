@@ -5,6 +5,7 @@ import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, 
 import { openPortal } from "../browser";
 import { detectChallengeFrame, scanStatusFromBody, safeAction, sleep, waitForInteractiveControls } from "../safeAction";
 import { snap, str } from "../snapshot";
+import { firstEmail } from "../../../shared/src/emailAddress";
 import { fillCustomCombobox, selectWithFallback } from "../comboboxFill";
 import { scrapeReviewScreen, compareReviewFields } from "../reviewScreenScraper";
 
@@ -701,7 +702,9 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       await fillText("applicantZip", "Zip Code", "Zip Code", project.zip ?? "", applicantScope);
 
       const ownerPhone = str(s["homeownerPhone"] ?? s["owner_phone"]);
-      const ownerEmail = str(s["homeownerEmail"] ?? s["owner_email"]);
+      // An email box takes an email address or nothing (looksLikeEmail, #71): a name stored in the
+      // email slot is left blank for the human, never typed into the utility's Email box.
+      const ownerEmail = firstEmail(str(s["homeownerEmail"]), str(s["owner_email"]));
       await fillText("applicantPhone", "(###) ###-####", "Phone", ownerPhone, applicantScope);
       await fillText("applicantEmail", "Email", "Email", ownerEmail, applicantScope);
       await settleAndNext("applicant");

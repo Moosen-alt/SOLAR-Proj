@@ -1,4 +1,5 @@
 import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, ReviewerFindingEvidence, ReviewerReport } from "../../shared/src/types";
+import { looksLikeEmail } from "../../shared/src/emailAddress";
 import { evaluateDesignCodeFindings, mountKindForProject, isMlpeDesignForProject } from "./codeReviewRules";
 import { pvWorksheetFindings, serviceRatingConsistencyFindings, type PvWorksheetGateInput } from "./pvWorksheetGate";
 import type { DesignTextSource } from "./designCriteria";
@@ -705,14 +706,19 @@ function addSubmittalDataFindings(project: ProjectRecord, findings: ReviewerFind
     ));
   }
 
+  // ON FILE MEANS AN EMAIL ADDRESS (looksLikeEmail, #71): a name typed into the email box is not
+  // one, and the recipe values blank it rather than type it into a portal's Email box. Same id,
+  // same callout severity; the detail describes the stored value and never repeats it.
   const email = typeof snap.homeownerEmail === "string" ? snap.homeownerEmail.trim() : "";
-  if (!email) {
+  if (!looksLikeEmail(email)) {
     findings.push(finding(
       "reviewer.submit.homeowner-email",
       "callout",
       "project_data",
-      "Homeowner email missing",
-      "Many AHJ portals require a property-owner email on the application.",
+      email ? "Homeowner email on file is not an email address — verify" : "Homeowner email missing",
+      email
+        ? "The homeowner email field holds a value that is not an email address, so it will not be filled into any portal. Many AHJ portals require a property-owner email on the application."
+        : "Many AHJ portals require a property-owner email on the application.",
       true,
       { designTeamAction: "Collect the homeowner email via the client intake link." },
     ));

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
+import { firstEmail, looksLikeEmail } from "../../shared/src/emailAddress";
 import { HttpError } from "./httpError";
 import { getProjectDetail, updateProject } from "./repository";
 import { resolveValuation } from "./valuation";
@@ -390,7 +391,7 @@ export function missingIntakeFields(db: AppDb, projectId: string): IntakeField[]
   const missing: IntakeField[] = [];
   const valuation = resolveValuation(snap, getProjectDetail(db, projectId).project.systemSizeDcKw);
   if (valuation.method !== "contract") missing.push("jobValue");
-  if (!str(snap.homeownerEmail)) missing.push("homeownerEmail");
+  if (!onFile(snap, "homeownerEmail")) missing.push("homeownerEmail");
   if (!str(snap.homeownerPhone)) missing.push("homeownerPhone");
   return missing;
 }
@@ -463,7 +464,7 @@ export function getIntakeRequestPublic(db: AppDb, token: string): {
     // Required = there is nothing on file yet. A prefilled field is shown but not
     // demanded, which is exactly what submitIntakeRequest enforces — the two must
     // not diverge or a client is blocked on a box that already has a value.
-    fields: fields.map((key) => ({ key, label: FIELD_LABELS[key], value: str(snap[key]), required: !str(snap[key]) })),
+    fields: fields.map((key) => ({ key, label: FIELD_LABELS[key], value: onFile(snap, key), required: !onFile(snap, key) })),
     // normalizeQuestions (inside parseStored) re-applies the public-key denylist
     // and strips internal recipe vocabulary from the label, so a row written
     // before either tightening still can't leak.
@@ -503,6 +504,11 @@ export function submitIntakeRequest(
   for (const key of fields) {
     const raw = answers[key];
     if (raw == null || String(raw).trim() === "") continue;
+    // An email box answered with something that is not an address is refused, before any write;
+    // the message names the field and never repeats the answer.
+    if (key === "homeownerEmail" && !looksLikeEmail(String(raw))) {
+      throw new HttpError(400, `"${FIELD_LABELS[key]}" must be an email address.`);
+    }
     payload[key] = String(raw).trim();
   }
 
@@ -540,7 +546,7 @@ export function submitIntakeRequest(
   // a client is never rejected for a question the form did not show them.
   const missing: string[] = [];
   for (const key of fields) {
-    if (payload[key] == null && !str(snap[key])) missing.push(FIELD_LABELS[key]);
+    if (payload[key] == null && !onFile(snap, key)) missing.push(FIELD_LABELS[key]);
   }
   for (const q of questions) {
     if (!questionIsOpen(project, q, columns)) continue;
@@ -656,6 +662,13 @@ export async function portalQuestionStatus(db: AppDb, projectId: string): Promis
     unansweredCount: questions.length,
     unsureCount: questions.filter((q) => q.unsure).length,
   };
+}
+
+/** The value on file for an intake field — "" when there is none. An email that is not an email
+ *  address is none (looksLikeEmail, #71): the link asks for it, prefills nothing, and a post that
+ *  skips it is short. The same answer in missingIntakeFields, the public form and the submit. */
+function onFile(snap: Record<string, unknown>, key: IntakeField): string {
+  return key === "homeownerEmail" ? firstEmail(snap[key]) : str(snap[key]);
 }
 
 function str(v: unknown): string {
