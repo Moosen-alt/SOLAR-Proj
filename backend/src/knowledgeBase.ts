@@ -1403,7 +1403,9 @@ const MILESTONE_LABELS: Record<string, string> = {
   correction_flagged: "first correction",
 };
 
-function median(values: number[]): number {
+/** The KB's timeline median (average of the middle pair) — the KPI report reads per-AHJ medians
+ *  through this so the panel and average_timeline_days cannot disagree. */
+export function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
