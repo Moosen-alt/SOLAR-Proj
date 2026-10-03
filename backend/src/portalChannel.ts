@@ -608,7 +608,46 @@ export function isInformationalPageUrl(url: string | null | undefined): boolean 
   if (segs.some((seg) => INFO_PATH_SEGMENT.test(seg) || INFO_PATH_COMPOUND.test(seg.replace(/\.[a-z0-9]+$/i, "")))) return true;
   const gov = /\.(?:gov|us)$/.test(host) || /\.(?:gov|state)\.[a-z]{2}\.us$/.test(host);
   if (gov && segs.length >= 2 && /^pages$/i.test(segs[segs.length - 2]) && /\.aspx$/i.test(segs[segs.length - 1])) return true;
+  // Government proper only: a .gov host or a US locality / state host (<x>.<st>.us) — not every
+  // ".us" domain, which a utility or a vendor can hold too.
+  if ((/\.gov$/.test(host) || /\.[a-z]{2}\.us$/.test(host)) && isAgencyContentPage(raw, host, segs)) return true;
   return false;
+}
+// ── A GOVERNMENT AGENCY'S OWN LANDING / CONTENT PAGE (issue #86) ─────────────────────────────
+// New Mexico CID's landing page (www.rld.nm.gov/construction-industries/) carries no help/library
+// word and no document extension, so it fit the permit track — and it is the page a per-job lookup
+// for the state issuer cites. CID's real applications are filed on nmrld.my.site.com. An agency's
+// own CMS pages (a division's landing page, its forms and fees pages, a CivicPlus "/995/Building-
+// Permits" page) are where it DESCRIBES how to apply; the application itself runs on a portal host
+// or behind an application path. So on a government host, a page is informational when NOTHING
+// about it reads as an application: no host label naming an application system (epermits., aca.,
+// apps., portal., energovweb. …), no path segment naming one (apply, login, portal, account,
+// CitizenAccess, SelfService, Cap …), no query string or "#/" app route, and no server-page
+// extension (.aspx/.jsp/.cfm/.do …: SharePoint's "/Pages/*.aspx" is judged above). Anything that
+// hints at an application stays judged as before — this rule only ever moves a page OUT of the
+// portal set, never into it.
+const APP_HOST_LABEL = /^(?:my.*|apps?|aca|cap|css|secure|online|login|sso|auth|accounts?|devhub|.*(?:permit|apply|portal|citizen|energov|accela|selfservice|eservice|e-?plan|inspect|licens).*)$/i;
+const APP_PATH_TOKEN = /^(?:apps?|apply|applications?|aca|cap|css|login|log-?in|log-?on|logon|sign-?in|sign-?up|signon|sso|auth|accounts?|my|portal|register|registration|dashboard|submit|online|secure|eservices?|e-services?|selfservice|self-service|citizen|citizenaccess|epermits?|e-permits?|eplans?|e-plans?|energov|accela)$/i;
+const APP_PATH_WORD = /apply|applicat|login|logon|signin|signup|portal|account|regist|citizen|selfservice|eservice|epermit|eplan|energov|accela|dashboard|submi/i;
+function isAgencyContentPage(raw: string, host: string, segs: string[]): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (parsed.search || /^#!?\//.test(parsed.hash)) return false;
+  const labels = host.replace(/^www\./, "").split(".");
+  const sub = labels.slice(0, Math.max(0, labels.length - registrableDomain(host).split(".").length));
+  if (sub.some((l) => APP_HOST_LABEL.test(l))) return false;
+  const last = segs[segs.length - 1];
+  const ext = /\.([a-z0-9]+)$/i.exec(last)?.[1] ?? "";
+  if (ext && !/^(?:html?|shtml)$/i.test(ext)) return false;
+  return segs.every((seg) => {
+    const bare = seg.replace(/\.[a-z0-9]+$/i, "");
+    if (APP_PATH_WORD.test(bare.replace(/[-_\s]/g, ""))) return false;
+    return !bare.split(/[-_\s]+/).some((t) => APP_PATH_TOKEN.test(t));
+  });
 }
 /** The interconnection SOFTWARE hosts (not the utilities' marketing domains) — the part of the
  *  utility list that files applications, so never an information page. */
