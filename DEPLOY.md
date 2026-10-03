@@ -34,6 +34,7 @@ Key variables (see `.env.example` for the full list):
 | `SESSION_ENCRYPTION_KEY` | **Required.** Encrypts portal storage-state blobs |
 | `ANTHROPIC_API_KEY` | Enables Claude AI (vision parsing, extraction, drafting) |
 | `AUTH_ENABLED` / `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Turn on dashboard login |
+| `SERVER_HOST` | Listen address. Default `127.0.0.1` (this machine only); the Docker image and `fly.toml` set `0.0.0.0`. With `AUTH_ENABLED` off, a non-loopback host refuses to start unless `ALLOW_UNAUTHENTICATED_NETWORK=1` |
 | `AUTH_COOKIE_SECURE` / `AUTH_SESSION_HOURS` | Secure-cookie flag (HTTPS) + login lifetime |
 | `MONITOR_INTERVAL_MINUTES` | How often permit/NEM checks + email tracker run (0 = off) |
 | `SEED_TEST_INSTALLER` | Seed the TML test installer. **Set `false` in production.** |

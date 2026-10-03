@@ -226,9 +226,9 @@ To turn it off (DAY1 blocker 1), delete the line and restart.
 
 ### 4.4 Who can reach the server
 
-The server listens on `0.0.0.0:4173`. The firewall rule **"Node.js JavaScript Runtime"** allows it on the **Public** profile, and the active network is Public. Choose one of two options.
+With no `SERVER_HOST` the server listens on `127.0.0.1:4173` (this machine only; the default since #82, which was `0.0.0.0` before). With `AUTH_ENABLED` off and a non-loopback `SERVER_HOST`, it refuses to start unless `ALLOW_UNAUTHENTICATED_NETWORK=1` is also set. The firewall rule **"Node.js JavaScript Runtime"** allows Node on the **Public** profile, and the active network is Public. Choose one of two options.
 
-**A. Only this desk (recommended until customers need links).** In `.env`:
+**A. Only this desk (recommended until customers need links).** This is the default; to make it explicit, in `.env`:
 
 ```ini
 SERVER_HOST=127.0.0.1
@@ -238,7 +238,7 @@ After the restart, only this machine can reach it. **How to confirm:** from anot
 
 Customer links (§4.5) then need a tunnel to reach `127.0.0.1:4173`, for example Cloudflare Tunnel, which gives an `https://` address without opening a port. That is not set up or tested in this repo. Test it before giving a link to a customer.
 
-**B. Other machines on the office network need it.** Keep `SERVER_HOST` unset. **(admin)** Make the network Private and take Node off the Public profile:
+**B. Other machines on the office network need it.** Set `SERVER_HOST=0.0.0.0` and `AUTH_ENABLED=true` (with auth off the server refuses to start on that host). **(admin)** Make the network Private and take Node off the Public profile:
 
 ```powershell
 Get-NetConnectionProfile | Format-Table Name, InterfaceAlias, NetworkCategory
@@ -500,7 +500,8 @@ Production runs a pinned checkout, `.probe\prod-pinned`, so edits in the develop
 | `AUTH_ENABLED` | off | `true` requires a login for everything except `/health`, `/login` and the public token pages |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | – | seed the first password (only while no user has one); delete the password line afterwards |
 | `AUTH_SECRET` | the session key | signs login cookies |
-| `SERVER_HOST` | `0.0.0.0` | `127.0.0.1` = this machine only |
+| `SERVER_HOST` | `127.0.0.1` | this machine only; `0.0.0.0` = every interface (needs `AUTH_ENABLED=true`, or the server refuses to start) |
+| `ALLOW_UNAUTHENTICATED_NETWORK` | off | `1` lets a non-loopback `SERVER_HOST` start with `AUTH_ENABLED` off. Don't. |
 | `PUBLIC_BASE_URL` | localhost | the base of every link a customer receives |
 | `BACKUP_DIR` | `backend/data/backups` | where snapshots are written first (production: `E:/SOLAR-Proj-Backups`) |
 | `BACKUP_INTERVAL_HOURS` / `BACKUP_KEEP` | 24 / 14 | snapshot cadence and how many to keep |
