@@ -313,8 +313,12 @@ const endsLikeLabel = (s: string): boolean => /[:#]\s*$/.test(String(s || "").tr
  */
 export function headerBands(g: PageGeometry, items: LabelItem[]): Band[] {
   const highlights = new Set(captionHighlights(g, items));
+  return shadedTextBands(g, items).filter((b) => !highlights.has(b));
+}
+/** Release #11's header bands — caption highlights included. A VERIFIED map's row snap reads these,
+ *  so the cell a person confirmed is read exactly as it was when they confirmed it (hard rule 3). */
+function shadedTextBands(g: PageGeometry, items: LabelItem[]): Band[] {
   return g.bands.filter((b) => {
-    if (highlights.has(b)) return false;
     const inside = items.filter((it) => it.page === g.page && it.y >= b.y0 - 1 && it.y <= b.y1 && it.x >= b.x0 - 2 && it.x < b.x1);
     return inside.length > 0 && !inside.some((it) => endsLikeLabel(it.str));
   });
@@ -367,6 +371,10 @@ export interface SnapInput {
   text: string;
   size: number;
   widthOf: (text: string, size: number) => number;
+  /** The map nobody verified. Only then are caption highlights read as captions (their edges not
+   *  rules, never header bands) and a cut that would leave a stub refused; a VERIFIED map's row is
+   *  read exactly as release #11 read it (hard rule 3). Required, so no caller gets either by default. */
+  unverifiedMap: boolean;
 }
 
 /** The largest size <= start (min 6) at which `text` fits `width`; `fits` false when even 6 does not. */
@@ -385,6 +393,12 @@ export function cut(text: string, width: number, size: number, widthOf: SnapInpu
   while (t.length > 0 && widthOf(t, size) > width) t = t.slice(0, -1);
   t = t.trimEnd();
   return t.length < Math.min(MIN_CUT_CHARS, text.trim().length) ? "" : t;
+}
+/** Release #11's cut, kept for VERIFIED maps: down to one character, never refused. */
+function cutToStub(text: string, width: number, size: number, widthOf: SnapInput["widthOf"]): string {
+  let t = text;
+  while (t.length > 1 && widthOf(t, size) > width) t = t.slice(0, -1);
+  return t.trimEnd();
 }
 /** Greedy word wrap at one size. */
 function wrap(text: string, width: number, size: number, widthOf: SnapInput["widthOf"]): string[] {
@@ -429,11 +443,13 @@ export function rowSnapPlacement(input: SnapInput): SnapResult | null {
   const text = String(input.text || "").replace(/\s+/g, " ").trim();
   if (!text) return null;
   const size0 = input.size > 0 ? input.size : 9;
-  // A caption's highlight is not a row: its edges are dropped from the rules this placement reads.
-  const highlights = captionHighlights(input.geometry, items);
+  // A caption's highlight is not a row: its edges are dropped from the rules this placement reads
+  // (an unverified map only — a verified map's rules are the ones its person confirmed against).
+  const highlights = input.unverifiedMap ? captionHighlights(input.geometry, items) : [];
   const edgeOf = (r: HRule) => r.band && highlights.some((b) => Math.abs(r.x0 - b.x0) < 0.5 && Math.abs(r.x1 - b.x1) < 0.5 && (Math.abs(r.y - b.y0) < 0.5 || Math.abs(r.y - b.y1) < 0.5));
-  const g: PageGeometry = { ...input.geometry, hRules: input.geometry.hRules.filter((r) => !edgeOf(r)) };
-  const headers = headerBands(g, items);
+  const g: PageGeometry = input.unverifiedMap ? { ...input.geometry, hRules: input.geometry.hRules.filter((r) => !edgeOf(r)) } : input.geometry;
+  const headers = input.unverifiedMap ? headerBands(g, items) : shadedTextBands(g, items);
+  const cutTo = input.unverifiedMap ? cut : cutToStub;
   const clear = (lines: SnapLine[]): boolean => lines.every((l) => {
     const box = { x0: l.x, y0: l.y - DESC * l.size, x1: l.x + widthOf(l.text, l.size), y1: l.y + CAP * l.size };
     return !headers.some((b) => intersects(box, b));
@@ -448,7 +464,7 @@ export function rowSnapPlacement(input: SnapInput): SnapResult | null {
     const byHeight = (top - y - 0.5) / CAP;
     if (byHeight < MIN_SIZE) return null;
     const fit = fitSize(text, room, Math.min(size0, byHeight), widthOf);
-    const t = fit.fits ? text : cut(text, room, fit.size, widthOf);
+    const t = fit.fits ? text : cutTo(text, room, fit.size, widthOf);
     if (!t) return null;
     return done([{ text: t, x: xStart, y, size: fit.size }], how, !fit.fits);
   };
@@ -473,7 +489,7 @@ export function rowSnapPlacement(input: SnapInput): SnapResult | null {
     lines = lines.map((l) => {
       if (widthOf(l, s) <= width) return l;
       truncated = true;
-      return cut(l, width, s, widthOf);
+      return cutTo(l, width, s, widthOf);
     });
     if (lines.some((l) => !l)) return null;
     return done(lines.map((l, i) => ({ text: l, x: x0, y: base + (lines.length - 1 - i) * pitch(s), size: s })), how, truncated);
@@ -514,7 +530,7 @@ export function rowSnapPlacement(input: SnapInput): SnapResult | null {
     lines = lines.map((l) => {
       if (widthOf(l, s) <= width) return l;
       truncated = true;
-      return cut(l, width, s, widthOf);
+      return cutTo(l, width, s, widthOf);
     });
     if (lines.some((l) => !l)) return null;
     return done(lines.map((l, i) => ({ text: l, x: x0 + 4, y: rows[i].bottom + (BASE_MIN + BASE_MAX) / 2, size: s })), "rows-below", truncated);

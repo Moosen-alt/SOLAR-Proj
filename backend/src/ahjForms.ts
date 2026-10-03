@@ -1726,7 +1726,13 @@ export async function fillLoadedForm(
     // Everything below is placed in each page's READING FRAME (formRowGeometry.pageFrame): a form
     // printed on its side on an upright page (the owner's ABQ E-Plan copy) is read turned upright,
     // and each drawn line is turned back onto the page with its glyphs at the printed text's angle.
+    //
+    // VERIFIED-MAP PARITY (hard rule 3, issue #39): the reading frame, the blank-run split, caption
+    // highlights and the shrink-then-withhold maxWidth below run on an UNVERIFIED map only. A map a
+    // person verified is drawn exactly as release #11 drew it — same position, same glyph angle,
+    // same text — and FLAT_FORM_ROW_SNAP=0 is release #11 on every map.
     const rowSnapOn = process.env.FLAT_FORM_ROW_SNAP !== "0";
+    const newMechanics = rowSnapOn && Boolean(def.unverifiedMap);
     let textItems: LabelItem[] = [];
     let geometry: PageGeometry[] = [];
     let snapTools: typeof import("./formRowGeometry") | null = null;
@@ -1744,14 +1750,14 @@ export async function fillLoadedForm(
         if (hasTextLayer(raw)) {
           frameTools = await import("./formRowGeometry");
           let items = raw;
-          // (FLAT_FORM_ROW_SNAP=0 is release #11 in full: no reading frame either.)
-          if (rowSnapOn) for (const [index, pg] of pages.entries()) {
+          // (FLAT_FORM_ROW_SNAP=0, or a verified map: no reading frame.)
+          if (newMechanics) for (const [index, pg] of pages.entries()) {
             const f = frameTools.pageFrame(raw, index, pg.getWidth(), pg.getHeight());
             frames.set(index, f);
             items = frameTools.itemsInFrame(items, f);
           }
           // The row snap also reads the words and the underscore blanks of a one-item row apart.
-          textItems = splitBlankRuns(items);
+          textItems = newMechanics ? splitBlankRuns(items) : items;
           resolveLabel = resolvePlacementLabel;
           anchorFor = (f) => {
             if (!f.label || !f.label.trim()) return null;
@@ -1909,7 +1915,7 @@ export async function fillLoadedForm(
         // No label to anchor the row (a verified map, or none found): the row is the one release #11's
         // own position names — the label-anchored point, else the map's — and only y moves into it.
         const start = L ? point : ((anchorFor ? anchorFor(field) : null) ?? point);
-        const snap = snapTools.rowSnapPlacement({ geometry: pageGeometry, items: textItems, label: L, point: start, text, size, widthOf });
+        const snap = snapTools.rowSnapPlacement({ geometry: pageGeometry, items: textItems, label: L, point: start, text, size, widthOf, unverifiedMap: Boolean(def.unverifiedMap) });
         if (snap && def.unverifiedMap && overprints(field.page, snap.lines)) {
           withhold("its place overlaps a value or the form's printed text", "its place on the form is already written in — complete it by hand");
           continue;
@@ -1929,7 +1935,10 @@ export async function fillLoadedForm(
         logger.info("forms", "flat-form row snap found no row; the map's own position is used", { form: def.formName, label: printed, page: field.page, labelFound: Boolean(L) });
       }
       // A box narrower than the value: shrink first (to 6pt), cut only then — and never to a stub.
-      if (field.maxWidth && widthOf(text, size) > field.maxWidth) {
+      // (A verified map, or FLAT_FORM_ROW_SNAP=0: release #11's plain cut at the map's size.)
+      if (field.maxWidth && !newMechanics) {
+        while (text.length > 1 && widthOf(text, size) > field.maxWidth) text = text.slice(0, -1);
+      } else if (field.maxWidth && widthOf(text, size) > field.maxWidth) {
         while (size > 6 && widthOf(text, size) > field.maxWidth) size = Math.max(6, size - 0.25);
         if (widthOf(text, size) > field.maxWidth) {
           let t = text;
