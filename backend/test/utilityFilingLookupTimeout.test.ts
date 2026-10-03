@@ -97,7 +97,7 @@ await check("(b) the tight retry's grounded answer is stored seeded and the time
   assert.equal(row?.filing.value?.name, "Retry PowerClerk");
   assert.equal(row?.confidence, "seeded");
   assert.equal(ufl.utilityFilingLookupStatus("NM", "Retry Electric"), null);
-  assert.match(ufl.utilityTrackPresentation(db, { state: "NM", utility: "Retry Electric" }).channel, /Retry PowerClerk \(cited/);
+  assert.match(ufl.utilityTrackPresentation(db, { state: "NM", utility: "Retry Electric" }).channel, /Retry PowerClerk — tenant URL unconfirmed, verify \(cited/);
 });
 
 await check("(c) a timeout's GROUNDED partial that passes the cited discipline is kept — no retry needed", async () => {

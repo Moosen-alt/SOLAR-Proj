@@ -614,6 +614,43 @@ export function isInformationalPageUrl(url: string | null | undefined): boolean 
  *  utility list that files applications, so never an information page. */
 const UTILITY_INTERCONNECTION_PLATFORM_HOSTS = ["powerclerk.com", "connectthegrid.com", "customerapplication.com"];
 
+// ── A NAMED PLATFORM PINS THE HOST (issue #31) ──────────────────────────────────────────
+// PNM's research answered portalPlatform "PowerClerk" beside www.pnm.com/customer-solar-program1 —
+// a program info page whose path matches no info-page regex — and it was saved and launched as the
+// NEM portal (the real one is PNM's own PowerClerk tenant). Growing the path regex cannot keep up
+// (the next CMS page is "/solar-interconnection"); the research's OWN words can: when it names an
+// interconnection platform, the application portal is on that platform's domain, so a candidate
+// on any other host is UNCONFIRMED — kept as a reference link, never the portal. Each platform's
+// hosts are UTILITY_INTERCONNECTION_PLATFORM_HOSTS', plus a white-label tenant this codebase knows
+// (ComEd runs ConnectTheGrid / Intellio Connect at interconnect.comed.com).
+const NAMED_INTERCONNECTION_PLATFORMS: Array<{ name: string; pattern: RegExp; hosts: string[] }> = [
+  { name: "PowerClerk", pattern: /power\s?clerk/i, hosts: ["powerclerk.com"] },
+  { name: "ConnectTheGrid", pattern: /connect\s?the\s?grid/i, hosts: ["connectthegrid.com", "interconnect.comed.com"] },
+  { name: "customerapplication.com", pattern: /customerapplication/i, hosts: ["customerapplication.com"] },
+];
+
+/** The interconnection platforms these words name ("PowerClerk (Clean Power Research)" → ["PowerClerk"]). */
+export function namedInterconnectionPlatforms(named: string | Array<string | null | undefined> | null | undefined): string[] {
+  const text = (Array.isArray(named) ? named : [named]).map((s) => String(s ?? "")).join(" \n ");
+  return NAMED_INTERCONNECTION_PLATFORMS.filter((p) => p.pattern.test(text)).map((p) => p.name);
+}
+
+/** Why this URL is NOT confirmed as the application portal when the research / lookup names an
+ *  interconnection platform it is not on — or "" (no platform named, not a URL, or on the named
+ *  platform's domain). Judged inside hostFitsTrackAndEntity (its `namedPlatform` option), so every
+ *  door asks the one predicate. */
+export function namedPlatformHostRefusal(named: string | Array<string | null | undefined> | null | undefined, url: string | null | undefined): string {
+  const host = portalHostOf(url);
+  if (!host) return "";
+  const platforms = NAMED_INTERCONNECTION_PLATFORMS.filter((p) => namedInterconnectionPlatforms(named).includes(p.name));
+  if (!platforms.length) return "";
+  const onPlatform = platforms.some((p) => p.hosts.some((h) => host === h || host.endsWith(`.${h}`)));
+  if (onPlatform) return "";
+  const names = platforms.map((p) => p.name).join(" / ");
+  const hosts = platforms.flatMap((p) => p.hosts).join(", ");
+  return `${host} is not on ${names}'s domain (${hosts}) — the source names ${names} as the interconnection platform, so this URL is not confirmed as the application portal (kept as a reference link; find the utility's own ${names} login)`;
+}
+
 /** Tenant identity of a portal URL: the first path segment, or — when a tenant-naming query parameter
  *  is present (citizenserve's installationID, BS&A's uid, an ACA agency code) — those parameters
  *  alone, since the path is then a page of that tenant (bsaonline.com/?uid=413 and
@@ -741,7 +778,7 @@ export interface PortalEntity {
  *  something stored (a recipe, a KB row). */
 export type PortalUrlSource = "recipe" | "kb" | "research" | "operator" | "statewide" | "learn";
 
-export type HostFitCode = "ok" | "no_url" | "not_a_portal" | "track_conflict" | "platform_conflict" | "foreign_entity";
+export type HostFitCode = "ok" | "no_url" | "not_a_portal" | "track_conflict" | "platform_conflict" | "platform_unconfirmed" | "foreign_entity";
 export interface HostFit {
   fits: boolean;
   code: HostFitCode;
@@ -753,6 +790,12 @@ export function hostFitsTrackAndEntity(
   entity: PortalEntity | null,
   url: string | null | undefined,
   source: PortalUrlSource = "kb",
+  opts: {
+    /** What the source says the portal runs on (research's portalName / portalPlatform, a lookup's
+     *  filing name and quote, a KB row's platform). Naming an interconnection platform pins the
+     *  host to that platform's domain on the NEM track (namedPlatformHostRefusal, issue #31). */
+    namedPlatform?: string | Array<string | null | undefined>;
+  } = {},
 ): HostFit {
   const value = String(url ?? "").trim();
   const host = portalHostOf(value);
@@ -808,6 +851,13 @@ export function hostFitsTrackAndEntity(
             : `${host} is a utility interconnection portal, and this is a ${trackName} filing`
         : `${host} is an AHJ permit portal, and this is a ${trackName} filing`,
     };
+  }
+  // 1b. THE SOURCE NAMED ANOTHER HOST'S PLATFORM (issue #31). NEM only: "PowerClerk" beside a
+  //     utility's own info page means the URL is not the application portal. A person's verified
+  //     portal for this entity is never second-guessed by what a source named (rule 3).
+  if (scope === "utility" && opts.namedPlatform && !(entity?.verifiedPortals ?? []).some((p) => sameHost(p, value))) {
+    const refusal = namedPlatformHostRefusal(opts.namedPlatform, value);
+    if (refusal) return { fits: false, code: "platform_unconfirmed", reason: refusal };
   }
   if (!entity) return { fits: true, code: "ok", reason: "track fits; no entity evidence" };
   const who = entity.name || (scope === "utility" ? "this utility" : "this AHJ");

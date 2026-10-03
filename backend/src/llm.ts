@@ -4,6 +4,7 @@ import { z } from "zod";
 import { performance } from "node:perf_hooks";
 import type { AcroFieldForMapping, AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, JurisdictionCodeResearchInput, DesignCriteriaResearchResult, ParserExtractedField, ParserFieldEvidence, ParserExtractionConflict, ParserExtractionUncertainty, ParserExtractionResolution, PlanPageIndex, CodeEdition, CodeFamily, CodeFamilyAdoptionModel, JurisdictionAdoptionModel, UpcomingCodeEdition, WebLookupResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
+import { RESEARCH_PORTAL_UNCONFIRMED_NOTE } from "./researchedPortalUrl";
 import { logger } from "./logger";
 import { persistLlmCall } from "./llmAccounting";
 import { routeFor, taskForLabel, takeAdvisorSlot, describeRoutes, BASELINE_MODEL, type LlmEffort, type LlmTask, type ResolvedRoute, type AdvisorConfig } from "./modelRouting";
@@ -2700,7 +2701,8 @@ Rules:${stateLayer ? `
 {
   "portalName": "<the BRANDED interconnection/NEM portal name the utility uses, e.g. 'PowerClerk', 'Customer Generation online application', or 'Email/PDF application'>",
   "portalPlatform": "<the UNDERLYING software platform/vendor: e.g. 'PowerClerk' (Clean Power Research), 'Tyler', 'Salesforce', 'custom', or 'None'. Many utilities share PowerClerk, so existing automation is reusable — only the entry URL + login differ.>",
-  "portalUrl": "<best-known interconnection portal/library URL or '' if unsure>",
+  "portalUrl": "<the application portal's OWN entry/login URL — where the application is filed (for PowerClerk, the utility's own <tenant>.powerclerk.com login) — or '' if you did not find it. A resource library, program, info, or 'how to apply' page on the utility's website is NOT the portal: leave it out of portalUrl and mention it in tips.>",
+  "portalUrlConfirmed": <true only when a page you found shows portalUrl IS the application portal's entry/login page; false otherwise>,
   "submissionMethod": "<online portal | email | mail | combination>",
   "requiredDocuments": ["<each document the utility's NEM/interconnection application requires — e.g. electrical one-line/SLD, site plan, inverter technical specifications / cut sheets, module spec, utility account + meter verification/photo, signed interconnection/customer-generation agreement, labeling photos, commissioning/as-built when required>"],
   "smartInverterSettings": "<how the utility handles smart-inverter settings in its NEM app. Most utilities ask a simple Yes/No: 'Will you use the utility's recommended smart inverter settings?' — answered Yes when the inverter is a UL 1741-SB listed smart inverter. This is a portal answer + an inverter spec-sheet upload, NOT a grid-profile drawing on the plan set. State the utility's specific behavior if known.>",
@@ -2716,6 +2718,7 @@ Rules:${stateLayer ? `
 Rules:
 - Be specific to the named utility and state when you can; otherwise give the standard customer-generation requirements for that region and say so in tips.
 - This is ADVISORY and must be human-verified — do NOT invent a precise portal URL you are unsure of (use '' instead).
+- When portalPlatform names an interconnection platform (PowerClerk, ConnectTheGrid…), portalUrl must be on that platform's domain (the utility's own tenant); a page on the utility's website is never it.
 - For smartInverterSettings, reflect the REAL portal behavior: it is a Yes/No election to use the utility's recommended smart-inverter settings (answer Yes for UL 1741-SB listed inverters) plus an inverter spec/cut-sheet upload — never describe it as a required grid-profile drawing on the plan set.
 - Return valid JSON only.`;
     const system = `${intro}\n\n${searchStep}\n\n${body}`;
@@ -2760,9 +2763,13 @@ Rules:
       submissionSteps: arr(parsed.submissionSteps),
       confidence: (["low", "medium", "high"].includes(String(parsed.confidence)) ? parsed.confidence : "low") as "low" | "medium" | "high",
       needsHumanVerification: true,
-      notes: webGrounded
+      notes: (webGrounded
         ? "Researched from the utility's official interconnection page via web search. Human-verify before relying on it; the first real submittal will confirm/correct these requirements."
-        : "Web search was unavailable — researched from model knowledge only. Verify against the utility's official interconnection page before relying on it.",
+        : "Web search was unavailable — researched from model knowledge only. Verify against the utility's official interconnection page before relying on it.")
+        // The model's own "not the confirmed portal" reaches the write door (issue #31): these notes
+        // are otherwise a fixed sentence, so researchSaysPortalUnconfirmed could never fire on them.
+        // Fail closed: a URL the model did not say it confirmed is a reference link, not the portal.
+        + (webGrounded && parsed.portalUrl && !["true", true].includes((parsed as { portalUrlConfirmed?: unknown }).portalUrlConfirmed as string | boolean) ? ` ${RESEARCH_PORTAL_UNCONFIRMED_NOTE}` : ""),
     };
   }
 

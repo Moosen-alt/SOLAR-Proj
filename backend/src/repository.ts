@@ -78,7 +78,7 @@ import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES
 import type { DesignTextSource } from "./designCriteria";
 import { describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor, isStatewidePortalUrl, projectForTrack, refuseTrackIssuerValue, trackIssuer } from "./permitProcess";
 import { statewideDecisionFor, statewideUrlRefusal } from "./statewideEvidence";
-import { RESEARCH_UNCONFIRMED_REASON, researchSaysPortalUnconfirmed, researchWithFittedUrl } from "./researchedPortalUrl";
+import { RESEARCH_UNCONFIRMED_REASON, researchNamedPlatform, researchSaysPortalUnconfirmed, researchWithFittedUrl } from "./researchedPortalUrl";
 import { bindRecipeForReplay, describeReplayBinding, openPerJobQuestions } from "./recipeReplayBinding";
 import { agencyListStatusResolver, documentInventory, missingFilledAtStaging, owedDocumentAction, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import { startedAtLabel, type StageAcquiredForm } from "./formAcquisitionPlan";
@@ -7751,10 +7751,10 @@ export function resolveStagePortal(db: AppDb, input: {
   // memo, so every door on this stage reads the one decision.
   let statewideDecisionMemo: ReturnType<typeof statewideDecisionFor> | undefined;
   const statewideDecision = () => (statewideDecisionMemo === undefined ? (statewideDecisionMemo = statewideDecisionFor(db, project, track)) : statewideDecisionMemo);
-  const fitUrl = (url: string | null | undefined, source: PortalUrlSource): string => {
+  const fitUrl = (url: string | null | undefined, source: PortalUrlSource, namedPlatform: string[] = []): string => {
     const value = String(url ?? "").trim();
     if (!value) return "";
-    const fit = hostFitsTrackAndEntity(track, hostEntity, value, source);
+    const fit = hostFitsTrackAndEntity(track, hostEntity, value, source, { namedPlatform });
     if (fit.fits) {
       const refusal = scopeForTrack(track) === "ahj" && source !== "statewide" && source !== "operator" && isStatewidePortalUrl(project.state, value)
         ? statewideUrlRefusal(db, project, track, value, statewideDecision())
@@ -7813,14 +7813,16 @@ export function resolveStagePortal(db: AppDb, input: {
     // EVERY row for the utility, best first — the utility-keyed row (no AHJ), this state, a
     // verified row — and the first candidate that FITS wins. LIMIT 1 used to take whichever row
     // SQLite returned first, which could be an AHJ row carrying that AHJ's permit portal.
-    const utilRows = db.query<{ portal_url?: string; portal_name?: string; state?: string; ahj?: string; verified_at?: string | null }>(
-      `SELECT portal_url, portal_name, state, ahj, verified_at FROM permit_utility_knowledge
+    // The row's own platform words judge its URL (issue #31): a row that says PowerClerk but points
+    // at the utility's program page (PNM's researched row) is not launched; the next row may fit.
+    const utilRows = db.query<{ portal_url?: string; portal_name?: string; portal_platform?: string; state?: string; ahj?: string; verified_at?: string | null }>(
+      `SELECT portal_url, portal_name, portal_platform, state, ahj, verified_at FROM permit_utility_knowledge
         WHERE utility = ? AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE 'http%')`,
       [project.utility],
     ).sort((a, b) => kbRowRank(a, projectState, true) - kbRowRank(b, projectState, true));
     for (const row of utilRows) {
       utilityPortalUrl = [String(row.portal_url ?? ""), String(row.portal_name ?? "")]
-        .map((u) => fitUrl(/^https?:\/\/\S+$/i.test(u.trim()) ? u.trim() : "", "kb")).find(Boolean) ?? "";
+        .map((u) => fitUrl(/^https?:\/\/\S+$/i.test(u.trim()) ? u.trim() : "", "kb", [String(row.portal_name ?? ""), String(row.portal_platform ?? "")])).find(Boolean) ?? "";
       if (utilityPortalUrl) break;
     }
   } else if (track !== "nem" && project.ahj) {
@@ -7888,7 +7890,7 @@ export function resolveStagePortal(db: AppDb, input: {
   // recipe / KB row matched via the project's UTILITY (or AHJ) can carry the other track's URL —
   // every candidate goes through fitUrl so resolution falls through to a real source instead of
   // stopping at the track/host-conflict guard below.
-  const permitSafeUrl = (url: string | null | undefined, source: PortalUrlSource = "kb"): string => fitUrl(url, source);
+  const permitSafeUrl = (url: string | null | undefined, source: PortalUrlSource = "kb", namedPlatform: string[] = []): string => fitUrl(url, source, namedPlatform);
   // Statewide-portal fallback: an Oregon AHJ with no portal URL of its own whose process
   // profile files through e-permitting/Accela uses the shared Oregon ePermitting portal
   // (one Accela instance for all subscribed jurisdictions — only the jurisdiction field
@@ -8450,6 +8452,8 @@ export async function prepareSubmission(
       let webGrounded: boolean | undefined;
       let researched = "";
       let researchNotes = "";
+      // What the research says the portal runs on — judged against the URL's host (issue #31).
+      let researchPlatform: string[] = [];
       // WHOSE portal was researched: the track's own entity, named as such in the log (issue #8: a
       // NEM result for PNM was logged as "for City of Albuquerque").
       const researchedFor = track === "nem" ? `${detail.project.utility} (utility, NEM track)` : `${portalProject.ahj} (AHJ, ${track ?? "permit"} track)`;
@@ -8458,14 +8462,15 @@ export async function prepareSubmission(
           utility: detail.project.utility, state: detail.project.state || "", ahj: detail.project.ahj,
         });
         researched = String(research.portalUrl || "");
-        researchNotes = String(research.notes || "");
+        researchNotes = [research.notes, ...(research.tips ?? [])].filter(Boolean).join(" | ");
+        researchPlatform = researchNamedPlatform(research);
         webGrounded = research.webGrounded;
       } else if (track !== "nem" && portalProject.ahj) {
         const { research } = await researchAndSaveAhj(db, {
           ahj: portalProject.ahj, state: portalProject.state || "", utility: portalProject.utility,
         });
         researched = String(research.portalUrl || "");
-        researchNotes = String(research.notes || "");
+        researchNotes = [research.notes, ...(research.tips ?? [])].filter(Boolean).join(" | ");
         webGrounded = research.webGrounded;
       }
       // A RESEARCHED URL IS NEVER LAUNCHED UNCONFIRMED WHEN IT DISAGREES with the track, with the
@@ -8475,7 +8480,7 @@ export async function prepareSubmission(
       // is not saved is not launched either). The refusal is audited and named in the run's
       // message; a person confirms by saving the portal on the entity's profile.
       const unconfirmed = Boolean(researched) && researchSaysPortalUnconfirmed(researchNotes);
-      credentialUrl = unconfirmed ? "" : permitSafeUrl(researched, "research");
+      credentialUrl = unconfirmed ? "" : permitSafeUrl(researched, "research", researchPlatform);
       if (researched && !credentialUrl) {
         const refusal = unconfirmed
           ? { code: "unconfirmed", reason: RESEARCH_UNCONFIRMED_REASON }
