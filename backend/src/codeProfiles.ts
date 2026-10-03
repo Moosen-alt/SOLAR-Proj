@@ -2372,6 +2372,23 @@ export async function runDesignCriteriaResearch(
   const state = String(payload.state || "");
   const ahj = String(payload.ahj || "");
   const profileKey = String(payload.profileKey || "") || undefined;
+  // The job row dedupes from here on (a complete lookup backs off 30 days; an incomplete or FAILED
+  // one is retried after DESIGN_RESEARCH_RETRY_MS) — this process's own marker would hold a retry for
+  // the whole window. Cleared however the job ends: a lookup that THROWS (#38) used to leave it set,
+  // so the gate read "retrying" while ensureDesignCriteriaResearched queued nothing until a restart.
+  let mergedKey: string | undefined;
+  try {
+    return await designCriteriaResearchBody(db, state, ahj, profileKey, provider, (k) => { mergedKey = k; });
+  } finally {
+    if (mergedKey) inFlightDesignResearch.delete(mergedKey);
+    if (profileKey) inFlightDesignResearch.delete(profileKey);
+  }
+}
+
+async function designCriteriaResearchBody(
+  db: AppDb, state: string, ahj: string, profileKey: string | undefined, provider: LLMProvider | undefined,
+  onMerged: (key: string) => void,
+): Promise<Record<string, unknown>> {
   const llm = provider ?? (await import("./llm")).createLLMProvider();
   // THE AHJ'S OWN PLACEMENT RULES ride the same job (it runs for every AHJ, a uniform-state one
   // included — Waltham's access-path rule is Waltham's, whatever Massachusetts adopts). Best effort:
@@ -2408,11 +2425,8 @@ export async function runDesignCriteriaResearch(
   }
   const research = await llm.researchDesignCriteria({ state, ahj });
   const merged = mergeResearchedDesignCriteria(db, { state, ahj, profileKey }, research);
+  onMerged(merged.profileKey);
   const placement = await placementHalf();
-  // The job row now dedupes (a complete lookup backs off 30 days; an incomplete one is retried after
-  // DESIGN_RESEARCH_RETRY_MS) — this process's own marker would hold a retry for the whole window.
-  inFlightDesignResearch.delete(merged.profileKey);
-  if (profileKey) inFlightDesignResearch.delete(profileKey);
   // The lookup's own notes (truncated, pages read, what was dropped and why) reach the job result.
   return {
     ...merged, webGrounded: research.webGrounded, ...(research.truncated ? { truncated: true } : {}),
