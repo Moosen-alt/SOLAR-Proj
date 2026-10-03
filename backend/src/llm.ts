@@ -896,7 +896,7 @@ A JURISDICTION-WIDE DESIGN VALUE comes from a design-criteria / climatic and geo
 You may OPEN (web_fetch) a result page to read its table — only official city, county or state government pages and code-publisher copies of this jurisdiction's adopted code (up.codes, codes.iccsafe.org, municode, ecode360, codepublishing, American Legal). Open at most a few pages; never open a blog, vendor, forum or map-tool page.
 
 WHEN TO OMIT (and say why in notes):
-- The source gives several values or a range for the jurisdiction ("115/125/140", "20-25 psf", "Exposure B or C", special wind region inside it), or says criteria are site-specific or vary by elevation (an address lookup tool / hazard map) — omit, and write "site-specific" in notes with the tool's URL.
+- The source gives several values or a range for the jurisdiction ("115/125/140", "20-25 psf", "Exposure B or C", special wind region inside it), or says criteria are site-specific or vary by elevation (an elevation-banded table, an address lookup tool / hazard map) — omit the value, and report it under "siteSpecific" with that table's or tool's official URL.
 - The value belongs to a neighbouring or different jurisdiction — omit.
 - A ROOF snow load (flat/sloped/minimum roof snow, Pf, Pm) is never a ground snow load.
 - windSpeedMph must be the ULTIMATE (strength) speed Vult; omit a speed labelled ASD, nominal, Vasd, or a legacy "basic wind speed" from a pre-2012 map.
@@ -911,9 +911,27 @@ Return ONLY JSON:
  "windExposure": {"value": "<B|C|D>", "sourceUrl": "<page>", "quote": "<exact words naming the exposure category>"} or omit,
  "seismicDesignCategory": {"value": "<A|B|C|D0|D1|D2|E>", "sourceUrl": "<page>", "quote": "<exact words naming the seismic design category>"} or omit,
  "frostDepthIn": {"value": <inches>, "sourceUrl": "<page>", "quote": "<exact words, with frost and the number>"} or omit,
+ "siteSpecific": [{"criterion": "groundSnowLoadPsf|windSpeedMph|windExposure|seismicDesignCategory|frostDepthIn", "sourceUrl": "<the official table/tool page>", "note": "<≤20 words: how it varies, e.g. by elevation band>"}] or omit,
  "notes": "<what you could not confirm, and any site-specific tool>"}
 Every value object may also carry "sourceKind": "design_criteria_table|adoption_ordinance|building_safety_policy|code_text|project_handout".
 Never guess. Never use model memory.`;
+
+/**
+ * The design-criteria lookup's user message. A COUNTY in a statewide-minimum state usually has no
+ * Table R301.2 page of its own (measured: a New Mexico county's lookup ran 196 s and found nothing):
+ * its criteria live in the STATE's adopted residential code (its Table R301.2 amendments) and on the
+ * county building page, and are often elevation-banded — so for "… County" the lookup is told to
+ * search those too, and to report a banded table as site-specific rather than as nothing. Pure.
+ */
+export function designCriteriaLookupUserMessage(input: { ahj: string; state: string }): string {
+  const base = `Jurisdiction: ${input.ahj}\nState: ${input.state}`;
+  if (!/\bcounty\b|\bparish\b/i.test(String(input.ahj || ""))) return base;
+  return `${base}
+This is a COUNTY. Besides its own pages, also search:
+- the state's adopted residential code and its amendments to Table R301.2 (climatic and geographic design criteria) — "${input.state} residential code Table R301.2 amendments ${input.ahj}";
+- the county's building / planning department page for design criteria ("${input.ahj} building department design criteria snow load wind").
+If the values vary by elevation or location inside the county (an elevation-banded table, an address lookup), report them under "siteSpecific" with that page's URL, not as one value.`;
+}
 
 /** Page-fetch caps for the design-criteria lookup ONLY (the other web-research calls do not fetch). */
 export const DESIGN_LOOKUP_MAX_FETCHES = 3;
@@ -1168,11 +1186,25 @@ export function parseDesignCriteriaLookup(
     }
   }
   const notes = typeof parsed.notes === "string" ? parsed.notes.slice(0, 400) : "";
+  // SITE-SPECIFIC criteria: no value to store, a page for a person — official pages only, one per
+  // criterion, never for a criterion that came back with a value.
+  const siteSpecific: NonNullable<DesignCriteriaResearchResult["siteSpecific"]> = [];
+  if (grounded && Array.isArray(parsed.siteSpecific)) {
+    for (const raw of parsed.siteSpecific as Array<Record<string, unknown> | null>) {
+      const criterion = String(raw?.criterion ?? "") as NonNullable<DesignCriteriaResearchResult["siteSpecific"]>[number]["criterion"];
+      if (!["groundSnowLoadPsf", "windSpeedMph", "windExposure", "seismicDesignCategory", "frostDepthIn"].includes(criterion)) continue;
+      const sourceUrl = typeof raw?.sourceUrl === "string" ? raw.sourceUrl.trim().slice(0, 500) : "";
+      if (!/^https?:\/\//i.test(sourceUrl) || !isOfficialCodeSource(sourceUrl, jurisdiction)) continue;
+      if (values.some((v) => v.criterion === criterion) || siteSpecific.some((x) => x.criterion === criterion)) continue;
+      siteSpecific.push({ criterion, sourceUrl, note: typeof raw?.note === "string" ? raw.note.trim().slice(0, 200) : "" });
+    }
+  }
   return {
     provider: "claude",
     values,
     webGrounded: grounded,
     ...(truncated ? { truncated: true } : {}),
+    ...(siteSpecific.length ? { siteSpecific } : {}),
     // A cut-off answer is not a negative result: an empty list from a truncated reply must not
     // read as "the jurisdiction publishes nothing".
     notes: `${grounded ? "Web-grounded lookup." : "No web results — nothing stored."}${truncated ? " Output truncated — not a negative result; retry." : ""}${dropped.length ? ` Dropped: ${dropped.join("; ")}.` : ""} ${notes}`.trim(),
@@ -2476,7 +2508,7 @@ Rules:
   }
 
   async researchDesignCriteria(input: { ahj: string; state: string }): Promise<DesignCriteriaResearchResult> {
-    const userMsg = `Jurisdiction: ${input.ahj}\nState: ${input.state}`;
+    const userMsg = designCriteriaLookupUserMessage(input);
     let raw = "";
     let grounded = false;
     let truncated = false;

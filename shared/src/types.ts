@@ -1565,6 +1565,13 @@ export interface DesignCriteriaResearchResult {
   webGrounded: boolean;
   /** The answer was cut off (max_tokens / pause_turn): a missing value is "not researched", not "not found". */
   truncated?: boolean;
+  /** Criteria the jurisdiction publishes ONLY per site (an elevation-banded table, an address lookup
+   *  tool): no one value to store, but a page a person reads for the site. Official pages only. */
+  siteSpecific?: Array<{
+    criterion: "groundSnowLoadPsf" | "windSpeedMph" | "windExposure" | "seismicDesignCategory" | "frostDepthIn";
+    sourceUrl: string;
+    note: string;
+  }>;
   notes: string;
 }
 
@@ -1586,11 +1593,26 @@ export interface DesignCriteriaLookupRecord {
     item: DesignCriteriaChecklistItem;
     /** not_found: a grounded, complete lookup found no citable value. not_researched: the lookup
      *  did not run, failed, or was cut off. weak_source: found, but on a page that is not a
-     *  jurisdiction-wide design value. */
-    status: "found" | "weak_source" | "not_found" | "not_researched";
+     *  jurisdiction-wide design value. site_specific: the jurisdiction publishes it only per site
+     *  (elevation bands, an address lookup) — sourceUrl is that table/tool. */
+    status: "found" | "weak_source" | "not_found" | "not_researched" | "site_specific";
     sourceUrl?: string;
     note?: string;
   }>;
+}
+
+/** WHERE AN AHJ'S DESIGN-CRITERIA LOOKUP STANDS, read from the job queue (never written by the read).
+ *  The reviewer's "criteria not on file" finding words itself from it: a lookup that is still running
+ *  is not "not on file", and one that ran and found nothing is not "never looked".
+ *  queued/running: a lookup (design-criteria or full code research) is pending or running.
+ *  retrying: the last lookup was incomplete (failed, cut off, not web-grounded) and will be retried.
+ *  incomplete: incomplete and out of retries for now. landed: a complete lookup ran (`items` is its
+ *  checklist). */
+export interface DesignCriteriaLookupProgress {
+  status: "queued" | "running" | "retrying" | "incomplete" | "landed";
+  /** When it was queued / started / finished. */
+  at?: string;
+  items?: DesignCriteriaLookupRecord["items"];
 }
 
 /** WHAT KIND OF STRUCTURE CARRIES THE ARRAY. One predicate answers it (structureType in

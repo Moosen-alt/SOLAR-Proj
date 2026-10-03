@@ -2099,6 +2099,47 @@ function groundSnowMinimumFinding(
   };
 }
 
+/**
+ * The "criteria not on file" finding's wording from where the AHJ's lookup stands (null = no lookup
+ * in the window: the plain "not on file" wording). Same finding id and severity either way — only
+ * the words change, so the four tests that pin the id keep pinning it.
+ */
+function designLookupWording(
+  ctx: EffectiveCodeContext,
+  who: string,
+  missing: string[],
+  snowMissing: boolean,
+  windMissing: boolean,
+): { title: string; lead: string; tail: string } | null {
+  const lk = ctx.designLookup;
+  if (!lk) return null;
+  const day = lk.at ? String(lk.at).slice(0, 10) : "";
+  const what = `${missing.join(" and ")}`;
+  if (lk.status === "queued" || lk.status === "running") {
+    return {
+      title: "Jurisdiction design criteria lookup in progress — stated values not yet checked",
+      lead: `${who}'s ${what} ${missing.length > 1 ? "are" : "is"} being looked up now (lookup ${lk.status}${day ? ` since ${day}` : ""})`,
+      tail: " The gate re-judges automatically when the lookup lands.",
+    };
+  }
+  if (lk.status === "retrying" || lk.status === "incomplete") {
+    return {
+      title: lk.status === "retrying" ? "Jurisdiction design criteria lookup incomplete — retrying" : "Jurisdiction design criteria lookup incomplete — verify with the AHJ",
+      lead: `The lookup for ${who}'s ${what}${day ? ` (${day})` : ""} did not finish (failed, cut off, or found no web results)`,
+      tail: lk.status === "retrying" ? " It is retried automatically; the gate re-judges when it lands." : " Automatic retries are used up for now; confirm the values with the AHJ.",
+    };
+  }
+  // landed: a complete lookup ran and the row still lacks these criteria.
+  const items = lk.items ?? [];
+  const site = items.filter((i) => i.status === "site_specific" && ((snowMissing && i.item === "groundSnowLoad") || (windMissing && i.item === "windSpeed")));
+  const siteNote = site.map((i) => `${i.item === "groundSnowLoad" ? "ground snow load" : "wind speed"} is published per site${i.note ? ` (${i.note})` : ""}${i.sourceUrl ? ` — ${i.sourceUrl}` : ""}`);
+  return {
+    title: "Jurisdiction design criteria looked up — no jurisdiction-wide value found",
+    lead: `A lookup${day ? ` on ${day}` : ""} found no jurisdiction-wide ${what} for ${who} on an official page`,
+    tail: siteNote.length ? ` Site-specific: ${siteNote.join("; ")}. Use the site's value from that source.` : "",
+  };
+}
+
 export function evaluateDesignCriteriaFindings(
   project: ProjectRecord,
   ctx: EffectiveCodeContext,
@@ -2291,12 +2332,16 @@ export function evaluateDesignCriteriaFindings(
         ahjWind == null ? `wind speed — ${say((c) => c.criterion === "windSpeedMph", " mph")}` : "",
       ].filter(Boolean);
       const quoted = stated.criteria.filter((c) => (ahjSnow == null && c.criterion === "groundSnowPsf") || (ahjWind == null && c.criterion === "windSpeedMph"));
+      // WHERE THE LOOKUP STANDS (ctx.designLookup, read from the job queue). The first project in a
+      // new AHJ is judged while its lookup is still running: "not on file" read as "nobody is
+      // looking", and a lookup that ran and found nothing read as one that never ran.
+      const lookup = designLookupWording(ctx, who, missing, ahjSnow == null, ahjWind == null);
       out.push({
         id: "city.struct.design-criteria-unknown",
         severity: "callout",
         category: "structural",
-        title: "Jurisdiction design criteria not on file — stated values unchecked",
-        message: `${who}'s ${missing.join(" and ")} ${missing.length > 1 ? "are" : "is"} not on file yet, so the package's stated values have NOT been checked against the jurisdiction's requirement: ${lines.join("; ")}.${approvedDesignsNote(ctx, [
+        title: lookup?.title ?? "Jurisdiction design criteria not on file — stated values unchecked",
+        message: `${lookup?.lead ?? `${who}'s ${missing.join(" and ")} ${missing.length > 1 ? "are" : "is"} not on file yet`}, so the package's stated values have NOT been checked against the jurisdiction's requirement: ${lines.join("; ")}.${lookup?.tail ?? ""}${approvedDesignsNote(ctx, [
           ...(ahjSnow == null ? ["groundSnowPsf" as const] : []),
           ...(ahjWind == null ? ["windSpeedMph" as const, "windExposure" as const] : []),
         ])}`,
