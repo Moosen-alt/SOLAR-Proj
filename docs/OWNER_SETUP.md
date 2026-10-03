@@ -122,3 +122,59 @@ the difference. The constitution forbids them, and Helm treats any bot-applied a
 | Tests fail with `fetch failed` / port in use | A test server was left running: `taskkill /F /IM node.exe` (this closes ALL node processes) |
 | DOM smokes can't find a browser | `npm run portal:install` |
 | Anything else | `node scripts/doctor.mjs --full` |
+
+## 7. Automatic updates (pull `main` and restart when idle)
+
+`scripts/local-auto-update.mjs` keeps this checkout on current `main` so you never have to
+`git pull` by hand. Every 15 minutes, if `main` has moved and nothing is in progress, it:
+snapshots the database into `BACKUP_DIR` (`autopilot-pre-update-<sha>-<time>.sqlite` plus its
+`.sha256`, a restore point rotation never deletes), stops this install's server, fast-forwards,
+runs `npm ci` only when `package-lock.json` changed, restarts `npm start` in its own minimized
+window, and waits for `/health` to report the new commit.
+
+**It does nothing (and says why in the log) when:**
+
+- the checkout is not on `main`, has changes to tracked files, or has commits `main` doesn't have;
+- anything is in progress: a background job running or due, a portal run queued, running, staged
+  or paused for you (review window, MFA/CAPTCHA), a filing `awaiting_human_submit`, or a lookup in
+  flight. It tries again 15 minutes later. A staged filing therefore holds updates until you submit
+  or discard it: that is on purpose, since a restart would close the window you submit from;
+- the supervised server (`run-prod-supervised.ps1`) is running: that loop owns restarts;
+- the pause file exists (below), or the database snapshot fails.
+
+If the pull or `npm ci` fails, it puts the checkout back on the old commit and restarts the old
+server. If the new server doesn't come up on the new commit within 3 minutes, it logs
+`HEALTH CHECK FAILED` and leaves it for you (no automatic rollback: the new version's migrations
+may already have run; the pre-update snapshot is the way back). It starts the server again only if
+one was running before the update.
+
+Because it updates this folder in place, **never use `C:\Users\isobl\SOLAR-Proj` for branch work**:
+agents (your terminal Claude included) work in their own `git worktree`.
+
+**See what it would do** (changes nothing, logs nothing; it does `git fetch`):
+
+```
+node scripts/local-auto-update.mjs --dry-run
+```
+
+**Install** (once, from a normal, non-admin terminal; it runs as you, only while you're logged in,
+because the server window and the portal browser need your desktop):
+
+```
+schtasks /Create /TN "SolarAutopilot-AutoUpdate" /SC MINUTE /MO 15 /IT /F /TR "cmd /c cd /d C:\Users\isobl\SOLAR-Proj && node scripts\local-auto-update.mjs"
+```
+
+A console flashes briefly every 15 minutes while it checks. Overlapping runs can't happen: a cycle
+holds `data\auto-update.lock` until it finishes.
+
+| To | Command |
+| --- | --- |
+| Run one cycle now | `schtasks /Run /TN "SolarAutopilot-AutoUpdate"` |
+| Pause (keeps the task) | `type nul > data\auto-update.pause` |
+| Resume | `del data\auto-update.pause` |
+| Disable / re-enable the task | `schtasks /Change /TN "SolarAutopilot-AutoUpdate" /DISABLE` (or `/ENABLE`) |
+| Remove it | `schtasks /Delete /TN "SolarAutopilot-AutoUpdate" /F` |
+| Read the log | `type data\logs\auto-update.log` |
+
+The log has one line per action: from-sha → to-sha, skip reasons, timings. It never contains
+customer data.
