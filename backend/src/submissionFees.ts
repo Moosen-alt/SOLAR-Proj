@@ -49,6 +49,7 @@ import { nowIso } from "./time";
 import { logger } from "./logger";
 import { isServiceLineBaseKind, serviceLineCounts, SERVICE_FEEDER_200A_LABEL, SERVICE_FEEDER_400A_LABEL } from "./batteryServiceFeeder";
 import { stateRulesFor } from "./permitProcess";
+import { localPermitReview, permitFeeProject } from "./feeIssuer";
 import { portalFeeSummary } from "./portalFeeReadings";
 
 /** The portal's own total for the filing — typed by a person ("actual") or read off the record
@@ -492,6 +493,14 @@ export function stateSurchargeNotice(state: string, gaps: string[]): string {
  *  stored at all. Resolved for every quote — see buildPaymentQuote for why the
  *  payment METHOD is taken from here even when a higher tier wins the amount. */
 function publishedScheduleFee(db: AppDb, project: ProjectRecord, track: "permit" | "nem"): ScheduleFee | null {
+  // THE PERMIT FEE IS THE ISSUER'S (issue #56): where a cited state rule issues the permits (New
+  // Mexico CID), the schedule is the state agency's, never the village's — the quote, the sheet and
+  // a Confirm (feeConfirmRows) all read it here, so they cannot disagree about whose row it is.
+  return scheduleFeeAt(db, track === "permit" ? permitFeeProject(project) : project, track);
+}
+
+/** The published-schedule lookup for exactly this project's agency, no issuer re-keying. */
+function scheduleFeeAt(db: AppDb, project: ProjectRecord, track: "permit" | "nem"): ScheduleFee | null {
   const lookup = feeScheduleLookup();
   if (!lookup) return null;
   try {
@@ -625,6 +634,8 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
   // where we got the number. Ameren Illinois' $50 is a mailed check whether we
   // read it off the schedule, learned it from a past filing, or typed it in.
   const schedule = publishedScheduleFee(db, project, track);
+  // The agency the permit fee is owed to (the state issuer's view, or the project itself).
+  const feeProject = track === "permit" ? permitFeeProject(project) : project;
   const scheduleConflicted = !!schedule?.reason && FEE_CONFLICT_RE.test(schedule.reason);
 
   let permitFeeUsd: number | null = null;
@@ -674,7 +685,7 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
       // the right instruction here, and it is the difference between a number a customer can
       // be quoted and one that only looks like it.
       permitFeeConfidence = schedule.valuationEstimated ? "estimated" : schedule.confidence;
-      const who = schedule.matchedName || (track === "nem" ? project.utility : project.ahj) || "this jurisdiction";
+      const who = schedule.matchedName || (track === "nem" ? project.utility : feeProject.ahj) || "this jurisdiction";
       // THE SENTENCE BESIDE THE NUMBER MUST BE ABOUT THAT NUMBER.
       //
       // This used to print the schedule ROW's `sourceQuote`, which is one line
@@ -860,6 +871,12 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
     permitFeeBasis: archivedNotice(project) + permitFeeBasis,
     permitFeeSourceUrl,
     permitFeeBracketLabel,
+    // Named only when the payee is not the AHJ. "cited" is about the SCHEDULE: said only when the
+    // amount came off a published (sourced) state schedule; otherwise the line says none is on file.
+    ...(feeProject !== project ? {
+      permitFeeIssuerLabel: `Permit fee — ${feeProject.ahj} (${permitFeeSource === "published_schedule" ? "state schedule, cited"
+        : permitFeeSource === "valuation_estimate" || permitFeeSource === "unknown" ? "state issuer — no state schedule on file yet" : "state issuer"})`,
+    } : {}),
     permitFeeConfidence,
     permitFeeCorroborated,
     permitFeeEvidenceQuote,
@@ -1043,7 +1060,10 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
 
   const lines: ProjectFeeSheetLine[] = quotes.map(({ track, quote }) => ({
     track,
-    jurisdiction: (track === "nem" ? project.utility : project.ahj) || "",
+    // The permit fee's payee is its issuer (permitFeeProject — the project AHJ unless a cited state
+    // rule issues the permits), the same agency buildPaymentQuote priced.
+    jurisdiction: (track === "nem" ? project.utility : permitFeeProject(project).ahj) || "",
+    ...(quote.permitFeeIssuerLabel ? { issuerLabel: quote.permitFeeIssuerLabel } : {}),
     feeUsd: quote.permitFeeUsd,
     source: quote.permitFeeSource,
     basis: quote.permitFeeBasis,
@@ -1075,11 +1095,17 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
     charges: quote.permitFeeCharges,
   }));
 
+  // THE AHJ'S OWN CHARGE WHERE A STATE AGENCY ISSUES THE PERMITS (issue #56): its zoning /
+  // site-development review, a line of its own, summed into the total like any other line.
+  const review = localPermitReview(project);
+  if (review) lines.push(localReviewLine(db, project, review));
+
   const unknowns: string[] = [];
   const outOfPortalPayments: string[] = [];
   for (const line of lines) {
     const who = line.jurisdiction || (line.track === "nem" ? "the utility" : "the AHJ");
-    const label = line.track === "nem" ? "NEM / interconnection fee" : "Permit fee";
+    const label = line.role === "local_review" ? "Zoning / site-development review fee"
+      : line.track === "nem" ? "NEM / interconnection fee" : "Permit fee";
     if (line.feeUsd == null) unknowns.push(`${label} for ${who} is unknown. ${line.basis}`);
     else if (!line.known) {
       // AN ESTIMATED LINE IS AN OPEN QUESTION AND IS LISTED AS ONE — an empty
@@ -1171,7 +1197,7 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
     // (batteryServiceFeeder.serviceLineCounts) the portal boxes and the PDF read.
     const svcLines = serviceLineCounts(project.parserSnapshot as Record<string, unknown> | null | undefined);
     const itemised = (line.charges ?? []).some((c) => isServiceLineBaseKind(c.kind));
-    if (line.track === "permit" && !isPortalFigure(line.source) && !itemised) {
+    if (line.track === "permit" && line.role !== "local_review" && !isPortalFigure(line.source) && !itemised) {
       if (svcLines.battery) {
         unknowns.push(
           `Battery/ESS job: the electrical permit for ${who} also bills one "${SERVICE_FEEDER_200A_LABEL}" line `
@@ -1235,6 +1261,49 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
     unknowns,
     outOfPortalPayments,
     generatedAt: nowIso(),
+  };
+}
+
+/** THE LOCAL ZONING / SITE-DEVELOPMENT REVIEW LINE (issue #56). Read off the AHJ's OWN key (an
+ *  undifferentiated row there is its review fee: it issues no permit here), never re-keyed to the
+ *  state issuer. Only a published schedule prices it — never the valuation heuristic, which models a
+ *  building permit, not a site-plan review — so with none on file the line has no number and the
+ *  sheet's total says unknown. Not confirmable here: a Confirm keys on the billing track, whose
+ *  permit row is the state issuer's. No service fee: it is not a submission this tool files. */
+function localReviewLine(db: AppDb, project: ProjectRecord, review: { ahj: string; issuer: string }): ProjectFeeSheetLine {
+  const at = { ...project, ahj: review.ahj } as ProjectRecord;
+  const s = scheduleFeeAt(db, at, "permit");
+  const priced = s != null && s.feeUsd != null;
+  const confidence: FeeConfidence = priced ? (s!.valuationEstimated ? "estimated" : s!.confidence) : "unknown";
+  return {
+    track: "permit",
+    role: "local_review",
+    jurisdiction: review.ahj,
+    issuerLabel: `Local zoning / site-development review — ${review.ahj} (before ${review.issuer}'s permits)`,
+    feeUsd: priced ? s!.feeUsd : null,
+    source: priced ? "published_schedule" : "unknown",
+    basis: priced
+      ? `${review.ahj}'s own zoning / site-development review fee, read off its published schedule${s!.bracketLabel ? ` ("${s!.bracketLabel}")` : ""}`
+        + `${s!.confidence === "verified" ? "." : " — researched, not yet checked by a person."} ${review.issuer} issues the building and electrical permits; this is ${review.ahj}'s separate charge.`
+      : `No published zoning / site-development review fee on file for ${review.ahj} yet${s?.reason ? ` (${s.reason})` : ""}. `
+        + `${review.ahj} issues no building or electrical permit here — ${review.issuer} does — but it reviews the site plan first and may charge for it. `
+        + `Ask ${review.ahj}'s planning office for the fee.`,
+    bracketLabel: priced ? s!.bracketLabel : null,
+    sourceUrl: s?.sourceUrl ?? null,
+    confidence,
+    corroborated: false,
+    evidenceQuote: priced && s!.evidenceVerdict !== "other_permit" ? s!.bracketQuote : "",
+    confirmable: false,
+    confirmRows: [],
+    verifiedBy: "",
+    verifiedAt: "",
+    comparison: null,
+    portalRecords: null,
+    paymentMethod: s?.paymentMethod ?? "unknown",
+    serviceFeeUsd: 0,
+    totalUsd: priced ? s!.feeUsd : null,
+    known: priced && confidence !== "estimated",
+    charges: s?.charges ?? [],
   };
 }
 

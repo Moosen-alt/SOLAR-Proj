@@ -840,7 +840,7 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
       // hard refusals (human-verified rows, open conflicts, unsourced fees), so
       // nothing in this handler can weaken them.
       const { researchFeeSchedule } = await import("./feeSchedules");
-      const p = job.payload as { state?: string; ahj?: string; utility?: string; track?: string; discipline?: string };
+      const p = job.payload as { state?: string; ahj?: string; utility?: string; track?: string; discipline?: string; focus?: string };
       const discipline = String(p.discipline || "");
       const outcome = await researchFeeSchedule(db, {
         state: String(p.state || ""),
@@ -848,6 +848,9 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
         utility: String(p.utility || ""),
         track: p.track === "nem" ? "nem" : "permit",
         discipline,
+        // Public agency wording only (feeResearchTargets): which fee to look for — a state issuer's
+        // schedule, or an AHJ's zoning review — never a project or customer detail.
+        focus: typeof p.focus === "string" ? p.focus.slice(0, 600) : undefined,
       });
       result = {
         saved: outcome.saved, found: outcome.found,
