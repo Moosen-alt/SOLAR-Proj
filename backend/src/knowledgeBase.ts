@@ -1403,8 +1403,8 @@ const MILESTONE_LABELS: Record<string, string> = {
   correction_flagged: "first correction",
 };
 
-/** The KB's timeline median (average of the middle pair) — the KPI report reads per-AHJ medians
- *  through this so the panel and average_timeline_days cannot disagree. */
+/** The KB's timeline median (average of the middle pair). The KPI report reads per-AHJ medians
+ *  through this so, read across orgs, the panel uses the same rule as average_timeline_days. */
 export function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);

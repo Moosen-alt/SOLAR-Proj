@@ -830,7 +830,10 @@ function getFilingKpis(
   for (const c of permitCorrections) if (c.correction_bucket === "A_we_fix") months.get(monthOf.get(String(c.submission_id))!)!.notices.add(String(c.notice));
 
   // SUBMITTED → ISSUED per AHJ: the same per-filing samples the KB's median is derived from
-  // (recomputeTimelineFromSamples), with the KB's own median, so the panel cannot disagree with it.
+  // (recomputeTimelineFromSamples), with the KB's middle-pair median. It matches the KB's
+  // average_timeline_days only when read across orgs (orgId null): the KB figure pools every
+  // tenant and every period, while this byAhj is org-scoped (still all-time). `overall` is a
+  // different population (this period's filings) on cycleStat's percentile median.
   const samples = db.query<Row>(
     `SELECT s.profile_key, s.track, s.days FROM permit_timeline_samples s
        JOIN projects p ON p.id = s.project_id${orgId ? " AND p.org_id = ?" : ""}
@@ -875,17 +878,25 @@ function getFilingKpis(
   const overridden = new Set(gateRuns.filter((g) => g.action === "project.status_overridden" && blockedProjects.has(g.projectId) && g.d.to !== "blocked"
     && Number(lastGateBefore(g.projectId, g.at)?.d.blockerCount ?? 0) > 0).map((g) => g.projectId));
 
-  // HUMAN MINUTES: the staging run that left the filing awaiting a person (same project and track,
-  // finished at or before the send) → submitted_at. A filing automation sent took no human minutes.
+  // HUMAN MINUTES: staged → sent, on the filing's OWN row. The staging run inserts the
+  // awaiting_human_submit row (created_at) in the same transaction that finishes the run, and every
+  // submit path updates that row in place (submitted_at) — while it ALSO overwrites the run's
+  // finished_at with the submit time, so the run cannot date the handoff. A row is counted only when
+  // a prepare_submit run for its track had started by the time it was written (the manual "record a
+  // filing" path inserts rows nothing staged) and it was sent after it was written. A filing
+  // automation sent, or sent by Approve & auto-submit ("<approver> (approved autopilot)"), took no
+  // human minutes and is left out.
   const handoffs = db.query<Row>(
-    `SELECT s.submitted_at,
-            (SELECT MAX(r.finished_at) FROM portal_runs r
-              WHERE r.project_id = s.project_id AND r.permit_type = s.permit_type AND r.run_type = 'prepare_submit'
-                AND r.finished_at IS NOT NULL AND r.finished_at <= s.submitted_at) AS staged_at
+    `SELECT s.submitted_at, s.created_at AS staged_at
        FROM submissions s JOIN projects p ON p.id = s.project_id${orgId ? " AND p.org_id = ?" : ""}
-      WHERE s.submitted_at >= ? AND s.submitted_at <= ? AND s.status <> 'failed' AND s.submitted_by NOT LIKE 'automation%'`,
+      WHERE s.submitted_at >= ? AND s.submitted_at <= ? AND s.status <> 'failed'
+        AND s.submitted_by NOT LIKE 'automation%' AND s.submitted_by NOT LIKE '%(approved autopilot)'
+        AND s.created_at < s.submitted_at
+        AND EXISTS (SELECT 1 FROM portal_runs r
+                     WHERE r.project_id = s.project_id AND r.permit_type = s.permit_type
+                       AND r.run_type = 'prepare_submit' AND r.started_at <= s.created_at)`,
     [...orgP, start, end + "T23:59:59"],
-  ).filter((r) => r.staged_at != null);
+  );
   const minutes = handoffs.map((r) => Math.round((Date.parse(String(r.submitted_at)) - Date.parse(String(r.staged_at))) / 60_000));
 
   const nowMs = Date.now();
@@ -946,6 +957,8 @@ function getFilingKpis(
       "Cycle medians exclude filings that have not closed; those count under 'open past p90'.",
       "Issuance is the monitor's first reading of it, so check cadence pads the tail.",
       "A gate miss is a bucket-A notice whose latest gate run before it reported no finding at all (a lower bound).",
+      "Human minutes run from the staged row's creation to its send; filings automation sent, including Approve & auto-submit, are left out.",
+      "Submit→issued by AHJ is all-time and this org's only, so it can differ from the shared KB timeline, which pools every tenant.",
     ],
   };
 }

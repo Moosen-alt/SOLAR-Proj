@@ -114,12 +114,31 @@ audit(p2, "reviewer_report.generated", { blockerCount: 0, warningCount: 0 }, iso
 audit(p3, "reviewer_report.generated", { blockerCount: 2, warningCount: 1 }, iso(62));
 audit(p3, "project.status_overridden", { from: "qc_passed", to: "ready_to_stage", reason: "operator judged the blockers moot" }, iso(61));
 
-// ── Human minutes: p1's building filing staged 90 minutes before a person sent it ──
-db.run(
-  `INSERT INTO portal_runs (id, project_id, run_type, status, started_at, finished_at, permit_type)
-   VALUES ('run-p1', ?, 'prepare_submit', 'submitted', ?, ?, 'building')`,
-  [p1, plus(iso(40), -1), new Date(Date.parse(iso(40)) - 90 * 60_000).toISOString()],
-);
+// ── Human minutes, seeded through the write path: recordPortalRun finishes the prepare_submit run
+//    and INSERTs the awaiting_human_submit row in one transaction; captureConfirmation then UPDATEs
+//    that row in place AND overwrites the run's finished_at with the submit time. p1's building
+//    filing was staged 90 minutes before a person sent it. ──
+const MIN = 60_000;
+function stagedThenSent(pid: string, track: string, stagedAt: string, sentAt: string, by: string, sid = `sub-${++seq}`): string {
+  db.run(
+    `INSERT INTO portal_runs (id, project_id, run_type, status, started_at, finished_at, permit_type)
+     VALUES (?, ?, 'prepare_submit', 'running', ?, NULL, ?)`,
+    [`run-${sid}`, pid, new Date(Date.parse(stagedAt) - 5 * MIN).toISOString(), track],
+  );
+  db.run("UPDATE portal_runs SET status = 'awaiting_human_submit', finished_at = ? WHERE id = ?", [stagedAt, `run-${sid}`]);
+  db.run(
+    `INSERT INTO submissions (id, project_id, submission_type, permit_type, status, created_at)
+     VALUES (?, ?, ?, ?, 'awaiting_human_submit', ?) ON CONFLICT(id) DO UPDATE SET status = 'awaiting_human_submit', created_at = excluded.created_at, submitted_at = NULL`,
+    [sid, pid, track === "nem" ? "interconnection" : "permit", track, stagedAt],
+  );
+  db.run("UPDATE portal_runs SET status = 'submitted', finished_at = ? WHERE id = ?", [sentAt, `run-${sid}`]);
+  db.run("UPDATE submissions SET status = 'submitted', submitted_at = ?, submitted_by = ? WHERE id = ?", [sentAt, by, sid]);
+  return sid;
+}
+stagedThenSent(p1, "building", new Date(Date.parse(iso(40)) - 90 * MIN).toISOString(), iso(40), "operator", f1);
+// Approve & auto-submit (autopilot.ts) and automation's own click took no human minutes.
+stagedThenSent(p4, "electrical", iso(21), iso(20.5), "Pat Approver (approved autopilot)");
+stagedThenSent(p2, "combo", iso(22), iso(21.9), "automation (final submit approved by Pat Approver)");
 // ── Human queue: two filings waiting on a person, 3 days and 1 day ──
 for (const [pid, age] of [[p4, 3], [p3, 1]] as const) {
   db.run(
@@ -188,7 +207,8 @@ check("gate false negative: the A notice after a silent gate", k.reviewerGate.fa
 check("gate false positive: the override of a blocking gate", k.reviewerGate.falsePositives.n === 1 && k.reviewerGate.falsePositives.of === 1);
 
 // 7. Human minutes
-check("human minutes per filing: 90, n 1", k.humanMinutes.median === 90 && k.humanMinutes.n === 1, JSON.stringify(k.humanMinutes));
+check("human minutes per filing: 90, n 1 (from the row, not the overwritten run finish)", k.humanMinutes.median === 90 && k.humanMinutes.n === 1, JSON.stringify(k.humanMinutes));
+check("human minutes: autopilot-approved and automation filings left out", k.humanMinutes.n === 1);
 check("blanks the human filled come from stagingQuality", k.blanksFilledPerRun.of === report.stagingQuality.measured);
 
 // 8. Human queue
