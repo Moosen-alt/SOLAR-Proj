@@ -161,7 +161,21 @@ export function savePermitProcessLookup(
 // Each is a fact about EVERY jurisdiction in the state, with the rule/form it comes from and the
 // words it says. Add a state by adding its facts here — never a jurisdiction.
 /** One state issuer application (StatePermitRules.stateTradeIssuer.issuerForms). */
-export type StateIssuerFormSeed = CitedFact<string> & { track: "building" | "electrical"; formName: string; searchUrl: string; url: string; notFound: string };
+export type StateIssuerFormSeed = CitedFact<string> & {
+  track: "building" | "electrical";
+  formName: string;
+  searchUrl: string;
+  /** The blank's download URL, as a person opened it from `searchUrl` ("" = not confirmed). */
+  url: string;
+  /** The blank's SHA-256 and size when it was opened (pins WHICH revision was seeded; never fetched to check). */
+  sha256: string;
+  bytes: number;
+  /** "docx": a Word document — the form filler is PDF-only, so it is filled BY HAND, never auto-filled. */
+  format: "pdf" | "docx";
+  fill: "auto" | "by_hand";
+  /** What the operator does with it (the form finder's words). */
+  note: string;
+};
 
 export interface StatePermitRules {
   /** Separate structural + electrical permits for a PV system. */
@@ -196,8 +210,9 @@ export interface StatePermitRules {
     localStep: { sourceUrl: string; quote: string };
     /** THE STATE ISSUER'S OWN APPLICATIONS (issue #53, Helm's decision on PR #64): ONE form PER TRACK
      *  (CID takes a building application and a separate electrical application), looked for on the
-     *  ISSUER's forms page (`searchUrl`), never the AHJ's. `url` is "" — the download is #60's to seed,
-     *  never guessed here; `notFound` says why and what to do. Seeded (a state rule), never verified. */
+     *  ISSUER's forms page (`searchUrl`), never the AHJ's. `url` is the download a person opened from
+     *  that page (#60), never guessed; a `by_hand` form is never fetched or auto-filled — `note` says
+     *  what the operator does. Seeded (a state rule), never verified. */
     issuerForms?: StateIssuerFormSeed[];
   };
 }
@@ -282,7 +297,11 @@ STATE_PERMIT_RULES.IA = {
 // local) are left to their own answers. SEEDED; a cited lookup, a person's verified row or the
 // operator's per-track issuer outranks it.
 const CID_FORMS_PAGE = "https://www.rld.nm.gov/construction-industries/forms-and-applications/";
-const CID_WORD_NOTE = "CID application is a Word document; download and fill by hand until #60 lands (CID's forms page: rld.nm.gov/construction-industries/forms-and-applications/)";
+// The two download URLs are the ones the forms page's own RealFile widget (RF.getWidgetFileLink)
+// opened — served from api.realfile.rtsclients.com, the state page's file host, with no expiry
+// parameter. Seeded from the state page (sourceUrl), never verified (hard rule 3); nothing fetches
+// them — the operator downloads the Word document, fills it by hand and uploads the filled PDF.
+const CID_WORD_NOTE = "CID's application is a Word document, not a PDF, and the form filler is PDF-only: download it, fill it by hand, save it as a PDF and upload the filled PDF to this row";
 STATE_PERMIT_RULES.NM = {
   stateTradeIssuer: {
     value: "New Mexico Construction Industries Division (CID)",
@@ -302,8 +321,7 @@ STATE_PERMIT_RULES.NM = {
     },
     // CID's TWO applications (worker-local's evidence on #60, opened on the state site with the owner
     // watching; Helm's decision on PR #64): the building permit and the electrical permit are separate
-    // Word documents on CID's forms page. NO download URL is stored here (that, and Word handling, is
-    // #60's PR) — the form finder names the page and says the form is filled by hand meanwhile.
+    // Word documents on CID's forms page. Each is pinned by the URL, SHA-256 and size it had when opened.
     issuerForms: [
       {
         track: "building",
@@ -313,8 +331,12 @@ STATE_PERMIT_RULES.NM = {
         searchUrl: CID_FORMS_PAGE,
         quote: "Construction Industries: Forms and Applications — Multi-Purpose State Building Application (Word document); Solar is among its residential scopes (issue #60 evidence)",
         origin: "state_rule",
-        url: "",
-        notFound: CID_WORD_NOTE,
+        url: "https://api.realfile.rtsclients.com/PublicFiles/1ee897135beb4b1c82715d36398de4c5/9b7ef935-4881-420d-9b33-b808a69039a0/General%20Building%20Permit%20Application.docx",
+        sha256: "9578c63347cf1700901c7285e445088dc43b2d41ccae8f91162ab52e2cafc219",
+        bytes: 69246,
+        format: "docx",
+        fill: "by_hand",
+        note: CID_WORD_NOTE,
       },
       {
         track: "electrical",
@@ -324,8 +346,12 @@ STATE_PERMIT_RULES.NM = {
         searchUrl: CID_FORMS_PAGE,
         quote: "Construction Industries: Forms and Applications — Electrical Permit Application (rev 3/3/2026, Word document); Solar is among its residential scopes (issue #60 evidence)",
         origin: "state_rule",
-        url: "",
-        notFound: CID_WORD_NOTE,
+        url: "https://api.realfile.rtsclients.com/PublicFiles/1ee897135beb4b1c82715d36398de4c5/894fd6e3-1671-459a-a9d0-425281b8811a/Electrical%20Permit%20Application.docx",
+        sha256: "ba01083b72117804eb6d963fcb346db968de341072fb854d72eb57b77b4804a7",
+        bytes: 71735,
+        format: "docx",
+        fill: "by_hand",
+        note: CID_WORD_NOTE,
       },
     ],
   },

@@ -293,13 +293,20 @@ export function issuingAgencyFormPlan(
   }
   const candidates = agencyApplicationForms(project, formType, want);
   // A STATE ISSUER'S FORM is looked for on the ISSUER's forms page, never the AHJ's (issue #53): the
-  // state rule names where — ONE form per track (Helm's decision on PR #64) — and a form whose download
-  // nobody has seeded stays not_found with the rule's own reason: never a guessed URL, never a search
-  // under the AHJ's name.
+  // state rule names where — ONE form per track (Helm's decision on PR #64) — never a guessed URL,
+  // never a search under the AHJ's name. A form filled BY HAND (#60: CID's Word documents; the filler
+  // is PDF-only) is needs_manual with its seeded download — nothing is fetched or stored, and the row
+  // stays owed until a person uploads the filled PDF. One with no confirmed download stays not_found.
   const stateIssuer = !candidates.length ? stateIssuerFormsFor(project) : null;
   const stateForm = stateIssuer && sameAgencyName(agency, stateIssuer.agency) && track ? stateIssuer.forms.find((f) => f.track === track) : undefined;
   if (stateForm) {
-    return { ...base, steps: [], settled: { status: "not_found", message: `${agency} issues the ${track} permit for ${project.ahj} (state rule, seeded — ${stateForm.sourceUrl}) on its own ${stateForm.formName}. It was looked for on ${agency}'s forms page (${stateForm.searchUrl}), not ${project.ahj}'s: ${stateForm.notFound}. Upload ${agency}'s blank (Find official form → upload); it has not been counted as present.` } };
+    const where = `${agency} issues the ${track} permit for ${project.ahj} (state rule, seeded — ${stateForm.sourceUrl}) on its own ${stateForm.formName}. It was looked for on ${agency}'s forms page (${stateForm.searchUrl}), not ${project.ahj}'s`;
+    if (stateForm.url && stateForm.fill === "by_hand") {
+      const what = stateForm.format === "docx" ? "Word document" : stateForm.format.toUpperCase();
+      return { ...base, steps: [], settled: { status: "needs_manual", sourceUrl: stateForm.url, mappedFields: 0,
+        message: `${where}: ${stateForm.note}. Download (${what}, ${stateForm.bytes} bytes, SHA-256 ${stateForm.sha256} when seeded): ${stateForm.url}. It is required, is not filled automatically, and has not been counted as present.` } };
+    }
+    return { ...base, steps: [], settled: { status: "not_found", message: `${where}: ${stateForm.note}. Upload ${agency}'s blank (Find official form → upload); it has not been counted as present.` } };
   }
   if (!candidates.length) {
     return { ...base, steps: [], settled: { status: "not_found", message: `${whose}, but no ${label} of ${agency}'s is held, seeded or cited. Upload ${agency}'s blank (Find official form → upload); it has not been counted as present.` } };

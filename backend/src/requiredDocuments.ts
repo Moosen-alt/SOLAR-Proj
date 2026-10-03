@@ -538,7 +538,7 @@ export function requiredApplicationDocs(
     const issuerRows: RequiredApplicationDoc[] = stateIssuer.forms.map((f) => ({
       docType: TRACK_FORM_TYPES[f.track][0],
       label: `${stateIssuer.agency}: ${f.formName}, filled`,
-      why: `${stateIssuer.agency} issues the ${f.track} permit for ${where} (state rule, seeded — ${f.sourceUrl}) on its own ${f.formName}; only ${stateIssuer.agency}'s ${f.track} form satisfies this row. It is ${stateIssuer.agency}'s form, looked for on its own forms page (${f.searchUrl}), never ${where}'s.`,
+      why: `${stateIssuer.agency} issues the ${f.track} permit for ${where} (state rule, seeded — ${f.sourceUrl}) on its own ${f.formName}; only ${stateIssuer.agency}'s ${f.track} form satisfies this row. It is ${stateIssuer.agency}'s form, looked for on its own forms page (${f.searchUrl}), never ${where}'s.${f.url && f.fill === "by_hand" ? ` ${f.note} (download: ${f.url}).` : ""}`,
       lane: "permit",
       blocking: owed,
       discipline: f.track === "building" ? "structural" : "electrical",
