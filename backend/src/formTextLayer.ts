@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { StandardFontEmbedder, StandardFonts } from "pdf-lib";
 
 export interface LabelItem {
   page: number;
@@ -20,6 +21,14 @@ export interface LabelItem {
   y: number; // baseline, PDF points from bottom (pdf-lib's convention)
   width: number;
   height: number;
+  /** The text's direction in degrees counter-clockwise (0 = upright, 90 = reading up the page).
+   *  Absent when upright. A form laid on its side on an upright page (City of Albuquerque's E-Plan
+   *  application, live 2026-10-01) prints every label at 90. */
+  angle?: number;
+  /** The font is a serif face (pdfjs's family guess) — only used to measure where a run's parts sit. */
+  serif?: boolean;
+  /** A run of underscores: a printed writing line, not words (splitBlankRuns). */
+  blank?: boolean;
 }
 
 export const normLabel = (s: string) => s.toLowerCase().replace(/\s+/g, " ").replace(/[^\w %/#.:&-]/g, "").trim();
@@ -41,15 +50,69 @@ export async function extractLabels(pdfBytes: Uint8Array): Promise<LabelItem[]> 
     for (let n = 1; n <= doc.numPages; n++) {
       const page = await doc.getPage(n);
       const tc = await page.getTextContent();
-      for (const it of tc.items as Array<{ str: string; transform: number[]; width: number; height: number }>) {
+      const styles = (tc as unknown as { styles?: Record<string, { fontFamily?: string }> }).styles ?? {};
+      for (const it of tc.items as Array<{ str: string; transform: number[]; width: number; height: number; fontName?: string }>) {
         if (!it.str || !it.str.trim()) continue;
-        out.push({ page: n - 1, str: it.str, x: it.transform[4], y: it.transform[5], width: it.width || 0, height: it.height || 0 });
+        const item: LabelItem = { page: n - 1, str: it.str, x: it.transform[4], y: it.transform[5], width: it.width || 0, height: it.height || 0 };
+        const angle = textAngle(it.transform);
+        if (angle) item.angle = angle;
+        if (/^serif$/i.test(String(styles[it.fontName ?? ""]?.fontFamily ?? ""))) item.serif = true;
+        out.push(item);
       }
     }
     return out;
   } catch {
     return [];
   }
+}
+
+/** A text matrix's direction, in degrees counter-clockwise, snapped to a quarter turn when within 2°. */
+function textAngle(t: number[]): number {
+  let a = (Math.atan2(t[1], t[0]) * 180) / Math.PI;
+  if (a < 0) a += 360;
+  const q = Math.round(a / 90) * 90;
+  if (Math.abs(a - q) <= 2) a = q % 360;
+  return Math.round(a * 100) / 100;
+}
+
+type FontName = Parameters<typeof StandardFontEmbedder.for>[0];
+const timesMetrics = StandardFontEmbedder.for(StandardFonts.TimesRoman as unknown as FontName);
+const helveticaMetrics = StandardFontEmbedder.for(StandardFonts.Helvetica as unknown as FontName);
+/** WinAnsi-safe text for the standard-font metrics (anything else measures as an "n"). */
+const measurable = (s: string): string => s.replace(/[^\x20-\x7e]/g, "n");
+
+/**
+ * WRITING LINES PRINTED AS UNDERSCORES. Many flat forms print a whole row as ONE text item —
+ * Valencia County's "NAME ____ PHONE ____ Company ____" — so neither "PHONE" nor its blank has a
+ * position of its own, and a value bound to the agent's PHONE resolved to the owner's PHONE a row
+ * up. This splits such an item into its words and its blanks (`blank: true`), each placed along the
+ * run by the standard serif / sans metrics scaled to the run's printed width (Times New Roman, the
+ * usual face of these forms, matches Times-Roman's metrics to a fraction of a point). Items with no
+ * run of 3+ underscores, and items not upright, are returned as they are.
+ */
+export function splitBlankRuns(items: LabelItem[]): LabelItem[] {
+  const out: LabelItem[] = [];
+  for (const it of items) {
+    if (it.angle || !/_{3,}/.test(it.str) || !(it.width > 0)) { out.push(it); continue; }
+    const metrics = it.serif ? timesMetrics : helveticaMetrics;
+    const text = measurable(it.str);
+    const total = metrics.widthOfTextAtSize(text, 1);
+    if (!(total > 0)) { out.push(it); continue; }
+    const at = (i: number) => it.x + (it.width * metrics.widthOfTextAtSize(text.slice(0, i), 1)) / total;
+    for (const m of it.str.matchAll(/_{3,}|[^_]+/g)) {
+      const start = m.index ?? 0;
+      const raw = m[0];
+      const blank = raw.startsWith("_") && /^_+$/.test(raw);
+      // A word part keeps its own trimmed extent (leading/trailing spaces are not the label).
+      const lead = blank ? 0 : raw.length - raw.trimStart().length;
+      const word = blank ? raw : raw.trim();
+      if (!word.replace(/_/g, "").trim() && !blank) continue;
+      const x0 = at(start + lead);
+      const x1 = at(start + lead + word.length);
+      out.push({ ...it, str: word, x: x0, width: x1 - x0, ...(blank ? { blank: true } : {}) });
+    }
+  }
+  return out;
 }
 
 /** Map each checkbox field name → the descriptive text sitting just to its right

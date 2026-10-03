@@ -245,12 +245,20 @@ await check("THE FIX: the Tax map/parcel row holds the parcel number and nothing
   const inRow = yLines.filter((l) => l.y > row.bottom && l.y < row.top && l.x < 355);
   assert.deepEqual(inRow.map((l) => l.text), [v("snapshot.parcelNumber")]);
 });
-await check("MUST-EXCLUDE: a check mark (lit:X) is drawn exactly where release #11 drew it — in its box, not moved beside its caption", async () => {
+await check("CHECK MARKS (issue #10): each X is drawn INSIDE the checkbox the page draws — the same box release #11 aimed at, now centred in it", async () => {
   const off = await fill(yamhillDef(), yamhill, ctx, { FLAT_FORM_ROW_SNAP: "0" });
-  const marks = (ls: Line[]) => ls.filter((l) => l.text === "X").map((l) => `${l.x.toFixed(1)},${l.y.toFixed(1)}`).sort();
+  const marks = (ls: Line[]) => ls.filter((l) => l.text === "X");
   const offLines = await drawnLines(off.bytes, yItems);
   assert.equal(marks(yLines).length, 3, JSON.stringify(marks(yLines)));
-  assert.deepEqual(marks(yLines), marks(offLines));
+  assert.ok(yGeo.boxes.length >= 10, `the page's checkboxes are read: ${yGeo.boxes.length}`);
+  const boxAt = (x: number, y: number) => [...yGeo.boxes].sort((a, b) => Math.hypot((a.x0 + a.x1) / 2 - x, (a.y0 + a.y1) / 2 - y) - Math.hypot((b.x0 + b.x1) / 2 - x, (b.y0 + b.y1) / 2 - y))[0];
+  for (const [i, m] of marks(yLines).entries()) {
+    // An X has no descender: its ink is baseline to cap height.
+    const box = yGeo.boxes.find((b) => m.x >= b.x0 && m.x1 <= b.x1 && m.y >= b.y0 && m.y + 0.72 * m.h <= b.y1);
+    assert.ok(box, `X at ${m.x.toFixed(1)},${m.y.toFixed(1)} is not inside a box`);
+    const was = marks(offLines)[i];
+    assert.equal(boxAt(was.x + 3, was.y + 3), box, `X moved to another box than release #11's (${was.x.toFixed(1)},${was.y.toFixed(1)})`);
+  }
 });
 await check("POSITIVE CONTROL (the kill): with FLAT_FORM_ROW_SNAP=0 (release #11) the same predicate reports the live defects", async () => {
   const off = await fill(yamhillDef(), yamhill, ctx, { FLAT_FORM_ROW_SNAP: "0" });
