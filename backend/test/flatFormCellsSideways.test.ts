@@ -440,7 +440,7 @@ await check("ONE-GLYPH RULE: a cut never leaves under 3 characters of a longer v
     { page: 0, y: 690, yTop: 690.35, yBottom: 689.65, x0: 20, x1: 300 }, { page: 0, y: 710, yTop: 710.35, yBottom: 709.65, x0: 20, x1: 300 },
   ] };
   const items: Item[] = [{ page: 0, str: "Owner:", x: 22, y: 693, width: 26, height: 9 }];
-  const snap = rowSnapPlacement({ geometry: g, items, label: items[0], point: { x: 50, y: 693 }, text: "Roberta Example-Longname", size: 9, widthOf });
+  const snap = rowSnapPlacement({ geometry: g, items, label: items[0], point: { x: 50, y: 693 }, text: "Roberta Example-Longname", size: 9, widthOf, unverifiedMap: true });
   assert.ok(!snap || snap.lines.every((l) => l.text.length >= 3), JSON.stringify(snap));
 });
 await check("ONE-GLYPH RULE (maxWidth path): a value wider than its box shrinks first; one that still does not fit is withheld and named, never drawn as a stub", async () => {
