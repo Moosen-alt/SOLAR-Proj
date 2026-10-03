@@ -9875,6 +9875,8 @@ function renderKpi(kpi) {
 
     ${renderStagingQuality(kpi.stagingQuality)}
 
+    ${window.KpiFilings ? window.KpiFilings.renderFilingKpis(kpi.filings) : ""}
+
     ${kpi.byUser.length > 0 ? `
     <h3 style="margin-top:24px">Per Operator</h3>
     <div class="table-wrap">

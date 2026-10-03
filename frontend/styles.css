@@ -1099,6 +1099,8 @@ tbody tr:hover, tbody tr.active { background: var(--tint-select); }
 .kpi-card.kpi-fail { background: var(--tint-fail); border-color: var(--edge-fail); }
 .kpi-value { font-size: 28px; font-weight: 800; color: var(--text); line-height: 1.1; }
 .kpi-label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+/* A rate on fewer than 10 filings (KpiRate.smallN): greyed, the n still shown beside it. */
+.kpi-smalln td { color: var(--muted); opacity: 0.7; }
 .text-danger { color: var(--danger); font-weight: 700; }
 
 /* Handoff banner — shown when permit issued + NEM approved */
