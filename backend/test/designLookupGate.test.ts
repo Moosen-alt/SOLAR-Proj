@@ -129,13 +129,14 @@ await check("AC1: the design lookup itself queued, then running -> 'queued' then
 // ─── AC6: the progress read is a read ────────────────────────────────────────────────────────────
 await check("AC6: reading the lookup's progress (code context, page-load stage results) writes nothing", async () => {
   const count = (t: string) => Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM ${t}`)?.n ?? 0);
-  const before = [count("job_queue"), count("audit_logs"), count("jurisdiction_code_profiles")];
+  const projectsStamp = () => String(db.get<{ m: string }>("SELECT MAX(updated_at) AS m FROM projects")?.m ?? "");
+  const before = [count("job_queue"), count("audit_logs"), count("jurisdiction_code_profiles"), count("projects"), projectsStamp()];
   const ctx = CP.resolveEffectiveCodeContext(db, ST, "Testvale County");
   assert.equal(ctx.designLookup?.status, "running");
   CP.readDesignLookupProgress(db, ST, "Testvale County");
   CP.listRowlessDesignLookups(db);
   await R.readStageResults(db, P1);
-  assert.deepEqual([count("job_queue"), count("audit_logs"), count("jurisdiction_code_profiles")], before);
+  assert.deepEqual([count("job_queue"), count("audit_logs"), count("jurisdiction_code_profiles"), count("projects"), projectsStamp()], before);
 });
 
 // ─── AC2: the lookup lands with values -> the worker re-judges ──────────────────────────────────
@@ -155,7 +156,7 @@ await check("AC2: values landed -> pre-stage projects in that AHJ are re-judged 
   assert.deepEqual(rejudged, [P1]);
   assert.equal(gateRuns(P1), before[0] + 1, "no new reviewer_report.generated row");
   assert.equal(gateRuns(P1_SUBMITTED), before[1], "a post-stage project was re-judged");
-  assert.equal(gateRuns(P_OTHER), before[2] + 1, "another AHJ's project was re-judged");
+  assert.equal(gateRuns(P_OTHER), before[2] + 1, "another AHJ's project: expected only its own explicit gate run (+1) — the re-judge must not touch it");
   assert.equal(unknownFinding(P1), undefined, "the criteria landed but the gate still says they are unknown");
   // Hard rule 3: the lookup's values land SEEDED.
   assert.equal(CP.ownCodeProfileRow(db, ST, "Testvale County")?.profile.confidence, "seeded");
@@ -179,32 +180,41 @@ await check("AC2: the WORKER re-judges after the job leaves 'running' (stub LLM,
 });
 
 // ─── AC4: an incomplete lookup is retried, not held 30 days ─────────────────────────────────────
-await check("AC4: truncated / ungrounded / failed -> 'incomplete — retrying', re-queued after the backoff, capped", async () => {
+await check("AC4: truncated / failed (threw) / ungrounded -> 'incomplete — retrying', re-queued after the backoff, capped", async () => {
+  // No marker resets here (#38): every lookup runs through runDesignCriteriaResearch, which must
+  // clear this process's in-flight marker however it ends — a lookup that THROWS included.
   process.env.ANTHROPIC_API_KEY = KEY;
   const ahj = "Retryton County";
   const P5 = mkProject(ahj);
   R.getReviewerReport(db, P5);
-  pendingDesignLookup(ahj);
+  const run = (provider: LLMProvider) => CP.runDesignCriteriaResearch(db, { state: ST, ahj, profileKey: keyOf(ahj) }, provider);
+  const first = pendingDesignLookup(ahj);
   // 1) cut off: a retry is due only after the backoff
-  finishJob(designJobs(ahj)[0].id, { webGrounded: true, truncated: true, found: 0, checklist: [] });
+  const cut = await run(fakeProvider({ provider: "claude", webGrounded: true, truncated: true, values: [], notes: "" }));
+  finishJob(first, cut);
   assert.match(unknownFinding(P5)!.title, /lookup incomplete — retrying/);
-  CP.resetResearchMarkersForTests();
   assert.equal(CP.ensureDesignCriteriaResearched(db, ST, ahj), 0, "retried inside the backoff");
-  finishJob(designJobs(ahj)[0].id, { webGrounded: true, truncated: true, found: 0, checklist: [] }, "done", CP.DESIGN_RESEARCH_RETRY_MS + 60_000);
+  finishJob(first, cut, "done", CP.DESIGN_RESEARCH_RETRY_MS + 60_000);
   assert.equal(CP.ensureDesignCriteriaResearched(db, ST, ahj), 1, "an incomplete lookup was held by the 30-day window");
-  // 2) ungrounded, then 3) failed: the cap stops the retries
-  const [, second] = designJobs(ahj);
-  finishJob(second.id, { webGrounded: false, found: 0, checklist: [] }, "done", CP.DESIGN_RESEARCH_RETRY_MS + 30_000);
-  CP.resetResearchMarkersForTests();
-  assert.equal(CP.ensureDesignCriteriaResearched(db, ST, ahj), 1);
-  finishJob(designJobs(ahj)[2].id, null, "failed", CP.DESIGN_RESEARCH_RETRY_MS + 10_000);
-  CP.resetResearchMarkersForTests();
+  // 2) the lookup THROWS: failed, and still retried after the backoff (not held by the marker)
+  const second = designJobs(ahj)[1];
+  const throwing = { researchDesignCriteria: async () => { throw new Error("synthetic: lookup API unavailable"); } } as unknown as LLMProvider;
+  await assert.rejects(run(throwing), /synthetic/);
+  finishJob(second.id, null, "failed", CP.DESIGN_RESEARCH_RETRY_MS + 30_000);
+  assert.equal(CP.readDesignLookupProgress(db, ST, ahj)?.status, "retrying");
+  // The next gate queues the retry itself, and says so — not "retrying" with nothing queued.
+  assert.match(unknownFinding(P5)!.title, /lookup in progress/, "a lookup that threw held its AHJ: 'retrying' with nothing queued");
+  assert.deepEqual(designJobs(ahj).map((j) => j.status), ["done", "failed", "pending"]);
+  // 3) ungrounded: the cap stops the retries
+  const ungrounded = await run(fakeProvider({ provider: "claude", webGrounded: false, values: [], notes: "" }));
+  finishJob(designJobs(ahj)[2].id, ungrounded, "done", CP.DESIGN_RESEARCH_RETRY_MS + 10_000);
   assert.equal(CP.ensureDesignCriteriaResearched(db, ST, ahj), 0, `retried past the cap of ${CP.DESIGN_RESEARCH_MAX_INCOMPLETE}`);
   assert.match(unknownFinding(P5)!.title, /lookup incomplete — verify with the AHJ/);
   // Control: a COMPLETE lookup still holds the 30-day window.
   const done = "Doneton County";
-  finishJob(pendingDesignLookup(done), { webGrounded: true, found: 0, checklist: [] }, "done", CP.DESIGN_RESEARCH_RETRY_MS * 5);
-  CP.resetResearchMarkersForTests();
+  const doneId = pendingDesignLookup(done);
+  const complete = await CP.runDesignCriteriaResearch(db, { state: ST, ahj: done, profileKey: keyOf(done) }, fakeProvider({ provider: "claude", webGrounded: true, values: [], notes: "" }));
+  finishJob(doneId, complete, "done", CP.DESIGN_RESEARCH_RETRY_MS * 5);
   assert.equal(CP.ensureDesignCriteriaResearched(db, ST, done), 0, "a complete lookup was re-queued inside 30 days");
 });
 
