@@ -295,16 +295,36 @@ export function deleteProjectDocument(db: AppDb, projectId: string, docId: strin
 const DOCUMENT_DELETED_ACTION = "project.document_deleted";
 
 /**
+ * WITHDRAW A PART THE SPLITTER WROTE (#77) — the splitter taking back its own cut, not a person's
+ * ruling. Refuses anything but a `source = 'split'` row: a document a person uploaded is never
+ * removed here. Recorded under its OWN audit action so documentTypesDeletedSince (a PERSON's
+ * deletion, which forbids a re-cut) does not read it, while documentsChangedAt still does — a
+ * verdict that counted the withdrawn part is stale.
+ */
+export function withdrawSplitPart(db: AppDb, projectId: string, docId: string): boolean {
+  const row = db.get<Row>("SELECT stored_path, doc_type, source FROM project_documents WHERE id = ? AND project_id = ?", [docId, projectId]);
+  if (!row || s(row.source) !== "split") return false;
+  const stored = s(row.stored_path);
+  if (stored && fs.existsSync(stored)) { try { fs.unlinkSync(stored); } catch { /* ignore */ } }
+  db.run("DELETE FROM project_documents WHERE id = ? AND source = 'split'", [docId]);
+  addAuditLog(db, projectId, "system", "documents", SPLIT_PART_WITHDRAWN_ACTION, { docType: s(row.doc_type) });
+  return true;
+}
+
+const SPLIT_PART_WITHDRAWN_ACTION = "project.split_part_withdrawn";
+
+/**
  * WHEN THIS PROJECT'S DOCUMENTS LAST CHANGED — the newest upload/split/generated row, or the
- * newest removal, whichever is later (null when nothing was ever on file). THE one answer to
- * "has the document set changed since X?": a verdict computed FROM the documents (QC's
+ * newest removal (a person's deletion, or the splitter withdrawing a stale part), whichever is
+ * later (null when nothing was ever on file). THE one answer to "has the document set changed since X?": a verdict computed FROM the documents (QC's
  * "Required document … not attached … Staging will refuse without it" rows, the bill-on-file
  * wait) is stale once this is newer than the verdict, and is re-judged (autoStageSteps STEP 1).
  */
 export function documentsChangedAt(db: AppDb, projectId: string): string | null {
   const uploaded = s(db.get<Row>("SELECT MAX(uploaded_at) AS t FROM project_documents WHERE project_id = ?", [projectId])?.t);
   const removed = s(db.get<Row>(
-    "SELECT MAX(created_at) AS t FROM audit_logs WHERE project_id = ? AND action = ?", [projectId, DOCUMENT_DELETED_ACTION])?.t);
+    "SELECT MAX(created_at) AS t FROM audit_logs WHERE project_id = ? AND action IN (?, ?)",
+    [projectId, DOCUMENT_DELETED_ACTION, SPLIT_PART_WITHDRAWN_ACTION])?.t);
   const newest = uploaded > removed ? uploaded : removed;
   return newest || null;
 }

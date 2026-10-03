@@ -104,7 +104,7 @@ import { isPortalPaused } from "./portalPause";
 import { ensureCheckTarget, refuseUtilityUrlOnPermitTarget, getSubmittalTracks, isTrackDone, requiredTracks, SUBMITTAL_TRACK_TYPES, trackHasFiling, trackPermitTypes, unfinishedTracks, unfinishedUnattributedTargets } from "./submittalTracks";
 import { recordTimelineSample, trackForTarget } from "./timelineSamples";
 import { buildApplicationDocumentPackage, findApplicationProfile } from "./applicationDocs";
-import { buildUtilityPackage } from "./docSplitter";
+import { ensurePlanSetSplit } from "./docSplitter";
 import { classifyCorrection, humanizeBucket, humanizeEnum } from "./corrections";
 import { extractCorrectionFromPage } from "./correctionExtract";
 import { parseCorrectionProposals, attachJurisdictionProposals } from "./correctionAgent";
@@ -8347,16 +8347,15 @@ export async function prepareSubmission(
   // the operator upload a single plan-set PDF and stage immediately without a separate
   // manual split step. Failures are non-fatal — if the plan set can't be split the
   // document gate below will still report exactly what's missing.
+  // ensurePlanSetSplit withdraws split parts the current classifier disagrees with (#77) and
+  // re-splits only when that can add a sheet — not on every pass for a set whose spec pages are
+  // title-only cut-sheets that never become a spec part (#75 review).
   try {
-    const existingDocs = projectDocsByType(db, detail.project.id);
-    const hasSheets = ["sld", "site_plan", "structural", "module_spec", "inverter_spec"].every((t) => existingDocs[t]);
-    if (!hasSheets) {
-      // nem → NEM docs; ANY permit-side track (building/electrical/combo/permit/mpu) → permit
-      // docs only; no track (stage everything) → all. Previously only 'building' mapped to
-      // 'permit', so electrical/combo/mpu stages did needless NEM-package work.
-      const target = track === "nem" ? "nem" : track ? "permit" : "all";
-      await buildUtilityPackage(db, detail.project.id, target);
-    }
+    // nem → NEM docs; ANY permit-side track (building/electrical/combo/permit/mpu) → permit
+    // docs only; no track (stage everything) → all. Previously only 'building' mapped to
+    // 'permit', so electrical/combo/mpu stages did needless NEM-package work.
+    const target = track === "nem" ? "nem" : track ? "permit" : "all";
+    await ensurePlanSetSplit(db, detail.project.id, target, ["sld", "site_plan", "structural", "module_spec", "inverter_spec"]);
   } catch { /* non-fatal — document gate will surface what's still missing */ }
 
   // failure — the gate only let scalar fields through before. Scope NEM-only gaps out

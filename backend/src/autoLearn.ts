@@ -38,10 +38,9 @@ import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics"
 import { RECIPE_FIELD_DESCRIPTIONS, deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey, portalEntityEvidence, stampCompanyAttestations, withholdClientLicenceLiteralsFor, recordPortalNotServed } from "./portalRecipes";
 import { notServedInResult } from "../../shared/src/portalNotServed";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
-import { projectDocsByType } from "./projectDocuments";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
 import { logger } from "./logger";
-import { buildUtilityPackage } from "./docSplitter";
+import { ensurePlanSetSplit } from "./docSplitter";
 import { addAuditLog } from "./audit";
 import { HttpError } from "./httpError";
 import { formPurposeMismatch } from "./formPurpose";
@@ -965,11 +964,8 @@ async function autoLearnPortalInner(
     await prepareOfficialDocuments(db, project);
   }
   try {
-    const existing = projectDocsByType(db, projectId);
-    const hasSheets = ["sld", "site_plan", "inverter_spec"].every((t) => existing[t]);
-    if (!hasSheets) {
-      await buildUtilityPackage(db, projectId, scopeType === "utility" ? "nem" : "permit").catch(() => null);
-    }
+    // Withdraws stale split parts (#77); re-splits only when that can add a sheet (#75 review).
+    await ensurePlanSetSplit(db, projectId, scopeType === "utility" ? "nem" : "permit", ["sld", "site_plan", "inverter_spec"]).catch(() => null);
     // Use the replay selection policy: filled applications are available, and
     // the operator's explicit upload wins when both versions exist. Scoped to the filing this
     // learn records (docs-audit PLAN D3): no permit named = every AHJ document ("permit").
