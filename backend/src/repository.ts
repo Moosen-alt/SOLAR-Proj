@@ -196,10 +196,13 @@ function stageFailureText(result: unknown): string {
 // constants; other jurisdictions get their recorded limits/citations or model-code
 // defaults with "verify locally" phrasing).
 export function buildReviewerReportFor(db: AppDb, project: ProjectRecord): ReviewerReport {
-  const codeContext = resolveEffectiveCodeContext(db, project.state, project.ahj);
+  let codeContext = resolveEffectiveCodeContext(db, project.state, project.ahj);
   // AUTONOMY: the internal gate self-onboards too — reviewing a project in an
-  // un-profiled jurisdiction queues background code research for its layers.
-  if (!codeContext.verified) ensureCodeProfilesResearched(db, project.state, project.ahj);
+  // un-profiled jurisdiction queues background code research for its layers. What it just queued
+  // is read back, so this very report says "lookup in progress", not "not on file".
+  if (!codeContext.verified && ensureCodeProfilesResearched(db, project.state, project.ahj) > 0) {
+    codeContext = resolveEffectiveCodeContext(db, project.state, project.ahj);
+  }
   // The reviewer's plan-set requirement is about whether the package EXISTS; give it the
   // attached document types so it cannot block a project that has them.
   const uploadedDocTypes = Object.keys(projectDocsByType(db, project.id));
@@ -5024,6 +5027,67 @@ export function getReviewerReport(db: AppDb, projectId: string): ReviewerReport 
   });
   recordReviewerGateVerdict(db, projectId, report);
   return report;
+}
+
+/**
+ * RE-JUDGE THE GATE WHEN AN AHJ'S DESIGN-CRITERIA LOOKUP LANDS. The first project in a new AHJ is
+ * judged while its lookup is still running (the single-slot worker runs the chain first), and
+ * nothing judged it again: the gate kept saying "not on file" over criteria that had since landed.
+ * Called by the worker after a design_criteria_research / code_research job finishes (done or
+ * failed for good). Every PRE-STAGE project (qc_passed / ready_to_stage — the statuses the gate's
+ * verdict is recorded for) in that state whose AHJ resolves to the looked-up row, and whose gate
+ * has already run, is re-judged: a new reviewer_report.generated audit row, the verdict recorded,
+ * and an SSE event so an open project page refetches. Cached vision verdicts only (no new LLM
+ * spend). Never touches a portal or a status other than the gate's own stage_detail.
+ */
+export async function rejudgeReviewerGatesAfterLookup(
+  db: AppDb,
+  target: { state: string; ahj: string },
+  trigger: string,
+): Promise<string[]> {
+  const { resolveCriteriaWriteRow } = await import("./codeProfiles");
+  const st = String(target.state || "").trim();
+  const name = String(target.ahj || "").trim();
+  if (!st || !name) return [];
+  const key = resolveCriteriaWriteRow(db, st, name)?.key;
+  if (!key) return [];
+  const candidates = db.query<Row>(
+    `SELECT p.id, p.ahj FROM projects p
+      WHERE UPPER(TRIM(p.state)) = ? AND p.status IN ('qc_passed', 'ready_to_stage')
+        AND EXISTS (SELECT 1 FROM audit_logs a WHERE a.project_id = p.id AND a.action = 'reviewer_report.generated')`,
+    [st.toUpperCase()],
+  );
+  const rejudged: string[] = [];
+  for (const row of candidates) {
+    const projectId = text(row.id);
+    try {
+      if (resolveCriteriaWriteRow(db, st, text(row.ahj))?.key !== key) continue;
+      const detail = getProjectDetail(db, projectId);
+      let report = buildReviewerReportFor(db, detail.project);
+      try {
+        const { createLLMProvider } = await import("./llm");
+        const { applyVisionToReviewerReport } = await import("./reviewerVision");
+        report = await applyVisionToReviewerReport(db, createLLMProvider(), report, { cacheOnly: true });
+      } catch { /* vision is best-effort; the text report stands */ }
+      addAuditLog(db, projectId, "system", "ahj reviewer gate", "reviewer_report.generated", {
+        trigger,
+        blockerCount: report.findings.filter((item) => item.severity === "blocker").length,
+        warningCount: report.findings.filter((item) => item.severity === "warning").length,
+        installerCalloutCount: report.installerCallouts.length,
+      });
+      recordReviewerGateVerdict(db, projectId, report);
+      rejudged.push(projectId);
+    } catch (err) {
+      logger.warn("reviewer-gate", `re-judge after ${trigger} failed`, { project: projectId, err: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  if (rejudged.length) {
+    const { sseBroadcast } = await import("./events");
+    for (const projectId of rejudged) {
+      sseBroadcast({ type: "reviewer_gate_rejudged", projectId, message: `Reviewer gate re-judged: ${name} design-criteria lookup landed.` });
+    }
+  }
+  return rejudged;
 }
 
 // Opt-in: run the base text report, then a Claude-vision pass that inspects the

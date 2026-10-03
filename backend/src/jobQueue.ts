@@ -652,6 +652,22 @@ export function claimNextJob(db: AppDb): JobRecord | null {
   return { ...job, status: "running", startedAt: now };
 }
 
+/** A design-criteria lookup (or the full code research that asks for the same criteria) finished —
+ *  AFTER its row left 'running', so the re-judged finding reads where the lookup now stands. The
+ *  gate of every pre-stage project in that AHJ is re-run (repository.rejudgeReviewerGatesAfterLookup).
+ *  Best effort: a failure here never changes the job's own outcome. */
+async function rejudgeAfterJurisdictionLookup(db: AppDb, job: JobRecord): Promise<void> {
+  if (job.jobType !== "design_criteria_research" && job.jobType !== "code_research") return;
+  const p = job.payload as { state?: unknown; ahj?: unknown };
+  if (!String(p.ahj || "").trim()) return; // the state layer: no AHJ's criteria
+  try {
+    const { rejudgeReviewerGatesAfterLookup } = await import("./repository");
+    await rejudgeReviewerGatesAfterLookup(db, { state: String(p.state || ""), ahj: String(p.ahj || "") }, `${job.jobType}_landed`);
+  } catch (err) {
+    logger.warn("job-worker", `re-judge after ${job.jobType} failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 // Process one pending job. Returns true if a job was found and processed.
 export async function processNextJob(db: AppDb): Promise<boolean> {
   const job = claimNextJob(db);
@@ -889,6 +905,7 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
       "UPDATE job_queue SET status = 'done', finished_at = ?, result = ?, progress = progress_total WHERE id = ? AND status = 'running'",
       [nowIso(), JSON.stringify(result), job.id],
     );
+    await rejudgeAfterJurisdictionLookup(db, job);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const retryCount = job.retryCount + 1;
@@ -909,6 +926,7 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
         [nowIso(), msg, job.id],
       );
       escalateJobFailure(db, job.jobType, job.projectId, msg);
+      await rejudgeAfterJurisdictionLookup(db, job);
     }
   } finally {
     inFlightJobIds.delete(job.id);

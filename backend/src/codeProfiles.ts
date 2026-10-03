@@ -25,6 +25,7 @@ import type {
   CodeReference,
   CodeResearchProvenance,
   DesignCriteriaChecklistItem,
+  DesignCriteriaLookupProgress,
   DesignCriteriaLookupRecord,
   DesignCriteriaResearchResult,
   JurisdictionAdoptionModel,
@@ -148,6 +149,9 @@ export interface EffectiveCodeContext {
   /** What ISSUED projects in this AHJ stated (corroboration only — never the AHJ's value).
    *  Loaded by resolveEffectiveCodeContext; absent/empty from the pure builder. */
   approvedDesigns?: ApprovedDesignObservation[];
+  /** Where this AHJ's design-criteria lookup stands (readDesignLookupProgress — a job_queue READ).
+   *  Loaded by resolveEffectiveCodeContext; absent from the pure builder and when no lookup exists. */
+  designLookup?: DesignCriteriaLookupProgress;
   /** Resolve a citation for a code family ("NEC", "IRC", …) from the adopted
    *  editions; returns a CodeReference shell the rule fills with section/title. */
   citationFor(code: string, section: string, title: string, fallback?: CodeReference): CodeReference;
@@ -222,7 +226,7 @@ function designCriteriaLookupOf(v: unknown): DesignCriteriaLookupRecord | undefi
   if (!r || typeof r !== "object" || typeof r.at !== "string" || !Array.isArray(r.items)) return undefined;
   const items = (r.items as Array<Record<string, unknown> | null>)
     .filter((i): i is Record<string, unknown> => !!i && (DESIGN_CRITERIA_CHECKLIST as readonly string[]).includes(String(i.item))
-      && ["found", "weak_source", "not_found", "not_researched"].includes(String(i.status)))
+      && ["found", "weak_source", "not_found", "not_researched", "site_specific"].includes(String(i.status)))
     .map((i) => ({
       item: i.item as DesignCriteriaChecklistItem,
       status: i.status as DesignCriteriaLookupRecord["items"][number]["status"],
@@ -909,7 +913,12 @@ export function resolveEffectiveCodeContext(db: AppDb, state: string, ahj: strin
   try { profile = getCodeProfile(db, { state, ahj }); } catch { profile = null; }
   let approvedDesigns: ApprovedDesignObservation[] = [];
   try { approvedDesigns = listApprovedDesignObservations(db, state, ahj); } catch { approvedDesigns = []; }
-  return buildCodeContext(state, ahj, profile, approvedDesigns);
+  const ctx = buildCodeContext(state, ahj, profile, approvedDesigns);
+  // The gate words "criteria not on file" from where the lookup stands (queued, running, ran and
+  // found nothing). A READ of job_queue — this runs on page-load read paths that write nothing.
+  let designLookup: DesignCriteriaLookupProgress | undefined;
+  try { designLookup = readDesignLookupProgress(db, state, ahj); } catch { designLookup = undefined; }
+  return designLookup ? { ...ctx, designLookup } : ctx;
 }
 
 /**
@@ -1986,6 +1995,115 @@ export function listApprovedDesignObservations(db: AppDb, state: string, ahj: st
 
 const DESIGN_RESEARCH_WINDOW_MS = 30 * 24 * 3600_000;
 const inFlightDesignResearch = new Map<string, number>();
+/** An incomplete lookup is retried after this long — not held for the 30-day window, which is for
+ *  ANSWERS (a complete lookup, values or none). */
+export const DESIGN_RESEARCH_RETRY_MS = 3600_000;
+/** Incomplete attempts in the window before the retry stops (a person looks; the next window retries). */
+export const DESIGN_RESEARCH_MAX_INCOMPLETE = 3;
+
+interface DesignLookupAttempt {
+  jobType: string;
+  status: string;
+  createdAt: string;
+  startedAt: string;
+  finishedAt: string;
+  result: Record<string, unknown> | null;
+}
+
+/** The AHJ's lookup jobs in the 30-day window (plus any still pending/running), newest first: the
+ *  design-criteria lookup and the full code research that asks for the same criteria. A READ. */
+function designLookupAttempts(db: AppDb, key: string): DesignLookupAttempt[] {
+  if (!key) return [];
+  return db.query<Row>(
+    `SELECT job_type, status, created_at, started_at, finished_at, result FROM job_queue
+      WHERE job_type IN ('design_criteria_research','code_research') AND payload LIKE ? ESCAPE '\\'
+        AND (status IN ('pending','running') OR created_at > ?)
+      ORDER BY created_at DESC LIMIT 20`,
+    [`%"profileKey":"${likeLiteral(key)}"%`, new Date(Date.now() - DESIGN_RESEARCH_WINDOW_MS).toISOString()],
+  ).map((r) => {
+    let result: Record<string, unknown> | null = null;
+    try { result = r.result ? JSON.parse(text(r.result)) : null; } catch { result = null; }
+    return { jobType: text(r.job_type), status: text(r.status), createdAt: text(r.created_at), startedAt: text(r.started_at), finishedAt: text(r.finished_at), result };
+  }).filter((a) => a.jobType === "design_criteria_research" || a.status === "pending" || a.status === "running");
+}
+
+/** A finished design-criteria lookup that is NOT an answer: it failed, was cut off, or did not
+ *  ground on the web (model memory is never stored, so nothing was looked at). */
+function isIncompleteDesignLookup(a: DesignLookupAttempt): boolean {
+  if (a.status === "failed") return true;
+  return a.result?.webGrounded === false || a.result?.truncated === true;
+}
+
+/** Every finished attempt in the window is incomplete, under the cap, and the newest is older than
+ *  the retry backoff. */
+function designLookupRetryDue(attempts: DesignLookupAttempt[]): boolean {
+  const finished = attempts.filter((a) => a.jobType === "design_criteria_research" && a.status !== "pending" && a.status !== "running");
+  if (!finished.length) return true;
+  if (!finished.every(isIncompleteDesignLookup)) return false;
+  if (finished.length >= DESIGN_RESEARCH_MAX_INCOMPLETE) return false;
+  const newest = Date.parse(finished[0].finishedAt || finished[0].createdAt);
+  return !Number.isFinite(newest) || Date.now() - newest >= DESIGN_RESEARCH_RETRY_MS;
+}
+
+/** Whether a design lookup may be queued at all in this process (key, switches). */
+function designLookupEnabled(): boolean {
+  if (process.env.SKIP_CODE_RESEARCH === "1" || codeResearchSwitchedOff() || isAutoSeedDisabled()) return false;
+  return !!String(process.env.ANTHROPIC_API_KEY ?? "").trim();
+}
+
+/**
+ * WHERE THIS AHJ'S DESIGN-CRITERIA LOOKUP STANDS, for the reviewer's wording. A pure READ of
+ * job_queue (the page-load reads write nothing — nextStep.test pins it). undefined = no lookup in the
+ * window (the finding keeps its "not on file" wording).
+ */
+export function readDesignLookupProgress(db: AppDb, state: string, ahj: string): DesignCriteriaLookupProgress | undefined {
+  const target = resolveCriteriaWriteRow(db, state, ahj);
+  if (!target || target.kind === "blocked_verified") return undefined;
+  const attempts = designLookupAttempts(db, target.key);
+  const live = attempts.find((a) => a.status === "pending" || a.status === "running");
+  if (live) return live.status === "running" ? { status: "running", at: live.startedAt || live.createdAt } : { status: "queued", at: live.createdAt };
+  // Queued by this process a moment ago: the job row is inserted after a dynamic import resolves.
+  const askedAt = inFlightDesignResearch.get(target.key);
+  const lastRow = attempts.find((a) => a.jobType === "design_criteria_research");
+  if (askedAt != null && (!lastRow || Date.parse(lastRow.createdAt) < askedAt - 1000)) return { status: "queued", at: new Date(askedAt).toISOString() };
+  const last = lastRow;
+  if (!last) return undefined;
+  const at = last.finishedAt || last.createdAt;
+  if (isIncompleteDesignLookup(last)) {
+    // "Retrying" only when a retry will actually be queued: the next review of this AHJ queues it.
+    const finished = attempts.filter((a) => a.jobType === "design_criteria_research");
+    const retrying = designLookupEnabled() && finished.every(isIncompleteDesignLookup) && finished.length < DESIGN_RESEARCH_MAX_INCOMPLETE;
+    return { status: retrying ? "retrying" : "incomplete", at };
+  }
+  const items = designCriteriaLookupOf({ at, items: last.result?.checklist })?.items;
+  return { status: "landed", at, ...(items ? { items } : {}) };
+}
+
+/**
+ * THE CHECKLIST OF A LOOKUP THAT HAS NO ROW TO LIVE ON. A county in a statewide-minimum state gets
+ * no AHJ row from code research, and a lookup that found nothing creates none (an empty row would
+ * read as researched) — so its checklist lives only in the job result. The KB card reads these
+ * (GET /api/code-profiles) so "we looked and found nothing" shows with its date, not as "not
+ * researched". Newest complete lookup per profile key without a row. A READ.
+ */
+export function listRowlessDesignLookups(db: AppDb): Array<{ key: string; state: string; ahj: string; designCriteriaLookup: DesignCriteriaLookupRecord }> {
+  const haveRow = new Set(db.query<Row>("SELECT profile_key FROM jurisdiction_code_profiles").map((r) => text(r.profile_key)));
+  const out = new Map<string, { key: string; state: string; ahj: string; designCriteriaLookup: DesignCriteriaLookupRecord }>();
+  for (const r of db.query<Row>(
+    "SELECT payload, result, finished_at FROM job_queue WHERE job_type = 'design_criteria_research' AND status = 'done' ORDER BY finished_at DESC LIMIT 500",
+  )) {
+    let payload: Record<string, unknown> = {};
+    let result: Record<string, unknown> = {};
+    try { payload = JSON.parse(text(r.payload) || "{}"); result = JSON.parse(text(r.result) || "{}"); } catch { continue; }
+    const key = String(payload.profileKey || "");
+    if (!key || haveRow.has(key) || out.has(key)) continue;
+    if (result.webGrounded === false || result.truncated === true) continue;
+    const record = designCriteriaLookupOf({ at: text(r.finished_at), items: result.checklist });
+    if (!record) continue;
+    out.set(key, { key, state: String(payload.state || ""), ahj: String(payload.ahj || ""), designCriteriaLookup: record });
+  }
+  return [...out.values()];
+}
 
 /**
  * ONE design-criteria lookup per AHJ whose own row lacks ground snow or wind speed. Deduped per
@@ -2020,12 +2138,11 @@ export function ensureDesignCriteriaResearched(db: AppDb, state: string, ahj: st
   if (fullPending) return 0;
   const askedAt = inFlightDesignResearch.get(key);
   if (askedAt != null && Date.now() - askedAt < DESIGN_RESEARCH_WINDOW_MS) return 0;
-  const recent = db.get<Row>(
-    `SELECT id FROM job_queue WHERE job_type = 'design_criteria_research' AND payload LIKE ? ESCAPE '\\'
-        AND (status IN ('pending','running') OR created_at > ?)`,
-    [`%${likeLiteral(key)}%`, new Date(Date.now() - DESIGN_RESEARCH_WINDOW_MS).toISOString()],
-  );
-  if (recent) return 0;
+  // A complete lookup in the window backs off 30 days; an INCOMPLETE one (failed, cut off, not
+  // web-grounded) is not an answer and is retried (designLookupRetryDue).
+  const attempts = designLookupAttempts(db, key);
+  if (attempts.some((a) => a.status === "pending" || a.status === "running")) return 0;
+  if (attempts.length && !designLookupRetryDue(attempts)) return 0;
   inFlightDesignResearch.set(key, Date.now());
   const ahjForJob = own?.profile.ahj || name;
   const stateForJob = own?.profile.state || st;
@@ -2190,6 +2307,10 @@ const CHECKLIST_FIELDS: Partial<Record<DesignCriteriaChecklistItem, Array<keyof 
   frostDepth: ["frostDepthIn"],
 };
 
+const SITE_SPECIFIC_ITEM: Record<NonNullable<DesignCriteriaResearchResult["siteSpecific"]>[number]["criterion"], DesignCriteriaChecklistItem> = {
+  groundSnowLoadPsf: "groundSnowLoad", windSpeedMph: "windSpeed", windExposure: "windExposure", seismicDesignCategory: "seismicDesignCategory", frostDepthIn: "frostDepth",
+};
+
 /**
  * EVERY CHECKLIST ITEM, EXPLICITLY (pure). A value on the row is found — or weak_source when its
  * lookup citation is flagged (a project-type handout). A missing one is not_found ONLY when the half
@@ -2220,6 +2341,9 @@ export function buildDesignCriteriaChecklist(
         if (c?.weakSource) return { item, status: "weak_source", ...(c.sourceUrl ? { sourceUrl: c.sourceUrl } : {}), note: c.weakSource };
         return { item, status: "found", ...(c?.sourceUrl ? { sourceUrl: c.sourceUrl } : {}) };
       }
+      // Published only per site (an elevation-banded table, an address lookup): a page for a person.
+      const site = research?.webGrounded ? (research.siteSpecific ?? []).find((x) => SITE_SPECIFIC_ITEM[x.criterion] === item) : undefined;
+      if (site) return { item, status: "site_specific", sourceUrl: site.sourceUrl, note: site.note || "published per site (elevation band / address lookup), not one jurisdiction-wide value" };
       return lookupComplete ? { item, status: "not_found", note: "no jurisdiction-wide value found on an official page" } : { item, status: "not_researched", note: whyNot };
     }
     const have = item === "fireSetbacks" ? (profile?.fireSetbacks ?? []).length > 0 : (profile?.amendments ?? []).length > 0;
@@ -2285,6 +2409,13 @@ export async function runDesignCriteriaResearch(
   const research = await llm.researchDesignCriteria({ state, ahj });
   const merged = mergeResearchedDesignCriteria(db, { state, ahj, profileKey }, research);
   const placement = await placementHalf();
+  // The job row now dedupes (a complete lookup backs off 30 days; an incomplete one is retried after
+  // DESIGN_RESEARCH_RETRY_MS) — this process's own marker would hold a retry for the whole window.
+  inFlightDesignResearch.delete(merged.profileKey);
+  if (profileKey) inFlightDesignResearch.delete(profileKey);
   // The lookup's own notes (truncated, pages read, what was dropped and why) reach the job result.
-  return { ...merged, webGrounded: research.webGrounded, found: research.values?.length ?? 0, notes: String(research.notes || "").slice(0, 1000), placement, checklist: checklist(research, placement).items };
+  return {
+    ...merged, webGrounded: research.webGrounded, ...(research.truncated ? { truncated: true } : {}),
+    found: research.values?.length ?? 0, notes: String(research.notes || "").slice(0, 1000), placement, checklist: checklist(research, placement).items,
+  };
 }

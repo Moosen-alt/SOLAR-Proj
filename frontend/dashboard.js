@@ -573,7 +573,11 @@ async function loadKnowledgeBase() {
     state.knowledgeProfiles = data.profiles || [];
     // The jurisdictions' code profiles, for the design criteria each KB card shows. Optional: a
     // failure (or no review entitlement) leaves the cards as they were.
-    try { state.codeProfiles = (await api("/api/code-profiles")).profiles || []; } catch { state.codeProfiles = []; }
+    try {
+      const cp = await api("/api/code-profiles");
+      state.codeProfiles = cp.profiles || [];
+      state.designLookups = cp.designLookups || [];
+    } catch { state.codeProfiles = []; state.designLookups = []; }
     $("knowledgeCount").textContent = state.knowledgeProfiles.length;
     renderKnowledgeBase();
   } catch (err) {
@@ -1856,7 +1860,7 @@ function renderKnowledgeProfile(profile) {
       ${docs.length ? `<p style="margin:4px 0;font-size:12px"><strong>Required docs (${docs.length}):</strong> ${esc(docs.join(" · "))}</p>` : `<p style="margin:4px 0;font-size:12px;color:var(--muted)">No required documents learned yet.</p>`}
       ${corrections.length ? `<div style="margin-top:4px;font-size:12px"><strong>Common corrections:</strong> <ul style="margin:2px 0 0 16px;padding:0">${corrections.map((c) => `<li>${esc(c.rootCause)}${c.count > 1 ? ` (×${c.count})` : ""}</li>`).join("")}</ul></div>` : ""}
       ${profile.notes ? kbNotesHtml(profile.notes) : ""}
-      ${kbDesignCriteriaHtml(codeProfileForKb(profile, state.codeProfiles || []))}
+      ${kbDesignCriteriaHtml(codeProfileForKb(profile, state.codeProfiles || [], state.designLookups || []))}
       ${kbDeleteButtonHtml(profile)}
     </article>
   `;
@@ -1892,11 +1896,18 @@ async function deleteKnowledgeEntry(profileKey, verified) {
 // THE JURISDICTION'S CODE PROFILE ON ITS KB CARD. Knowledge rows are keyed state|ahj|utility and
 // code profiles state|ahj, so the card finds its AHJ's own code-profile row by state + AHJ name
 // (exact, case-insensitive — a name match would put one city's criteria on another's card).
-function codeProfileForKb(kbProfile, codeProfiles) {
+// A jurisdiction with NO code-profile row (a county in a statewide-minimum state) may still have been
+// looked up: its checklist comes from designLookups (the job result), so the card says "not found
+// (lookup <date>)" instead of "not researched".
+function codeProfileForKb(kbProfile, codeProfiles, designLookups) {
   const st = String(kbProfile?.state || "").trim().toUpperCase();
   const ahj = String(kbProfile?.ahj || "").trim().toLowerCase();
   if (!st || !ahj) return null;
-  return (codeProfiles || []).find((c) => String(c.state || "").trim().toUpperCase() === st && String(c.ahj || "").trim().toLowerCase() === ahj) || null;
+  const same = (c) => String(c.state || "").trim().toUpperCase() === st && String(c.ahj || "").trim().toLowerCase() === ahj;
+  const row = (codeProfiles || []).find(same);
+  if (row) return row;
+  const lookup = (designLookups || []).find(same);
+  return lookup ? { state: lookup.state, ahj: lookup.ahj, confidence: "seeded", designCriteria: {}, citations: [], fireSetbacks: [], amendments: [], designCriteriaLookup: lookup.designCriteriaLookup } : null;
 }
 
 const KB_CRITERIA_LABELS = {
@@ -1960,8 +1971,11 @@ function kbDesignCriteriaHtml(codeProfile) {
       : (item === "fireSetbacks" ? (codeProfile.fireSetbacks || []).length : (codeProfile.amendments || []).length) > 0;
     if (have) continue;
     const rec = lookup ? lookup.items.find((x) => x && x.item === item) : null;
-    const status = rec && rec.status === "not_found" ? `not found${lookup.at ? ` (lookup ${String(lookup.at).slice(0, 10)})` : ""}` : "not researched";
-    gaps.push(`<li>${esc(label)}: <span class="badge badge-warning">${esc(status)} — verify</span></li>`);
+    const when = lookup && lookup.at ? ` (lookup ${String(lookup.at).slice(0, 10)})` : "";
+    const status = rec && rec.status === "not_found" ? `not found${when}`
+      : rec && rec.status === "site_specific" ? `site-specific${when}` : "not researched";
+    const link = rec && rec.status === "site_specific" && rec.sourceUrl ? ` <span class="muted">${esc(rec.note || "")} — ${esc(rec.sourceUrl)}</span>` : "";
+    gaps.push(`<li>${esc(label)}: <span class="badge badge-warning">${esc(status)} — verify</span>${link}</li>`);
   }
   const obs = Array.isArray(codeProfile.approvedDesignSummary) ? codeProfile.approvedDesignSummary : [];
   const obsText = obs.map((o) => {
@@ -10011,6 +10025,8 @@ const SSE_EVENT_KINDS = {
   imap_poll_done: "info",
   // The automatic build/verify chain finished a pass — refetches the open project.
   stage_steps_done: "info",
+  // An AHJ's design-criteria lookup landed and the gate re-judged this project — refetches it.
+  reviewer_gate_rejudged: "info",
 };
 
 function connectSse() {

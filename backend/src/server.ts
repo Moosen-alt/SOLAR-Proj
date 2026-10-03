@@ -61,7 +61,7 @@ import { requestScope, orgFilter, orgClause, reqOrgFilter, assertInScope, auditC
 import type { RequestScope } from "./scope";
 import { DEFAULT_ORG_ID } from "./db";
 import { ensureStatusShareToken, statusShareUrl } from "./clientNotifier";
-import { listCodeProfiles, getCodeProfile, saveResearchedCodeProfile, saveVerifiedCodeProfile, codeProfileKey } from "./codeProfiles";
+import { listCodeProfiles, listRowlessDesignLookups, getCodeProfile, saveResearchedCodeProfile, saveVerifiedCodeProfile, codeProfileKey } from "./codeProfiles";
 import { applyCorrectionApproval } from "./correctionAgent";
 import { runStandaloneReview, getReviewSubmission, listReviewSubmissions, reviewSubjectToProject } from "./reviewSubject";
 import { renderReviewerReportHtml } from "./reviewerEngine";
@@ -911,7 +911,9 @@ app.get("/api/intake/:token", asyncHandler(async (req, res) => {
 // treats them as authoritative ("verify locally" phrasing until then).
 // ---------------------------------------------------------------------------
 app.get("/api/code-profiles", (_req, res) => {
-  res.json({ profiles: listCodeProfiles(db) });
+  // designLookups: the checklist of a lookup with no AHJ row to live on (a county in a
+  // statewide-minimum state) — the KB card shows "not found (lookup <date>)" from it.
+  res.json({ profiles: listCodeProfiles(db), designLookups: listRowlessDesignLookups(db) });
 });
 
 app.get("/api/code-profiles/resolve", (req, res) => {
