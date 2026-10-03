@@ -7,10 +7,10 @@
 //
 // Pins (rule 5's information-page clause — an information page is never a portal on either track;
 // the ONE predicate, hostFitsTrackAndEntity → isInformationalPageUrl):
-//   (x)  MUST-EXCLUDE: a government agency's landing / content page — a .gov / .us host whose path
-//        names no application, login, portal or account and carries no query or app route — is an
-//        information page, and fits NEITHER track (not_a_portal). CID's landing page, its forms and
-//        fees pages, a state division's page, a CivicPlus city page;
+//   (x)  MUST-EXCLUDE: a STATE agency's landing / content page — a <st>.gov / <state>.gov /
+//        state.<st>.us host whose host and path name no application, login, portal or account and
+//        carry no query or app route — is an information page, and fits NEITHER track
+//        (not_a_portal). CID's landing page, its forms and fees pages, other state divisions' pages;
 //   (u)  MUST-EXCLUDE (unchanged, #31): PNM's program page never fits the permit track, and never
 //        fits the NEM track beside a named PowerClerk;
 //   (p)  MUST-PASS: every application portal stays a portal — a PowerClerk login, an Accela
@@ -18,7 +18,8 @@
 //        government-hosted portals this codebase already knows (aca.oregon.gov/CitizenAccess,
 //        portal.columbus.gov's Cap pages, apps.<city>.gov/citizen, energovweb.<city>.gov,
 //        a bare portal host, a /login page);
-//   (n)  never widens what counts as a portal: no URL that was informational before is a portal now.
+//   (n)  never widens what counts as a portal: no URL that was informational before is a portal now;
+//        a city's / county's own .gov page and a commercial page are judged exactly as before.
 // Synthetic URLs except the public agency / platform URLs the issue names. No network.
 //
 // KILL TEST (run red by hand before the fix):
@@ -52,10 +53,18 @@ const AGENCY_PAGES = [
   "https://www.rld.nm.gov/construction-industries/fees/",
   "https://www.rld.nm.gov/manufactured-housing/",
   "https://www.oregon.gov/BCD",
+  "https://www.texas.gov/business/licenses-permits.html",
+  "https://www.dli.mn.gov/business/electrical-contractors",
+  "https://www.bcd.state.or.us/building",
+];
+// A city's / county's own .gov site is NOT this rule: it can host its own permit system or a
+// municipal utility's interconnection page at a plain path (MUST-PASS pins in perJobPermitProcess
+// and portalHostFit), so a local host is judged exactly as before.
+const LOCAL_GOV_PAGES = [
+  "https://www.cityofexample.gov/building/permits",
+  "https://utilities.cityofexample.gov/solar-interconnection",
   "https://loslunasnm.gov/995/Building-Permits",
-  "https://www.example-county.gov/building/solar-permits.html",
   "https://www.ci.example-town.or.us/building",
-  "https://www.portland.gov/ppd/solar-development/solar-permits",
 ];
 const PNM_PROGRAM = "https://www.pnm.com/customer-solar-program1";
 
@@ -82,9 +91,13 @@ const PERMIT_PORTALS = [
   "https://www.example-city.gov/eservices/permits",
   "https://www.example-city.gov/building/solar?tab=apply",
   "https://epermits.example-city.gov/residential-solar",
+  // a state's own application paths stay portals
+  "https://www.rld.nm.gov/construction-industries/apply-online",
+  "https://www.oregon.gov/bcd/epermitting/app/",
+  "https://secure.sos.state.or.us/oard/view.action?ruleNumber=918-050-0180",
 ];
 
-await check("(x1) MUST-EXCLUDE: a government agency's landing / content page is an information page (CID's landing page first)", () => {
+await check("(x1) MUST-EXCLUDE: a STATE agency's landing / content page is an information page (CID's landing page first)", () => {
   for (const u of AGENCY_PAGES) assert.equal(isInformationalPageUrl(u), true, u);
 });
 await check("(x2) MUST-EXCLUDE: the issue's repro — CID's landing page fits NEITHER track, from any source (not_a_portal)", () => {
@@ -125,7 +138,8 @@ await check("(n1) never widens a portal: help pages, documents and SharePoint pa
   ]) assert.equal(isInformationalPageUrl(u), true, u);
   for (const u of ["https://www.rld.nm.gov/", "https://rld.nm.gov", "https://www.example-city.gov/"]) assert.equal(isInformationalPageUrl(u), false, u);
 });
-await check("(n2) the rule is the GOVERNMENT agency's own site only: a commercial page with the same shape is judged as before", () => {
+await check("(n2) the rule is the STATE agency's own site only: a local government page or a commercial page with the same shape is judged as before", () => {
+  for (const u of LOCAL_GOV_PAGES) assert.equal(isInformationalPageUrl(u), false, u);
   // Not a government host → not this rule (PNM's page stays the #31 named-platform case).
   assert.equal(isInformationalPageUrl(PNM_PROGRAM), false);
   assert.equal(isInformationalPageUrl("https://www.example-installer.test/construction-industries/"), false);

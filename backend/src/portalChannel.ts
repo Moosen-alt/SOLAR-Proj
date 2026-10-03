@@ -608,24 +608,36 @@ export function isInformationalPageUrl(url: string | null | undefined): boolean 
   if (segs.some((seg) => INFO_PATH_SEGMENT.test(seg) || INFO_PATH_COMPOUND.test(seg.replace(/\.[a-z0-9]+$/i, "")))) return true;
   const gov = /\.(?:gov|us)$/.test(host) || /\.(?:gov|state)\.[a-z]{2}\.us$/.test(host);
   if (gov && segs.length >= 2 && /^pages$/i.test(segs[segs.length - 2]) && /\.aspx$/i.test(segs[segs.length - 1])) return true;
-  // Government proper only: a .gov host or a US locality / state host (<x>.<st>.us) — not every
-  // ".us" domain, which a utility or a vendor can hold too.
-  if ((/\.gov$/.test(host) || /\.[a-z]{2}\.us$/.test(host)) && isAgencyContentPage(raw, host, segs)) return true;
+  if (isStateGovernmentHost(host) && isAgencyContentPage(raw, host, segs)) return true;
   return false;
 }
-// ── A GOVERNMENT AGENCY'S OWN LANDING / CONTENT PAGE (issue #86) ─────────────────────────────
+// ── A STATE AGENCY'S OWN LANDING / CONTENT PAGE (issue #86) ──────────────────────────────────
 // New Mexico CID's landing page (www.rld.nm.gov/construction-industries/) carries no help/library
 // word and no document extension, so it fit the permit track — and it is the page a per-job lookup
-// for the state issuer cites. CID's real applications are filed on nmrld.my.site.com. An agency's
+// for the state issuer cites. CID's real applications are filed on nmrld.my.site.com. A state agency's
 // own CMS pages (a division's landing page, its forms and fees pages, a CivicPlus "/995/Building-
 // Permits" page) are where it DESCRIBES how to apply; the application itself runs on a portal host
-// or behind an application path. So on a government host, a page is informational when NOTHING
+// or behind an application path. So on a STATE government host, a page is informational when NOTHING
 // about it reads as an application: no host label naming an application system (epermits., aca.,
 // apps., portal., energovweb. …), no path segment naming one (apply, login, portal, account,
 // CitizenAccess, SelfService, Cap …), no query string or "#/" app route, and no server-page
 // extension (.aspx/.jsp/.cfm/.do …: SharePoint's "/Pages/*.aspx" is judged above). Anything that
 // hints at an application stays judged as before — this rule only ever moves a page OUT of the
-// portal set, never into it.
+// portal set, never into it. STATE hosts only: a city's or county's own .gov site can host its own
+// permit system or a municipal utility's interconnection page at a plain path
+// (www.cityofexample.gov/building/permits, utilities.cityofexample.gov/solar-interconnection —
+// MUST-PASS pins in perJobPermitProcess / portalHostFit), so a local host is judged as before.
+const US_STATE_NAME_DOMAINS = new Set("alabama alaska arizona arkansas california colorado connecticut delaware florida georgia hawaii idaho illinois indiana iowa kansas kentucky louisiana maine maryland massachusetts mass michigan minnesota mississippi missouri montana nebraska nevada newhampshire newjersey newmexico newyork northcarolina northdakota ohio oklahoma oregon pennsylvania rhodeisland southcarolina southdakota tennessee texas utah vermont virginia washington westvirginia wisconsin wyoming".split(" ").map((n) => `${n}.gov`));
+/** A STATE government's own host: <st>.gov and its agencies (rld.nm.gov), a state-name .gov
+ *  (oregon.gov, texas.gov), or the legacy state.<st>.us tree (sos.state.or.us). */
+function isStateGovernmentHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^www\./, "");
+  const m = /(?:^|\.)([a-z]{2})\.gov$/.exec(h);
+  if (m && US_STATE_CODES.has(m[1])) return true;
+  if (US_STATE_NAME_DOMAINS.has(h.split(".").slice(-2).join("."))) return true;
+  const st = /(?:^|\.)state\.([a-z]{2})\.us$/.exec(h);
+  return Boolean(st && US_STATE_CODES.has(st[1]));
+}
 const APP_HOST_LABEL = /^(?:my.*|apps?|aca|cap|css|secure|online|login|sso|auth|accounts?|devhub|.*(?:permit|apply|portal|citizen|energov|accela|selfservice|eservice|e-?plan|inspect|licens).*)$/i;
 const APP_PATH_TOKEN = /^(?:apps?|apply|applications?|aca|cap|css|login|log-?in|log-?on|logon|sign-?in|sign-?up|signon|sso|auth|accounts?|my|portal|register|registration|dashboard|submit|online|secure|eservices?|e-services?|selfservice|self-service|citizen|citizenaccess|epermits?|e-permits?|eplans?|e-plans?|energov|accela)$/i;
 const APP_PATH_WORD = /apply|applicat|login|logon|signin|signup|portal|account|regist|citizen|selfservice|eservice|epermit|eplan|energov|accela|dashboard|submi/i;
