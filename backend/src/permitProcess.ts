@@ -160,6 +160,9 @@ export function savePermitProcessLookup(
 // ── Cited state rules (layer 3) ──────────────────────────────────────────────────────────
 // Each is a fact about EVERY jurisdiction in the state, with the rule/form it comes from and the
 // words it says. Add a state by adding its facts here — never a jurisdiction.
+/** One state issuer application (StatePermitRules.stateTradeIssuer.issuerForms). */
+export type StateIssuerFormSeed = CitedFact<string> & { track: "building" | "electrical"; formName: string; searchUrl: string; url: string; notFound: string };
+
 export interface StatePermitRules {
   /** Separate structural + electrical permits for a PV system. */
   permitStructure?: CitedFact<"separate" | "combo">;
@@ -191,11 +194,11 @@ export interface StatePermitRules {
     served: string[];
     manufactured: CitedFact<string>;
     localStep: { sourceUrl: string; quote: string };
-    /** THE STATE ISSUER'S OWN APPLICATION (issue #53): ONE form for every track in `covers` (CID files
-     *  the building and electrical permits on one application), looked for on the ISSUER's site
-     *  (`searchUrl`), never the AHJ's. `url` is "" until a person confirms the PDF on the state site —
-     *  never guessed; `notFound` says why. Seeded (a state rule), never verified. */
-    issuerForm?: CitedFact<string> & { formName: string; covers: Array<"building" | "electrical">; searchUrl: string; url: string; notFound: string };
+    /** THE STATE ISSUER'S OWN APPLICATIONS (issue #53, Helm's decision on PR #64): ONE form PER TRACK
+     *  (CID takes a building application and a separate electrical application), looked for on the
+     *  ISSUER's forms page (`searchUrl`), never the AHJ's. `url` is "" — the download is #60's to seed,
+     *  never guessed here; `notFound` says why and what to do. Seeded (a state rule), never verified. */
+    issuerForms?: StateIssuerFormSeed[];
   };
 }
 
@@ -278,6 +281,8 @@ STATE_PERMIT_RULES.IA = {
 // simply not on it. Mixed rows (Belen, Grant County, Santa Fe County: one permit at CID, the other
 // local) are left to their own answers. SEEDED; a cited lookup, a person's verified row or the
 // operator's per-track issuer outranks it.
+const CID_FORMS_PAGE = "https://www.rld.nm.gov/construction-industries/forms-and-applications/";
+const CID_WORD_NOTE = "CID application is a Word document; download and fill by hand until #60 lands (CID's forms page: rld.nm.gov/construction-industries/forms-and-applications/)";
 STATE_PERMIT_RULES.NM = {
   stateTradeIssuer: {
     value: "New Mexico Construction Industries Division (CID)",
@@ -295,20 +300,34 @@ STATE_PERMIT_RULES.NM = {
       sourceUrl: "https://loslunasnm.gov/995/Building-Permits",
       quote: "Village of Los Lunas Planning Division / Valencia County Community Development: zoning compliance and site-development review on a site plan; the building and electrical permits come from CID",
     },
-    // CID's permit application. Its public PDF could not be confirmed on rld.nm.gov (2026-10-03: the
-    // "Apply for a Permit" page links only to CID's online permit system and its forms listing is
-    // rendered by script), so NO URL is stored — the form finder says so instead of guessing one.
-    issuerForm: {
-      value: "New Mexico Construction Industries Division (CID) permit application",
-      formName: "Permit Application (one application for the building and electrical permits)",
-      covers: ["building", "electrical"],
-      sourceUrl: "https://www.rld.nm.gov/construction-industries/apply-for-a-permit/",
-      searchUrl: "https://www.rld.nm.gov/construction-industries/apply-for-a-permit/",
-      quote: "Construction Industries: Apply for a Permit — the building and the electrical permit are CID's; one application covers both (issue #53, owner's NM research)",
-      origin: "state_rule",
-      url: "",
-      notFound: "CID form URL not confirmed: rld.nm.gov names no downloadable permit application PDF (its permit page links to CID's online permit system)",
-    },
+    // CID's TWO applications (worker-local's evidence on #60, opened on the state site with the owner
+    // watching; Helm's decision on PR #64): the building permit and the electrical permit are separate
+    // Word documents on CID's forms page. NO download URL is stored here (that, and Word handling, is
+    // #60's PR) — the form finder names the page and says the form is filled by hand meanwhile.
+    issuerForms: [
+      {
+        track: "building",
+        value: "New Mexico Construction Industries Division (CID) Multi-Purpose State Building Application",
+        formName: "Multi-Purpose State Building Application",
+        sourceUrl: CID_FORMS_PAGE,
+        searchUrl: CID_FORMS_PAGE,
+        quote: "Construction Industries: Forms and Applications — Multi-Purpose State Building Application (Word document); Solar is among its residential scopes (issue #60 evidence)",
+        origin: "state_rule",
+        url: "",
+        notFound: CID_WORD_NOTE,
+      },
+      {
+        track: "electrical",
+        value: "New Mexico Construction Industries Division (CID) Electrical Permit Application",
+        formName: "Electrical Permit Application",
+        sourceUrl: CID_FORMS_PAGE,
+        searchUrl: CID_FORMS_PAGE,
+        quote: "Construction Industries: Forms and Applications — Electrical Permit Application (rev 3/3/2026, Word document); Solar is among its residential scopes (issue #60 evidence)",
+        origin: "state_rule",
+        url: "",
+        notFound: CID_WORD_NOTE,
+      },
+    ],
   },
 };
 export const BCD_5952_URL = BCD_5952;
@@ -336,17 +355,16 @@ export function stateTradeIssuerFor(project: IssuerProject): (CitedFact<string> 
   return { value: String(fact.value), sourceUrl: fact.sourceUrl, quote: fact.quote, origin: fact.origin, localReviewer: ahj, manufactured };
 }
 
-/** THE STATE ISSUER'S ONE APPLICATION for this project (issue #53): the state rule's issuerForm,
- *  for the tracks the state agency actually issues here (trackIssuer — an operator's own per-track
- *  issuer keeps that track off it). null = no state issuer, a manufactured home (MHD: no form on
- *  file), or no form declared. */
-export function stateIssuerFormFor(project: IssuerProject): (NonNullable<NonNullable<StatePermitRules["stateTradeIssuer"]>["issuerForm"]> & { agency: string; localReviewer: string; tracks: Array<"building" | "electrical"> }) | null {
+/** THE STATE ISSUER'S APPLICATIONS for this project (issue #53): the state rule's issuerForms, ONE
+ *  per track, for the tracks the state agency actually issues here (trackIssuer — an operator's own
+ *  per-track issuer keeps that track off it). null = no state issuer, a manufactured home (MHD: no
+ *  form on file), or no form declared. */
+export function stateIssuerFormsFor(project: IssuerProject): { agency: string; localReviewer: string; tracks: Array<"building" | "electrical">; forms: StateIssuerFormSeed[] } | null {
   const st = stateTradeIssuerFor(project);
   if (!st || st.manufactured) return null;
-  const form = stateRulesFor(baseOfView(project).state).stateTradeIssuer?.issuerForm;
-  if (!form) return null;
-  const tracks = form.covers.filter((t) => sameAgencyName(trackIssuer(project, t).name, st.value));
-  return tracks.length ? { ...form, agency: st.value, localReviewer: st.localReviewer, tracks } : null;
+  const seeded = stateRulesFor(baseOfView(project).state).stateTradeIssuer?.issuerForms ?? [];
+  const forms = seeded.filter((f) => sameAgencyName(trackIssuer(project, f.track).name, st.value));
+  return forms.length ? { agency: st.value, localReviewer: st.localReviewer, tracks: forms.map((f) => f.track), forms } : null;
 }
 
 export function stateRulesFor(state: string | null | undefined): StatePermitRules {

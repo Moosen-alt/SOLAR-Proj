@@ -23,7 +23,7 @@
 // at module top level — functions only — so the cycle stays inert.
 // ---------------------------------------------------------------------------
 import type { CitedFact, ProjectRecord } from "../../shared/src/types";
-import { citedAgencyAnswer, issuingAgencyFor, permitAnswerForTrack, permitProcessFor, stateIssuerFormFor, structureTypeMeaning } from "./permitProcess";
+import { citedAgencyAnswer, issuingAgencyFor, permitAnswerForTrack, permitProcessFor, stateIssuerFormsFor, structureTypeMeaning } from "./permitProcess";
 import { agencyNameKey, sameAgencyName } from "./permitProcessLookup";
 import { DOCUMENT_URL, hostStateOf, isAgencyOwnDomain, jurisdictionTypes, nameKeys, portalNameToken, stateAgencyOf, wordsNameAnotherJurisdiction } from "./permitPlatformCatalog";
 import { isPathTenantedHost, isVendorDomain, portalHostOf, portalTenantOf, registrableDomain } from "./portalChannel";
@@ -42,31 +42,38 @@ export const TRACK_FORM_TYPES: Record<FormTrack, readonly string[]> = {
   electrical: ["electrical_application"],
 };
 
-/** A STATE ISSUER'S PROJECT (permitProcess.stateIssuerFormFor — New Mexico CID, issue #53): the
+/** A STATE ISSUER'S PROJECT (permitProcess.stateIssuerFormsFor — New Mexico CID, issue #53): the
  *  GENERIC application slot is the AHJ's own local zoning / site-development review application
  *  (Valencia County's Multi-Purpose Permit Application), never the state agency's — the agency's
- *  one application is filed under the track types. False when no state issuer form applies. */
+ *  applications are filed under the track types, one per track. False when no state issuer applies. */
 export function stateIssuerKeepsGenericSlot(project: Pick<ProjectRecord, "state" | "ahj">): boolean {
-  try { return Boolean(stateIssuerFormFor(project)); } catch { return false; }
+  try { return Boolean(stateIssuerFormsFor(project)); } catch { return false; }
 }
+
+/** The slot key of a state issuer's row stored under the GENERIC type: it names no track, so it fills
+ *  neither of the issuer's per-track rows (each is satisfied only by the issuer's form OF THAT TYPE —
+ *  Helm's decision on PR #64) nor the AHJ's local review slot (it is not the AHJ's). No required row
+ *  carries this key; the operator re-types the upload as building or electrical. */
+export const UNTRACKED_ISSUER_SLOT = "state_issuer_untracked";
 
 /** WHOSE SLOT A STORED APPLICATION FILLS under a state issuer (issue #53, Helm's review of PR #64): its
  *  AUTHORITY, never its form_type. The pre-#45 pass asked the county for `building_application`, and
  *  classifyFormType keeps that fallback for "…Multi-Purpose Permit Application.pdf" — so the AHJ's OWN
  *  blank is stored typed building_application. Keyed by type, that row (and its fill) satisfied the
  *  issuer's row and never the local one. Here:
- *   - a row whose authority is the ISSUER keeps its track type (a generic-typed one is the issuer's
- *     first covered track) — only the issuer's own form fills the issuer's row;
+ *   - a row whose authority is the ISSUER keeps its track type — only the issuer's own building form
+ *     fills the issuer's building row, only its electrical form its electrical row; a generic-typed
+ *     one fills neither (UNTRACKED_ISSUER_SLOT);
  *   - any other row of a covered track's types (or the generic type) is the AHJ's own application:
  *     the local zoning / site-development review slot, `permit_application`.
  *  Every other project, and every other type (checklists, worksheets), is returned unchanged. */
 export function applicationSlotFor(project: Pick<ProjectRecord, "state" | "ahj">, formType: string, authority: string): string {
-  let form: ReturnType<typeof stateIssuerFormFor> = null;
-  try { form = stateIssuerFormFor(project); } catch { form = null; }
-  if (!form) return formType;
-  const covered = new Set<string>(["permit_application", ...form.tracks.flatMap((t) => TRACK_FORM_TYPES[t])]);
+  let issuer: ReturnType<typeof stateIssuerFormsFor> = null;
+  try { issuer = stateIssuerFormsFor(project); } catch { issuer = null; }
+  if (!issuer) return formType;
+  const covered = new Set<string>(["permit_application", ...issuer.tracks.flatMap((t) => TRACK_FORM_TYPES[t])]);
   if (!covered.has(formType)) return formType;
-  if (rowBelongsToAuthority(authority, form.agency)) return formType === "permit_application" ? TRACK_FORM_TYPES[form.tracks[0]][0] : formType;
+  if (rowBelongsToAuthority(authority, issuer.agency)) return formType === "permit_application" ? UNTRACKED_ISSUER_SLOT : formType;
   return "permit_application";
 }
 
@@ -74,9 +81,9 @@ export function applicationSlotFor(project: Pick<ProjectRecord, "state" | "ahj">
  *  (applicationSlotFor) — what acquisition counts as "held" for the generic slot. [] when no state
  *  issuer applies. */
 export function localReviewSlotTypes(project: Pick<ProjectRecord, "state" | "ahj">): string[] {
-  let form: ReturnType<typeof stateIssuerFormFor> = null;
-  try { form = stateIssuerFormFor(project); } catch { form = null; }
-  return form ? [...new Set(["permit_application", ...form.tracks.flatMap((t) => TRACK_FORM_TYPES[t])])] : [];
+  let issuer: ReturnType<typeof stateIssuerFormsFor> = null;
+  try { issuer = stateIssuerFormsFor(project); } catch { issuer = null; }
+  return issuer ? [...new Set(["permit_application", ...issuer.tracks.flatMap((t) => TRACK_FORM_TYPES[t])])] : [];
 }
 
 /** The stored form types an issuing agency's rows replace for a track (ahjForms.loadStoredTemplates):
@@ -526,8 +533,6 @@ export interface AgencyListItem {
   docTypes: string[];
   role: "application" | "checklist" | "prerequisite";
   track?: FormTrack;
-  /** Every track this ONE application files (a state issuer's single form — stateIssuerFormFor). */
-  covers?: FormTrack[];
   /** The issuing agency whose application this is (role "application"). */
   agency?: string;
   sourceUrl: string;
@@ -622,7 +627,8 @@ export function issuingAgencyDocumentList(project: Pick<ProjectRecord, "state" |
   } catch { /* path optional */ }
   const kind = standardReview ? null : applicationKindForPath(path);
   const items: AgencyListItem[] = [];
-  const stateForm = (() => { try { return stateIssuerFormFor(project); } catch { return null; } })();
+  const stateIssuer = (() => { try { return stateIssuerFormsFor(project); } catch { return null; } })();
+  let localReviewListed = false;
   const add = (item: AgencyListItem): void => {
     let status: AgencyLineStatus | null = null;
     try { status = statusOf ? statusOf(item) : null; } catch { status = null; }
@@ -632,14 +638,17 @@ export function issuingAgencyDocumentList(project: Pick<ProjectRecord, "state" |
     items.push({ ...item, text: said, status });
   };
   for (const o of others) {
-    // A STATE ISSUER'S ONE APPLICATION (issue #53): one line for every track it covers — never a
-    // second form for the same agency — and the AHJ's own local review application beside it.
-    if (stateForm && stateForm.tracks.includes(o.track) && sameAgencyName(o.name, stateForm.agency)) {
-      if (items.some((i) => i.covers)) continue;
-      add({ text: `${o.name} (issues the ${stateForm.tracks.join(" and ")} permits on one application): ${stateForm.formName}`,
-        docTypes: stateForm.tracks.map((t) => TRACK_FORM_TYPES[t][0]), role: "application", track: o.track, covers: [...stateForm.tracks], agency: o.name, sourceUrl: stateForm.sourceUrl });
-      add({ text: `${stateForm.localReviewer} (local zoning / site-development review, first): ${stateForm.localReviewer}'s own application`,
-        docTypes: ["permit_application"], role: "application", sourceUrl: "" });
+    // A STATE ISSUER'S APPLICATIONS (issue #53, Helm's decision on PR #64): ONE line per track, each
+    // the issuer's own form of that type, and the AHJ's own local review application listed once.
+    const stateForm = stateIssuer && sameAgencyName(o.name, stateIssuer.agency) ? stateIssuer.forms.find((f) => f.track === o.track) : undefined;
+    if (stateIssuer && stateForm) {
+      add({ text: `${o.name} (issues the ${o.track} permit): ${stateForm.formName}`,
+        docTypes: [TRACK_FORM_TYPES[o.track][0]], role: "application", track: o.track, agency: o.name, sourceUrl: stateForm.sourceUrl });
+      if (!localReviewListed) {
+        localReviewListed = true;
+        add({ text: `${stateIssuer.localReviewer} (local zoning / site-development review, first): ${stateIssuer.localReviewer}'s own application`,
+          docTypes: ["permit_application"], role: "application", sourceUrl: "" });
+      }
       continue;
     }
     const discipline = o.track === "building" ? "structural (building)" : "electrical";
@@ -690,7 +699,7 @@ export function agencyListReplacesLine(list: AgencyDocumentList, line: string): 
   const t = requirementTrack(line);
   if (!t) return false;
   if (t === "checklist") return list.decidesStateChecklist || list.items.some((i) => i.role === "checklist");
-  return list.items.some((i) => i.role === "application" && (i.track === t || Boolean(i.covers?.includes(t))));
+  return list.items.some((i) => i.role === "application" && i.track === t);
 }
 
 /** The line names, BY ITS URL, a PDF the agency list already carries as one of its application lines
