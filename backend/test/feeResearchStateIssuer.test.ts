@@ -173,6 +173,24 @@ async function main(): Promise<void> {
   check("4f. Albuquerque: unchanged — the permit line is Albuquerque's, no review line",
     abqSheet.lines.find((l) => l.track === "permit")?.jurisdiction === "Albuquerque" && !abqSheet.lines.some((l) => l.role === "local_review"),
     JSON.stringify(abqSheet.lines.map((l) => [l.track, l.jurisdiction, l.role])));
+
+  // ---------------------------------------------------------------------------
+  // 5) A LEGACY permit/structural row under the AHJ's own key (what a pre-#56 run researched
+  //    against the wrong agency) is NOT the zoning review fee: the review line is only the exact
+  //    undifferentiated row, and review research is still queued (Helm's review on #61).
+  // ---------------------------------------------------------------------------
+  const savedLegacy = saveFeeSchedule(db, { state: "NM", ahj: "Valencia County", track: "permit", discipline: "structural" }, {
+    found: true, reason: "", basis: "flat",
+    brackets: [{ minKw: null, maxKw: null, feeUsd: 300, label: "Building permit (synthetic)" }],
+    notes: "", sourceUrl: "https://county.example/building-fees", sourceQuote: "Building permit (synthetic) $300", sourceKind: "official",
+  } as never);
+  check("5a. the synthetic legacy structural row saved", savedLegacy.saved && savedLegacy.schedule?.discipline === "structural", savedLegacy.reason);
+  const legacySheet = buildProjectFeeSheet(db, valencia);
+  const lr = legacySheet.lines.find((l) => l.role === "local_review");
+  check("5b. a stray structural row under the AHJ key never becomes the review line",
+    lr?.jurisdiction === "Valencia County" && lr?.feeUsd === null && lr?.source === "unknown", JSON.stringify(lr));
+  check("5c. …and review research for the county is still a target",
+    feeResearchTargets(db, valencia, requiredTracks(valencia)).some((t) => t.role === "local_review" && t.ahj === "Valencia County"));
   delete process.env.NEM_FEE_ESTIMATE_USD;
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

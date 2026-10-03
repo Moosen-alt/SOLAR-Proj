@@ -202,6 +202,9 @@ export type FeeScheduleLookup = (
 
 /** The export names accepted from the schedule module, most-current first. */
 const LOOKUP_EXPORTS = ["feeForProject", "lookupPublishedFee"];
+/** The exact-row lookup for an AHJ's own zoning review fee (feeSchedules.localReviewFeeForProject). */
+const LOCAL_REVIEW_EXPORT = "localReviewFeeForProject";
+let loadedReviewLookup: FeeScheduleLookup | null | undefined;
 
 let injectedLookup: FeeScheduleLookup | null = null;
 let loadedLookup: FeeScheduleLookup | null | undefined; // undefined = not tried yet
@@ -238,6 +241,21 @@ function feeScheduleLookup(): FeeScheduleLookup | null {
     }
   }
   return loadedLookup;
+}
+
+/** Same defensive load as feeScheduleLookup, for the local review row; absent → no review fee. */
+function localReviewLookup(): FeeScheduleLookup | null {
+  if (loadedReviewLookup !== undefined) return loadedReviewLookup;
+  loadedReviewLookup = null;
+  const req = createRequire(import.meta.url);
+  for (const spec of ["./feeSchedules.ts", "./feeSchedules.js"]) {
+    try {
+      const mod = req(spec) as Record<string, unknown> | undefined;
+      if (typeof mod?.[LOCAL_REVIEW_EXPORT] === "function") loadedReviewLookup = mod[LOCAL_REVIEW_EXPORT] as FeeScheduleLookup;
+      break;
+    } catch { /* absent or broken: feeScheduleLookup already says so once */ }
+  }
+  return loadedReviewLookup;
 }
 
 interface ScheduleFee {
@@ -1265,14 +1283,18 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
 }
 
 /** THE LOCAL ZONING / SITE-DEVELOPMENT REVIEW LINE (issue #56). Read off the AHJ's OWN key (an
- *  undifferentiated row there is its review fee: it issues no permit here), never re-keyed to the
+ *  EXACT undifferentiated row there is its review fee: it issues no permit here), never re-keyed to the
  *  state issuer. Only a published schedule prices it — never the valuation heuristic, which models a
  *  building permit, not a site-plan review — so with none on file the line has no number and the
  *  sheet's total says unknown. Not confirmable here: a Confirm keys on the billing track, whose
  *  permit row is the state issuer's. No service fee: it is not a submission this tool files. */
 function localReviewLine(db: AppDb, project: ProjectRecord, review: { ahj: string; issuer: string }): ProjectFeeSheetLine {
   const at = { ...project, ahj: review.ahj } as ProjectRecord;
-  const s = scheduleFeeAt(db, at, "permit");
+  // EXACTLY the undifferentiated row under the AHJ's key (localReviewFeeForProject) — never the
+  // general lookup, whose "only row under the key" fallback would print a legacy building-permit
+  // row researched under the village as its review fee.
+  let s: ScheduleFee | null = null;
+  try { s = normalizeScheduleResult(localReviewLookup()?.(db, at, "permit")); } catch { s = null; }
   const priced = s != null && s.feeUsd != null;
   const confidence: FeeConfidence = priced ? (s!.valuationEstimated ? "estimated" : s!.confidence) : "unknown";
   return {

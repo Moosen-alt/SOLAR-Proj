@@ -2988,8 +2988,9 @@ export function feeResearchTargets(db: AppDb, project: FeeResearchProject, track
   const review = localPermitReview(project);
   if (review && tracks.some((t) => feeTrack(t) === "permit")) {
     const profileKey = feeScheduleProfileKey({ state, ahj: review.ahj }, "permit");
-    // An undifferentiated row under the AHJ's own key IS its review fee: it issues no permit here.
-    if (!findFeeScheduleForProject(db, { state, ahj: review.ahj, utility: "" }, "permit", "")) {
+    // Only the EXACT undifferentiated row under the AHJ's own key is its review fee (it issues no
+    // permit here) — a stray structural/electrical row there is not (localReviewScheduleRow).
+    if (!localReviewScheduleRow(db, { state, ahj: review.ahj })) {
       out.push({
         track: "permit", discipline: "", role: "local_review", state, ahj: review.ahj, utility, profileKey,
         researchKey: `permit|${profileKey}|local_review`,
@@ -3266,6 +3267,18 @@ function resolveLine(
 ): FeeScheduleLine | null {
   const raw = findRawScheduleForProject(db, project, track, discipline);
   if (!raw) return null;
+  return lineFromRaw(db, project, track, discipline, raw, inputs);
+}
+
+/** resolveLine for a row already chosen — the hop, the evaluation and the dangling-hop refusal. */
+function lineFromRaw(
+  db: AppDb,
+  project: Pick<ProjectRecord, "state" | "ahj" | "utility" | "systemSizeAcKw" | "systemSizeDcKw" | "parserSnapshot">,
+  track: FeeTrack,
+  discipline: FeeDiscipline,
+  raw: FeeScheduleRecord,
+  inputs?: FeeEvalInputs,
+): FeeScheduleLine {
   const hop = followCollectedBy(db, raw);
   const hoppedFrom = hop.collectedBy ? (track === "nem" ? raw.utility : raw.ahj) : "";
   // The filing is the discipline ASKED FOR — an undifferentiated row answering a
@@ -4539,6 +4552,27 @@ export function feeForProject(
   const lines = feeLinesForProject(db, project, track);
   if (!lines.length) return null;
   return { ...resolutionFrom(lines, track), lines };
+}
+
+/** THE AHJ'S OWN ZONING / SITE-DEVELOPMENT REVIEW ROW where a state agency issues the permits
+ *  (issue #56): EXACTLY the undifferentiated permit row under the AHJ's own key, and nothing else.
+ *  findRawScheduleForProject's fallbacks (the only row under the key, a fuzzy name) are refused on
+ *  purpose — a legacy "Building permit" row researched under the village before #56 is a permit
+ *  fee researched against the wrong agency, never its review fee. null = none on file. Read by
+ *  feeResearchTargets (is the review fee held?) and the fee sheet's review line (submissionFees). */
+export function localReviewFeeForProject(
+  db: AppDb,
+  project: Pick<ProjectRecord, "state" | "ahj" | "utility" | "systemSizeAcKw" | "systemSizeDcKw" | "parserSnapshot">,
+): ProjectFeeResolution | null {
+  const raw = localReviewScheduleRow(db, project);
+  if (!raw) return null;
+  const line = lineFromRaw(db, project, "permit", "", raw);
+  return { ...resolutionFrom([line], "permit"), lines: [line] };
+}
+
+function localReviewScheduleRow(db: AppDb, project: Pick<ProjectRecord, "state" | "ahj">): FeeScheduleRecord | null {
+  if (!clean(project.ahj)) return null;
+  return getFeeSchedule(db, feeScheduleProfileKey({ state: project.state, ahj: project.ahj }, "permit"), "permit", "");
 }
 
 /** Evaluate one already-resolved schedule into a line. */
