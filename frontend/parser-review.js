@@ -1172,6 +1172,71 @@
     return out;
   }
 
+  // -------------------------------------------------------------------------
+  // 8. SPLIT MAP SPEC SHEETS — the backend splitter's rule (docSplitter.ts, #66), on the page.
+  // -------------------------------------------------------------------------
+  // A WIRING CALCULATIONS sheet tabulates "INVERTER SPECIFICATIONS" and "PV MODULE
+  // SPECIFICATIONS" in its body, and the bare patterns below mapped it as the inverter (and
+  // module) spec. The submit gate reads this map (requiredDocuments.sheetInPlanSet), so it said
+  // "in plan set" for a spec sheet the splitter reports missing (#90). Same regex as the
+  // backend's CALCS_SHEET: a calculations sheet is never a spec sheet, whatever its body says.
+  const CALCS_SHEET = /\b(?:WIR(?:E|ING)|ELECTRICAL)\s+CALC(?:ULATION)?S?\b/i;
+  const isCalcsSheet = (text) => CALCS_SHEET.test(String(text || ''));
+  // The backend's SPEC_SHEET_NAME: a page that NAMES a spec sheet but that neither category
+  // claimed (a title-only "EQUIPMENT SPECIFICATION" cut-sheet: module? combiner? racking?) is
+  // undecided — never guessed into the module spec, never dropped silently.
+  const SPEC_SHEET_NAME = /(?:MICRO-?)?(?:INVERTERS?|MODULES?|EQUIPMENT)\s+SPEC(?:IFICATION)?S?\b/i;
+  const MODULE_SPEC_PATTERNS = [
+    /PV MODULE SPECIFICATION SHEET/i,
+    /PV MODULE\s*\/\s*INV SPECIFICATION SHEET/i,
+    /Q\.TRON AC/i,
+    /ZXM7-SH108/i,
+    /ZNSHINESOLAR/i,
+    /MODULE SPECIFICATION/i,
+  ];
+  const INVERTER_SPEC_PATTERNS = [
+    /MICROINVERTER SPECIFICATION SHEET/i,
+    /PV MODULE\s*\/\s*INV SPECIFICATION SHEET/i,
+    /DS3 Series/i,
+    /Q\.TRON AC/i,
+    /Q\.MI/i,
+    /MICROINVERTER/i,
+    /INVERTER SPECIFICATION/i,
+  ];
+  // Written into the page's split-map text. The gate trusts a spec line only from a map that
+  // carries it: a snapshot written before this rule may have mapped the calcs sheet (#90).
+  const SPEC_MAP_RULE = 'Spec rule: title-block sheet names; calculation sheets excluded (#90)';
+
+  /** The module / inverter spec pages among `pages` ([{page, text}], text already normalized),
+   *  plus the spec-NAMED pages neither claimed (undecided). */
+  function specSheetPages(pages) {
+    const moduleSpecs = [];
+    let inverterSpecs = [];
+    const undecidedSpecs = [];
+    for (const p of pages || []) {
+      const t = String(p.text || '');
+      if (isCalcsSheet(t)) continue;
+      const isModule = MODULE_SPEC_PATTERNS.some((re) => re.test(t));
+      const isInverter = INVERTER_SPEC_PATTERNS.some((re) => re.test(t));
+      if (isModule) moduleSpecs.push(p.page);
+      if (isInverter) inverterSpecs.push(p.page);
+      if (!isModule && !isInverter && SPEC_SHEET_NAME.test(t)) undecidedSpecs.push(p.page);
+    }
+    // Combined Q.TRON sheets contain module and inverter info together.
+    let modules = moduleSpecs;
+    if (!modules.length && inverterSpecs.length) modules = [...inverterSpecs];
+    if (!inverterSpecs.length && modules.length) inverterSpecs = [...modules];
+    return { moduleSpecs: modules, inverterSpecs, undecidedSpecs };
+  }
+
+  /** A split-map row's value: the pages, else "undecided (…)" when spec-named pages exist that
+   *  could not be told apart, else "missing". The gate counts only the first. */
+  function specMapValue(specPages, undecidedPages) {
+    if (specPages && specPages.length) return specPages.join(', ');
+    if (undecidedPages && undecidedPages.length) return `undecided (pages ${undecidedPages.join(', ')} name an equipment spec; check which)`;
+    return 'missing';
+  }
+
   return {
     compareMeters, meterTargets, meterInText,
     mergeNotes, assertsMissingAttached,
@@ -1182,5 +1247,6 @@
     locatesDecision, EXCAVATION_TYPES,
     filterTapEvidence, isNoteMention,
     formatReviewList,
+    isCalcsSheet, specSheetPages, specMapValue, SPEC_MAP_RULE,
   };
 });
