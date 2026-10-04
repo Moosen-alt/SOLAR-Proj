@@ -13,6 +13,8 @@
 //      every tick
 //   5. NOT IDLE: a job running or due, a portal run queued/running/staged/paused for a human,
 //      a filing awaiting_human_submit, a lookup in flight   -> skip, try again next cycle
+//      (a waiting portal run / filing counts only while its window can be open: written since the
+//      running server started and not on an archived project; issue #99)
 //   6. the supervised server (run-prod-supervised.ps1) owns this install -> skip
 //   7. snapshot the DB (online backup + .sha256 sidecar, verified) -> no snapshot, no pull
 //   8. stop this install's server (the process LISTENING on PORT whose command line is server.ts)
@@ -66,8 +68,20 @@ export const DEFAULTS = {
 // Restarting closes the review window the human submits from (hard rule 1's human gate).
 export const BUSY_PORTAL_RUN_STATUSES = ["queued", "running", "awaiting_human_submit", "awaiting_human_resubmit", "paused_for_human"];
 
-/** Counts that make the install busy. `nowIso` decides which pending jobs are due. */
-export function readBusyCounts(db, nowIso = new Date().toISOString()) {
+// A review window lives in the server process that staged it (issue #99). A row staged BEFORE the
+// running server started has no window left to close (that process and its browser are gone), and a
+// row on an archived project is never filed from one. So a waiting portal run / filing holds an
+// update only while its window can still be open: written since `liveSince` (the running server's
+// start) and not on an archived project. `liveSince` null = start unknown: every non-archived
+// waiting row counts. Times go through julianday() so 'YYYY-MM-DD HH:MM:SS' and ISO 'T…Z' compare
+// alike; a time that cannot be read counts as live.
+const LIVE_SINCE = (col) => `(? IS NULL OR ${col} IS NULL OR julianday(${col}) IS NULL OR julianday(${col}) >= julianday(?))`;
+const NOT_ARCHIVED = (alias) =>
+  `NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = ${alias}.project_id AND p.archived_at IS NOT NULL AND p.archived_at <> '')`;
+
+/** Counts that make the install busy. `nowIso` decides which pending jobs are due; `liveSince` (ISO,
+ *  or null when unknown) decides which waiting portal runs and filings can still have a window. */
+export function readBusyCounts(db, nowIso = new Date().toISOString(), liveSince = null) {
   const n = (sql, params = []) => db.prepare(sql).get(...params).n;
   const marks = BUSY_PORTAL_RUN_STATUSES.map(() => "?").join(", ");
   return {
@@ -76,9 +90,40 @@ export function readBusyCounts(db, nowIso = new Date().toISOString()) {
       "SELECT COUNT(*) AS n FROM job_queue WHERE status = 'running' OR (status = 'pending' AND (scheduled_at IS NULL OR scheduled_at <= ?))",
       [nowIso],
     ),
-    portalRuns: n(`SELECT COUNT(*) AS n FROM portal_runs WHERE status IN (${marks})`, BUSY_PORTAL_RUN_STATUSES),
-    filings: n("SELECT COUNT(*) AS n FROM submissions WHERE status = 'awaiting_human_submit'"),
+    portalRuns: n(
+      `SELECT COUNT(*) AS n FROM portal_runs r WHERE r.status IN (${marks}) AND ${LIVE_SINCE("r.started_at")} AND ${NOT_ARCHIVED("r")}`,
+      [...BUSY_PORTAL_RUN_STATUSES, liveSince, liveSince],
+    ),
+    filings: n(
+      `SELECT COUNT(*) AS n FROM submissions s WHERE s.status = 'awaiting_human_submit' AND ${LIVE_SINCE("s.created_at")} AND ${NOT_ARCHIVED("s")}`,
+      [liveSince, liveSince],
+    ),
   };
+}
+
+/** Waiting rows that do NOT hold the update (staged before the running server started, or on an
+ *  archived project). Only for the log line, so the owner can see what was set aside and why. */
+export function readStaleWaiting(db, liveSince = null) {
+  const n = (sql, params = []) => db.prepare(sql).get(...params).n;
+  const marks = BUSY_PORTAL_RUN_STATUSES.map(() => "?").join(", ");
+  const live = readBusyCounts(db, new Date().toISOString(), liveSince);
+  return {
+    portalRuns: n(`SELECT COUNT(*) AS n FROM portal_runs WHERE status IN (${marks})`, BUSY_PORTAL_RUN_STATUSES) - live.portalRuns,
+    filings: n("SELECT COUNT(*) AS n FROM submissions WHERE status = 'awaiting_human_submit'") - live.filings,
+  };
+}
+
+// How far back a review window can still be open: the running server's start, read from /health's
+// uptimeSec, with a minute of slack (uptime is rounded; a row may be written while it boots). No
+// server listening = nothing can be open. A server that is there but did not answer /health, or an
+// older one with no uptimeSec, = unknown (null), and every non-archived waiting row counts.
+export const LIVE_SLACK_MS = 60_000;
+export function liveSessionCutoff(health, server, nowMs) {
+  if (health && typeof health.uptimeSec === "number" && Number.isFinite(health.uptimeSec) && health.uptimeSec >= 0) {
+    return new Date(nowMs - health.uptimeSec * 1000 - LIVE_SLACK_MS).toISOString();
+  }
+  if (!health && server && Array.isArray(server.roots) && server.roots.length === 0) return new Date(nowMs).toISOString();
+  return null;
 }
 
 /** Busy reasons from the DB counts plus /health's in-process count; [] means idle. */
@@ -341,9 +386,19 @@ function realDeps(cfg, log) {
     git: (args) => run("git", args, cfg.root),
     npmCi: () => run("npm", ["ci"], cfg.root, 900_000),
     async busy() {
+      const health = await getHealth(cfg.port);
+      // Only ask Windows for the server process when /health did not answer (no server, or a hung one).
+      const liveSince = liveSessionCutoff(health, health ? null : inspectServer(cfg), Date.now());
       let counts = null;
-      try { const db = openDb(cfg.root, true); try { counts = readBusyCounts(db); } finally { db.close(); } } catch { counts = null; }
-      return busyReasons(counts, await getHealth(cfg.port));
+      let stale = null;
+      try {
+        const db = openDb(cfg.root, true);
+        try { counts = readBusyCounts(db, new Date().toISOString(), liveSince); stale = readStaleWaiting(db, liveSince); } finally { db.close(); }
+      } catch { counts = null; }
+      if (stale && (stale.portalRuns > 0 || stale.filings > 0)) {
+        log(`not holding for ${stale.portalRuns} portal run(s) / ${stale.filings} filing(s) waiting on a human from before the running server started${liveSince ? ` (${liveSince})` : ""} or on archived projects: no window of theirs can be open`);
+      }
+      return busyReasons(counts, health);
     },
     supervisorRunning: () => inspectServer(cfg)?.supervisor ?? true, // unreadable = assume it is
     // Online backup from a read-only connection, then the sha256sum-format sidecar backup.ts
