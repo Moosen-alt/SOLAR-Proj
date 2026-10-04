@@ -65,6 +65,7 @@ import { listCodeProfiles, listRowlessDesignLookups, getCodeProfile, saveResearc
 import { applyCorrectionApproval } from "./correctionAgent";
 import { runStandaloneReview, getReviewSubmission, listReviewSubmissions, reviewSubjectToProject } from "./reviewSubject";
 import { renderReviewerReportHtml } from "./reviewerEngine";
+import { readCorrectionNotice, renderCorrectionNoticeText } from "./correctionNotice";
 import { REVIEW_PACKS } from "./reviewPacks";
 import { getAutopilotState, maybeResumeAutopilot, runAutopilotApproval } from "./autopilot";
 import { computeNextStep } from "./nextStep";
@@ -1487,6 +1488,19 @@ app.get("/api/projects/:id/reviewer-report", asyncHandler(async (req, res) => {
     return;
   }
   res.json(getReviewerReport(db, String(req.params.id)));
+}));
+
+// The reviewer gate's findings as the AHJ's correction letter (#148), before submittal. A read:
+// writes nothing and calls no model. ?format=text is the letter as plain text; the JSON carries both.
+app.get("/api/projects/:id/correction-notice", asyncHandler(async (req, res) => {
+  const notice = readCorrectionNotice(db, String(req.params.id));
+  const text = renderCorrectionNoticeText(notice);
+  if (req.query.format === "text") {
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.send(text);
+    return;
+  }
+  res.json({ notice, text });
 }));
 
 // Renders the source plan-set page behind a reviewer-gate evidence topic so the

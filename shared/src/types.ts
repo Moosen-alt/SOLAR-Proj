@@ -1985,6 +1985,51 @@ export interface ReviewerReport {
   finalSubmitGate: FinalSubmitGate;
 }
 
+/** The pre-submittal correction notice (#148): the reviewer report re-read as the AHJ's own
+ *  correction letter. A VIEW — built from ReviewerReport findings, never a second judgement:
+ *  each item's weight is the gate's severity (blocker → hold, warning → comment,
+ *  callout → info), so rule 3's "verified + document-stated ⇒ blocker" shape carries over as is. */
+export type CorrectionNoticeGroup = "Structural" | "Electrical" | "Fire" | "Plan completeness" | "Local requirements";
+export type CorrectionNoticeWeight = "hold" | "comment" | "info";
+
+export interface CorrectionNoticeItem {
+  /** 1-based, numbered through the whole letter in print order. */
+  number: number;
+  group: CorrectionNoticeGroup;
+  weight: CorrectionNoticeWeight;
+  findingId: string;
+  title: string;
+  /** The comment as the plan checker would word it (the finding's cityFeedback). */
+  comment: string;
+  /** "2021 IRC R324.6 — Roof access and pathways", from the finding's code references (adopted edition). */
+  citations: string[];
+  /** What the submitted documents say, from the finding's evidence; "" when the gate found nothing stated. */
+  planStates: string;
+  required: string;
+  /** The sheet / page the evidence was read from; "" when unknown. */
+  sheet: string;
+}
+
+export interface CorrectionNoticePriorCorrection {
+  title: string;
+  /** How many of this org's past corrections matched this project. */
+  count: number;
+  requiredAction: string;
+}
+
+export interface CorrectionNotice {
+  projectId: string;
+  generatedAt: string;
+  ahj: string;
+  state: string;
+  /** Which layer the code basis came from, and the line that says so. */
+  provenance: "verified" | "seeded" | "defaults";
+  provenanceLine: string;
+  counts: { hold: number; comment: number; info: number };
+  items: CorrectionNoticeItem[];
+  priorCorrections: CorrectionNoticePriorCorrection[];
+}
+
 export interface KnowledgeSource {
   label: string;
   url: string;
