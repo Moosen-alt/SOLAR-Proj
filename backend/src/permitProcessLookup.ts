@@ -32,7 +32,7 @@
 import type { CitedFact, LLMProvider, PermitFeeAnswer, PermitProcessDiscipline, PermitProcessLookup, PermitProcessPermitAnswer, WebLookupResult } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import { hostFitsTrackAndEntity, isInformationalPageUrl, isPathTenantedHost, isPermitPlatformUrl, isVendorDomain, isVendorRootOrMarketing, portalHostOf, portalTenantKey, portalTenantOf, salesforceTenantKind, trackSafeUrl, type PortalEntity } from "./portalChannel";
-import { ahjNameCore, getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stateRulesFor, trackIssuer } from "./permitProcess";
+import { ahjNameCore, getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stateRulesFor, trackIssuer, ZONING_SIGNOFF } from "./permitProcess";
 import { CONNECTOR_WORDS, DEPARTMENT_WORDS, GENERIC_ORG_WORDS, agencyNameKey, sameAgencyName, stripDepartmentPhrase } from "./agencyName";
 // Re-exported: the agency-name identity helpers moved to agencyName.ts (pure, no lookup stack) so
 // permitProcess can ask the same question without importing this module back (a cycle).
@@ -171,8 +171,6 @@ const supportsName = (value: string, quote: string) => {
 // sign-off — does not state that the value ISSUES the permit. A name AFTER the marker (the county it
 // then goes to) is the destination and still counts.
 const PREREQ_MARKER = /\bfirst\b[^.;]{0,40}?\b(?:before|then|prior to)\b|\bbefore (?:going|submitting|applying|being (?:sent|submitted)|it goes|they go) to\b|\bprior to (?:submitting|applying|going)\b/i;
-// "zoning compliance review" is New Mexico's wording for the local step before a CID permit (#44).
-const ZONING_SIGNOFF = /\b(?:zoning|land[- ]use|planning)\s+(?:compliance\s+)?(?:approval|sign[- ]?off|clearance|review|verification)\b/i;
 export function namesOnlyAsPrerequisite(value: string, quote: string): boolean {
   const need = words(value).filter((x) => !GENERIC_ORG_WORDS.has(x));
   const w = need.length ? need : words(value);
@@ -460,6 +458,19 @@ const asDiscipline = (v: unknown): PermitProcessDiscipline | null => {
   return s ? "other" : null;
 };
 
+/** DOES THE QUOTE SAY WHICH? (#44, #103 review) "state": it names the state agency (CID /
+ *  Construction Industries) AND no clause claims the jurisdiction's own building office; "own": a
+ *  clause claims one AND the quote names no CID. Every CID-served quote also says "building official"
+ *  ("CID is the building official for the Village"), and "the Town's own Building Department … under
+ *  state law" says "state", so neither word alone decides. A negated clause ("has no building program",
+ *  "does not have its own building department") claims nothing. */
+const STATE_AGENCY = /\bcid\b|construction industries/i;
+const OWN_BUILDING_OFFICE = /\bown\b[^.;]{0,30}\bbuilding\b|\bbuilding (?:official|department|division|program)\b/i;
+const NEGATED = /\b(?:no|not|never|without|lacks?|none)\b|n't\b/i;
+const claimsOwnBuildingOffice = (q: string) => q.split(/[.;]/).some((c) => OWN_BUILDING_OFFICE.test(c) && !NEGATED.test(c) && !STATE_AGENCY.test(c));
+const supportsBuildingProgram = (value: "own" | "state", quote: string): boolean =>
+  value === "state" ? STATE_AGENCY.test(quote) && !claimsOwnBuildingOffice(quote) : claimsOwnBuildingOffice(quote) && !STATE_AGENCY.test(quote);
+
 export function parseProcessPart(text: string, seenUrls: string[], stopReason: string | null, platformPages: string[] = [], entity: PortalEntity | null = null): {
   issuingAgency: CitedFact<string>; permitStructure: CitedFact<"separate" | "combo">; permits: PermitProcessPermitAnswer[]; prerequisites: CitedFact<string>[]; problem: string;
   buildingProgram?: CitedFact<"own" | "state">; unincorporatedZoning?: CitedFact<string>;
@@ -490,10 +501,10 @@ export function parseProcessPart(text: string, seenUrls: string[], stopReason: s
     });
   }
   // The state-issuer questions (processLookupSystemFor): kept only cited, and only when the quote says
-  // which — a state-served answer names the state agency, an own-program answer the local building office.
+  // WHICH (supportsBuildingProgram) — the value flips the issuer both ways.
   const buildingProgram = acceptCited<"own" | "state">(json.buildingProgram as RawFact, {
     seenUrls, what: "building program", coerce: (v) => (/^state\b/i.test(str(v)) ? "state" : /^own\b/i.test(str(v)) ? "own" : null),
-    supports: (v, q) => (v === "state" ? /\bcid\b|construction industries|\bstate\b/i.test(q) : /\bown\b[^.;]{0,30}\bbuilding\b|\bbuilding (?:official|department|division|program)\b/i.test(q)),
+    supports: supportsBuildingProgram,
   });
   const unincorporatedZoning = acceptCited<string>(json.unincorporatedZoning as RawFact, {
     seenUrls, what: "unincorporated zoning office", coerce: (v) => (/\bcounty\b/i.test(str(v)) ? str(v) : null), supports: supportsName,

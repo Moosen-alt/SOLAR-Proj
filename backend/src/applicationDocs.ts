@@ -9,7 +9,7 @@ import { isBillHolderName } from "./accountHolders";
 import { nowIso } from "./time";
 import { hasMpuScope } from "./serviceScope";
 import { findAhjProcessProfile, ahjProcessKnowledgeStatus, jurisdictionCore, registryTermMatches } from "./processProfiles";
-import { describeCited, isStatewidePortalUrl, permitChannelLabel, permitProcessFor, statePermitStructure, stateRulesFor, stateTradeIssuerFor, unincorporatedZoningFor } from "./permitProcess";
+import { describeCited, isStatewidePortalUrl, permitChannelLabel, permitProcessFor, statePermitStructure, stateRulesFor, stateTradeIssuerFor, unincorporatedZoningFor, ZONING_SIGNOFF } from "./permitProcess";
 import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, usStateCode, type PermitPathResolution } from "./permitPath";
 // Functions only, called at run time: this module sits inside the permitProcessLookup ->
 // feeSchedules -> knowledgeBase -> applicationDocs import cycle (see applicationDocsAgency's header).
@@ -172,6 +172,12 @@ export function permitStructureAnswer(
     // what put the AHJ on the state issuer. A lookup-served AHJ cites the lookup's own page (#44).
     let cite = trade.origin === "state_rule" ? { sourceUrl: rule.localStep.sourceUrl, quote: rule.localStep.quote } : { sourceUrl: trade.sourceUrl, quote: trade.quote };
     let step = `Zoning compliance / site-development review on a site plan at ${trade.localReviewer}, submitted ${method ? `by ${method}` : "as its own page says (verify on the AHJ site)"}${where}; ${trade.localReviewer} issues no building permit`;
+    // ONE zoning step (#103 review): the lookup's own cited zoning prerequisite IS this step — it lends
+    // its citation (this AHJ's own page, better evidence than the seed's) and is not listed twice.
+    // Routed to the county below, the village's step is not the one, so it stays out either way.
+    const citedZoning = prerequisites.filter((x) => ZONING_SIGNOFF.test(x.step));
+    const rest = prerequisites.filter((x) => !ZONING_SIGNOFF.test(x.step));
+    if (citedZoning[0]) cite = { sourceUrl: citedZoning[0].sourceUrl, quote: citedZoning[0].quote };
     // "Unincorporated county" on a city/village: the zoning review is the COUNTY's (#44) — its office
     // from the lookup's cited answer or the seeded city→county table; never guessed when unknown.
     if (/^unincorporated/i.test(asked) && !/\bcounty\b/i.test(trade.localReviewer)) {
@@ -184,7 +190,7 @@ export function permitStructureAnswer(
     }
     return {
       ...settle("separate", trade.origin === "state_rule" ? "state_rule" : "cited", `Permit structure: separate building + electrical permits from ${trade.value} — ${trade.origin === "state_rule" ? "state rule" : "per-job lookup"}, ${trade.sourceUrl} ("${trade.quote.slice(0, 160)}")`, trade.sourceUrl, trade.quote),
-      prerequisites: [{ step, ...cite }, ...prerequisites],
+      prerequisites: [{ step, ...cite }, ...rest],
       issuer: trade.value,
     };
   }

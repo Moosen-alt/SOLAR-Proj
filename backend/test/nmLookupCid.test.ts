@@ -28,6 +28,9 @@ const ppl = await import("../src/permitProcessLookup");
 const pp = await import("../src/permitProcess");
 const { permitStructureAnswer } = await import("../src/applicationDocs");
 const { isInformationalPageUrl } = await import("../src/portalChannel");
+const { permitFeeProject, localPermitReview } = await import("../src/feeIssuer");
+const jobQueue = await import("../src/jobQueue");
+clearInterval(jobQueue.startJobWorker(db));
 
 let failures = 0;
 const check = async (name: string, fn: () => void | Promise<void>) => {
@@ -76,13 +79,35 @@ await check("a CITED 'served by CID' answer puts an AHJ no seed names on CID (or
   for (const t of ["building", "electrical"]) {
     const ti = pp.trackIssuer(p, t);
     assert.match(ti.name, CID, t);
-    assert.equal(ti.source, "lookup", t);
+    // The issuer is the STATE agency: source "state_rule" whichever source put the AHJ on it, so
+    // every consumer that keys on it (fees, the issuer's own lookup) reaches CID (#103 review).
+    assert.equal(ti.source, "state_rule", t);
+    assert.equal(ti.sourceUrl, CID_PAGE, t);
   }
   const a = permitStructureAnswer(p);
   assert.equal(a.structure, "separate");
   assert.match(a.prerequisites[0].step, /Example Pueblo/);
   // The seed's Los Lunas citation is never borrowed for another AHJ's local step.
   assert.ok(!a.prerequisites.some((x) => /loslunas/i.test(x.sourceUrl)), JSON.stringify(a.prerequisites));
+});
+await check("a cited-'state' village reaches the fee path on both tracks: fees key on CID, the village's own charge is its zoning review", () => {
+  const p = project("Village of Example Pueblo", "Example Pueblo");
+  for (const t of ["building", "electrical", "permit"]) {
+    const v = permitFeeProject(p, t);
+    assert.notEqual(v, p, `${t}: the fee still reads the village`);
+    assert.match(String(v.ahj), CID, t);
+  }
+  assert.deepEqual(localPermitReview(p), { ahj: "Village of Example Pueblo", issuer: pp.stateTradeIssuerFor(p)!.value });
+});
+await check("a cited-'state' village's issuer (CID) gets its own lookup queued, both tracks naming it", async () => {
+  process.env.ANTHROPIC_API_KEY = "sk-ant-test-not-a-real-key";
+  try {
+    await ppl.ensurePermitProcessLookedUp(db, { id: "p-nm", state: "NM", ahj: "Village of Example Pueblo", parserSnapshot: {} });
+    const queued = db.query<{ payload: string }>("SELECT payload FROM job_queue WHERE job_type = 'permit_process_lookup' AND status IN ('pending','running')").map((r) => JSON.parse(r.payload).ahj as string);
+    // Retire them synchronously, before enqueueJob's deferred kick could start one.
+    db.run("UPDATE job_queue SET status = 'failed' WHERE job_type = 'permit_process_lookup' AND status IN ('pending','running')");
+    assert.ok(queued.some((a) => CID.test(a)), JSON.stringify(queued));
+  } finally { delete process.env.ANTHROPIC_API_KEY; }
 });
 await check("the lookup's zoning step is recorded as a cited prerequisite", async () => {
   await run("Village of Example Mesa", answer({
@@ -93,11 +118,31 @@ await check("the lookup's zoning step is recorded as a cited prerequisite", asyn
   assert.ok(lk.prerequisites?.some((x) => /zoning/i.test(String(x.value)) && x.sourceUrl === TOWN_PAGE), JSON.stringify(lk.prerequisites));
   const a = permitStructureAnswer(project("Village of Example Mesa", "Example Mesa"));
   assert.ok(a.prerequisites.some((x) => x.sourceUrl === TOWN_PAGE), JSON.stringify(a.prerequisites));
+  // ONE zoning step: the lookup's cited one lends its citation to the step, never listed twice.
+  assert.equal(a.prerequisites.filter((x) => /zoning/i.test(x.step)).length, 1, JSON.stringify(a.prerequisites));
+  assert.equal(a.prerequisites[0].sourceUrl, TOWN_PAGE);
 });
 await check("a cited 'own building program' answer outranks the seeded served list (Rio Communities)", async () => {
   assert.ok(pp.stateTradeIssuerFor(project("Rio Communities", "Rio Communities")), "seed precondition");
   await run("Rio Communities", answer({ buildingProgram: { value: "own", sourceUrl: TOWN_PAGE, quote: "Rio Communities now runs its own building program; the city building official issues permits" } }));
   assert.equal(pp.stateTradeIssuerFor(project("Rio Communities", "Rio Communities")), null);
+});
+// The value flips the issuer both ways, so the quote must say WHICH (#103 review): a "state" answer
+// names CID and claims no own building office; an "own" answer claims one and names no CID.
+await check("an 'own' answer whose quote says CID is the building official is NOT kept (seeded AHJ stays on CID)", async () => {
+  await run("Bosque Farms", answer({ buildingProgram: { value: "own", sourceUrl: CID_PAGE, quote: "CID is the building official for the Village; the village has no building program" } }));
+  assert.equal(pp.permitProcessFor({ state: "NM", ahj: "Bosque Farms" })?.buildingProgram?.value ?? null, null);
+  assert.match(String(pp.stateTradeIssuerFor(project("Bosque Farms", "Bosque Farms"))?.value), CID);
+  db.run("DELETE FROM permit_process_lookups WHERE ahj = ?", ["Bosque Farms"]);
+});
+await check("a 'state' answer whose quote says the town's own Building Department issues permits is NOT kept", async () => {
+  await run("Town of Example Ridge", answer({ buildingProgram: { value: "state", sourceUrl: TOWN_PAGE, quote: "The Town's own Building Department issues building permits under state law" } }));
+  assert.equal(pp.permitProcessFor({ state: "NM", ahj: "Town of Example Ridge" })?.buildingProgram?.value ?? null, null);
+  assert.equal(pp.stateTradeIssuerFor(project("Town of Example Ridge", "Example Ridge")), null);
+});
+await check("a 'state' quote that says the village has no building department of its own still counts", async () => {
+  await run("Village of Example Cerro", answer({ buildingProgram: { value: "state", sourceUrl: CID_PAGE, quote: "The Village of Example Cerro does not have its own building department; CID issues its building permits" } }));
+  assert.equal(pp.permitProcessFor({ state: "NM", ahj: "Village of Example Cerro" })?.buildingProgram?.value, "state");
 });
 await check("an UNCITED answer is not kept: unknown stays unknown", async () => {
   await run("Village of Example Arroyo", answer({ buildingProgram: { value: "state", sourceUrl: "", quote: "" } }));
@@ -153,6 +198,7 @@ await check("the lookup's cited county office answers when the seed has none", a
   }));
   const step = permitStructureAnswer(project("Village of Example Vado", "Example Vado", { incorporatedStatus: UNINC })).prerequisites[0].step;
   assert.match(step, /Example County Planning and Zoning/, step);
+  assert.equal(pp.unincorporatedZoningFor(project("Village of Example Vado", "Example Vado"))?.county, "Example County");
 });
 await check("Albuquerque control: no state issuer, no zoning step, whatever the answer", () => {
   const a = permitStructureAnswer(project("Albuquerque", "Albuquerque", { incorporatedStatus: UNINC }));

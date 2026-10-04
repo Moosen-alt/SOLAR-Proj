@@ -373,6 +373,10 @@ STATE_PERMIT_RULES.NM = {
   },
 };
 export const BCD_5952_URL = BCD_5952;
+/** A zoning / land-use sign-off step ("zoning compliance review" is New Mexico's wording for the
+ *  local step before a CID permit, #44). The lookup's prerequisite parser and permitStructureAnswer's
+ *  dedupe of the state-issuer zoning step read this one predicate. */
+export const ZONING_SIGNOFF = /\b(?:zoning|land[- ]use|planning)\s+(?:compliance\s+)?(?:approval|sign[- ]?off|clearance|review|verification)\b/i;
 
 /** "City of Albuquerque" / "Albuquerque, NM" → "albuquerque"; a county keeps its "county". */
 function localAhjName(ahj: string): string {
@@ -421,7 +425,9 @@ export function unincorporatedZoningFor(project: IssuerProject): { county: strin
   if (!local || /\bcounty\b/.test(local)) return null;
   const lk = permitProcessFor(base)?.unincorporatedZoning;
   if (lk && answered(lk) && /^https?:\/\//i.test(lk.sourceUrl) && lk.quote.trim().length >= 8) {
-    return { county: String(lk.value), office: String(lk.value), sourceUrl: lk.sourceUrl, quote: lk.quote };
+    // "Example County Planning and Zoning" → county "Example County", office the whole cited name.
+    const office = String(lk.value);
+    return { county: /^(.*?\bcounty)\b/i.exec(office)?.[1] ?? office, office, sourceUrl: lk.sourceUrl, quote: lk.quote };
   }
   return stateRulesFor(base.state).stateTradeIssuer?.countyOf?.[local] ?? null;
 }
@@ -715,7 +721,11 @@ export function trackIssuer(project: IssuerProject, track: string | null | undef
     };
   }
   const st = ahj ? stateTradeIssuerFor(base) : null;
-  if (st) return { name: st.value, source: st.origin === "state_rule" ? "state_rule" : "lookup", sourceUrl: st.sourceUrl, quote: st.quote, override, ...(refused ? { refused } : {}) };
+  // Source "state_rule" whether the seed or the lookup's cited buildingProgram put this AHJ on the
+  // state issuer: the ISSUER is the state rule's agency either way, and the fee path
+  // (feeIssuer.permitFeeProject) and the issuer's own lookup (stateIssuersToLookUp) key on it (#103
+  // review). The citation travels in sourceUrl/quote — the lookup's page when the lookup decided.
+  if (st) return { name: st.value, source: "state_rule", sourceUrl: st.sourceUrl, quote: st.quote, override, ...(refused ? { refused } : {}) };
   return { name: ahj, source: "project", override, ...(refused ? { refused } : {}) };
 }
 
