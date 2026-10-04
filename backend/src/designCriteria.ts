@@ -26,6 +26,9 @@
 //   city.struct.design-criteria-unknown    the AHJ's value is not on file (a callout, never
 //                                          silence: an unknown must not read as reassurance)
 //   city.code.basis-mismatch               the plan's GOVERNING CODES vs the adopted codes
+//                                          (a blocker only against a human-verified profile)
+//   city.code.basis-unverified             the plan states a code basis, the AHJ's editions
+//                                          are not on file (a callout, never silence)
 //
 // Pure: no database. The jurisdiction arrives as an EffectiveCodeContext, the same way the
 // rest of codeReviewRules receives it, so these rules work for any AHJ whose profile carries
@@ -42,6 +45,7 @@ import type {
   StatedDesignCriterion,
   StatedDesignCriterionKind,
   StatedDesignCriterionQualifier,
+  UpcomingCodeEdition,
 } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
 
@@ -1805,6 +1809,73 @@ function statedEvidence(items: StatedDesignCriterion[], note: string): ReviewerF
   }));
 }
 
+/** The state's upcoming edition of exactly the code and edition a mismatch line compared, when it
+ *  takes effect within `days` of `asOf` (or already has: the row has not caught up). Only that
+ *  pair: a plan's upcoming base must not soften a mismatch on its state code, or vice versa. */
+function upcomingWithin(ctx: EffectiveCodeContext, asOf: string | undefined, days: number): (stated: { code: string; edition: string }) => UpcomingCodeEdition | null {
+  const now = Date.parse(String(asOf || new Date().toISOString()).slice(0, 10));
+  const due = (ctx.profile?.upcoming ?? []).filter((u) => {
+    const when = Date.parse(String(u.anticipatedDate || "").slice(0, 10));
+    return Number.isFinite(when) && Number.isFinite(now) && when - now <= days * 86_400_000;
+  });
+  return (stated) => due.find((u) => normCodeToken(u.code) === normCodeToken(stated.code) && String(u.edition).trim() === stated.edition) ?? null;
+}
+
+/**
+ * NO EDITIONS ON FILE — the plan's code basis next to the lookup state. A callout, never more:
+ * the model-code defaults are placeholders (the "current cycle" says nothing about what this AHJ
+ * adopted), and a seeded lookup that recorded no editions has nothing to compare with.
+ */
+function codeBasisUnverified(ctx: EffectiveCodeContext, basis: StatedCodeBasisEntry[], who: string): ReviewerFinding {
+  const seen = new Set<string>();
+  const claims: string[] = [];
+  for (const b of basis) {
+    const label = `${b.edition} ${b.code}${b.baseCode ? ` (${b.baseCode} ${b.baseEdition})` : ""}`;
+    if (seen.has(label)) continue;
+    seen.add(label);
+    claims.push(label);
+  }
+  const at = ctx.profile?.researchedAt ? ` ${ctx.profile.researchedAt.slice(0, 10)}` : "";
+  const lookup = !ctx.profile
+    ? "no code profile on file yet (lookup not landed)"
+    : ctx.verified
+      ? `${provenance(ctx)} records no adopted editions`
+      : `lookup landed seeded${at} without adopted editions`;
+  // The model cycle, said as such: which stated editions are not the current model edition. With
+  // no editions on file the context carries the model-code defaults (buildCodeContext).
+  const defaults = new Map(ctx.adoptedCodes.map((d) => [normCodeToken(d.code), d.edition]));
+  const offCycle = [...new Set(basis
+    .filter((b) => defaults.has(normCodeToken(b.code)) && defaults.get(normCodeToken(b.code)) !== b.edition)
+    .map((b) => `${b.code} ${b.edition} (current model edition ${defaults.get(normCodeToken(b.code))})`))];
+  return {
+    id: "city.code.basis-unverified",
+    severity: "callout",
+    category: "plan_set",
+    title: "Jurisdiction's adopted code editions not on file — plan's code basis unchecked",
+    message: `Plan states ${claims.slice(0, 8).join(" / ")}; ${who}'s adopted code editions are not on file — ${lookup}. The plan's code basis has NOT been checked against the jurisdiction's adoption.${offCycle.length ? ` For reference only (not the jurisdiction's adoption): ${offCycle.slice(0, 4).join("; ")}.` : ""}`,
+    cityFeedback: `Confirm the code editions ${who} currently enforces and show them in the plan's governing-codes block.`,
+    designTeamAction: `Look up the code editions ${who} has adopted (building, residential, electrical, fire) and confirm the plan's governing-codes block before submittal; record them on the jurisdiction's code profile so the next plan set is compared automatically.`,
+    evidenceNeeded: ["Jurisdiction's adopted code editions", "Governing-codes block on the cover sheet"],
+    codeReferences: [...new Set(basis.map((b) => normCodeToken(b.code)))]
+      .filter((code) => MODEL_CODES.has(code))
+      .slice(0, 4)
+      .map((code) => ctx.citationFor(code, "Adopted edition", `${code} as adopted by ${who}`)),
+    installerCallout: false,
+    evidenceStatus: "weak",
+    evidenceFound: basis.slice(0, 12).map((b) => ({
+      kind: "source_excerpt" as const,
+      label: `${b.code} ${b.edition}${b.baseCode ? ` (${b.baseCode} ${b.baseEdition})` : ""}`,
+      source: b.source,
+      excerpt: b.excerpt,
+      confidence: "high" as const,
+      pageHint: "",
+      screenshotPath: "",
+      verifier: "rule_engine" as const,
+      note: "Stated by the package; not compared — the jurisdiction's editions are not on file.",
+    })),
+  };
+}
+
 function provenance(ctx: EffectiveCodeContext): string {
   // Name the ROW the value came from, not the project's AHJ: a city with no row of its own
   // resolves to the state-level default, and "City of X code profile (human-verified)" would
@@ -2161,6 +2232,8 @@ export function evaluateDesignCriteriaFindings(
     /** The project's permit path as its wording scopes it (permitPath.pathWordingScope): "" = not
      *  decided. Picks which state minimum ground snow load applies. */
     permitPath?: "prescriptive" | "engineered" | "";
+    /** The day "within 90 days of an upcoming edition" is measured from (ISO); defaults to today. */
+    asOf?: string;
   },
 ): ReviewerFinding[] {
   const sources = readSources(project, opts.extraTexts ?? []);
@@ -2368,8 +2441,16 @@ export function evaluateDesignCriteriaFindings(
     }
   }
 
-  // (d) CODE BASIS — the plan's printed editions vs what the profile says is adopted. A
-  // warning at most: most profiles are seeded, and either side may be the stale one.
+  // (d) CODE BASIS — the plan's printed editions vs what the profile says is adopted. EVERY plan
+  // set that prints a code basis gets an answer (issue #108): silence on a jurisdiction with no
+  // editions on file read as "the code basis checked out".
+  //   · no editions on file (model defaults, or a profile row that records none) -> a callout
+  //     quoting the plan's claim next to the lookup state, like design-criteria-unknown. Never
+  //     more: the defaults are placeholders, not the jurisdiction's adoption.
+  //   · a mismatch against a SEEDED profile -> a warning (hard rule 3: research lands seeded,
+  //     and a seeded row never blocks; either side may be the stale one).
+  //   · a mismatch against a human-VERIFIED profile -> a blocker, unless the plan prints the
+  //     state's UPCOMING edition and it takes effect within 90 days (a warning naming the date).
   //
   // LIKE WITH LIKE. A plan entry is compared with the profile entry of the SAME named code
   // (state code to state code: ORSC with ORSC). Base model codes are compared only when a base
@@ -2377,20 +2458,28 @@ export function evaluateDesignCriteriaFindings(
   // base its entry's title states ("based on the 2021 IRC"). A state code and a model code are
   // never compared by year: the 2022 Oregon Fire Code IS the right code for the 2021 IFC.
   const adopted = ctx.profile?.adoptedCodes?.length ? ctx.adoptedCodes : [];
+  if (!adopted.length && stated.codeBasis.length) out.push(codeBasisUnverified(ctx, stated.codeBasis, who));
   if (adopted.length && stated.codeBasis.length) {
     const profileEntries = adopted.map(profileCodeEntry);
     const lines: string[] = [];
+    // Lines whose plan edition is the state's upcoming edition, due within the window: these
+    // never block, and say the date.
+    const softened = new Set<string>();
     const seen = new Set<string>();
-    const report = (key: string, line: string): void => {
+    const upcomingFor = upcomingWithin(ctx, opts.asOf, 90);
+    const report = (key: string, line: string, compared: { code: string; edition: string }): void => {
       if (seen.has(key)) return;
       seen.add(key);
-      lines.push(line);
+      const due = upcomingFor(compared);
+      const text = due ? `${line} — the plan's edition is the upcoming ${due.code} ${due.edition}, anticipated effective ${due.anticipatedDate}` : line;
+      if (due) softened.add(text);
+      lines.push(text);
     };
     for (const b of stated.codeBasis) {
       const code = normCodeToken(b.code);
       const same = profileEntries.filter((a) => a.code === code);
       if (same.length && !same.some((a) => a.edition === b.edition)) {
-        report(`${code}|${b.edition}`, `plan states ${b.code} ${b.edition} (${b.source}) — profile records ${same.map((a) => a.label).join(" / ")}`);
+        report(`${code}|${b.edition}`, `plan states ${b.code} ${b.edition} (${b.source}) — profile records ${same.map((a) => a.label).join(" / ")}`, b);
       }
       // The plan's printed base, compared with a base the profile states for that model code.
       if (b.baseCode && b.baseEdition) {
@@ -2402,7 +2491,7 @@ export function evaluateDesignCriteriaFindings(
             ...profileEntries.filter((a) => a.base?.code === model).map((a) => ({ edition: a.base!.edition, label: `${a.label} (based on ${model} ${a.base!.edition})` })),
           ];
           if (recorded.length && !recorded.some((r) => r.edition === b.baseEdition)) {
-            report(`${code}|${b.edition}|${model}|${b.baseEdition}`, `plan states ${b.code} ${b.edition} based on ${model} ${b.baseEdition} (${b.source}) — profile records ${recorded.map((r) => r.label).join(" / ")}`);
+            report(`${code}|${b.edition}|${model}|${b.baseEdition}`, `plan states ${b.code} ${b.edition} based on ${model} ${b.baseEdition} (${b.source}) — profile records ${recorded.map((r) => r.label).join(" / ")}`, { code: model, edition: b.baseEdition });
           }
         }
       }
@@ -2411,17 +2500,24 @@ export function evaluateDesignCriteriaFindings(
       if (!same.length && MODEL_CODES.has(code)) {
         const via = profileEntries.filter((a) => a.base?.code === code);
         if (via.length && !via.some((a) => a.base!.edition === b.edition)) {
-          report(`${code}|${b.edition}`, `plan states ${b.code} ${b.edition} (${b.source}) — profile records ${via.map((a) => `${a.label} (based on ${code} ${a.base!.edition})`).join(" / ")}`);
+          report(`${code}|${b.edition}`, `plan states ${b.code} ${b.edition} (${b.source}) — profile records ${via.map((a) => `${a.label} (based on ${code} ${a.base!.edition})`).join(" / ")}`, b);
         }
       }
     }
     if (lines.length) {
+      // A VERIFIED edition is the jurisdiction's code: a plan on another edition is not approvable
+      // as drawn. Only a seeded row stays a warning, and only an upcoming edition softens it.
+      const blocks = ctx.verified && lines.some((l) => !softened.has(l));
       out.push({
         id: "city.code.basis-mismatch",
-        severity: "warning",
+        severity: blocks ? "blocker" : "warning",
         category: "plan_set",
         title: "Plan's code basis differs from the jurisdiction's adopted codes",
-        message: `${lines.join("; ")}. Profile: ${provenance(ctx)}. One side is out of date — confirm the currently adopted editions.`,
+        message: `${lines.join("; ")}. Profile: ${provenance(ctx)}. ${blocks
+          ? "The adopted editions are verified — the plan's governing-codes block must state them."
+          : softened.size === lines.length
+            ? "The plan anticipates the upcoming edition — confirm which edition the jurisdiction will review under on the submittal date."
+            : "One side is out of date — confirm the currently adopted editions."}`,
         // AN UNVERIFIED PROFILE CANNOT TELL AN INSTALLER TO CHANGE THEIR PLAN. Venus TX (new-AHJ e2e,
         // 2026-09-26): a seeded state edition (NEC 2026) against a plan that correctly said 2020 —
         // and the installer was told to "update" it. Only a human-verified profile may ask for the

@@ -21,6 +21,7 @@ import { buildCodeContext } from "../src/codeProfiles";
 import { evaluateDesignCodeFindings } from "../src/codeReviewRules";
 import { extractStatedDesignCriteria, type DesignTextSource } from "../src/designCriteria";
 import { buildReviewerReport } from "../src/reviewerEngine";
+import { visionMayRelax } from "../src/reviewerVision";
 
 let failures = 0;
 const check = (label: string, fn: () => void): void => {
@@ -264,10 +265,18 @@ check("C: site detail read — wind 110 / Exp C; ROOF SNOW 36 is roof snow, NOT 
   assert.equal(s.criteria.filter((c) => c.criterion === "groundSnowPsf").length, 0);
 });
 
-check("C: basis-mismatch fires vs a profile adopting NEC 2023 — a WARNING even when the profile is verified", () => {
-  const f = get(run(caseC, ctxFor({ confidence: "verified" })), BASIS);
+check("C: basis-mismatch fires vs a SEEDED profile adopting NEC 2023 — a WARNING (a seeded row never blocks)", () => {
+  const f = get(run(caseC, ctxFor({})), BASIS);
   assert.ok(f, "mismatch must fire");
   assert.equal(f!.severity, "warning");
+  assert.match(f!.message, /NEC 2020/);
+  assert.match(f!.message, /NEC 2023/);
+});
+
+check("C #108: basis-mismatch vs a human-VERIFIED profile adopting NEC 2023 is a BLOCKER", () => {
+  const f = get(run(caseC, ctxFor({ confidence: "verified" })), BASIS);
+  assert.ok(f, "mismatch must fire");
+  assert.equal(f!.severity, "blocker");
   assert.match(f!.message, /NEC 2020/);
   assert.match(f!.message, /NEC 2023/);
 });
@@ -279,6 +288,89 @@ check("C MUST-EXCLUDE: plan basis matching the profile -> no mismatch", () => {
 
 check("C MUST-EXCLUDE: no adopted-code record (defaults) -> no mismatch against placeholders", () => {
   assert.ok(!get(run(caseC, buildCodeContext("OR", "City of Nowhere", null)), BASIS));
+});
+
+// ── #108: every plan set that prints a code basis gets an answer ─────────────────────────
+const BASIS_UNVERIFIED = "city.code.basis-unverified";
+const UT_PLAN = "GOVERNING CODES: 2021 IRC, 2021 IBC, 2020 NEC, 2021 IFC. SYSTEM SIZE: 8 kW DC";
+const utah = project({ planSetExtractedText: UT_PLAN }, { state: "UT", ahj: "City of Testvale" } as Partial<ProjectRecord>);
+const utProfile = (over: Partial<JurisdictionCodeProfile>): JurisdictionCodeProfile => profile({
+  key: "ut|city of testvale|unknown", state: "UT", ahj: "City of Testvale",
+  adoptedCodes: [{ code: "IRC", edition: "2021" }, { code: "IBC", edition: "2021" }, { code: "NEC", edition: "2023" }, { code: "IFC", edition: "2021" }],
+  ...over,
+});
+const utCtx = (over: Partial<JurisdictionCodeProfile>) => buildCodeContext("UT", "City of Testvale", utProfile(over));
+const inDays = (n: number): string => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
+
+check("#108 MUST-PASS: defaults (no profile) -> a basis-unverified CALLOUT quoting the plan, and nothing that warns or blocks", () => {
+  const fs = run(utah, buildCodeContext("UT", "City of Testvale", null));
+  const f = get(fs, BASIS_UNVERIFIED);
+  assert.ok(f, "a plan that prints a code basis must get an answer on defaults");
+  assert.equal(f!.severity, "callout");
+  assert.equal(f!.installerCallout, false);
+  assert.match(f!.message, /2020 NEC/);
+  assert.match(f!.message, /2021 IRC/);
+  assert.match(f!.message, /not on file/);
+  assert.match(f!.message, /lookup not landed/);
+  assert.ok(!get(fs, BASIS), "no mismatch against placeholders");
+});
+
+check("#108 MUST-PASS: a SEEDED profile with no editions on file -> callout naming the seeded lookup, never a blocker", () => {
+  const fs = run(utah, utCtx({ adoptedCodes: [] }));
+  const f = get(fs, BASIS_UNVERIFIED);
+  assert.ok(f);
+  assert.equal(f!.severity, "callout");
+  assert.match(f!.message, /seeded 2026-09-01/);
+  assert.ok(!fs.some((x) => x.id.startsWith("city.code.basis") && x.severity === "blocker"));
+});
+
+check("#108 MUST-PASS: verified profile, plan on NEC 2020 vs adopted NEC 2023 -> basis-mismatch BLOCKER", () => {
+  const fs = run(utah, utCtx({ confidence: "verified", verifiedBy: "operator" }));
+  const f = get(fs, BASIS);
+  assert.ok(f);
+  assert.equal(f!.severity, "blocker");
+  assert.match(f!.message, /NEC 2020/);
+  assert.ok(!get(fs, BASIS_UNVERIFIED), "editions on file: no unverified callout");
+});
+
+check("#108 MUST-PASS: the same mismatch on a SEEDED profile stays a warning (rule 3)", () => {
+  const f = get(run(utah, utCtx({})), BASIS);
+  assert.ok(f);
+  assert.equal(f!.severity, "warning");
+});
+
+check("#108 MUST-EXCLUDE: verified profile and a matching plan -> no basis finding at all", () => {
+  const fs = run(utah, utCtx({ confidence: "verified", adoptedCodes: [{ code: "IRC", edition: "2021" }, { code: "IBC", edition: "2021" }, { code: "NEC", edition: "2020" }, { code: "IFC", edition: "2021" }] }));
+  assert.ok(!fs.some((f) => f.id.startsWith("city.code.basis")), JSON.stringify(fs.filter((f) => f.id.startsWith("city.code.basis")).map((f) => f.id)));
+});
+
+check("#108 MUST-EXCLUDE: a verified state code naming its model base still matches (base-edition equivalence)", () => {
+  const fs = run(caseC, ctxFor({ confidence: "verified", adoptedCodes: [{ code: "ORSC", edition: "2023" }, { code: "OESC", edition: "2023" }, { code: "NEC", edition: "2020" }] }));
+  assert.ok(!get(fs, BASIS));
+});
+
+const NEXT_PLAN = "GOVERNING CODES: 2021 IRC, 2026 NEC. SYSTEM SIZE: 8 kW DC";
+const nextCycle = project({ planSetExtractedText: NEXT_PLAN }, { state: "UT", ahj: "City of Testvale" } as Partial<ProjectRecord>);
+const withUpcoming = (date: string) => utCtx({ confidence: "verified", upcoming: [{ family: "electrical", code: "NEC", edition: "2026", anticipatedDate: date, status: "adopted" }] });
+
+check("#108 MUST-PASS: verified, plan prints the UPCOMING edition due within 90 days -> a warning naming the date", () => {
+  const date = inDays(30);
+  const f = get(run(nextCycle, withUpcoming(date)), BASIS);
+  assert.ok(f);
+  assert.equal(f!.severity, "warning");
+  assert.ok(f!.message.includes(date), f!.message);
+  assert.match(f!.message, /upcoming NEC 2026/);
+});
+
+check("#108 MUST-PASS: the upcoming edition due beyond 90 days does not soften -> blocker", () => {
+  const f = get(run(nextCycle, withUpcoming(inDays(200))), BASIS);
+  assert.ok(f);
+  assert.equal(f!.severity, "blocker");
+});
+
+check("#108 MUST-PASS: vision may never relax either code-basis finding", () => {
+  assert.equal(visionMayRelax({ id: BASIS } as ReviewerFinding), false);
+  assert.equal(visionMayRelax({ id: BASIS_UNVERIFIED } as ReviewerFinding), false);
 });
 
 check("C: a list printed BEFORE its heading (PDF text order) is still read", () => {
