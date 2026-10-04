@@ -140,6 +140,51 @@ check("OCPD over ampacity with every input on the sheet (count not stated -> fav
   assert.match(f?.message ?? "", /count not stated; 3 or fewer assumed/);
 });
 
+// THE MOST COMMON MICRO TOPOLOGY (Helm's review of #152): an Enphase combiner, two #12 / 20 A
+// branches, a 40 A backfeed on #8. Every value is on the sheet, but WHICH conductor the 40 A breaker
+// protects is the parser's pairing. If it pairs the breaker with the branch #12 the recompute says
+// "largest permitted OCPD 20 A, but the PV breaker is 40 A" — that may only ever be a WARNING.
+// 32 x 1.21 A = 38.72 A; 1.25 x 38.72 = 48.4 A (so the 40 A breaker is itself undersized: that is
+// a different finding and not what this pins).
+const COMBINER_SHEET = [
+  "SINGLE LINE DIAGRAM PV-4. (16) ENPHASE IQ8M-72-2-US MICROINVERTERS PER BRANCH. MAX CONTINUOUS OUTPUT CURRENT 1.21 A.",
+  "MAIN SERVICE PANEL: BUS RATING 200A, MAIN BREAKER 175A, PV BACKFEED BREAKER 40A.",
+  "BRANCH CIRCUIT 1: (2) #12 AWG THWN-2 CU, 20A BREAKER IN ENPHASE IQ COMBINER 4.",
+  "BRANCH CIRCUIT 2: (2) #12 AWG THWN-2 CU, 20A BREAKER IN ENPHASE IQ COMBINER 4.",
+  "COMBINER OUTPUT TO MSP: (3) #8 AWG THWN-2 CU IN 3/4\" EMT.",
+].join("\n");
+const COMBINER_FIELDS = {
+  pvMicroMake: "Enphase", pvMicroModel: "IQ8M-72-2-US", pvMicroQty: "32", pvMicroOutputW: "1.21",
+  busRating: "200A", mainBreaker: "175A", pvBreaker: "40A",
+};
+
+check("Enphase combiner: the parser pairs the 40 A backfeed with the #12 branch -> ocpd-over-ampacity is a WARNING, never a blocker", () => {
+  const f = byId(run({ ...COMBINER_FIELDS, acConductor: "#12 AWG THWN-2 CU", planSetExtractedText: COMBINER_SHEET }), "city.elec.sizing-ocpd-over-ampacity");
+  assert.ok(f, "no ampacity finding");
+  assert.equal(f.severity, "warning");
+  assert.match(f.message, /#12 CU THWN-2 \(parser\)/);
+  assert.match(f.message, /acConductor/);
+});
+
+check("Enphase combiner, one line: same answer when the sheet text is not split into lines", () => {
+  const f = byId(run({ ...COMBINER_FIELDS, acConductor: "#12 AWG THWN-2 CU", planSetExtractedText: COMBINER_SHEET.replace(/\n/g, " ") }), "city.elec.sizing-ocpd-over-ampacity");
+  assert.equal(f?.severity, "warning");
+});
+
+check("Enphase combiner, control: the parser pairs the 40 A backfeed with the #8 output -> no ampacity finding", () => {
+  const fs = run({ ...COMBINER_FIELDS, acConductor: "#8 AWG THWN-2 CU", planSetExtractedText: COMBINER_SHEET });
+  assert.equal(byId(fs, "city.elec.sizing-ocpd-over-ampacity"), undefined);
+});
+
+check("two conductor sizes, the undersized one LABELLED as the output circuit -> still a BLOCKER", () => {
+  // String inverter: #10 PV WIRE on the DC side, #8 on the AC output circuit (50 A at 75 C) too small for 60 A.
+  const sheet = STRING_SHEET.replace("INVERTER OUTPUT CIRCUIT: (3) #6 AWG THWN-2 CU.", "DC SOURCE CIRCUITS: (4) #10 AWG PV WIRE CU.\nINVERTER OUTPUT CIRCUIT: (3) #8 AWG THWN-2 CU.");
+  const { acConductorCount: _drop, ...fields } = STRING_FIELDS; // the count is parser-only (see above)
+  const f = byId(run({ ...fields, acConductor: "#8 AWG THWN-2 CU", planSetExtractedText: sheet }), "city.elec.sizing-ocpd-over-ampacity");
+  assert.equal(f?.severity, "blocker");
+  assert.doesNotMatch(f?.message ?? "", /\(parser\)/);
+});
+
 // (d) Voltage drop: only on a STATED run length.
 check("missing run length -> no voltage-drop finding", () => {
   const fs = run({ ...MICRO_FIELDS, acConductor: "#10 AWG THWN-2 CU", planSetExtractedText: MICRO_SHEET });

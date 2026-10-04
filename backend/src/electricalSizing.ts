@@ -216,6 +216,38 @@ function finding(input: Omit<ReviewerFinding, "category" | "installerCallout">):
   return { ...input, category: "electrical", installerCallout: true };
 }
 
+// --- which conductor the PV breaker protects ----------------------------------------------------
+
+// A conductor callout on the sheets: "#8 AWG THWN-2", "#12 CU", "10 AWG". A bare "#2" is a note
+// marker unless a size word or a material/insulation follows it closely.
+const CONDUCTOR_MENTION = /(?:#\s*([1-4]\s*\/\s*0|14|12|10|8|6|4|3|2|1)\b(?=\s*AWG\b|[^#;\n]{0,16}?\b(?:CU|AL|COPPER|ALUMINUM|THWN|THHN|XHHW|USE|RHW|PV\s*WIRE|THW|UF|NM-B|TW)\b)|\b([1-4]\s*\/\s*0|14|12|10|8|6|4|3|2|1)\s*AWG\b)/gi;
+const conductorSizesIn = (text: string): string[] =>
+  [...text.matchAll(CONDUCTOR_MENTION)].map((m) => (m[1] ?? m[2]).replace(/\s/g, ""));
+// The circuit the PV breaker protects, by its label on the SLD / wire schedule. A BRANCH circuit
+// (an Enphase combiner's #12 / 20 A branches) is never it, even when the line also names the PV.
+const OUTPUT_CIRCUIT_LABEL = /\b(?:(?:INVERTER|PV|SOLAR|AC|COMBINER)\s+(?:AC\s+)?OUTPUT(?:\s+CIRCUIT)?|BACK\s*-?\s*FEED(?:ING)?|(?:PV|SOLAR)\s+(?:BREAKER|OCPD)|INTERCONNECTION\s+CONDUCTORS?)\b/i;
+
+/**
+ * Is `conductor` stated on the sheets AS the PV output circuit's conductor? Finding the string
+ * somewhere is not enough (Helm's review of #152): on a micro system with a combiner, two #12 /
+ * 20 A branches and a 40 A backfeed on #8, the parser's acConductor pairing of the breaker with
+ * the #12 is a parser judgement, and a parser judgement may only ever warn (#141). So:
+ *   - one distinct conductor size on the whole package -> there is no other circuit to confuse
+ *     it with: stated when it appears;
+ *   - more than one -> stated only on a segment (a line or schedule row) that carries an output-
+ *     circuit / PV-breaker label, names no branch, and names no other conductor size.
+ */
+export function conductorStatedAsOutputCircuit(conductor: ParsedConductor, sheetText: string): boolean {
+  const sizes = new Set(conductorSizesIn(sheetText));
+  if (!sizes.has(conductor.size)) return false;
+  if (sizes.size === 1) return true;
+  return sheetText.split(/[\n;]|\.(?=\s|$)/).some((segment) => {
+    if (!OUTPUT_CIRCUIT_LABEL.test(segment) || /\bBRANCH/i.test(segment)) return false;
+    const here = new Set(conductorSizesIn(segment));
+    return here.size === 1 && here.has(conductor.size);
+  });
+}
+
 export interface ElectricalSizingOptions {
   /** Per-document texts (one per uploaded document); the snapshot's sheet text is read too. */
   documentTexts?: DesignTextSource[];
@@ -326,8 +358,7 @@ export function evaluateElectricalSizingFindings(project: ProjectRecord, opts: E
     const nextUp = nextStandardOcpd(ampacity) ?? Infinity;
     const maxOcpd = Math.min(nextUp, small ?? Infinity);
     if (breaker.value > maxOcpd + 1e-9) {
-      const conductorStated = new RegExp(String.raw`#?\s*${conductor.size.replace("/", "\\/")}\s*(?:AWG)?[^#;]{0,16}?${conductor.insulation ? conductor.insulation.replace(/[-\s]/g, "[-\\s]?") : "(?:CU|AL|COPPER|ALUMINUM|AWG)"}`, "i").test(sheetText);
-      const used: ElectricalSizingInput[] = [breaker, { key: "acConductor", value: 0, documentStated: conductorStated }];
+      const used: ElectricalSizingInput[] = [breaker, { key: "acConductor", value: 0, documentStated: conductorStatedAsOutputCircuit(conductor, sheetText) }];
       if (high) used.push(high);
       if (count) used.push(count);
       const steps = [
