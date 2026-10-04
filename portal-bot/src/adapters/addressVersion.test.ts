@@ -51,8 +51,8 @@ check("every version of THIS property stays a candidate — order is a hint, not
 // The operator's correction: sometimes one record carries BOTH disciplines.
 check("a single record holding both disciplines is tried first for either", () => {
   const both = ["Select 5050 PLACEHOLDER BLVD SE, City Applications, COOS BAY OR 97420 City Applications COOS BAY OR 97420 111 PLACEHOLDER, CRAIG"];
-  assert.match(first(both, true), /OCEAN BLVD/);
-  assert.match(first(both, false), /OCEAN BLVD/);
+  assert.match(first(both, true), /PLACEHOLDER BLVD/);
+  assert.match(first(both, false), /PLACEHOLDER BLVD/);
 });
 
 check("the owner of record outranks the jurisdiction convention", () => {
