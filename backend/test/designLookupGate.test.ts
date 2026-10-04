@@ -16,6 +16,9 @@
 //   AC5 a "… County" lookup also searches the state's Table R301.2 amendments + the county page,
 //       and a banded table comes back as site_specific (official pages only).
 //   AC6 the progress read writes nothing; values the lookup stores stay seeded.
+//   AC7 a STATE-layer code_research (no AHJ) landing re-judges every pre-stage project in that
+//       state (#107): a plan stating another edition now carries city.code.basis-mismatch; other
+//       states are untouched; no vision call; a state + AHJ landing in one tick re-judge once.
 //
 //   npx tsx backend/test/designLookupGate.test.ts
 import "./_isolate"; // FIRST: temp cwd, nothing lands in the repo's backend/data
@@ -294,6 +297,63 @@ await check("AC3: the KB card shows 'not found (lookup <date>)' and the site-spe
   // The criteria the lookup answered are not "not researched" (the placement half did not run here).
   assert.doesNotMatch(html, /(?:Ground snow load|Design wind speed \(ultimate\)|Wind exposure|Seismic design category|Frost depth): <span class="badge badge-warning">not researched/);
   assert.equal(fns.codeProfileForKb({ state: ST, ahj: "Nowhere County" }, [], CP.listRowlessDesignLookups(db)), null);
+});
+
+// ─── AC7: a STATE-layer code lookup lands -> the state's pre-stage projects are re-judged (#107) ──
+await check("AC7: a state-layer code_research landing re-judges the state's projects (basis-mismatch); other states untouched; no vision call", async () => {
+  // A state with no shipped reference data: until its own research lands, nothing records an edition.
+  const ST2 = "KS";
+  const AHJ2 = "Stateland County";
+  const BASIS = "city.code.basis-mismatch";
+  const PK = R.createProject(db, {
+    owner: "Synthetic Owner", state: ST2, dcKw: "8.4", acKw: "7.7", street: "2 Test Way", city: "Testburg", zip: "66000",
+    ahj: AHJ2, utility: "Test Power",
+  } as never).project.id;
+  db.run("UPDATE projects SET status = 'ready_to_stage' WHERE id = ?", [PK]);
+  db.run(
+    "INSERT INTO project_documents (id, project_id, doc_type, original_filename, source, uploaded_at, extracted_text) VALUES (?, ?, 'plan_set', 'plan_set.pdf', 'upload', ?, ?)",
+    [`doc-${PK}`, PK, new Date().toISOString(), "COVER SHEET GOVERNING CODES ALL WORK SHALL CONFORM TO 2021 IRC 2020 NEC ROOF MOUNT PV ARRAY"],
+  );
+  const basisOf = (id: string) => R.buildReviewerReportFor(db, R.getProjectDetail(db, id).project).findings.find((f) => f.id === BASIS);
+  delete process.env.ANTHROPIC_API_KEY; // the worker builds the stub provider: nothing reaches the network
+  R.getReviewerReport(db, PK);
+  assert.equal(basisOf(PK), undefined, "control: no state editions on file, yet a basis finding");
+  finishAllPending();
+  enqueueJob(db, "code_research", { state: ST2, ahj: "", profileKey: CP.codeProfileKey({ state: ST2, ahj: "" }) }, { priority: 3, maxRetries: 2 });
+  // The research's landing: its editions are stored (seeded, cited) before its row leaves 'running'.
+  CP.saveResearchedCodeProfile(db, {
+    key: "", state: ST2, ahj: "", confidence: "seeded", amendments: [], designCriteria: {}, prescriptive: {}, fireSetbacks: [], citations: [], updatedAt: "",
+    adoptedCodes: [{ code: "IRC", edition: "2018", family: "residential", sourceUrl: "https://codes.example.gov/ks", quote: "The state has adopted the 2018 International Residential Code." }],
+    researchProvenance: { webGrounded: true, method: "web_search", notes: "synthetic", at: new Date().toISOString(), searches: 2, groundedSearches: 2 },
+  } as never);
+  // Vision calls only: an earlier check's enqueue kicks a background drain whose calls land here too.
+  const llmCalls = () => Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM llm_calls WHERE label LIKE '%vision%'")?.n ?? 0);
+  const visionPasses = () => Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'reviewer_report.vision_pass'")?.n ?? 0);
+  const before = { pk: gateRuns(PK), other: gateRuns(P1), llm: llmCalls(), vision: visionPasses() };
+  assert.equal(await processNextJob(db), true);
+  const stateKey = CP.codeProfileKey({ state: ST2, ahj: "" });
+  assert.equal(db.get<{ status: string }>("SELECT status FROM job_queue WHERE job_type = 'code_research' AND payload LIKE ?", [`%"profileKey":"${stateKey}"%`])?.status, "done");
+  assert.equal(gateRuns(PK), before.pk + 1, "the state landing did not re-judge the state's pre-stage project");
+  const row = db.get<{ details: string }>("SELECT details FROM audit_logs WHERE project_id = ? AND action = 'reviewer_report.generated' ORDER BY rowid DESC LIMIT 1", [PK]);
+  assert.match(String(row?.details), /code_research_landed/);
+  const f = basisOf(PK);
+  assert.ok(f, "the plan states IRC 2021 against the state's 2018, but no basis finding");
+  assert.match(f!.message, /IRC 2021/);
+  assert.equal(gateRuns(P1), before.other, "a project in another state was re-judged");
+  assert.equal(llmCalls(), before.llm, "the re-judge made a vision call");
+  assert.equal(visionPasses(), before.vision, "the re-judge ran a vision pass");
+
+  // Same tick: a state and an AHJ landing that both landed before either re-judge -> one re-judge.
+  const stateLanded = R.lookupLandingMark();
+  const ahjLanded = R.lookupLandingMark();
+  const n = gateRuns(PK);
+  assert.deepEqual(await R.rejudgeReviewerGatesAfterLookup(db, { state: ST2, ahj: "", scope: "state" }, "code_research_landed", { landedMark: stateLanded }), [PK]);
+  assert.deepEqual(await R.rejudgeReviewerGatesAfterLookup(db, { state: ST2, ahj: AHJ2 }, "design_criteria_research_landed", { landedMark: ahjLanded }), []);
+  assert.equal(gateRuns(PK), n + 1, "two landings in one tick re-judged twice");
+  // A landing AFTER that re-judge started is new data: it re-judges.
+  assert.deepEqual(await R.rejudgeReviewerGatesAfterLookup(db, { state: ST2, ahj: "", scope: "state" }, "code_research_landed", { landedMark: R.lookupLandingMark() }), [PK]);
+  // The AHJ arm is unchanged: an empty AHJ without the state scope re-judges nothing.
+  assert.deepEqual(await R.rejudgeReviewerGatesAfterLookup(db, { state: ST2, ahj: "" }, "design_criteria_research_landed"), []);
 });
 
 CP.setCodeResearchEnqueuerForTests(null);

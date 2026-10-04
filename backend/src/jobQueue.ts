@@ -6,7 +6,7 @@ import { DEFAULT_ORG_ID } from "./db";
 import { addAuditLog } from "./audit";
 import { importMboxKnowledge } from "./knowledgeBase";
 import { restoreRecipeSnapshotIfAbandoned, upsertRecipeNote } from "./portalRecipes";
-import { runDuePermitChecks } from "./repository";
+import { lookupLandingMark, runDuePermitChecks } from "./repository";
 import { scanFolder } from "./batchImport";
 import { nowIso } from "./time";
 import { logger } from "./logger";
@@ -654,15 +654,21 @@ export function claimNextJob(db: AppDb): JobRecord | null {
 
 /** A design-criteria lookup (or the full code research that asks for the same criteria) finished —
  *  AFTER its row left 'running', so the re-judged finding reads where the lookup now stands. The
- *  gate of every pre-stage project in that AHJ is re-run (repository.rejudgeReviewerGatesAfterLookup).
+ *  gate of every pre-stage project in that AHJ is re-run (repository.rejudgeReviewerGatesAfterLookup);
+ *  a STATE-layer code_research (no AHJ) re-runs every pre-stage project in the state, since its
+ *  editions and minimums reach every AHJ that inherits them (#107).
  *  Best effort: a failure here never changes the job's own outcome. */
 async function rejudgeAfterJurisdictionLookup(db: AppDb, job: JobRecord): Promise<void> {
   if (job.jobType !== "design_criteria_research" && job.jobType !== "code_research") return;
+  // Taken before any await: the job's data and its row's final status are both written by now.
+  const landedMark = lookupLandingMark();
   const p = job.payload as { state?: unknown; ahj?: unknown };
-  if (!String(p.ahj || "").trim()) return; // the state layer: no AHJ's criteria
+  const ahj = String(p.ahj || "").trim();
+  // A design-criteria lookup is always an AHJ's; only code_research has a state layer.
+  if (!ahj && job.jobType !== "code_research") return;
   try {
     const { rejudgeReviewerGatesAfterLookup } = await import("./repository");
-    await rejudgeReviewerGatesAfterLookup(db, { state: String(p.state || ""), ahj: String(p.ahj || "") }, `${job.jobType}_landed`);
+    await rejudgeReviewerGatesAfterLookup(db, { state: String(p.state || ""), ahj, scope: ahj ? "ahj" : "state" }, `${job.jobType}_landed`, { landedMark });
   } catch (err) {
     logger.warn("job-worker", `re-judge after ${job.jobType} failed: ${err instanceof Error ? err.message : String(err)}`);
   }
