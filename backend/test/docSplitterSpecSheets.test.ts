@@ -173,6 +173,29 @@ console.log("\n4. A SPEC-NAMED PAGE A STRAY HIT FILED ELSEWHERE IS STILL REPORTE
   run("the page list is exactly [3, 4]", JSON.stringify(result.undecidedSpecPages) === "[3,4]", undecided);
 }
 
+// ---------------------------------------------------------------------------
+console.log("\n5. A PAGE WHOSE WINNER CAME FROM A TITLE-BLOCK PATTERN IS NOT REPORTED UNDECIDED (#119)");
+{
+  // A dense SLD whose spec-callout block cites "INVERTER SPECIFICATIONS": the sheet name won sld
+  // (a pattern hit), so the filing is right and reporting it is noise. The #91 brochure, whose
+  // STRUCTURAL is a `words`-only hit, must still be reported.
+  const pid = await projectWith([
+    { lines: [...titleBlock("PV-6", "ELECTRICAL LINE DIAGRAM"), "MICROINVERTER BRANCH CIRCUIT",
+      "INVERTER SPECIFICATIONS  MAX AC OUTPUT 315 VA  UL 1741", "PV MODULE  Q.TRON 400"] },
+    { lines: [...titleBlock("PV-13", "EQUIPMENT SPECIFICATION"), "SYNTHRAIL STRUCTURAL MOUNTING SYSTEMS"], image: true },
+  ]);
+  const result = await buildUtilityPackage(db, pid, "all");
+  const pages = (t: string) => result.parts.find((p) => p.docType === t)?.pages ?? [];
+  const parts = JSON.stringify(result.parts.map((p) => [p.docType, p.pages]));
+  const undecided = JSON.stringify({ pages: result.undecidedSpecPages, filedAs: result.undecidedSpecFiledAs });
+  run("filing unchanged: the dense SLD is filed sld", pages("sld").includes(1), parts);
+  run("filing unchanged: the dense SLD is not in inverter_spec", !pages("inverter_spec").includes(1), parts);
+  run("THE POINT: the dense SLD is not in undecidedSpecPages", !(result.undecidedSpecPages ?? []).includes(1), undecided);
+  run("…nor in undecidedSpecFiledAs", !result.undecidedSpecFiledAs?.["1"], undecided);
+  run("the #91 words-only STRUCTURAL brochure is still reported, filed as structural",
+    JSON.stringify(result.undecidedSpecPages) === "[2]" && result.undecidedSpecFiledAs?.["2"] === "structural", undecided);
+}
+
 // Close before deleting the scratch DB - Windows holds the open handle as a file lock (EBUSY).
 db.close();
 fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -87,7 +87,10 @@ const SPEC_DOC_TYPES = new Set(["module_spec", "inverter_spec"]);
 // wins the structural category on that one stray hit, and before, only a page NO category claimed
 // was reported — so it went into the structural part with nothing said. It still goes there (the
 // winner-take-all scoring is unchanged); `undecidedSpecFiledAs` names the category that took it.
-// A calculations sheet is not undecided — it is known not to be a spec sheet.
+// A calculations sheet is not undecided — it is known not to be a spec sheet. Neither is a page whose
+// winning category hit a title-block PATTERN (#119): a dense SLD whose callout cites "INVERTER
+// SPECIFICATIONS" won sld on its own sheet name, so the filing has a strong reason and the report
+// would be noise. Only a `words`/`vocabulary`-only winner, like the STRUCTURAL brochure, is reported.
 const SPEC_SHEET_NAME = /(?:MICRO-?)?(?:INVERTERS?|MODULES?|EQUIPMENT)\s+SPEC(?:IFICATION)?S?\b/i;
 
 // The general-notes / sheet-index cover page lists every sheet name and would otherwise
@@ -105,25 +108,34 @@ function isIndexOrNotesPage(text: string): boolean {
 // The one legitimate multi-category case is preserved explicitly: a COMBINED
 // "MODULE / INV SPECIFICATION SHEET" genuinely IS both the module spec and the inverter spec,
 // so that single sheet is added to both — and nothing else fans out.
+//
+// `byPattern` says whether the winning category scored at least one title-block `patterns` hit
+// (a sheet NAME or number), as opposed to only `words` / `vocabulary` — the undecided-spec report
+// reads it (#119). Filing never does.
 function classifyPage(text: string): string[] {
-  if (isIndexOrNotesPage(text)) return [];
+  return scorePage(text).docTypes;
+}
+
+function scorePage(text: string): { docTypes: string[]; byPattern: boolean } {
+  if (isIndexOrNotesPage(text)) return { docTypes: [], byPattern: false };
   const electricalSheet = ELECTRICAL_SHEET.test(text);
   const calcsSheet = CALCS_SHEET.test(text);
-  let best: { docType: string; score: number } | null = null;
+  let best: { docType: string; score: number; patternHits: number } | null = null;
   for (const cat of CATEGORY_PATTERNS) {
     if (calcsSheet && SPEC_DOC_TYPES.has(cat.docType)) continue;
     const hits = (res: RegExp[] | undefined) => (res ?? []).reduce((n, re) => (re.test(text) ? n + 1 : n), 0);
-    const score = hits(cat.patterns)
+    const patternHits = hits(cat.patterns);
+    const score = patternHits
       + (electricalSheet ? 0 : hits(cat.words) + (cat.vocabulary?.some((re) => re.test(text)) ? 1 : 0));
-    if (score > 0 && (!best || score > best.score)) best = { docType: cat.docType, score };
+    if (score > 0 && (!best || score > best.score)) best = { docType: cat.docType, score, patternHits };
   }
-  if (!best) return [];
+  if (!best) return { docTypes: [], byPattern: false };
   const out = [best.docType];
   if (!calcsSheet && /MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i.test(text)) {
     if (!out.includes("module_spec")) out.push("module_spec");
     if (!out.includes("inverter_spec")) out.push("inverter_spec");
   }
-  return out;
+  return { docTypes: out, byPattern: best.patternHits > 0 };
 }
 
 // Which documents each submission TYPE needs in its upload package. The package is
@@ -283,7 +295,8 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
 
 // Assign each page of the plan set to its categories (classifyPage). 1-based unclassified pages;
 // the pages that name a spec sheet but landed in no spec part are listed as undecided spec pages,
-// with the category that took each one, if any (#91).
+// with the category that took each one, if any (#91) — unless that category won on a title-block
+// pattern hit (#119).
 async function classifyPlanSetPages(planSetPath: string, total: number): Promise<{ byCategory: Map<string, number[]>; unclassified: number[]; undecidedSpec: number[]; undecidedSpecFiledAs: Record<string, string>; pageTexts: string[] }> {
   const pageTexts = await extractPdfPages(planSetPath, 80);
   const byCategory = new Map<string, number[]>();
@@ -292,15 +305,19 @@ async function classifyPlanSetPages(planSetPath: string, total: number): Promise
   const undecidedSpecFiledAs: Record<string, string> = {};
   for (let i = 0; i < total; i++) {
     const text = pageTexts[i] ?? "";
-    const docTypes = classifyPage(text);
+    const { docTypes, byPattern } = scorePage(text);
     for (const docType of docTypes) {
       const arr = byCategory.get(docType) ?? [];
       arr.push(i);
       byCategory.set(docType, arr);
     }
     if (!docTypes.length) unclassified.push(i + 1);
+    // A page whose winner came from a title-block pattern (a dense SLD citing "INVERTER
+    // SPECIFICATIONS" in a callout, won by its own sheet name) is filed right, so reporting it is
+    // noise (#119). Only a stray `words`-only winner (#91's STRUCTURAL racking brochure) or no
+    // winner at all leaves the page undecided.
     if (SPEC_SHEET_NAME.test(text) && !CALCS_SHEET.test(text) && !isIndexOrNotesPage(text)
-      && !docTypes.some((t) => SPEC_DOC_TYPES.has(t))) {
+      && !docTypes.some((t) => SPEC_DOC_TYPES.has(t)) && !byPattern) {
       undecidedSpec.push(i + 1);
       if (docTypes.length) undecidedSpecFiledAs[String(i + 1)] = docTypes[0];
     }
