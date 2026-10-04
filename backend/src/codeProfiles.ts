@@ -2004,6 +2004,8 @@ export const DESIGN_RESEARCH_MAX_INCOMPLETE = 3;
 interface DesignLookupAttempt {
   jobType: string;
   status: string;
+  /** A placement-rules retry (#69): asked only the placement half, so it is no criteria answer. */
+  placementOnly: boolean;
   createdAt: string;
   startedAt: string;
   finishedAt: string;
@@ -2015,7 +2017,7 @@ interface DesignLookupAttempt {
 function designLookupAttempts(db: AppDb, key: string): DesignLookupAttempt[] {
   if (!key) return [];
   return db.query<Row>(
-    `SELECT job_type, status, created_at, started_at, finished_at, result FROM job_queue
+    `SELECT job_type, status, payload, created_at, started_at, finished_at, result FROM job_queue
       WHERE job_type IN ('design_criteria_research','code_research') AND payload LIKE ? ESCAPE '\\'
         AND (status IN ('pending','running') OR created_at > ?)
       ORDER BY created_at DESC LIMIT 20`,
@@ -2023,7 +2025,9 @@ function designLookupAttempts(db: AppDb, key: string): DesignLookupAttempt[] {
   ).map((r) => {
     let result: Record<string, unknown> | null = null;
     try { result = r.result ? JSON.parse(text(r.result)) : null; } catch { result = null; }
-    return { jobType: text(r.job_type), status: text(r.status), createdAt: text(r.created_at), startedAt: text(r.started_at), finishedAt: text(r.finished_at), result };
+    let placementOnly = false;
+    try { placementOnly = JSON.parse(text(r.payload) || "{}").placementOnly === true; } catch { placementOnly = false; }
+    return { jobType: text(r.job_type), status: text(r.status), placementOnly, createdAt: text(r.created_at), startedAt: text(r.started_at), finishedAt: text(r.finished_at), result };
   }).filter((a) => a.jobType === "design_criteria_research" || a.status === "pending" || a.status === "running");
 }
 
@@ -2037,11 +2041,36 @@ function isIncompleteDesignLookup(a: DesignLookupAttempt): boolean {
 /** Every finished attempt in the window is incomplete, under the cap, and the newest is older than
  *  the retry backoff. */
 function designLookupRetryDue(attempts: DesignLookupAttempt[]): boolean {
-  const finished = attempts.filter((a) => a.jobType === "design_criteria_research" && a.status !== "pending" && a.status !== "running");
+  const finished = attempts.filter((a) => a.jobType === "design_criteria_research" && !a.placementOnly && a.status !== "pending" && a.status !== "running");
   if (!finished.length) return true;
   if (!finished.every(isIncompleteDesignLookup)) return false;
   if (finished.length >= DESIGN_RESEARCH_MAX_INCOMPLETE) return false;
   const newest = Date.parse(finished[0].finishedAt || finished[0].createdAt);
+  return !Number.isFinite(newest) || Date.now() - newest >= DESIGN_RESEARCH_RETRY_MS;
+}
+
+/** A finished lookup whose PLACEMENT half ran but is not an answer (#69): aborted (the 240 s
+ *  timeout), errored, or not web-grounded. A half that was skipped (rules already on file, no web
+ *  lookup) asked nothing; a grounded half that found no rule IS an answer (not_found). */
+function isIncompletePlacementLookup(a: DesignLookupAttempt): boolean {
+  if (a.status === "failed") return true;
+  const p = a.result?.placement as Record<string, unknown> | undefined;
+  if (!p || typeof p !== "object" || p.skipped) return false;
+  return !!p.error || p.webGrounded !== true;
+}
+
+/**
+ * THE PLACEMENT HALF IS DUE A RETRY ON ITS OWN (#69). The criteria half may be an answer (values or
+ * none) while the placement half was cut off — that is not an answer for fire setbacks / local PV
+ * amendments, so it is retried on the same backoff and cap as an incomplete criteria lookup, as a
+ * placement-only job (the criteria half is not re-asked). Only attempts that asked placement count.
+ */
+function placementLookupRetryDue(attempts: DesignLookupAttempt[]): boolean {
+  const asked = attempts.filter((a) => a.jobType === "design_criteria_research" && a.status !== "pending" && a.status !== "running"
+    && (a.status === "failed" ? a.placementOnly : !!a.result?.placement && !(a.result.placement as Record<string, unknown>).skipped));
+  if (!asked.length || !asked.every(isIncompletePlacementLookup)) return false;
+  if (asked.length >= DESIGN_RESEARCH_MAX_INCOMPLETE) return false;
+  const newest = Date.parse(asked[0].finishedAt || asked[0].createdAt);
   return !Number.isFinite(newest) || Date.now() - newest >= DESIGN_RESEARCH_RETRY_MS;
 }
 
@@ -2064,14 +2093,15 @@ export function readDesignLookupProgress(db: AppDb, state: string, ahj: string):
   if (live) return live.status === "running" ? { status: "running", at: live.startedAt || live.createdAt } : { status: "queued", at: live.createdAt };
   // Queued by this process a moment ago: the job row is inserted after a dynamic import resolves.
   const askedAt = inFlightDesignResearch.get(target.key);
-  const lastRow = attempts.find((a) => a.jobType === "design_criteria_research");
+  // A placement-only retry that FAILED carries no checklist and says nothing about the criteria (#69).
+  const lastRow = attempts.find((a) => a.jobType === "design_criteria_research" && !(a.placementOnly && a.status === "failed"));
   if (askedAt != null && (!lastRow || Date.parse(lastRow.createdAt) < askedAt - 1000)) return { status: "queued", at: new Date(askedAt).toISOString() };
   const last = lastRow;
   if (!last) return undefined;
   const at = last.finishedAt || last.createdAt;
   if (isIncompleteDesignLookup(last)) {
     // "Retrying" only when a retry will actually be queued: the next review of this AHJ queues it.
-    const finished = attempts.filter((a) => a.jobType === "design_criteria_research");
+    const finished = attempts.filter((a) => a.jobType === "design_criteria_research" && !a.placementOnly);
     const retrying = designLookupEnabled() && finished.every(isIncompleteDesignLookup) && finished.length < DESIGN_RESEARCH_MAX_INCOMPLETE;
     return { status: retrying ? "retrying" : "incomplete", at };
   }
@@ -2127,8 +2157,12 @@ export function ensureDesignCriteriaResearched(db: AppDb, state: string, ahj: st
   // A jurisdiction that publishes only pg(asd) (2024 IRC Table R301.2) has its ground snow answered.
   const snowAnswered = typeof dc.groundSnowLoadPsf === "number" || typeof dc.groundSnowLoadAsdPsf === "number";
   // Answered criteria: nothing to ask. (The AHJ's placement rules ride this job — runDesignCriteriaResearch
-  // — so a NEW AHJ gets them; a row whose criteria were filled earlier is not re-queued for them alone.)
-  if (snowAnswered && typeof dc.windSpeedMph === "number") return 0;
+  // — so a NEW AHJ gets them; a row whose criteria were filled earlier is not re-queued for them alone,
+  // unless THIS lookup's placement half was cut off: placementLookupRetryDue below.)
+  const criteriaAnswered = snowAnswered && typeof dc.windSpeedMph === "number";
+  if (criteriaAnswered && !designLookupAttempts(db, target.key).length) return 0;
+  // Rules already on the row: the placement half would skip, so there is nothing to retry for it.
+  const placementOnFile = !!own?.profile.fireSetbacks.length;
   const key = target.key;
   const fullAskedAt = inFlightCodeResearch.get(key);
   if (fullAskedAt != null && Date.now() - fullAskedAt < CODE_RESEARCH_WINDOW_MS) return 0;
@@ -2142,17 +2176,23 @@ export function ensureDesignCriteriaResearched(db: AppDb, state: string, ahj: st
   // web-grounded) is not an answer and is retried (designLookupRetryDue).
   const attempts = designLookupAttempts(db, key);
   if (attempts.some((a) => a.status === "pending" || a.status === "running")) return 0;
-  if (attempts.length && !designLookupRetryDue(attempts)) return 0;
+  // The criteria are answered (on the row, or by a complete lookup): only an incomplete placement
+  // half is left to ask, alone (#69).
+  let placementOnly = false;
+  if (criteriaAnswered || (attempts.length && !designLookupRetryDue(attempts))) {
+    if (placementOnFile || !placementLookupRetryDue(attempts)) return 0;
+    placementOnly = true;
+  }
   inFlightDesignResearch.set(key, Date.now());
   const ahjForJob = own?.profile.ahj || name;
   const stateForJob = own?.profile.state || st;
-  const payload = { state: stateForJob, ahj: ahjForJob, profileKey: key };
+  const payload = { state: stateForJob, ahj: ahjForJob, profileKey: key, ...(placementOnly ? { placementOnly: true } : {}) };
   if (designResearchEnqueuerForTests) designResearchEnqueuerForTests(db, payload);
   else void import("./jobQueue").then(({ enqueueJob, processNextJob }) => {
     enqueueJob(db, "design_criteria_research", payload, { priority: 3, maxRetries: 2 });
     void processNextJob(db).catch(() => null);
   }).catch(() => { inFlightDesignResearch.delete(key); });
-  logger.info("code-profiles", `design-criteria lookup queued for ${stateForJob}/${ahjForJob}`);
+  logger.info("code-profiles", `${placementOnly ? "placement-rules retry" : "design-criteria lookup"} queued for ${stateForJob}/${ahjForJob}`);
   return 1;
 }
 
@@ -2366,19 +2406,20 @@ export function saveDesignCriteriaLookupRecord(db: AppDb, target: { state: strin
 /** The design_criteria_research job body. `provider` is a test seam. */
 export async function runDesignCriteriaResearch(
   db: AppDb,
-  payload: { state?: unknown; ahj?: unknown; profileKey?: unknown },
+  payload: { state?: unknown; ahj?: unknown; profileKey?: unknown; placementOnly?: unknown },
   provider?: LLMProvider,
 ): Promise<Record<string, unknown>> {
   const state = String(payload.state || "");
   const ahj = String(payload.ahj || "");
   const profileKey = String(payload.profileKey || "") || undefined;
+  const placementOnly = payload.placementOnly === true;
   // The job row dedupes from here on (a complete lookup backs off 30 days; an incomplete or FAILED
   // one is retried after DESIGN_RESEARCH_RETRY_MS) — this process's own marker would hold a retry for
   // the whole window. Cleared however the job ends: a lookup that THROWS (#38) used to leave it set,
   // so the gate read "retrying" while ensureDesignCriteriaResearched queued nothing until a restart.
   let mergedKey: string | undefined;
   try {
-    return await designCriteriaResearchBody(db, state, ahj, profileKey, provider, (k) => { mergedKey = k; });
+    return await designCriteriaResearchBody(db, state, ahj, profileKey, placementOnly, provider, (k) => { mergedKey = k; });
   } finally {
     if (mergedKey) inFlightDesignResearch.delete(mergedKey);
     if (profileKey) inFlightDesignResearch.delete(profileKey);
@@ -2386,7 +2427,7 @@ export async function runDesignCriteriaResearch(
 }
 
 async function designCriteriaResearchBody(
-  db: AppDb, state: string, ahj: string, profileKey: string | undefined, provider: LLMProvider | undefined,
+  db: AppDb, state: string, ahj: string, profileKey: string | undefined, placementOnly: boolean, provider: LLMProvider | undefined,
   onMerged: (key: string) => void,
 ): Promise<Record<string, unknown>> {
   const llm = provider ?? (await import("./llm")).createLLMProvider();
@@ -2412,13 +2453,29 @@ async function designCriteriaResearchBody(
   const criteriaAnswered = (typeof dcNow.groundSnowLoadPsf === "number" || typeof dcNow.groundSnowLoadAsdPsf === "number") && typeof dcNow.windSpeedMph === "number";
   // EVERY CHECKLIST ITEM IS RECORDED (found / weak source / not found / not researched) on the row
   // and in the job result, so a criterion nobody found is a visible gap, never a silent pass.
-  const checklist = (research: DesignCriteriaResearchResult | null, placement: Record<string, unknown>): DesignCriteriaLookupRecord => {
+  const ownProfile = () => {
     const row = resolveCriteriaWriteRow(db, state, ahj);
-    const record = buildDesignCriteriaChecklist(row && row.kind !== "create" ? row.profile : null, research,
-      placement.webGrounded === true && !placement.error);
+    return row && row.kind !== "create" ? row.profile : null;
+  };
+  const placementRan = (placement: Record<string, unknown>): boolean => placement.webGrounded === true && !placement.error;
+  const checklist = (research: DesignCriteriaResearchResult | null, placement: Record<string, unknown>): DesignCriteriaLookupRecord => {
+    const record = buildDesignCriteriaChecklist(ownProfile(), research, placementRan(placement));
     saveDesignCriteriaLookupRecord(db, { state, ahj }, record);
     return record;
   };
+  // A PLACEMENT-ONLY RETRY (#69): the criteria half answered earlier, so it is not re-asked. Its
+  // checklist keeps that answer's criteria items (a criterion it never asked would otherwise read
+  // "not researched" over the earlier "not found").
+  if (placementOnly) {
+    const placement = await placementHalf();
+    const record = buildDesignCriteriaChecklist(ownProfile(), null, placementRan(placement));
+    const earlier = profileKey ? designLookupAttempts(db, profileKey).find((a) => a.jobType === "design_criteria_research"
+      && a.status === "done" && !a.placementOnly && !isIncompleteDesignLookup(a) && Array.isArray(a.result?.checklist)) : undefined;
+    const before = new Map(((earlier?.result?.checklist ?? []) as DesignCriteriaLookupRecord["items"]).map((i) => [i.item, i]));
+    const items = record.items.map((i) => (CHECKLIST_FIELDS[i.item] && i.status === "not_researched" && before.get(i.item)) || i);
+    saveDesignCriteriaLookupRecord(db, { state, ahj }, { ...record, items });
+    return { saved: false, reason: "placement-rules retry (the criteria half answered earlier)", placementOnly: true, placement, checklist: items };
+  }
   if (criteriaAnswered || !llm.researchDesignCriteria) {
     const placement = await placementHalf();
     return { saved: false, reason: criteriaAnswered ? "design criteria already on file" : "provider has no design-criteria lookup", placement, checklist: checklist(null, placement).items };
