@@ -177,12 +177,20 @@ console.log("\n4. A SPEC-NAMED PAGE A STRAY HIT FILED ELSEWHERE IS STILL REPORTE
 console.log("\n5. A PAGE WHOSE WINNER CAME FROM A TITLE-BLOCK PATTERN IS NOT REPORTED UNDECIDED (#119)");
 {
   // A dense SLD whose spec-callout block cites "INVERTER SPECIFICATIONS": the sheet name won sld
-  // (a pattern hit), so the filing is right and reporting it is noise. The #91 brochure, whose
-  // STRUCTURAL is a `words`-only hit, must still be reported.
+  // (a sheet-name hit), so the filing is right and reporting it is noise. The #91 brochure, whose
+  // STRUCTURAL is a `words`-only hit, must still be reported. So must an EQUIPMENT SPECIFICATION
+  // page that merely CITES the SLD's sheet number ("SEE E 1.1 FOR WIRING"): sld takes it on that
+  // bare number alone, which is #91's stray hit, not the page's own name.
+  //
+  // Page 1's premise is a TIE: sld and inverter_spec each score one sheet-name hit (ELECTRICAL LINE
+  // DIAGRAM / INVERTER SPECIFICATIONS), and sld wins only because it comes first in
+  // CATEGORY_PATTERNS (a later category must score strictly higher). Reorder the array and the
+  // filing checks below go red before the report checks mean anything.
   const pid = await projectWith([
     { lines: [...titleBlock("PV-6", "ELECTRICAL LINE DIAGRAM"), "MICROINVERTER BRANCH CIRCUIT",
       "INVERTER SPECIFICATIONS  MAX AC OUTPUT 315 VA  UL 1741", "PV MODULE  Q.TRON 400"] },
     { lines: [...titleBlock("PV-13", "EQUIPMENT SPECIFICATION"), "SYNTHRAIL STRUCTURAL MOUNTING SYSTEMS"], image: true },
+    { lines: [...titleBlock("PV-14", "EQUIPMENT SPECIFICATION"), "SEE E 1.1 FOR WIRING"], image: true },
   ]);
   const result = await buildUtilityPackage(db, pid, "all");
   const pages = (t: string) => result.parts.find((p) => p.docType === t)?.pages ?? [];
@@ -193,7 +201,11 @@ console.log("\n5. A PAGE WHOSE WINNER CAME FROM A TITLE-BLOCK PATTERN IS NOT REP
   run("THE POINT: the dense SLD is not in undecidedSpecPages", !(result.undecidedSpecPages ?? []).includes(1), undecided);
   run("…nor in undecidedSpecFiledAs", !result.undecidedSpecFiledAs?.["1"], undecided);
   run("the #91 words-only STRUCTURAL brochure is still reported, filed as structural",
-    JSON.stringify(result.undecidedSpecPages) === "[2]" && result.undecidedSpecFiledAs?.["2"] === "structural", undecided);
+    (result.undecidedSpecPages ?? []).includes(2) && result.undecidedSpecFiledAs?.["2"] === "structural", undecided);
+  run("filing unchanged: the SEE E 1.1 page is filed sld on the bare sheet number", pages("sld").includes(3), parts);
+  run("THE PROBE: the SEE E 1.1 page is still reported undecided, filed as sld",
+    (result.undecidedSpecPages ?? []).includes(3) && result.undecidedSpecFiledAs?.["3"] === "sld", undecided);
+  run("the page list is exactly [2, 3]", JSON.stringify(result.undecidedSpecPages) === "[2,3]", undecided);
 }
 
 // Close before deleting the scratch DB - Windows holds the open handle as a file lock (EBUSY).
