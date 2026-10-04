@@ -1,4 +1,4 @@
-import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, ReviewerFindingEvidence, StructureTypeFact } from "../../shared/src/types";
+import type { AhjProcessProfile, CodeReference, NecEditionRequirements, ProjectRecord, ReviewerFinding, ReviewerFindingEvidence, StructureTypeFact } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
 import { FIRE_PATHWAY_PATTERNS, packageShowsSld } from "./projectEvidence";
 import { pathWordingScope, resolvePermitPath, usStateCode } from "./permitPath";
@@ -11,6 +11,7 @@ import {
   residentialCodeRef,
   type DesignTextSource,
 } from "./designCriteria";
+import { adoptedNecEdition, necEditionRequirements, NEC_EDITION_REQUIREMENTS } from "./necEditions";
 
 const oregonElectrical2023: CodeReference = {
   code: "2023 OESC / 2023 NEC",
@@ -525,6 +526,98 @@ export const SUPPLY_SIDE_DETAIL_PATTERNS: RegExp[] = [
   /supply.?side\s*(?:tap|connection)\s*detail/i,
 ];
 
+// --- Edition-keyed evidence (issue #143; the table is necEditions.ts) ---------------------------
+
+const rapidShutdownLabel: CodeReference = {
+  code: "NEC",
+  section: "690.56(C)",
+  title: "Rapid shutdown identification",
+  adoptionScope: "Buildings with PV rapid shutdown, per the adopted NEC edition.",
+  sourceUrl: "",
+  note: "The label wording and the switch marking follow the adopted edition.",
+};
+
+/** 690.12(B)(2) (2017+): HOW the inside-the-array-boundary requirement is met — a listed PV hazard
+ *  control system, or rapid shutdown equipment stated as listed. A bare "rapid shutdown" is not it. */
+export const RSD_LISTED_EQUIPMENT_PATTERNS: RegExp[] = [
+  /\bPV\s*hazard\s*control/i,
+  /\bPVHCS\b/i,
+  /\bUL\s*3741\b/i,
+  /\bPVRS[ES]\b/i,
+  /690\.12\s*\(\s*B\s*\)\s*\(\s*2\s*\)/i,
+  /\blisted\b[^.;\n]{0,40}\b(?:rapid\s*shutdown|RSD)\b/i,
+  /\b(?:rapid\s*shutdown|RSD)\b[^.;\n]{0,40}\blisted\b/i,
+];
+/** 690.12(C) (2020+): where the initiation device is. */
+export const RSD_INITIATION_PATTERNS: RegExp[] = [
+  /\binitiat(?:ion|ing|or)\b/i,
+  /\b(?:rapid\s*shutdown|RSD)\s*(?:switch|initiator|button)\b/i,
+  /690\.12\s*\(\s*C\s*\)/i,
+];
+const STAND_ALONE = /\boff.?grid\b|\bstand.?alone\s+(?:system|PV|solar)/i;
+
+/** The marker projectDocuments stores for a PDF with no text layer — nothing was read from it. */
+function readableDocumentText(text: unknown): boolean {
+  const t = String(text ?? "").trim();
+  return t !== "" && t !== "[no text layer]";
+}
+
+/** A microinverter design has no DC PV source circuits to label beyond the module leads. */
+function isMicroinverterDesign(project: ProjectRecord, allText: string): boolean {
+  if (str(project, "pvMicroModel") || str(project, "pvMicroQty")) return true;
+  const inverter = [str(project, "invModel"), str(project, "inverterModel")].filter(Boolean).join("\n");
+  if (inverter.trim()) return /micro.?inverter|enphase|\biq\s?[678]\b|hoymiles|apsystems/i.test(inverter);
+  return /micro.?inverter/i.test(allText);
+}
+
+function necRapidShutdownEvidence(nec: NecEditionRequirements, mlpe: boolean): string[] {
+  const rs = nec.rapidShutdown;
+  return [
+    mlpe ? `${rs.article} module-level shutdown note (MLPE listing)` : `RSD device or inverter listing basis (${rs.article})`,
+    ...(rs.insideBoundaryArticle ? [`Inside-array-boundary basis: listed PV hazard control system or listed RSD equipment (${rs.insideBoundaryArticle})`] : []),
+    ...(rs.initiationDeviceArticle ? [`Initiation device location (${rs.initiationDeviceArticle})`] : [`RSD initiation/control location`]),
+    `Rapid shutdown label "${nec.labels.rapidShutdownWording}" (${nec.labels.rapidShutdown})`,
+    `NEC ${nec.edition} code-cycle note`,
+  ];
+}
+
+interface NecLabelRequirement {
+  label: string;
+  section: string;
+  wording?: string;
+  patterns: RegExp[];
+}
+
+/** The labels the edition names that apply to this design. A null cell is skipped, not guessed. */
+function necLabelRequirements(nec: NecEditionRequirements, opts: { rsdApplies: boolean; standAlone: boolean; dcCircuits: boolean }): NecLabelRequirement[] {
+  const l = nec.labels;
+  const out: NecLabelRequirement[] = [];
+  if (opts.rsdApplies) {
+    out.push({
+      label: "Rapid shutdown label", section: l.rapidShutdown, wording: l.rapidShutdownWording,
+      patterns: [/equipped\s+with\s+rapid\s+shutdown/i, /690\.56\s*\(\s*C\s*\)/i, /\b(?:rapid\s*shutdown|RSD)\s*(?:label|placard|sign|switch)\b/i],
+    });
+  }
+  out.push({ label: "Power-source directory", section: l.powerSourceDirectory, patterns: POWER_SOURCE_DIRECTORY_PATTERNS });
+  if (l.disconnect) out.push({ label: "PV system disconnect marking", section: l.disconnect, wording: "PV SYSTEM DISCONNECT", patterns: [/PV\s+system\s+disconnect/i, /690\.13/i] });
+  if (l.pointOfInterconnection) {
+    out.push({
+      label: "Point-of-interconnection label (rated AC output current, nominal AC voltage)", section: l.pointOfInterconnection,
+      patterns: [/690\.54/i, /\bAC\s+output\s+current\b/i, /\bnominal\s+(?:operating\s+)?AC\s+voltage\b/i],
+    });
+  }
+  if (l.dcSource && opts.dcCircuits) {
+    out.push({
+      label: "DC PV circuit label (maximum DC voltage)", section: l.dcSource,
+      patterns: [/690\.53/i, /\bmax(?:imum|\.)?\s+(?:DC\s+)?(?:system\s+)?voltage\b/i, /\bDC\s+PV\s+(?:source|circuit)/i],
+    });
+  }
+  if (l.standAloneDirectory && opts.standAlone) {
+    out.push({ label: "Stand-alone system power-source plaque", section: l.standAloneDirectory, patterns: [/710\.10/i, /\bstand.?alone\b[^.;]{0,40}\b(?:plaque|directory)\b/i] });
+  }
+  return out;
+}
+
 const engineeredDesign: CodeReference = {
   code: "IRC / ORSC",
   section: "R301.1.3",
@@ -624,11 +717,25 @@ export function evaluateDesignCodeFindings(
   // legacy constant otherwise (or when the family isn't in the adopted list).
   const cite = (code: string, fallback: CodeReference): CodeReference =>
     ctx ? ctx.citationFor(code, fallback.section, fallback.title, fallback) : fallback;
+  // THE ADOPTED NEC EDITION (issue #143). Read only from a profile that records editions: the model
+  // defaults buildCodeContext falls back to (NEC 2023) are placeholders, not the jurisdiction's
+  // adoption, so a default context is "edition unknown" exactly like no context. Known → the RSD,
+  // label and interconnection rules cite that edition's article and ask for its evidence; unknown
+  // → the generic rules below, unchanged, plus one callout naming the gap (context present only).
+  const necAdopted = ctx?.profile?.adoptedCodes?.length ? adoptedNecEdition(ctx.adoptedCodes) : null;
+  const nec = necEditionRequirements(necAdopted);
+  // The edition's own section where the table states one; a null cell keeps the generic citation.
+  const necRef = (section: string | null | undefined, fallback: CodeReference): CodeReference =>
+    ctx && nec && section ? ctx.citationFor("NEC", section, fallback.title, { ...fallback, section }) : cite("NEC", fallback);
   const electricalRef = cite("NEC", oregonElectrical2023);
-  const rapidShutdownRef = cite("NEC", rapidShutdown);
-  const powerSourceDirectoryRef = cite("NEC", powerSourceDirectory);
-  const loadSideRef = cite("NEC", loadSideInterconnection);
-  const supplySideRef = cite("NEC", supplySideInterconnection);
+  const rapidShutdownRef = necRef(nec?.rapidShutdown.article, rapidShutdown);
+  const powerSourceDirectoryRef = necRef(nec?.labels.powerSourceDirectory, powerSourceDirectory);
+  const loadSideRef = necRef(nec?.interconnection.loadSide, loadSideInterconnection);
+  const supplySideRef = necRef(nec?.interconnection.supplySide, supplySideInterconnection);
+  // The section numbers the interconnection messages print. Unknown edition: today's wording.
+  const supplyArt = nec?.interconnection.supplySide ?? "705.11";
+  const busbarArt = nec ? (nec.interconnection.busbar120 ?? nec.interconnection.loadSide) : "705.12(B)(3)(2)";
+  const loadArt = nec?.interconnection.loadSide ?? "705.12";
   // The roof-loads section is a RESIDENTIAL-code section: cite it under the jurisdiction's own
   // residential code (ORSC / CRC / FBC-R …) where the numbering is known to match, else the IRC's
   // number with an "unmapped" note — never "2023 IRC" for an ORSC row filed under the IRC token, and
@@ -1136,20 +1243,58 @@ export function evaluateDesignCodeFindings(
       severity: mlpe ? "warning" : "blocker",
       category: "electrical",
       title: mlpe ? "Rapid shutdown callout missing (MLPE design)" : "Rapid shutdown not shown",
-      message: mlpe
+      message: (mlpe
         ? "The design uses microinverters/module-level power electronics, which provide inherent module-level rapid shutdown, but the plans do not call out NEC 690.12 compliance or the RSD label."
-        : "No rapid shutdown callout or equipment evidence was detected.",
+        : "No rapid shutdown callout or equipment evidence was detected.")
+        + (nec ? ` The adopted NEC ${nec.edition} ${nec.rapidShutdown.article} requires ${nec.rapidShutdown.limits}.` : ""),
       cityFeedback: mlpe
         ? "Add a rapid shutdown note to the electrical plans stating the module-level shutdown basis (microinverter/MLPE listing) and show the required rapid shutdown label/placard for the adopted NEC cycle."
         : "Revise the electrical plans to identify rapid shutdown equipment, initiation/control location, controlled conductors or array boundary basis, and required field marking for the adopted NEC cycle.",
       designTeamAction: mlpe
         ? "Add a 690.12 module-level shutdown note and RSD label callout to the SLD/label schedule (equipment already complies)."
         : "Add RSD equipment and label callouts to the SLD/site/equipment schedule.",
-      evidenceNeeded: mlpe
-        ? ["690.12 module-level shutdown note", "RSD label/placard callout", "Microinverter/MLPE listing reference"]
-        : ["RSD device or inverter listing basis", "RSD initiation/control location", "RSD label/placard callout", "Code-cycle note"],
-      codeReferences: [rapidShutdownRef, electricalRef],
+      evidenceNeeded: nec
+        ? necRapidShutdownEvidence(nec, mlpe)
+        : mlpe
+          ? ["690.12 module-level shutdown note", "RSD label/placard callout", "Microinverter/MLPE listing reference"]
+          : ["RSD device or inverter listing basis", "RSD initiation/control location", "RSD label/placard callout", "Code-cycle note"],
+      codeReferences: nec ? [rapidShutdownRef, necRef(nec.labels.rapidShutdown, rapidShutdownLabel), electricalRef] : [rapidShutdownRef, electricalRef],
     }));
+  }
+
+  // THE EDITION'S OWN EVIDENCE (issue #143). A plan set that says "rapid shutdown" has cleared the
+  // presence rule above; a 2017+ checker then asks HOW the inside-the-array-boundary requirement is
+  // met (a listed PV hazard control system / listed RSD equipment, 690.12(B)(2)), and a 2020+ one
+  // where the initiation device is (690.12(C): outside, readily accessible, on a dwelling). Rule-3
+  // shape: a human-VERIFIED edition and a package whose documents were actually read → blocker;
+  // a seeded edition, or nothing but parser fields to read → warning. An MLPE design meets
+  // 690.12 inherently, so its gap is documentation: never more than a warning.
+  const documentsRead = documentTexts.some((d) => readableDocumentText(d.text)) || readableDocumentText(str(project, "planSetExtractedText"));
+  const ruleThreeSeverity: ReviewerFinding["severity"] = ctx?.verified && documentsRead ? "blocker" : "warning";
+  if (nec && rsdApplies && hasAny(all, RAPID_SHUTDOWN_PATTERNS)) {
+    const mlpe = isMlpeDesign(project, all);
+    const gaps: Array<{ item: string; section: string }> = [];
+    if (nec.rapidShutdown.requiresListedEquipment && nec.rapidShutdown.insideBoundaryArticle && !affirmedIn(packageTexts, RSD_LISTED_EQUIPMENT_PATTERNS)) {
+      gaps.push({ item: "Listed PV hazard control system or listed rapid shutdown equipment for inside the array boundary", section: nec.rapidShutdown.insideBoundaryArticle });
+    }
+    if (nec.rapidShutdown.initiationDeviceArticle && !affirmedIn(packageTexts, RSD_INITIATION_PATTERNS)) {
+      gaps.push({ item: "Rapid shutdown initiation device location (readily accessible, outside a dwelling)", section: nec.rapidShutdown.initiationDeviceArticle });
+    }
+    if (gaps.length) {
+      out.push(finding({
+        id: "city.elec.rapid-shutdown-edition-evidence",
+        severity: mlpe ? "warning" : ruleThreeSeverity,
+        category: "electrical",
+        title: `Rapid shutdown does not show what NEC ${nec.edition} asks for`,
+        message: `The plans mention rapid shutdown, but the adopted NEC ${nec.edition} also needs: ${gaps.map((g) => `${g.item} (${g.section})`).join("; ")}.`,
+        cityFeedback: `Revise the electrical plans to show the NEC ${nec.edition} rapid shutdown basis: ${gaps.map((g) => `${g.section} — ${g.item.toLowerCase()}`).join("; ")}.`,
+        designTeamAction: mlpe
+          ? `Add the MLPE listing as the ${gaps.map((g) => g.section).join(" / ")} basis on the SLD and label schedule (equipment already complies).`
+          : `Add the ${gaps.map((g) => g.section).join(" / ")} evidence to the SLD/equipment schedule.`,
+        evidenceNeeded: gaps.map((g) => g.item),
+        codeReferences: gaps.map((g) => necRef(g.section, rapidShutdown)),
+      }));
+    }
   }
 
   if (!hasAny(all, LABEL_SCHEDULE_PATTERNS)) {
@@ -1161,8 +1306,49 @@ export function evaluateDesignCodeFindings(
       message: "The package does not clearly show required PV placards/labels.",
       cityFeedback: "Provide a PV label schedule showing service equipment directory, rapid shutdown label, disconnect labels, backfed breaker warning where applicable, and any AHJ/utility-specific placards.",
       designTeamAction: "Add label sheet or label callouts to the electrical plan.",
-      evidenceNeeded: ["Label schedule", "Placard locations", "Backfed breaker warning where applicable", "Power source directory"],
-      codeReferences: [rapidShutdownRef, powerSourceDirectoryRef],
+      evidenceNeeded: nec
+        ? ["Label schedule", "Placard locations", "Backfed breaker warning where applicable", ...necLabelRequirements(nec, { rsdApplies, standAlone: STAND_ALONE.test(all), dcCircuits: !isMicroinverterDesign(project, all) }).map((l) => `${l.label} (${l.section})`)]
+        : ["Label schedule", "Placard locations", "Backfed breaker warning where applicable", "Power source directory"],
+      codeReferences: nec
+        ? necLabelRequirements(nec, { rsdApplies, standAlone: STAND_ALONE.test(all), dcCircuits: !isMicroinverterDesign(project, all) }).map((l) => necRef(l.section, { ...rapidShutdownLabel, section: l.section, title: l.label }))
+        : [rapidShutdownRef, powerSourceDirectoryRef],
+    }));
+  } else if (nec) {
+    // The schedule exists; does it carry the labels THIS edition names? Same rule-3 severity as the
+    // rapid-shutdown evidence above. Each missing label is cited by the edition's own section.
+    const missingLabels = necLabelRequirements(nec, { rsdApplies, standAlone: STAND_ALONE.test(all), dcCircuits: !isMicroinverterDesign(project, all) })
+      .filter((l) => !affirmedIn(packageTexts, l.patterns));
+    if (missingLabels.length) {
+      out.push(finding({
+        id: "city.elec.labels-edition-missing",
+        severity: ruleThreeSeverity,
+        category: "electrical",
+        title: `PV label schedule is missing labels NEC ${nec.edition} requires`,
+        message: `The package shows a label schedule, but not: ${missingLabels.map((l) => `${l.label} (${l.section})`).join("; ")}.`,
+        cityFeedback: `Add the NEC ${nec.edition} labels to the label schedule: ${missingLabels.map((l) => `${l.section} ${l.label}${l.wording ? ` ("${l.wording}")` : ""}`).join("; ")}.`,
+        designTeamAction: "Add the missing labels and their locations to the label sheet.",
+        evidenceNeeded: missingLabels.map((l) => `${l.label} (${l.section})`),
+        codeReferences: missingLabels.map((l) => necRef(l.section, { ...rapidShutdownLabel, section: l.section, title: l.label })),
+      }));
+    }
+  }
+
+  // EDITION UNKNOWN: the generic rules above ran, and the report says why they were generic. Only
+  // with a jurisdiction context — the no-context path stays exactly as the Oregon golden pins it.
+  if (ctx && !nec) {
+    out.push(finding({
+      id: "city.code.nec-edition-unknown",
+      severity: "callout",
+      category: "electrical",
+      title: "Adopted NEC edition not known — rapid shutdown, labels and interconnection checked generically",
+      message: necAdopted == null
+        ? `No adopted electrical code edition is on file for ${ctx.ahj || ctx.state || "this jurisdiction"}, so rapid shutdown (690.12), labels (690.56(C), 705.10) and the interconnection sections were checked for presence only, not against an edition's articles.`
+        : `${ctx.ahj || ctx.state || "This jurisdiction"} is on NEC ${necAdopted}, which the edition table does not cover (${Object.keys(NEC_EDITION_REQUIREMENTS).join(", ")}), so rapid shutdown, labels and the interconnection sections were checked for presence only.`,
+      cityFeedback: "Confirm the locally adopted NEC edition so rapid shutdown, labeling and interconnection can be checked against its articles.",
+      designTeamAction: "Record the jurisdiction's adopted NEC edition on its code profile.",
+      evidenceNeeded: ["Adopted NEC edition for the jurisdiction"],
+      codeReferences: [rapidShutdownRef],
+      installerCallout: false,
     }));
   }
 
@@ -1196,9 +1382,9 @@ export function evaluateDesignCodeFindings(
       severity: "callout",
       category: "electrical",
       title: "Supply-side tap — the 120% busbar screen does not apply",
-      message: `The interconnection is recorded as "${str(project, "interco") || project.interconnectionMethod}", a supply-side (line-side) connection. NEC 705.12(B)(3)(2)'s 120% busbar calculation governs LOAD-side connections and is not the applicable test here.`,
+      message: `The interconnection is recorded as "${str(project, "interco") || project.interconnectionMethod}", a supply-side (line-side) connection. NEC ${busbarArt}'s 120% busbar calculation governs LOAD-side connections and is not the applicable test here.`,
       cityFeedback: "Show the supply-side tap detail: tap conductor size and ampacity relative to the service, the PV disconnect/OCPD ahead of the service disconnect, and the labelling required at the service equipment.",
-      designTeamAction: "Confirm the tap conductors and overcurrent protection are sized to the service per NEC 705.11, and that the busbar calculation is correctly omitted rather than missing.",
+      designTeamAction: `Confirm the tap conductors and overcurrent protection are sized to the service per NEC ${supplyArt}, and that the busbar calculation is correctly omitted rather than missing.`,
       evidenceNeeded: ["Supply-side tap detail on the one-line", "Tap conductor size/ampacity vs service rating", "PV disconnect and OCPD location", "Service-equipment labelling"],
       // 705.11, not 705.12. This finding EXISTS to say the load-side busbar screen does not
       // govern here, so citing the load-side section as its basis contradicted its own text.
@@ -1210,10 +1396,10 @@ export function evaluateDesignCodeFindings(
       severity: "warning",
       category: "electrical",
       title: "Interconnection method names both supply side and load side",
-      message: `The recorded interconnection ("${str(project, "interco") || project.interconnectionMethod}") carries both supply-side and load-side language, and the two answer to different code sections — 705.11 versus the 705.12(B)(3)(2) busbar screen.`,
+      message: `The recorded interconnection ("${str(project, "interco") || project.interconnectionMethod}") carries both supply-side and load-side language, and the two answer to different code sections — ${supplyArt} versus the ${busbarArt} busbar screen.`,
       cityFeedback: "State the interconnection method unambiguously on the one-line, with the calculation that matches it.",
       designTeamAction: "Settle which connection the design actually makes before filing; the reviewer cannot apply the right screen until it is stated once.",
-      evidenceNeeded: ["Interconnection method stated once on the one-line", "The matching calculation (705.11 tap sizing OR the 705.12 busbar screen)"],
+      evidenceNeeded: ["Interconnection method stated once on the one-line", `The matching calculation (${supplyArt} tap sizing OR the ${loadArt} busbar screen)`],
       // The whole content of this finding is that the design has not said WHICH of the two
       // governs, so both are cited — matching the message's own "705.11 versus 705.12".
       codeReferences: [supplySideRef, loadSideRef],
@@ -1228,7 +1414,7 @@ export function evaluateDesignCodeFindings(
         message: `Captured ratings produce ${mainBreaker}A main + ${pvBreaker}A PV on a ${bus}A bus, which exceeds 120 percent of bus rating.`,
         cityFeedback: "Revise the interconnection design. The load-side calculation shown by the captured data does not satisfy the common 120 percent busbar screen. Provide a compliant alternate calculation, breaker relocation, de-rated main, supply-side connection, service upgrade, or engineered basis as applicable.",
         designTeamAction: "Correct the interconnection method and update the one-line/load calculation.",
-        evidenceNeeded: ["MSP bus rating", "Main breaker rating", "PV breaker/OCPD rating", "705.12 calculation or alternate basis"],
+        evidenceNeeded: ["MSP bus rating", "Main breaker rating", "PV breaker/OCPD rating", `${loadArt} calculation or alternate basis`],
         codeReferences: [loadSideRef],
       }));
     } else if (!hasAny(all, LOAD_SIDE_CALC_PATTERNS) || bus == null || mainBreaker == null || pvBreaker == null) {
@@ -1239,7 +1425,7 @@ export function evaluateDesignCodeFindings(
         title: "Load-side interconnection calculation incomplete",
         message: "The package does not clearly show the load-side interconnection ratings/calculation.",
         cityFeedback: "Provide the NEC load-side interconnection calculation on the SLD, including bus rating, main breaker rating, PV breaker/OCPD rating, inverter output current basis, breaker location, and any required warning label.",
-        designTeamAction: "Add the 705.12 calculation and verify it matches the MSP schedule.",
+        designTeamAction: `Add the ${loadArt} calculation and verify it matches the MSP schedule.`,
         evidenceNeeded: ["MSP bus rating", "Main breaker rating", "PV breaker/OCPD rating", "Breaker location/opposite-end note", "Inverter output current basis"],
         codeReferences: [loadSideRef, powerSourceDirectoryRef],
       }));
@@ -1266,7 +1452,7 @@ export function evaluateDesignCodeFindings(
       title: "Interconnection method not classifiable — the busbar screen did not run",
       message: `The recorded interconnection ("${str(project, "interco") || project.interconnectionMethod}") does not say whether the connection is supply side or load side, and the two answer to different code sections. No interconnection calculation has been checked for this project.`,
       cityFeedback: "State the interconnection method explicitly on the one-line — supply-side/line-side tap, or load-side breaker connection — with the calculation that matches it.",
-      designTeamAction: "Record the method as supply side or load side. A load-side connection needs the 705.12 busbar screen (bus rating, main breaker, PV breaker); a supply-side tap needs the 705.11 tap detail and conductor sizing.",
+      designTeamAction: `Record the method as supply side or load side. A load-side connection needs the ${loadArt} busbar screen (bus rating, main breaker, PV breaker); a supply-side tap needs the ${supplyArt} tap detail and conductor sizing.`,
       evidenceNeeded: ["Interconnection method stated as supply side or load side", "MSP bus rating", "Main breaker rating", "PV breaker/OCPD rating"],
       codeReferences: [supplySideRef, loadSideRef],
     }));
