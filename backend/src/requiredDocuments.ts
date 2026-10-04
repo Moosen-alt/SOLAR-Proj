@@ -227,14 +227,16 @@ function snap(project: ProjectRecord, key: string): string {
 // Plan-set sheet labels we look for in the parser's readiness / split text, used as a
 // secondary signal that a sheet is present INSIDE the combined plan-set PDF (the plan
 // set file itself must still physically exist — we never count prose alone).
-const PLAN_SHEET_HINTS: Record<string, RegExp> = {
+const PLAN_SHEET_HINT_TABLE = {
   sld: /\b(sld|one-?line|single-?line|3-?line|three-?line)\b/i,
   site_plan: /\b(site\s*plan|plot\s*plan|site\/?roof)\b/i,
   structural: /\b(structural|roof\s*fram|rafter|truss|attachment\s*detail|mount\s*detail)\b/i,
   module_spec: /\bmodule\s*spec/i,
   inverter_spec: /\b(inverter|microinverter)\s*spec|\bUL[\s-]*1741\b/i,
   labels: /\b(label|placard)/i,
-};
+} satisfies Record<string, RegExp>;
+type PlanSheetType = keyof typeof PLAN_SHEET_HINT_TABLE;
+const PLAN_SHEET_HINTS: Record<string, RegExp> = PLAN_SHEET_HINT_TABLE;
 
 // WHAT EACH SHEET'S `why` PROMISES, as text. PLAN_SHEET_HINTS decides that a sheet is PRESENT from
 // its TITLE — so a plan set with a sheet titled "Single Line Diagram" and no interconnection detail
@@ -253,7 +255,8 @@ const PLAN_SHEET_HINTS: Record<string, RegExp> = {
 interface SheetContentElement { element: string; patterns: RegExp[] }
 const PV_HAZARD_CONTROL = /\bPV\s*hazard\s*control|\bPVHCS\b/i;
 const POINT_OF_INTERCONNECTION = /\bpoint\s+of\s+(?:inter)?connection\b|\bPOI\b/i;
-const SHEET_CONTENT_ELEMENTS: Record<string, (nec: number | null) => SheetContentElement[]> = {
+// Keyed by PlanSheetType, so a content entry for a sheet the hints do not know is a compile error.
+const SHEET_CONTENT_ELEMENTS: Partial<Record<PlanSheetType, (nec: number | null) => SheetContentElement[]>> = {
   sld: (nec) => [
     {
       element: `${necLabel(nec)} 690.12 rapid shutdown${nec == null ? "" : nec >= 2017 ? " (array boundary / PV hazard control)" : " (10 ft boundary)"}`,
@@ -314,7 +317,7 @@ export function sheetContentGaps(project: ProjectRecord, presence: DocPresence[]
   const nec = adoptedNecEdition(adoptedCodes);
   const gaps: SheetContentGap[] = [];
   for (const p of presence) {
-    const elements = p.present ? SHEET_CONTENT_ELEMENTS[p.docType]?.(nec) : undefined;
+    const elements = p.present ? SHEET_CONTENT_ELEMENTS[p.docType as PlanSheetType]?.(nec) : undefined;
     if (!elements) continue;
     const missing = elements.filter((e) => !e.patterns.some((re) => re.test(body))).map((e) => e.element);
     if (missing.length) gaps.push({ docType: p.docType, label: p.label, via: p.via, missing });

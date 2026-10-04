@@ -61,13 +61,13 @@ const mk = () => createProject(db, {
 // A REAL FILE ON DISK. projectDocsByType requires fs.existsSync(stored_path) — a row pointing at
 // nothing is not a document, which is right, and is why the first version of this fixture showed
 // every sheet as missing no matter what it inserted.
-const attach = (pid: string, docType: string) => {
+const attach = (pid: string, docType: string, extractedText = "") => {
   const file = path.join(tmpDir, `${pid}-${docType}.pdf`);
   fs.writeFileSync(file, "%PDF-1.4 test fixture");
   db.run(
-    `INSERT INTO project_documents (id, project_id, doc_type, original_filename, stored_path, source, uploaded_at)
-     VALUES (?, ?, ?, ?, ?, 'upload', ?)`,
-    [`${pid}-${docType}`, pid, docType, `${docType}.pdf`, file, new Date().toISOString()],
+    `INSERT INTO project_documents (id, project_id, doc_type, original_filename, stored_path, source, uploaded_at, extracted_text)
+     VALUES (?, ?, ?, ?, ?, 'upload', ?, ?)`,
+    [`${pid}-${docType}`, pid, docType, `${docType}.pdf`, file, new Date().toISOString(), extractedText],
   );
 };
 
@@ -213,15 +213,22 @@ check("MUST EXCLUDE: unknown mounting still asks — silence is not proof nothin
 // ---------------------------------------------------------------------------
 const { sheetContentGaps, adoptedNecEdition } = await import("../src/requiredDocuments");
 
-const titledSld = (body: string) => {
+// THE WAY PRODUCTION HOLDS THE TEXT: on the uploaded plan set's project_documents row
+// (extracted_text), never in the stored snapshot — planSetExtractedText is a non-persistent
+// overlay that updateProject strips. QC has to overlay it the way getProjectDetail does.
+// A real parse always leaves SOME summary text (reviewFlags, stampRecommendation …), so the
+// fixture carries one: without the overlay the check would read only that and cry "not found".
+const titledSld = (body: string, summary = "Parser review flags: confirm equipment schedule.") => {
   const p = createProject(db, {
     clientId: client.id, owner: `SLD Owner ${++n}`, street: `${n} SLD St`, city: "Coos Bay",
     state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power", dcKw: "8", acKw: "6.4",
     packetReadinessText: "READY - SLD",
     splitPagesText: "02 SLD Single Line Diagram: page 3",
-    planSetExtractedText: body,
+    reviewFlags: summary,
   } as never).project;
-  attach(p.id, "plan_set");
+  attach(p.id, "plan_set", body);
+  const stored = JSON.parse(String(db.get<{ parser_json: string }>("SELECT parser_json FROM projects WHERE id = ?", [p.id])?.parser_json || "{}"));
+  assert.ok(!stored.planSetExtractedText, "fixture must not carry the plan-set text in the stored snapshot");
   return docRules(p.id);
 };
 
@@ -241,7 +248,7 @@ check("A TITLED SLD WITHOUT 705.12 TEXT: docs.sld passes presence, docs.sld.cont
   assert.equal(rules.filter((r) => r.qc_status === "fail").length, 0, "a content gap must never fail QC");
 });
 
-check("...WITH the interconnection text: no docs.sld.content advisory", () => {
+check("...WITH the interconnection text on the uploaded plan set (not in the stored snapshot): no docs.sld.content advisory", () => {
   const rules = titledSld("SINGLE LINE DIAGRAM. RAPID SHUTDOWN PER 690.12. LOAD SIDE CONNECTION PER NEC 705.12: 200A BUSBAR, 200A MAIN, 40A PV BREAKER, 120% RULE.");
   assert.equal(rules.filter((r) => r.rule_id === "docs.sld.content").length, 0,
     `a fully shown SLD raised a content advisory: ${JSON.stringify(rules.filter((r) => r.rule_id === "docs.sld.content"))}`);
@@ -249,7 +256,7 @@ check("...WITH the interconnection text: no docs.sld.content advisory", () => {
 
 check("THE TITLE CANNOT VOUCH FOR ITSELF: sheet-title maps are not read as content, and no readable body says nothing", () => {
   // Only the title maps carry text: nothing was read, which is not evidence of absence.
-  const rules = titledSld("");
+  const rules = titledSld("", "");
   assert.equal(rules.filter((r) => /\.content$/.test(r.rule_id)).length, 0,
     `no body text was read, yet a content advisory fired: ${JSON.stringify(rules.filter((r) => /\.content$/.test(r.rule_id)))}`);
   // A title mentioning 705.12 does not count as the SLD showing it.
