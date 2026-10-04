@@ -138,6 +138,17 @@ export function codeFamilyOf(entry: string | (Pick<CodeEdition, "code"> & Partia
   return undefined;
 }
 
+/** The NEC edition year the jurisdiction has adopted for the ELECTRICAL family (a state code such
+ *  as the OESC counts by the NEC year it is based on), or null when no electrical entry is on file. */
+export function adoptedNecEdition(adoptedCodes: CodeEdition[] | undefined): number | null {
+  for (const c of adoptedCodes ?? []) {
+    if (codeFamilyOf(c) !== "electrical") continue;
+    const year = String(c.basedOn || "").match(/\b(?:19|20)\d{2}\b/)?.[0] ?? String(c.edition || "").match(/\b(?:19|20)\d{2}\b/)?.[0];
+    if (year) return Number(year);
+  }
+  return null;
+}
+
 /** The adoption model a state applies to ONE family: byFamily, else the overall model unless "mixed". */
 export function familyAdoptionModel(model: JurisdictionAdoptionModel | null | undefined, family: CodeFamily): CodeFamilyAdoptionModel | undefined {
   if (!model) return undefined;

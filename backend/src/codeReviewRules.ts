@@ -11,6 +11,7 @@ import {
   residentialCodeRef,
   type DesignTextSource,
 } from "./designCriteria";
+import { adoptedNecEdition } from "./codeFamilies";
 
 const oregonElectrical2023: CodeReference = {
   code: "2023 OESC / 2023 NEC",
@@ -161,6 +162,29 @@ function num(project: ProjectRecord, keys: string[]): number | null {
     if (value != null) return value;
   }
   return null;
+}
+
+/**
+ * The inverter output circuit's continuous current for the 705.12 busbar screen (#153): per-unit
+ * rated output current x quantity, read the way electricalSizing's recompute (#144) reads it so
+ * the two never disagree. A micro make/model means a micro system (pvMicroOutputW x pvMicroQty);
+ * otherwise a string inverter (invOutputW x invQty, one unit when no quantity is stated). Null
+ * when unknown or implausible: a per-unit value above 100 A is a watt rating in the amps field
+ * (baselineRules' xcheck-pv-breaker-125 guard), and then the breaker rating is the safer reading.
+ */
+function inverterOutputCurrent(project: ProjectRecord): { amps: number; calc: string } | null {
+  const micro = Boolean(str(project, "pvMicroMake") || str(project, "pvMicroModel"));
+  const unit = num(project, [micro ? "pvMicroOutputW" : "invOutputW"]);
+  if (unit == null || !(unit > 0) || unit > 100) return null;
+  const qty = num(project, [micro ? "pvMicroQty" : "invQty"]) ?? (micro ? null : 1);
+  if (qty == null || !(qty > 0)) return null;
+  const amps = unit * qty;
+  if (amps > 400) return null;
+  return { amps, calc: qty === 1 ? `${fmtAmps(unit)} A` : `${qty} x ${fmtAmps(unit)} A = ${fmtAmps(amps)} A` };
+}
+
+function fmtAmps(n: number): string {
+  return String(Math.round(n * 100) / 100);
 }
 
 export function designText(project: ProjectRecord): string {
@@ -1219,13 +1243,32 @@ export function evaluateDesignCodeFindings(
       codeReferences: [supplySideRef, loadSideRef],
     }));
   } else if (/load.side|breaker|back.?feed|bus/i.test(intercoText)) {
-    if (bus != null && mainBreaker != null && pvBreaker != null && mainBreaker + pvBreaker > bus * 1.2) {
+    // THE SOURCE TERM IS 125 % OF THE INVERTER OUTPUT CURRENT, NOT THE BREAKER (#153). Since the
+    // 2017 NEC, 705.12(B)(3)(2) reads "125 percent of the power source output circuit current";
+    // the PV breaker rating is the pre-2017 wording. The breaker is always >= 1.25 x I (rounded
+    // up to a standard size), so testing it blocked compliant designs: 200 A bus, 200 A main,
+    // 50 A breaker, 32 A inverter is 250 A > 240 A on the breaker but 1.25 x 32 + 200 = 240 A
+    // on the current, which passes. Same arithmetic as electricalSizing's busbar recompute
+    // (#144), so the product has one busbar answer. The breaker reading stays only where the
+    // jurisdiction's adopted NEC is older than 2017, or where the current is unknown — and the
+    // message says which.
+    const nec = ctx ? adoptedNecEdition(ctx.adoptedCodes) : null;
+    const preNec2017 = nec != null && nec < 2017;
+    const invAmps = preNec2017 ? null : inverterOutputCurrent(project);
+    const sourceAmps = invAmps != null ? invAmps.amps * 1.25 : pvBreaker;
+    if (bus != null && mainBreaker != null && sourceAmps != null && mainBreaker + sourceAmps > bus * 1.2 + 1e-9) {
+      const allowance = bus * 1.2;
+      const message = invAmps != null
+        ? `705.12(B)(3)(2): inverter output current ${invAmps.calc}; 1.25 x ${fmtAmps(invAmps.amps)} A = ${fmtAmps(sourceAmps)} A + ${mainBreaker}A main = ${fmtAmps(mainBreaker + sourceAmps)} A, above 120 percent of the ${bus}A bus (${fmtAmps(allowance)} A).`
+        : `Captured ratings produce ${mainBreaker}A main + ${pvBreaker}A PV on a ${bus}A bus, which exceeds 120 percent of bus rating. ${preNec2017
+          ? `Measured on the PV breaker rating because the adopted NEC is the ${nec} edition (the 2017+ wording uses 125 percent of the inverter output current).`
+          : "Measured on the PV breaker rating because the inverter output current is not captured; 125 percent of that current is the 2017+ NEC test and may pass."}`;
       out.push(finding({
         id: "city.elec.load-side-over-120",
         severity: "blocker",
         category: "electrical",
         title: "Load-side interconnection exceeds 120 percent bus screen",
-        message: `Captured ratings produce ${mainBreaker}A main + ${pvBreaker}A PV on a ${bus}A bus, which exceeds 120 percent of bus rating.`,
+        message,
         cityFeedback: "Revise the interconnection design. The load-side calculation shown by the captured data does not satisfy the common 120 percent busbar screen. Provide a compliant alternate calculation, breaker relocation, de-rated main, supply-side connection, service upgrade, or engineered basis as applicable.",
         designTeamAction: "Correct the interconnection method and update the one-line/load calculation.",
         evidenceNeeded: ["MSP bus rating", "Main breaker rating", "PV breaker/OCPD rating", "705.12 calculation or alternate basis"],

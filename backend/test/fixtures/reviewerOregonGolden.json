@@ -281,7 +281,7 @@
       "severity": "blocker",
       "category": "electrical",
       "title": "Load-side interconnection exceeds 120 percent bus screen",
-      "message": "Captured ratings produce 200A main + 70A PV on a 200A bus, which exceeds 120 percent of bus rating.",
+      "message": "Captured ratings produce 200A main + 70A PV on a 200A bus, which exceeds 120 percent of bus rating. Measured on the PV breaker rating because the inverter output current is not captured; 125 percent of that current is the 2017+ NEC test and may pass.",
       "cityFeedback": "Revise the interconnection design. The load-side calculation shown by the captured data does not satisfy the common 120 percent busbar screen. Provide a compliant alternate calculation, breaker relocation, de-rated main, supply-side connection, service upgrade, or engineered basis as applicable.",
       "designTeamAction": "Correct the interconnection method and update the one-line/load calculation.",
       "evidenceNeeded": [
@@ -860,7 +860,7 @@
       "severity": "blocker",
       "category": "electrical",
       "title": "Load-side interconnection exceeds 120 percent bus screen",
-      "message": "Captured ratings produce 200A main + 70A PV on a 200A bus, which exceeds 120 percent of bus rating.",
+      "message": "Captured ratings produce 200A main + 70A PV on a 200A bus, which exceeds 120 percent of bus rating. Measured on the PV breaker rating because the inverter output current is not captured; 125 percent of that current is the 2017+ NEC test and may pass.",
       "cityFeedback": "Revise the interconnection design. The load-side calculation shown by the captured data does not satisfy the common 120 percent busbar screen. Provide a compliant alternate calculation, breaker relocation, de-rated main, supply-side connection, service upgrade, or engineered basis as applicable.",
       "designTeamAction": "Correct the interconnection method and update the one-line/load calculation.",
       "evidenceNeeded": [
