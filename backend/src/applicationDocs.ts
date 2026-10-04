@@ -177,6 +177,7 @@ export function permitStructureAnswer(
     // Routed to the county below, the village's step is not the one, so it stays out either way.
     const citedZoning = prerequisites.filter((x) => ZONING_SIGNOFF.test(x.step));
     const rest = prerequisites.filter((x) => !ZONING_SIGNOFF.test(x.step));
+    const ownCite = cite;
     if (citedZoning[0]) cite = { sourceUrl: citedZoning[0].sourceUrl, quote: citedZoning[0].quote };
     // "Unincorporated county" on a city/village: the zoning review is the COUNTY's (#44) — its office
     // from the lookup's cited answer or the seeded city→county table; never guessed when unknown.
@@ -186,7 +187,9 @@ export function permitStructureAnswer(
       step = office
         ? `Zoning compliance / site-development review on a site plan at ${office} (operator: ${asked} — outside ${trade.localReviewer}'s limits); neither issues a building permit`
         : `Zoning compliance / site-development review at the county's planning / zoning office (operator: ${asked} — outside ${trade.localReviewer}'s limits; the county office is not on file — confirm which county and its office)`;
-      if (county?.sourceUrl) cite = { sourceUrl: county.sourceUrl, quote: county.quote };
+      // The village's cited zoning page is not the county's evidence (#127): with no county citation
+      // on file (Tyrone → Grant County) the step falls back to what put the AHJ on the state issuer.
+      cite = county?.sourceUrl ? { sourceUrl: county.sourceUrl, quote: county.quote } : ownCite;
     }
     return {
       ...settle("separate", trade.origin === "state_rule" ? "state_rule" : "cited", `Permit structure: separate building + electrical permits from ${trade.value} — ${trade.origin === "state_rule" ? "state rule" : "per-job lookup"}, ${trade.sourceUrl} ("${trade.quote.slice(0, 160)}")`, trade.sourceUrl, trade.quote),
