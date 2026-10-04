@@ -140,6 +140,23 @@ check("OCPD over ampacity with every input on the sheet (count not stated -> fav
   assert.match(f?.message ?? "", /count not stated; 3 or fewer assumed/);
 });
 
+// Review on #152: WHICH conductor the PV breaker protects is a parser pairing. Enphase combiner,
+// two #12 / 20 A branch circuits, 40 A backfeed on #8 — the parser picked the BRANCH conductor.
+// Every string is on the sheet, but the pairing is not, so this may only ever be a warning.
+check("combiner: parser pairs the 40 A breaker with a #12 branch conductor -> WARNING, never a blocker", () => {
+  const sheet = [
+    "(20) ENPHASE IQ8M-72-2-US MICROINVERTERS. MAX CONTINUOUS OUTPUT CURRENT 1.21 A. BUS RATING 200A, MAIN BREAKER 200A.",
+    "BRANCH CIRCUITS: (2) 20A BREAKERS IN ENPHASE IQ COMBINER, #12 AWG THWN-2 CU.",
+    "COMBINER OUTPUT TO MSP: PV BREAKER 40A, #8 AWG THWN-2 CU.",
+  ].join(" ");
+  const fs = run({ pvMicroMake: "Enphase", pvMicroModel: "IQ8M-72-2-US", pvMicroQty: "20", pvMicroOutputW: "1.21", busRating: "200A", mainBreaker: "200A", pvBreaker: "40A", acConductor: "#12 AWG THWN-2 CU", planSetExtractedText: sheet });
+  const f = byId(fs, "city.elec.sizing-ocpd-over-ampacity");
+  assert.ok(f, "control: the mis-paired conductor still produces the finding");
+  assert.equal(f.severity, "warning");
+  assert.match(f.message, /#12 CU THWN-2 \(parser\)/);
+  assert.match(f.message, /largest permitted OCPD 20 A/);
+});
+
 // (d) Voltage drop: only on a STATED run length.
 check("missing run length -> no voltage-drop finding", () => {
   const fs = run({ ...MICRO_FIELDS, acConductor: "#10 AWG THWN-2 CU", planSetExtractedText: MICRO_SHEET });

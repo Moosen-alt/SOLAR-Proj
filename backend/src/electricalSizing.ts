@@ -129,6 +129,15 @@ export function parseConductor(raw: string): ParsedConductor | null {
   return { size, material, column, insulation };
 }
 
+/** Every distinct conductor size the sheets name ("#10", "8 AWG", "1/0 AWG"). */
+function sheetConductorSizes(text: string): Set<string> {
+  const sizes = new Set<string>();
+  for (const m of text.matchAll(/(?:#\s*(14|12|10|8|6|4|3|2|1|[1-4]\s*\/\s*0)\b|\b(14|12|10|8|6|4|3|2|1|[1-4]\s*\/\s*0)\s*AWG\b)/gi)) {
+    sizes.add((m[1] ?? m[2]).replace(/\s/g, ""));
+  }
+  return sizes;
+}
+
 // --- reading values off the sheets --------------------------------------------------------------
 
 type Reader = (text: string) => number[];
@@ -326,7 +335,12 @@ export function evaluateElectricalSizingFindings(project: ProjectRecord, opts: E
     const nextUp = nextStandardOcpd(ampacity) ?? Infinity;
     const maxOcpd = Math.min(nextUp, small ?? Infinity);
     if (breaker.value > maxOcpd + 1e-9) {
-      const conductorStated = new RegExp(String.raw`#?\s*${conductor.size.replace("/", "\\/")}\s*(?:AWG)?[^#;]{0,16}?${conductor.insulation ? conductor.insulation.replace(/[-\s]/g, "[-\\s]?") : "(?:CU|AL|COPPER|ALUMINUM|AWG)"}`, "i").test(sheetText);
+      // WHICH conductor the PV breaker protects is a parser judgement. On the common micro
+      // topology (combiner, #12 / 20 A branch circuits, 40 A backfeed on #8) the parser can pick a
+      // BRANCH conductor, and the sheets do state it — just not as this circuit. So the conductor
+      // counts as document-stated only when the sheets name ONE conductor size and it is this one;
+      // two or more sizes on the sheets keep it a warning (review on #152).
+      const conductorStated = sheetConductorSizes(sheetText).size === 1 && new RegExp(String.raw`#?\s*${conductor.size.replace("/", "\\/")}\s*(?:AWG)?[^#;]{0,16}?${conductor.insulation ? conductor.insulation.replace(/[-\s]/g, "[-\\s]?") : "(?:CU|AL|COPPER|ALUMINUM|AWG)"}`, "i").test(sheetText);
       const used: ElectricalSizingInput[] = [breaker, { key: "acConductor", value: 0, documentStated: conductorStated }];
       if (high) used.push(high);
       if (count) used.push(count);
