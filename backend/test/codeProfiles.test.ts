@@ -237,6 +237,56 @@ await run("code_research job in stub mode saves NOTHING (never blocks future res
   assert.ok(!mt, "no empty MT profile row stored");
 });
 
+// #145: an amendment's research classification (`check`) is stored, fills a blank on a seeded row,
+// never replaces a check already there, and never touches a human-verified row.
+{
+  const grounded = { webGrounded: true, method: "web_search" as const, at: "2026-10-01T00:00:00Z", searches: 3, groundedSearches: 2 };
+  const SRC = "https://codes.amendville.example.gov/local";
+  const pg30 = { kind: "min_value" as const, field: "groundSnowPsf" as const, value: 30, unit: "psf" };
+  const research = (state: string, ahj: string, amendments: Array<Record<string, unknown>>) => ({
+    key: "", state, ahj, confidence: "seeded" as const, adoptedCodes: [{ family: "residential" as const, code: "IRC", edition: "2021" }],
+    amendments: amendments as never, designCriteria: {}, prescriptive: {}, fireSetbacks: [], citations: [], updatedAt: "",
+    researchProvenance: grounded,
+  });
+  const snowAm = { code: "IRC", section: "R301.2", summary: "Ground snow load minimum 30 psf", sourceUrl: SRC };
+
+  await run("#145 a research amendment's check is stored on the row and read back", () => {
+    saveResearchedCodeProfile(db, research("ZA", "Amendville", [{ ...snowAm, check: pg30 }]), { families: ["residential"] });
+    const p = getCodeProfile(db, { state: "ZA", ahj: "Amendville" })!;
+    assert.deepEqual(p.amendments.find((a) => a.summary === snowAm.summary)?.check, pg30);
+  });
+
+  await run("#145 a seeded row's unclassified amendment takes the research's check; an existing check is never replaced", () => {
+    saveResearchedCodeProfile(db, research("ZA", "Blankton", [snowAm]), { families: ["residential"] });
+    assert.equal(getCodeProfile(db, { state: "ZA", ahj: "Blankton" })!.amendments[0].check, undefined);
+    saveResearchedCodeProfile(db, research("ZA", "Blankton", [{ ...snowAm, check: pg30 }]), { families: ["residential"] });
+    const filled = getCodeProfile(db, { state: "ZA", ahj: "Blankton" })!.amendments.filter((a) => a.summary === snowAm.summary);
+    assert.equal(filled.length, 1, "the same amendment was appended twice");
+    assert.deepEqual(filled[0].check, pg30);
+    saveResearchedCodeProfile(db, research("ZA", "Blankton", [{ ...snowAm, check: { ...pg30, value: 10 } }]), { families: ["residential"] });
+    assert.equal(getCodeProfile(db, { state: "ZA", ahj: "Blankton" })!.amendments.find((a) => a.summary === snowAm.summary)?.check?.value, 30);
+  });
+
+  await run("#145 a VERIFIED row's amendments are never overwritten by a classified research answer", () => {
+    saveVerifiedCodeProfile(db, { ...research("ZA", "Lockville", [snowAm]), researchProvenance: undefined }, "tester");
+    saveResearchedCodeProfile(db, research("ZA", "Lockville", [{ ...snowAm, check: pg30 }, { code: "IFC", summary: "New amendment", sourceUrl: SRC, check: pg30 }]), { families: ["residential"] });
+    const p = getCodeProfile(db, { state: "ZA", ahj: "Lockville" })!;
+    assert.equal(p.confidence, "verified");
+    assert.deepEqual(p.amendments.map((a) => [a.summary, a.check]), [[snowAm.summary, undefined]]);
+  });
+
+  await run("#145 a layered read records which row each merged amendment came from", () => {
+    saveVerifiedCodeProfile(db, { ...research("ZA", "", [{ code: "IRC", summary: "State amendment", sourceUrl: SRC, check: pg30 }]), researchProvenance: undefined }, "tester");
+    const p = getCodeProfile(db, { state: "ZA", ahj: "Amendville" })!;
+    const i = p.amendments.findIndex((a) => a.summary === "State amendment");
+    const j = p.amendments.findIndex((a) => a.summary === snowAm.summary);
+    assert.ok(i >= 0 && j >= 0);
+    assert.equal(p.fieldSources?.[`amendments.${i}`]?.confidence, "verified");
+    assert.equal(p.fieldSources?.[`amendments.${j}`]?.confidence, "seeded");
+    assert.equal(p.fieldSources?.[`amendments.${j}`]?.ahj, "Amendville");
+  });
+}
+
 // Close before deleting the scratch DB - Windows holds the open handle as a file lock (EBUSY).
 db.close();
 fs.rmSync(tmpDir, { recursive: true, force: true });

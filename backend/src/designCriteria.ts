@@ -1898,6 +1898,13 @@ export function packageTextSources(project: ProjectRecord, extraTexts: DesignTex
     .map(({ label, text }) => ({ label, text }));
 }
 
+/** Every package text WITH its kind (readSources): `sheet` and not `derived` is a document's own
+ *  words; anything else is a reading of one. For a rule outside this module that must say whether
+ *  what it found is document-stated (the local amendment checks, amendmentChecks.ts). */
+export function packageReadSources(project: ProjectRecord, extraTexts: DesignTextSource[] = []): Array<DesignTextSource & { derived: boolean; sheet: boolean }> {
+  return readSources(project, extraTexts).map(({ label, text, derived, sheet }) => ({ label, text, derived, sheet }));
+}
+
 /** The package's OWN sheets only (per-document texts, the sheet text) — never the parser's
  *  narrative summaries, which are a reading of the documents. What "document-stated" means for
  *  the electrical sizing checks (electricalSizing.ts). */

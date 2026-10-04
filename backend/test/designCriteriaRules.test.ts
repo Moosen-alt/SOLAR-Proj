@@ -867,6 +867,107 @@ check("#142 fire pathways: an 18 in pathway against the verified AHJ's 36 in is 
   assert.ok(!get(run(project({ planSetExtractedText: '36" FIRE ACCESS PATHWAY' }), ctxFor({ ...VERIFIED, fireSetbacks }), [{ label: "Plan set", text: '36" FIRE ACCESS PATHWAY' }]), "city.fire.pathway-below-required"));
 });
 
+// ---------------------------------------------------------------------------------------
+// #145 LOCAL AMENDMENTS, COMPARED WITH THE PLAN — one case per check kind, rule 3 severity.
+// Synthetic amendments on a synthetic city; no real ordinance text.
+// ---------------------------------------------------------------------------------------
+const NOT_MET = "city.code.amendment-not-met";
+const BY_HAND = "city.code.amendments-check-by-hand";
+const SRC = "https://codes.testport.example.gov/amendments";
+const amend = (check: JurisdictionCodeProfile["amendments"][number]["check"], summary = "Synthetic local amendment") =>
+  ({ code: "IRC", section: "R301.2", summary, sourceUrl: SRC, ...(check ? { check } : {}) });
+const AM_PLAN = "STRUCTURAL NOTES: GROUND SNOW LOAD = 25 PSF. WIND SPEED = 110 MPH. EXPOSURE C. PV DEAD LOAD = 3.5 PSF. "
+  + "NEW PV ATTACHMENTS AT 6'-0\" O.C. 30\" FIRE ACCESS PATHWAY. AC DISCONNECT: ROOF-MOUNTED DISCONNECT AT ARRAY.";
+const amPlan = project({ planSetExtractedText: AM_PLAN });
+const amDocs = [{ label: "Plan set", text: AM_PLAN }];
+
+check("#145 min_value: Pg 25 vs a VERIFIED 30 psf amendment, stated on the sheets -> BLOCKER naming both numbers", () => {
+  const f = get(run(amPlan, ctxFor({ ...VERIFIED, amendments: [amend({ kind: "min_value", field: "groundSnowPsf", value: 30, unit: "psf" })] }), amDocs), NOT_MET);
+  assert.equal(f?.severity, "blocker");
+  assert.match(f!.message, /25 psf/);
+  assert.match(f!.message, /at least 30 psf/);
+  assert.equal(f!.codeReferences[0].sourceUrl, SRC);
+});
+
+check("#145 min_value: the same amendment SEEDED -> WARNING; a plan meeting it -> nothing", () => {
+  const ams = [amend({ kind: "min_value", field: "groundSnowPsf", value: 30, unit: "psf" })];
+  assert.equal(get(run(amPlan, ctxFor({ amendments: ams }), amDocs), NOT_MET)?.severity, "warning");
+  const ok = "GROUND SNOW LOAD = 30 PSF";
+  assert.ok(!get(run(project({ planSetExtractedText: ok }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: ok }]), NOT_MET));
+});
+
+check("#145 min_value: a value ONLY the parser read never blocks, even on a verified row", () => {
+  const f = get(run(project({ snow: "25" }), ctxFor({ ...VERIFIED, amendments: [amend({ kind: "min_value", field: "groundSnowPsf", value: 30, unit: "psf" })] })), NOT_MET);
+  assert.equal(f?.severity, "warning");
+  assert.match(f!.message, /parser/);
+});
+
+check("#145 min_value on the roof plan: a 30 in pathway vs a verified 36 in amendment -> BLOCKER", () => {
+  assert.equal(get(run(amPlan, ctxFor({ ...VERIFIED, amendments: [amend({ kind: "min_value", field: "pathwayWidthIn", value: 36, unit: "in" })] }), amDocs), NOT_MET)?.severity, "blocker");
+});
+
+check("#145 max_value: PV dead load 3.5 psf vs a verified 3 psf maximum, and 72 in o.c. vs 48 in -> BLOCKER; within both -> nothing", () => {
+  const ams = [amend({ kind: "max_value", field: "pvDeadLoadPsf", value: 3, unit: "psf" }), amend({ kind: "max_value", field: "attachmentSpacingIn", value: 48, unit: "in" })];
+  const f = get(run(amPlan, ctxFor({ ...VERIFIED, amendments: ams }), amDocs), NOT_MET);
+  assert.equal(f?.severity, "blocker");
+  assert.match(f!.message, /3\.5 psf/);
+  assert.match(f!.message, /72 in/);
+  const ok = "PV DEAD LOAD = 2.5 PSF. NEW PV ATTACHMENTS AT 4'-0\" O.C.";
+  assert.ok(!get(run(project({ planSetExtractedText: ok }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: ok }]), NOT_MET));
+});
+
+check("#145 required_text: a verified placard wording absent from the sheets -> BLOCKER; present (any punctuation/case) -> nothing", () => {
+  const ams = [amend({ kind: "required_text", field: "planText", value: "SOLAR PV SYSTEM EQUIPPED WITH RAPID SHUTDOWN" })];
+  assert.equal(get(run(amPlan, ctxFor({ ...VERIFIED, amendments: ams }), amDocs), NOT_MET)?.severity, "blocker");
+  const ok = `${AM_PLAN} PLACARD: "Solar PV system — equipped with rapid shutdown"`;
+  assert.ok(!get(run(project({ planSetExtractedText: ok }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: ok }]), NOT_MET));
+});
+
+check("#145 prohibited: a verified 'no roof-mounted disconnect' amendment vs a plan showing one -> BLOCKER; a plan saying NO roof-mounted disconnect -> nothing", () => {
+  const ams = [amend({ kind: "prohibited", field: "planText", value: "roof-mounted disconnect" })];
+  const f = get(run(amPlan, ctxFor({ ...VERIFIED, amendments: ams }), amDocs), NOT_MET);
+  assert.equal(f?.severity, "blocker");
+  assert.match(f!.message, /roof-mounted disconnect/);
+  const ok = "AC DISCONNECT AT METER. NO ROOF-MOUNTED DISCONNECT.";
+  assert.ok(!get(run(project({ planSetExtractedText: ok }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: ok }]), NOT_MET));
+});
+
+check("#145 informational amendments (no check) and a check the plan cannot answer -> one CALLOUT 'Local amendments to check by hand', never a not-met", () => {
+  const ams = [
+    amend(undefined, "Local solar access ordinance applies"),
+    amend({ kind: "min_value", field: "ridgeSetbackIn", value: 36, unit: "in" }, "Ridge setback 36 inches"),
+  ];
+  const fs = run(amPlan, ctxFor({ ...VERIFIED, amendments: ams }), amDocs);
+  assert.ok(!get(fs, NOT_MET));
+  const c = get(fs, BY_HAND);
+  assert.equal(c?.severity, "callout");
+  assert.equal(c!.title, "Local amendments to check by hand");
+  assert.match(c!.message, /solar access ordinance/);
+  assert.match(c!.message, /does not state its ridge setback/);
+});
+
+check("#145 a LAYERED read: a verified state amendment blocks, a seeded city amendment under it only warns", () => {
+  const stateAm = amend({ kind: "min_value", field: "groundSnowPsf", value: 30, unit: "psf" });
+  const cityAm = amend({ kind: "max_value", field: "pvDeadLoadPsf", value: 3, unit: "psf" });
+  const layered = (verifiedIndex: number) => profile({
+    amendments: [stateAm, cityAm],
+    fieldSources: {
+      "amendments.0": { ahj: "", state: "OR", confidence: verifiedIndex === 0 ? "verified" : "seeded" },
+      "amendments.1": { ahj: "City of Testport", state: "OR", confidence: verifiedIndex === 1 ? "verified" : "seeded" },
+    },
+  });
+  const onlyCity = buildCodeContext("OR", "City of Testport", { ...layered(1), amendments: [stateAm, { ...cityAm, check: { ...cityAm.check!, value: 5 } }] });
+  assert.equal(get(run(amPlan, buildCodeContext("OR", "City of Testport", layered(0)), amDocs), NOT_MET)?.severity, "blocker");
+  // The failing amendment (the state's Pg minimum) is on the SEEDED layer here: a warning.
+  assert.equal(get(run(amPlan, onlyCity, amDocs), NOT_MET)?.severity, "warning");
+});
+
+check("#145 the not-met finding is measured: vision may never relax it", () => {
+  const f = get(run(amPlan, ctxFor({ ...VERIFIED, amendments: [amend({ kind: "min_value", field: "groundSnowPsf", value: 30, unit: "psf" })] }), amDocs), NOT_MET)!;
+  assert.equal(visionMayRelax(f), false);
+  assert.equal(visionMayRelax({ ...f, title: "Ground snow load" }), false);
+});
+
 if (failures) {
   console.error(`\n${failures} design-criteria check(s) FAILED`);
   process.exit(1);

@@ -12,6 +12,7 @@ import { routeFor, taskForLabel, takeAdvisorSlot, describeRoutes, BASELINE_MODEL
 import { lookupCecInverter, lookupCecModuleMake } from "./cecEquipment";
 import { planTextForExtraction } from "./structuralIntake";
 import { CONTRACT_PRICE_LABEL, VALUATION_BOX_LABEL } from "./valuation";
+import { parseAmendmentCheck } from "./amendmentChecks";
 import type { CodeResearchProvenance } from "./codeProfiles";
 
 // Claude Opus 5: drop-in successor to Opus 4.8 at identical pricing with a
@@ -2593,7 +2594,7 @@ Rules:
   "adoptionModel": {"model": "statewide_uniform|statewide_minimum_local_amend|local_adoption|mixed", "byFamily": {"<family>": "<model, only where it differs>"}, "sourceUrl": "<statute/rule saying so>", "quote": "<≤25 words>"},` : ""}
   "adoptedCodes": [{"family": "residential|building|electrical|fire|energy|mechanical|plumbing", "code": "<the jurisdiction's own abbreviation (ORSC, CRC, FBC-R, RCNYS) or the model code (IRC, NEC) when adopted under that name>", "edition": "<year>", "basedOn": "<model code + edition it is built on, e.g. 2021 IRC>", "effectiveDate": "YYYY-MM-DD", "mandatoryDate": "YYYY-MM-DD, first day ONLY this edition may be used (omit if no phase-in)", "previousEdition": "<year>", "sourceUrl": "<page stating it>", "quote": "<≤25 words from that page>"}],${stateLayer ? `
   "upcoming": [{"family": "<family>", "code": "", "edition": "", "basedOn": "", "anticipatedDate": "YYYY-MM-DD", "status": "adopted|filed|in rulemaking|proposed", "sourceUrl": ""}],` : ""}
-  "amendments": [{"code": "<family>", "section": "<section if known>", "summary": "<what the state/local amendment changes>", "sourceUrl": "<source>"}],
+  "amendments": [{"code": "<family>", "section": "<section if known>", "summary": "<what the state/local amendment changes>", "sourceUrl": "<source>", "check": {"kind": "min_value|max_value|required_text|prohibited", "field": "groundSnowPsf|windSpeedMph|pvDeadLoadPsf|pathwayWidthIn|ridgeSetbackIn|attachmentSpacingIn|planText", "value": <number, or the exact wording>, "unit": "psf|mph|in|ft"} or omit}],
   "designCriteria": {"groundSnowLoadPsf": <number or omit>, "windSpeedMph": <number or omit>, "windExposure": "<B|C|D or omit>", "seismicDesignCategory": "<or omit>", "frostDepthIn": <number or omit>, "sourceUrl": "<the county/city design-criteria page>"},
   "prescriptive": {"hasPrescriptivePath": <true|false — omit ONLY if you genuinely could not tell>, "maxGroundSnowPsf": <number or omit>, "maxPvDeadLoadPsf": <number or omit>, "maxRafterSpacingIn": <number or omit>, "allowedWindExposures": ["<B>","<C>"] or omit, "maxWindSpeedMphExpB": <number or omit>, "maxWindSpeedMphExpC": <number or omit>, "engineerStampOverKwDc": <number or omit>, "sourceUrl": "<the page publishing the prescriptive path>"},
   "citations": [{"label": "<what this source establishes>", "sourceUrl": "<url>"}],
@@ -2612,6 +2613,7 @@ Rules:${stateLayer ? `
   example). "hasPrescriptivePath": false is a VALUABLE answer — say it plainly when the
   jurisdiction has no published prescriptive PV path. Never copy Oregon's numbers into
   another state: omit any limit you did not find published for THIS jurisdiction.
+- An amendment's "check" makes it comparable with a plan set — give one ONLY when the cited page states it plainly, else omit it: min_value / max_value with a numeric field and its unit (a ground snow minimum, a minimum pathway width or ridge setback, a maximum PV dead load or attachment spacing, a minimum design wind speed); required_text with field "planText" and the exact wording the plans must carry (a required placard); prohibited with field "planText" and the wording a plan would show for the prohibited item (e.g. "roof-mounted disconnect"). Anything else stays a summary with no check.
 - This is ADVISORY and will be human-verified — never invent a sourceUrl.
 - Return valid JSON only.`;
     const system = `${intro}\n\n${searchStep}\n\n${body}`;
@@ -2696,7 +2698,12 @@ Rules:${stateLayer ? `
         .slice(0, 16),
       amendments: (Array.isArray(parsed.amendments) ? parsed.amendments : [])
         .filter((a): a is Record<string, unknown> => !!a && typeof a === "object")
-        .map((a) => ({ code: String(a.code || "").slice(0, 24), section: strv(a.section), summary: String(prose(a.summary) || "").slice(0, 400), sourceUrl: src(a.sourceUrl) }))
+        .map((a) => {
+          // A check only on a CITED amendment of a grounded answer (#145): uncited or unclassifiable
+          // ones stay informational, listed for a person to check by hand.
+          const check = parseAmendmentCheck(a.check, { cited: webGrounded && !!src(a.sourceUrl) });
+          return { code: String(a.code || "").slice(0, 24), section: strv(a.section), summary: String(prose(a.summary) || "").slice(0, 400), sourceUrl: src(a.sourceUrl), ...(check ? { check } : {}) };
+        })
         .filter((a) => a.code && a.summary)
         .slice(0, 20),
       designCriteria: {

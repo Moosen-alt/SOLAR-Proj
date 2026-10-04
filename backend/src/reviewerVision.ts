@@ -8,6 +8,7 @@ import { findPlanSetPdf, renderPdfPageToPng, selectTopPagesForTopic } from "./pa
 import { extractPdfPages } from "./batchImport";
 import type { EvidenceTopic } from "./projectEvidence";
 import { applyRoofPlanMeasurement, FIRE_PATHWAY_BELOW_ID, FIRE_PATHWAY_UNMEASURED_ID } from "./designCriteria";
+import { AMENDMENT_NOT_MET_ID } from "./amendmentChecks";
 import { nowIso } from "./time";
 
 // ---------------------------------------------------------------------------
@@ -127,6 +128,9 @@ export const MEASURED_FINDING_IDS: ReadonlySet<string> = new Set([
   // A stated (or vision-measured) pathway width / ridge setback against the required one is
   // arithmetic (issue #142). A sheet showing a pathway does not make it wide enough.
   FIRE_PATHWAY_BELOW_ID,
+  // A classified local amendment compared with the plan's stated value or wording (#145): a sheet
+  // showing a snow note or a placard does not make the value meet the amendment.
+  AMENDMENT_NOT_MET_ID,
 ]);
 
 /** False when the finding reports a measured result rather than missing evidence. */

@@ -670,6 +670,78 @@ await check("SF-a: a phase-in whose previous edition is its own entry allows bot
   assert.equal(F.editionsInEffect([{ family: "residential", code: "780 CMR", edition: "2021", effectiveDate: "2024-10-11", mandatoryDate: "2025-06-30" }], "residential", "2025-07-01").status, "in_effect");
 });
 
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// #145 AMENDMENT CLASSIFICATION — the real researchJurisdictionCodes parse, its web search stubbed
+// (no network): a check lands only on a CITED amendment of a GROUNDED answer; ungrounded stores
+// nothing at all.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+{
+  const { ClaudeLLMProvider } = await import("../src/llm");
+  const { parseAmendmentCheck } = await import("../src/amendmentChecks");
+  const SRC = "https://codes.classify.example.gov/amendments";
+  const answer = {
+    adoptedCodes: [{ family: "residential", code: "IRC", edition: "2021", sourceUrl: SRC, quote: "adopts the 2021 IRC" }],
+    amendments: [
+      { code: "IRC", section: "R301.2", summary: "Ground snow load minimum 30 psf", sourceUrl: SRC, check: { kind: "min_value", field: "groundSnowPsf", value: 30, unit: "psf" } },
+      { code: "IFC", section: "1205", summary: "Pathways 3 feet wide", sourceUrl: SRC, check: { kind: "min_value", field: "pathwayWidthIn", value: 3, unit: "ft" } },
+      { code: "IRC", summary: "Uncited minimum 40 psf", check: { kind: "min_value", field: "groundSnowPsf", value: 40, unit: "psf" } },
+      { code: "IRC", summary: "Wrong unit", sourceUrl: SRC, check: { kind: "min_value", field: "groundSnowPsf", value: 30, unit: "kPa" } },
+      { code: "NEC", summary: "No roof-mounted disconnects", sourceUrl: SRC, check: { kind: "prohibited", field: "planText", value: "roof-mounted disconnect" } },
+      { code: "NEC", summary: "Text kind on a quantity", sourceUrl: SRC, check: { kind: "required_text", field: "groundSnowPsf", value: "30" } },
+      { code: "IRC", summary: "Informational only", sourceUrl: SRC },
+    ],
+    citations: [{ label: "Amendments", sourceUrl: SRC }],
+  };
+  const prompts: string[] = [];
+  const researcher = (groundedSearches: number) => {
+    const provider = new ClaudeLLMProvider("sk-ant-test-not-a-key");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (provider as any).askWithWebSearch = async (_label: string, system: string) => (prompts.push(system), {
+      text: JSON.stringify(answer), searches: 2, groundedSearches, fetches: 0, fetchedUrls: [], stopReason: "end_turn",
+      resultUrls: groundedSearches ? [SRC] : [], resultTitles: {}, model: "claude-test",
+    });
+    return provider;
+  };
+  const checkOf = (p: JurisdictionCodeProfile, summary: string) => p.amendments.find((a) => a.summary === summary)?.check;
+
+  await check("#145 MUST-PASS: a grounded answer stores each CITED, well-formed check (feet converted to inches)", async () => {
+    const r = await researcher(2).researchJurisdictionCodes({ state: "ZC", ahj: "Classifyton", families: ["residential"] });
+    assert.equal(r.webGrounded, true);
+    assert.match(prompts.at(-1) ?? "", /"check": \{"kind": "min_value\|max_value\|required_text\|prohibited"/, "the research prompt does not ask for the classification");
+    assert.deepEqual(checkOf(r.profile, "Ground snow load minimum 30 psf"), { kind: "min_value", field: "groundSnowPsf", value: 30, unit: "psf" });
+    assert.deepEqual(checkOf(r.profile, "Pathways 3 feet wide"), { kind: "min_value", field: "pathwayWidthIn", value: 36, unit: "in" });
+    assert.deepEqual(checkOf(r.profile, "No roof-mounted disconnects"), { kind: "prohibited", field: "planText", value: "roof-mounted disconnect" });
+    CP.saveResearchedCodeProfile(db, r.profile, { families: ["residential"] });
+    const stored = payloadOf(CP.codeProfileKey({ state: "ZC", ahj: "Classifyton" }));
+    assert.equal(stored?.amendments.find((a: { summary: string }) => a.summary === "Ground snow load minimum 30 psf")?.check?.value, 30);
+  });
+
+  await check("#145 MUST-EXCLUDE: uncited, wrong-unit, mis-shaped and unclassified amendments stay informational (no check)", async () => {
+    const r = await researcher(2).researchJurisdictionCodes({ state: "ZC", ahj: "Classifyton", families: ["residential"] });
+    for (const s of ["Uncited minimum 40 psf", "Wrong unit", "Text kind on a quantity", "Informational only"]) {
+      assert.ok(r.profile.amendments.some((a) => a.summary === s), `${s} dropped — it should stay as an informational amendment`);
+      assert.equal(checkOf(r.profile, s), undefined, `${s} was classified`);
+    }
+  });
+
+  await check("#145 MUST-EXCLUDE: an UNGROUNDED answer classifies nothing and stores nothing", async () => {
+    const r = await researcher(0).researchJurisdictionCodes({ state: "ZC", ahj: "Ungroundton", families: ["residential"] });
+    assert.equal(r.webGrounded, false);
+    assert.ok(r.profile.amendments.every((a) => !a.check), "an ungrounded answer carried a check");
+    CP.saveResearchedCodeProfile(db, r.profile, { families: ["residential"] });
+    assert.equal(payloadOf(CP.codeProfileKey({ state: "ZC", ahj: "Ungroundton" })), null, "an ungrounded research stored a row");
+  });
+
+  await check("#145 parseAmendmentCheck: never without a citation, whatever the shape", () => {
+    assert.equal(parseAmendmentCheck({ kind: "min_value", field: "groundSnowPsf", value: 30, unit: "psf" }, { cited: false }), undefined);
+    assert.equal(parseAmendmentCheck({ kind: "min_value", field: "groundSnowPsf", value: 30 }, { cited: true }), undefined, "no unit");
+    assert.equal(parseAmendmentCheck({ kind: "max_value", field: "planText", value: 3, unit: "psf" }, { cited: true }), undefined);
+    assert.equal(parseAmendmentCheck({ kind: "required_text", field: "planText", value: "x" }, { cited: true }), undefined, "too short");
+    assert.equal(parseAmendmentCheck({ kind: "guess", field: "groundSnowPsf", value: 30, unit: "psf" }, { cited: true }), undefined);
+    assert.deepEqual(parseAmendmentCheck({ kind: "max_value", field: "attachmentSpacingIn", value: "4", unit: "feet" }, { cited: true }), { kind: "max_value", field: "attachmentSpacingIn", value: 48, unit: "in" });
+  });
+}
+
 CP.setCodeResearchEnqueuerForTests(null);
 CP.setDesignResearchEnqueuerForTests(null);
 console.log(failures ? `\ncodeEditionResearch: ${failures} FAILED` : "\ncodeEditionResearch: all checks passed");
