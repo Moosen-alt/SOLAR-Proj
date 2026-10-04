@@ -1,4 +1,4 @@
-// STAGE ALWAYS ACQUIRES THE OFFICIAL FORMS THIS JOB STILL OWES (live 2026-09-27, Michael Sheridan —
+// STAGE ALWAYS ACQUIRES THE OFFICIAL FORMS THIS JOB STILL OWES (live 2026-09-27, Jules Testperson —
 // City of Jefferson, Marion County issues both permits). After release, Michael's Marion B-01S / E-01
 // were NOT on file until the operator clicked "Find missing official forms": Stage
 // (prepareSubmission -> prepareOfficialDocuments) skipped acquisition inside the 24h per-AHJ cooldown,
@@ -120,7 +120,7 @@ const resultFor = (prep: unknown, formType: string) =>
   ((prep as { results?: Array<{ formType: string; status: string; message: string }> } | undefined)?.results ?? []).find((r) => r.formType === formType);
 
 try {
-  const michael = mkJob("City of Jefferson", "Jefferson", "Michael Fixture");
+  const michael = mkJob("City of Jefferson", "Jefferson", "Jules Fixture");
 
   // ═══ SETUP — the AHJ was prepared earlier today, on the OLD version ═════════════════════════════
   // (Michael's morning: a version before issuing-agency forms existed — nothing named Marion County as

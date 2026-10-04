@@ -155,7 +155,7 @@ export function projectSecretValues(project: ProjectRecord): string[] {
 
 /** SAFETY RULE 2 — a secret EMBEDDED in free text. The planner's value filter drops a field
  *  whose WHOLE value equals a secret; prose is not caught that way. Live (City of Jefferson,
- *  2026-09-25): the site-plan line "...tied to exterior utility meter #77 902 323, new PV AC
+ *  2026-09-25): the site-plan line "...tied to exterior utility meter #80 000 100, new PV AC
  *  disconnect ... within 10' of the utility meter" matched the disconnect topic, went into the
  *  design digest, and carried the meter number to the model on every planner call.
  *  The ONE scrub lives in shared/src/portalSafety.ts — the learner scrubs its page text with it
@@ -471,7 +471,7 @@ export function buildPortalPlanner(
   // billing contact's name/email/phone — the very values PowerClerk's Customer Information
   // page asks for — and "AccountHolder" matches the broad account regex. Treating them as
   // secrets poisoned the VALUE set with the homeowner's email, phone, and surname, which the
-  // value filter then erased under EVERY key: live on Marineau's NEM, two learns in a row
+  // value filter then erased under EVERY key: live on Placeholder's NEM, two learns in a row
   // left the required Email boxes blank because homeownerEmail had been silently deleted as
   // "a secret". The account NUMBER stays under its own keys and stays stripped.
   const isSecretKey = isPlannerSecretKey;

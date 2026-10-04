@@ -284,7 +284,7 @@ export function namesAgree(applicant: string, accountHolder: string): boolean {
   if (!bSet.has(aLast)) return false;
 
   // Surname matches. Now the given name must also be accounted for, or this is a
-  // DIFFERENT PERSON IN THE SAME HOUSEHOLD — a spouse, which is exactly the Simmons case
+  // DIFFERENT PERSON IN THE SAME HOUSEHOLD — a spouse, which is exactly the Mockdata case
   // and exactly what the utility rejects.
   const aGiven = a.slice(0, -1);
   if (aGiven.length === 0) return true; // surname only — nothing more to disagree about
@@ -454,9 +454,9 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
   // and the name printed on the utility bill are two different facts, and when they
   // disagree the application is suspended — not corrected, suspended, with a clock on it.
   //
-  // Live: David Simmons' PacifiCorp application (APP-111681) was filed with
-  // homeownerName "David Simmons" while the bill we had already parsed read
-  // "STEPHANIE SIMMONS". PacifiCorp's reply: "David Simmons is not listed on the account.
+  // Live: Finley Mockdata' PacifiCorp application (APP-111681) was filed with
+  // homeownerName "Finley Mockdata" while the bill we had already parsed read
+  // "STEPHANIE MOCKDATA". PacifiCorp's reply: "Finley Mockdata is not listed on the account.
   // They will need to be added to the account as a co-customer or have the electric service
   // put into their name; and/or to have the primary electric account holders name added to
   // the application" — 10 business days to fix or the request may be withdrawn. Both names

@@ -1,5 +1,5 @@
 // One-off ENGINE TEST: fill the City of Tualatin Prescriptive Photovoltaic
-// Questionnaire with the Daniel Daly TEST project's data via the deterministic
+// Questionnaire with the Blake Fixture TEST project's data via the deterministic
 // form-fill engine (autoFillByFieldName + checkboxLabels + prescriptive answers).
 // Output is a TEST FILL for engine evaluation — swap the project id to produce a
 // real one. Delete this file after the session.
@@ -14,7 +14,7 @@ const { getProjectDetail } = await import("./backend/src/repository");
 const { getClient } = await import("./backend/src/clients");
 
 const db = await openDatabase();
-const projectId = "cf1c56aa"; // Daniel Daly TEST project (matched by prefix below)
+const projectId = "cf1c56aa"; // Blake Fixture TEST project (matched by prefix below)
 const row = db.get<{ id: string }>("SELECT id FROM projects WHERE id LIKE ?", [`${projectId}%`]);
 if (!row) throw new Error("test project not found");
 const detail = getProjectDetail(db, String(row.id));

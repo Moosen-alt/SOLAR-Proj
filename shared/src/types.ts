@@ -807,7 +807,7 @@ export interface ProjectRecord {
    *  purpose, because hiding work from the people doing it is how a cleanup
    *  becomes a second problem. What they must not do is answer IDENTICALLY, and
    *  that is what they did for as long as this column could not reach a record:
-   *  the superseded Daly pass (cf1c56aa) priced out at $274.43 and raised blocking
+   *  the superseded Fixture pass (cf1c56aa) priced out at $274.43 and raised blocking
    *  demands with nothing anywhere saying its live twin is the real job. */
   archivedAt?: string;
   /** Why it was archived — the sentence that explains, six months later, why a job
@@ -2678,7 +2678,7 @@ export interface ProjectDetail {
  *
  * The third value exists because the boolean did not have room for it. `needsRecheck:false` used
  * to mean BOTH "we checked and it is current" AND "our check blew up", and the pages rendered the
- * reassuring reading of that: Christopher Ivy's building permit — stalled at Coos Bay's counter on
+ * reassuring reading of that: Drew Example's building permit — stalled at Coos Bay's counter on
  * "Intake Requirements Needed" since Sep 3 — went on telling the homeowner "In review by the
  * jurisdiction" with no caveat at all, in a payload BYTE-IDENTICAL to a confirmed-fresh one. A
  * failed check that looks exactly like a passed check is worse than no check, because it is the

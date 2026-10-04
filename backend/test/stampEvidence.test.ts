@@ -2,7 +2,7 @@
 //
 // Twice. Same defect, two AHJs, two missing artifacts, ten weeks apart.
 //
-// ONE — Coos Bay structural 187-26-000309-STR (Ann Marineau, 1780 Ocean Blvd SE). The parser had
+// ONE — Coos Bay structural 187-26-000309-STR (Emery Placeholder, 5050 Placeholder Blvd SE). The parser had
 // already written "No PE stamp/seal shown (title block 'Signature with Seal' is blank); AHJ may
 // require stamped structural for 2x4 @16\" rafters" and the packet filed anyway: the positive
 // pattern matched "stamped" and the negative guard wanted the words "no stamp" ADJACENT. "PE" sat
@@ -182,8 +182,8 @@ check("THE BOX IS NOT THE MARK: a title block that HAS a seal area proves nothin
 //
 // Measured on the live database while building this fix: an EMPTY title block prints the literal
 // words "SIGNATURE WITH SEAL" exactly like a signed one does, because that is the label of the
-// box. Reading planSetExtractedText in the positive direction flipped 15622 SE Vivian Way and
-// 990 17th St NE to "stamped" on that boilerplate alone, with no seal anywhere in either set.
+// box. Reading planSetExtractedText in the positive direction flipped 50030 SE Testing Way and
+// 520 Example St NE to "stamped" on that boilerplate alone, with no seal anywhere in either set.
 // ---------------------------------------------------------------------------
 const TITLE_BLOCK_BOILERPLATE =
   "- N/A  DATE DESCRIPTION  REVISIONS SIGNATURE WITH SEAL PROJECT NAME & ADDRESS SHEET SIZE SHEET NUMBER  ANSI B 11";
@@ -288,7 +288,7 @@ check("[CALLER] MUST KEEP: a genuine sealed letter in the plan set still satisfi
 });
 
 check("[CALLER] MUST KEEP: an ATTACHED structural_letter satisfies even when the text denies a seal", () => {
-  // This is how 1075 Flanagan Ave and 1095 Michigan Ave are satisfied on the live database: the
+  // This is how 5010 Fixture Ave and 5060 Synthetic Ave are satisfied on the live database: the
   // letter is a FILE. That route must not be touched by a text rule.
   const out = inventoryFor({ stampRecommendation: ANN_SENTENCE }, ["structural_letter"]);
   assert.equal(out.present, true, "a real uploaded letter is the strongest evidence there is");

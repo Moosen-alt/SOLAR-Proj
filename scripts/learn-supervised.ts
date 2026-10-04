@@ -1,7 +1,7 @@
 // WATCH THE LEARN, AND ANYTHING YOU DO ON THE PAGE IS LEARNED.
 //
 //   npm run learn:supervised -- --project <id-or-homeowner-name> [--track nem|building|electrical|combo]
-//   npm run learn:supervised -- --project "David Simmons" --dry-run
+//   npm run learn:supervised -- --project "Finley Mockdata" --dry-run
 //   npm run learn:supervised -- --project <id> --url https://egov.example.org/energovprod/selfservice#/home
 //
 // The machinery for this already existed and had no door. autoLearnPortal takes

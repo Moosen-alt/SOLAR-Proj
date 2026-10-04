@@ -40,7 +40,7 @@
 //                  the CLI renderer and the dashboard card both ITEMISE, and both
 //                  say INCOMPLETE rather than printing a sum that omits a charge.
 //
-//   MUST EXCLUDE — THE OVER-CORRECTION GUARD. Christopher Ivy's fully-published
+//   MUST EXCLUDE — THE OVER-CORRECTION GUARD. Drew Example's fully-published
 //                  Coos pair still totals exactly $335.00, with no charges beyond
 //                  its two permits, no new unresolved-ness, and NO itemisation
 //                  block on either renderer: a jurisdiction whose data is complete
@@ -192,7 +192,7 @@ async function main(): Promise<void> {
   const corroborated = savePortland(false);
 
   // -------------------------------------------------------------------------
-  // THE OVER-CORRECTION GUARD'S ROWS — Christopher Ivy's live Coos pair, verbatim.
+  // THE OVER-CORRECTION GUARD'S ROWS — Drew Example's live Coos pair, verbatim.
   // No ancillary charges anywhere, which is every row in the live table today.
   // -------------------------------------------------------------------------
   saveFeeSchedule(db, { state: "OR", ahj: "City of Coos Bay", track: "permit", discipline: "structural" }, finding({

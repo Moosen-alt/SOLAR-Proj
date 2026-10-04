@@ -1,6 +1,6 @@
 // THE LEARNER IS TOLD WHICH AGENCY ISSUES THE PERMIT IT IS LEARNING (agency-row item 2).
 //
-// Production 2026-09-27 (Michael Sheridan, City of Jefferson OR): the per-job lookup says Marion
+// Production 2026-09-27 (Jules Testperson, City of Jefferson OR): the per-job lookup says Marion
 // County issues BOTH permits, but the learner only ever received city/ZIP/owner and a discipline,
 // so its address-version choice fell to the Coos Bay convention (CITY row for structural) — the
 // wrong agency. autoLearnPortal now puts issuingAgencyFor(project, <this learn's track>) on the

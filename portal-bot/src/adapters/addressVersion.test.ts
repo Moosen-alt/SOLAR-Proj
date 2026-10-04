@@ -4,7 +4,7 @@
 // differ per row. A first cut hard-mapped CITY->structural and COUNTY->electrical; the operator
 // corrected that (either can hold both). The replacement tried every version until one offered
 // the permit — and promptly selected "DEQ Applications", which issues onsite/septic permits and
-// nothing else, then wedged. These are the real 773 Kentucky rows.
+// nothing else, then wedged. These are the real 540 Mockup rows.
 //   npx tsx portal-bot/src/adapters/addressVersion.test.ts
 import assert from "node:assert/strict";
 import { rankAddressVersions } from "./oregonEPermitting";
@@ -15,13 +15,13 @@ const check = (label: string, fn: () => void): void => {
   catch (err) { failures++; console.error(`  FAIL - ${label}\n         ${err instanceof Error ? err.message : String(err)}`); }
 };
 
-// Verbatim from the live search for 773 Kentucky Ave, Coos Bay.
+// Verbatim from the live search for 540 Mockup Ave, Coos Bay.
 const KENTUCKY = [
-  "Select 773 KENTUCKY AV, DEQ Applications, COOS BAY Coos OR 97420 DEQ Applications COOS BAY OR 97420 25S13W20CC2503 GILPIN, BILLY, JR. & LAMBERT, COURTNEY",
-  "Select 773 KENTUCKY AVE, City Applications, EMPIRE, COOS BAY COOS OR 97420 City Applications COOS BAY OR 97420 25S13W20CCTL0250300 SAKSCHEWSKI, GERHARD & JEANNETT",
-  "Select 773 KENTUCKY AVE, COUNTY APPLICATIONS, COOS BAY COOS OR 97420 COUNTY APPLICATIONS COOS BAY OR 97420 25S1320CC02503 HUISMAN, VINCENT",
+  "Select 540 MOCKUP AV, DEQ Applications, COOS BAY Coos OR 97420 DEQ Applications COOS BAY OR 97420 25S13W20CC0000 SAMPLE, ALEX, JR. & FIXTURE, CASEY",
+  "Select 540 MOCKUP AVE, City Applications, EMPIRE, COOS BAY COOS OR 97420 City Applications COOS BAY OR 97420 25S13W20CCTL0250300 SAKSCHEWSKI, GERHARD & JEANNETT",
+  "Select 540 MOCKUP AVE, COUNTY APPLICATIONS, COOS BAY COOS OR 97420 COUNTY APPLICATIONS COOS BAY OR 97420 25S1320CC02503 HUISMAN, VINCENT",
 ];
-const IVY = { city: "Coos Bay", zip: "97420", homeownerName: "Christopher Ivy" };
+const IVY = { city: "Coos Bay", zip: "97420", homeownerName: "Drew Example" };
 
 const first = (rows: string[], isElectrical: boolean): string =>
   rankAddressVersions(rows, { ...IVY, isElectrical }).ranked[0]?.text ?? "";
@@ -50,25 +50,25 @@ check("every version of THIS property stays a candidate — order is a hint, not
 
 // The operator's correction: sometimes one record carries BOTH disciplines.
 check("a single record holding both disciplines is tried first for either", () => {
-  const both = ["Select 1780 OCEAN BLVD SE, City Applications, COOS BAY OR 97420 City Applications COOS BAY OR 97420 111 MARINEAU, CRAIG"];
-  assert.match(first(both, true), /OCEAN BLVD/);
-  assert.match(first(both, false), /OCEAN BLVD/);
+  const both = ["Select 5050 PLACEHOLDER BLVD SE, City Applications, COOS BAY OR 97420 City Applications COOS BAY OR 97420 111 PLACEHOLDER, CRAIG"];
+  assert.match(first(both, true), /PLACEHOLDER BLVD/);
+  assert.match(first(both, false), /PLACEHOLDER BLVD/);
 });
 
 check("the owner of record outranks the jurisdiction convention", () => {
   const rows = [
-    "Select 773 KENTUCKY AVE, COUNTY APPLICATIONS, COOS BAY OR 97420 COUNTY APPLICATIONS COOS BAY OR 97420 25S1320CC02503 HUISMAN, VINCENT",
-    "Select 773 KENTUCKY AVE, City Applications, COOS BAY OR 97420 City Applications COOS BAY OR 97420 25S13W20CCTL0250300 IVY, CHRISTOPHER A",
+    "Select 540 MOCKUP AVE, COUNTY APPLICATIONS, COOS BAY OR 97420 COUNTY APPLICATIONS COOS BAY OR 97420 25S1320CC02503 HUISMAN, VINCENT",
+    "Select 540 MOCKUP AVE, City Applications, COOS BAY OR 97420 City Applications COOS BAY OR 97420 25S13W20CCTL0250300 EXAMPLE, DREW A",
   ];
   // Electrical would normally prefer COUNTY, but the customer's own parcel wins.
-  assert.match(first(rows, true), /IVY, CHRISTOPHER/);
+  assert.match(first(rows, true), /EXAMPLE, DREW/);
 });
 
 check("a different town's row is REJECTED, never merely ranked low", () => {
   const loose = [
     "Select 119 7TH E, County Applications, MILTON FREEWATER UMATILLA OR 97862 County Applications MILTON FREEWATER OR 97862",
     "Select 119 NE 78TH AVE, PORTLAND OR 97213 PORTLAND OR 97213 1N2E32DA10900",
-    "Select 773 KENTUCKY AVE, COUNTY APPLICATIONS, COOS BAY OR 97420 COUNTY APPLICATIONS COOS BAY OR 97420 25S1320CC02503 HUISMAN, VINCENT",
+    "Select 540 MOCKUP AVE, COUNTY APPLICATIONS, COOS BAY OR 97420 COUNTY APPLICATIONS COOS BAY OR 97420 25S1320CC02503 HUISMAN, VINCENT",
   ];
   const out = rankAddressVersions(loose, { ...IVY, isElectrical: true });
   assert.equal(out.ranked.length, 1, "only the Coos Bay row is a candidate");
@@ -205,11 +205,11 @@ check("MUST-EXCLUDE: an unmatched agency whose convention pick is the OTHER kind
 });
 check("MUST-EXCLUDE: the owner of record still outranks the agency preference", () => {
   const rows = [
-    "Select 773 KENTUCKY AVE, COUNTY APPLICATIONS, COOS BAY COOS OR 97420 COUNTY APPLICATIONS COOS BAY OR 97420 25S1320CC02503 HUISMAN, VINCENT",
-    "Select 773 KENTUCKY AVE, City Applications, COOS BAY OR 97420 City Applications COOS BAY OR 97420 25S13W20CCTL0250300 IVY, CHRISTOPHER A",
+    "Select 540 MOCKUP AVE, COUNTY APPLICATIONS, COOS BAY COOS OR 97420 COUNTY APPLICATIONS COOS BAY OR 97420 25S1320CC02503 HUISMAN, VINCENT",
+    "Select 540 MOCKUP AVE, City Applications, COOS BAY OR 97420 City Applications COOS BAY OR 97420 25S13W20CCTL0250300 EXAMPLE, DREW A",
   ];
   const r = rank(rows, IVY, true, "Coos County");
-  assert.match(r.ranked[0].text, /IVY, CHRISTOPHER/);
+  assert.match(r.ranked[0].text, /EXAMPLE, DREW/);
   assert.equal(r.preference.contradicts, false, "the agency's row exists — the owner's parcel is a choice, not a contradiction");
 });
 check("MUST-EXCLUDE: DEQ still ranks last and another town's row is still rejected with an agency supplied", () => {

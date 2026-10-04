@@ -17,7 +17,7 @@
 //     Trask 88647deb reads "COMBO City of Portland (permit portal) run failed — not staged…"
 //     while the project sits at `awaiting_human_submit` with one awaiting run AND one later
 //     failed run. That is the fixture below.
-//   * Project status and run status disagree in live data (Daly cf1c56aa: `qc_passed` with NINE
+//   * Project status and run status disagree in live data (Fixture cf1c56aa: `qc_passed` with NINE
 //     awaiting runs) — covered as its own case.
 //
 // Browser-free. Run: tsx backend/test/submitSeam.test.ts
@@ -215,14 +215,14 @@ check("1k. and the approve button stays available (a later track still needs it)
 }
 
 // ===========================================================================
-// 5. LIVE SHAPE — Daly cf1c56aa: `qc_passed` with awaiting runs underneath.
+// 5. LIVE SHAPE — Fixture cf1c56aa: `qc_passed` with awaiting runs underneath.
 //    The approval gate refuses; nothing is written.
 // ===========================================================================
 {
-  const pid = mkProject("Daly Split Status", "City of Salem", "Portland General Electric");
+  const pid = mkProject("Fixture Split Status", "City of Salem", "Portland General Electric");
   db.run("UPDATE projects SET status = 'qc_passed', stage_detail = 'qc_passed' WHERE id = ?", [pid]);
-  mkRun("run-daly-1", pid, "awaiting_human_submit", "2026-08-27T01:38:51.048Z", { actor: "AutoLearnAdapter", ok: true, finalSubmitClicked: false });
-  mkRun("run-daly-2", pid, "awaiting_human_submit", "2026-08-27T02:03:20.780Z", { actor: "AutoLearnAdapter", ok: true, finalSubmitClicked: false }, "permit");
+  mkRun("run-fixture-1", pid, "awaiting_human_submit", "2026-08-27T01:38:51.048Z", { actor: "AutoLearnAdapter", ok: true, finalSubmitClicked: false });
+  mkRun("run-fixture-2", pid, "awaiting_human_submit", "2026-08-27T02:03:20.780Z", { actor: "AutoLearnAdapter", ok: true, finalSubmitClicked: false }, "permit");
   let err = "";
   try { await runAutopilotApproval(db, pid, { approverName: "Operator Under Test", approverUserId: null }); }
   catch (e) { err = e instanceof Error ? e.message : String(e); }

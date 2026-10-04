@@ -1,6 +1,6 @@
 // THE PORTAL'S OWN FEE, READ AUTOMATICALLY OFF THE FILED RECORD (operator 2026-09-27).
 //
-// Ann Marineau's permit line read "$360.00 (provisional)" while her City of Coos Bay record
+// Emery Placeholder's permit line read "$360.00 (provisional)" while her City of Coos Bay record
 // 187-26-000309-STR sat on the portal with a Fees section the monitor never opened. This pins
 // the read end to end on the REAL sweep (runDuePermitChecks), with both outside doors seamed
 // (no portal is touched):
@@ -61,8 +61,8 @@ const STR = "187-26-000309-STR";
 const ELEC = "194-26-001482-ELEC";
 const head = (record: string, status: string) =>
   `Record ${record}: Residential Structural Record Status: ${status} Expiration Date: 02/28/2027 `
-  + "Work Location 12 Example Lane COOS BAY OR 97420 * Record Details Applicant: Ann Example "
-  + "Licensed Professional:TML INTERNATIONAL LLC 223690 CCB 223690 Project Description: Ann Example Install 8.36 kW DC roof-mounted photovoltaic system "
+  + "Work Location 12 Example Lane COOS BAY OR 97420 * Record Details Applicant: Emery Example "
+  + "Licensed Professional:TML INTERNATIONAL LLC 223690 CCB 223690 Project Description: Emery Example Install 8.36 kW DC roof-mounted photovoltaic system "
   + "Additional Information Job Value($):$21,383.55 Number of Buildings:1 Parcel Information Parcel Number:25S13W20CCTL0250300\n";
 const TAIL = "\nInspections Click here to view a list of the Oregon Standard Model Inspection Codes. Documents Upload/View Valuation Calculator "
   + "Occupancy Type Quantity Unit Unit Cost Job Value No records found. Right Of Way Management No ROWM data available at this time.";
@@ -99,7 +99,7 @@ const page = (record: string, status: string, fees: string) => `${head(record, s
   check("1g. a page with no Fees section is no_fee_section", !nothing.ok && nothing.reason === "no_fee_section", JSON.stringify(nothing));
   const review = readReviewScreenFees([
     { label: "Permit Fee", value: "$200.00" }, { label: "Plan Review Fee", value: "$99.00" }, { label: "Job Value($)", value: "$21,383.55" },
-    { label: "Total Fees", value: "$299.00" }, { label: "Applicant", value: "Ann Example" },
+    { label: "Total Fees", value: "$299.00" }, { label: "Applicant", value: "Emery Example" },
   ], "");
   check("1h. the review screen: fee fields read, the printed total wins, the job value is never a fee",
     review.ok && review.reading.totalUsd === 299 && review.reading.lines.length === 2 && !/21,383|Job Value/.test(JSON.stringify(review.reading)), JSON.stringify(review));
@@ -305,7 +305,7 @@ const words = (html: string): string => html.replace(/<[^>]+>/g, " ").replace(/\
 const badge = (html: string): string => /<span class="badge [^"]*">([^<]*)<\/span>/.exec(face(html))?.[1] ?? "";
 {
   const portalLine = buildProjectFeeSheet(db, R.getProjectDetail(db, neighbour.id).project).lines.find((l) => l.track === "permit")!;
-  // The neighbour's line is learned_history; render ann's portal line as it stood after sweep 3.
+  // The neighbour's line is learned_history; render emery's portal line as it stood after sweep 3.
   const annLine = { ...line2, feeUsd: 415.2, source: "portal_record", confidence: "actual", comparison: q3.permitFeeComparison, portalRecords: q3.portalFeeRecords };
   const html = lib.renderFeeSheetLine(annLine);
   check("7a. a portal-read amount is labelled 'actual — read from the portal', never 'verified'",

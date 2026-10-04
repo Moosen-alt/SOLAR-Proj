@@ -523,7 +523,7 @@ function money(n: number): string {
   return n.toFixed(2);
 }
 
-/** "4583294881" / "+1 458.329.4881" -> "(458) 329-4881"; anything that is not a 10-digit US
+/** "5550100100" / "+1 555.010.0100" -> "(555) 010-0100"; anything that is not a 10-digit US
  *  number (an extension, a foreign number, a blank) is returned exactly as written. */
 export function formatUsPhone(raw: string): string {
   const text = String(raw ?? "").trim();
@@ -818,8 +818,8 @@ function computed(name: string, ctx: FillContext): string {
     }
     case "fullAddress": {
       // projectAddress often ALREADY carries city/state/zip; joining blindly printed
-      // "1095 Michigan Ave, Coos Bay, OR, 97420, Coos Bay, OR, 97420" on the live
-      // Simmons building application. Build on streetAddress, which strips them.
+      // "5060 Synthetic Ave, Coos Bay, OR, 97420, Coos Bay, OR, 97420" on the live
+      // Mockdata building application. Build on streetAddress, which strips them.
       const street = computed("streetAddress", ctx) || str(ctx.project.projectAddress);
       return [street, ctx.project.city, ctx.project.state, ctx.project.zip]
         .filter(Boolean)
@@ -896,7 +896,7 @@ function computed(name: string, ctx: FillContext): string {
     // checklist Marion County reviews (applicationDocsAgency.formAuthorityFor — the one predicate).
     case "buildingDepartment":
       return formAuthorityFor(ctx.project, "building_application").name || str(ctx.project.ahj);
-    // A 10-digit US number reads as one on a form: "(458) 329-4881", never "4583294881" beside a
+    // A 10-digit US number reads as one on a form: "(555) 010-0100", never "5550100100" beside a
     // contractor phone the client record already formats. Anything else is left as written.
     case "homeownerPhone":
       return formatUsPhone(str(ctx.snapshot.homeownerPhone));
@@ -1158,7 +1158,7 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
     prescriptiveJurisdictionOnly,
   };
   // THE OWNER'S MAILING ADDRESS IS THE INSTALLATION ADDRESS unless the project records another
-  // (operator ruling 2026-09-27, Michael Sheridan's Marion B-01S / E-01: "this will just be the
+  // (operator ruling 2026-09-27, Jules Testperson's Marion B-01S / E-01: "this will just be the
   // install address"). Only when NO mailing address is on file — a parsed or entered one (even a
   // partial one) is never mixed with the site's.
   if (!str(ctx.snapshot.homeownerMailingAddress) && !str(ctx.snapshot.homeownerMailingCityStateZip)) {
