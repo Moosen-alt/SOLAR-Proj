@@ -339,6 +339,52 @@ try {
     assert.equal(pp.permitProcessFor({ state: "OR", ahj: "Example County" })?.buildingProgram?.value, "own");
   });
 
+  // #174 review: a city that shares its county's name — the county is still named.
+  await check("#171: Baker City / Tillamook / Union — a quote naming the same-named county is kept as 'state'", async () => {
+    const cases: Array<[string, string]> = [
+      ["Baker City", "Baker County Building Department issues building and electrical permits for Baker City"],
+      ["City of Tillamook", "Tillamook County Community Development issues building permits for the City of Tillamook"],
+      ["City of Union", "Union County issues building permits for the City of Union"],
+    ];
+    for (const [ahj, quote] of cases) {
+      const names = pp.servingIssuerNamed("OR", ahj)!;
+      assert.ok(names(quote), `${ahj}: the county is named`);
+      await runLookup(ahj, processAnswer({ buildingProgram: { value: "state", sourceUrl: COUNTY_PAGE, quote } }));
+      assert.equal(pp.permitProcessFor({ state: "OR", ahj })?.buildingProgram?.value, "state", ahj);
+      assert.ok(pp.servedByStateIssuer(mkProject(ahj)), `${ahj} is served`);
+    }
+    // ...while the city's own name alone, and a county AHJ's own name, still never read as a county.
+    assert.equal(pp.servingIssuerNamed("OR", "Baker City")!("The Baker City Building Department issues building permits"), false);
+    assert.equal(pp.servingIssuerNamed("OR", "Baker County")!("Baker County Building Department issues building permits"), false);
+  });
+
+  await check("#171: a cited issuing agency that is not the serving office does not name the agency", async () => {
+    const ahj = "City of Example Otheragency";
+    await runLookup(ahj, processAnswer({
+      issuingAgency: { value: "Example Fire District", sourceUrl: COUNTY_PAGE, quote: "Example Fire District issues fire permits for the City of Example Otheragency" },
+      buildingProgram: { value: "state", sourceUrl: COUNTY_PAGE, quote: "Example County Building Division issues building permits for the City of Example Otheragency" },
+    }));
+    const served = pp.servedByStateIssuer(mkProject(ahj));
+    assert.ok(served);
+    assert.match(served!.agency, /county building department or the Oregon Building Codes Division/, served!.agency);
+  });
+
+  await check("#171: a statewide ePermitting blank in the catalog is attached for a served city (and only a served one)", async () => {
+    const { CURATED_AHJ_FORMS } = await import("../src/curatedAhjForms");
+    const row = { ahj: "oregon epermitting", state: "OR", formType: "building_application", formName: "Example Statewide Building Application", url: "https://www.example.test/statewide-building.pdf", hash: "0".repeat(64), documentDate: "test" };
+    (CURATED_AHJ_FORMS as unknown as Array<typeof row>).push(row);
+    try {
+      const served = mkProject("City of Example Countyserved");
+      const src = plan.ownFreeFormSource(served, "building_application", "prescriptive");
+      assert.equal(src?.url, row.url, "the served city's building slot gets the statewide blank");
+      assert.equal(src?.curated?.formName, row.formName);
+      assert.equal(plan.ownFreeFormSource(mkProject("City of Example Ownprogram"), "building_application", "prescriptive"), null, "a city not served does not");
+    } finally {
+      const i = (CURATED_AHJ_FORMS as unknown as Array<typeof row>).indexOf(row);
+      if (i >= 0) (CURATED_AHJ_FORMS as unknown as Array<typeof row>).splice(i, 1);
+    }
+  });
+
   await check("#171 rule 3: a lookup's 'state' answer never overwrites a person's verified 'own' row", async () => {
     const ahj = "City of Example Verified";
     lookup(ahj, "own", "The City of Example Verified Building Division issues building permits for the city");
