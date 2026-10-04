@@ -1629,6 +1629,20 @@ export interface ApprovedDesignObservation {
   recordNumber: string;
   issuedAt: string;
   criteria: Array<{ criterion: StatedDesignCriterionKind; value: number | string; qualifier: StatedDesignCriterionQualifier }>;
+  /** What the issued plan carried on each precedent dimension (permitPrecedents.ts, #147). Absent on
+   *  rows recorded before precedents were kept. */
+  precedents?: PermitPrecedentItem[];
+}
+
+/** A dimension an issued permit sets a precedent on: the equipment, the attachment hardware, and
+ *  the roof-attachment detail the office has already accepted (#147). */
+export type PermitPrecedentDimension = "module" | "inverter" | "battery" | "racking" | "attachment" | "roofDetail";
+
+/** One plan's value on one precedent dimension, as the parser read it (scalar fields only). */
+export interface PermitPrecedentItem {
+  dimension: PermitPrecedentDimension;
+  /** Display form, e.g. "Synthetic Solar SS-400". Matching uses permitPrecedents.precedentKey. */
+  value: string;
 }
 
 export interface DesignCriteriaResearchResult {

@@ -8,6 +8,7 @@ import { findPlanSetPdf, renderPdfPageToPng, selectTopPagesForTopic } from "./pa
 import { extractPdfPages } from "./batchImport";
 import type { EvidenceTopic } from "./projectEvidence";
 import { applyRoofPlanMeasurement, FIRE_PATHWAY_BELOW_ID, FIRE_PATHWAY_UNMEASURED_ID } from "./designCriteria";
+import { PRECEDENT_DEPARTURE_ID } from "./permitPrecedents";
 import { nowIso } from "./time";
 
 // ---------------------------------------------------------------------------
@@ -127,6 +128,10 @@ export const MEASURED_FINDING_IDS: ReadonlySet<string> = new Set([
   // A stated (or vision-measured) pathway width / ridge setback against the required one is
   // arithmetic (issue #142). A sheet showing a pathway does not make it wide enough.
   FIRE_PATHWAY_BELOW_ID,
+  // The plan's product against what issued permits in this AHJ carried (#147) is a comparison of
+  // recorded values; a sheet showing an attachment detail cannot say it is the accepted one (and
+  // "attachment" in its title would map it to rackingAttachment).
+  PRECEDENT_DEPARTURE_ID,
 ]);
 
 /** False when the finding reports a measured result rather than missing evidence. */
