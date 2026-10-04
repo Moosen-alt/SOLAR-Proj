@@ -540,6 +540,70 @@ await check("B4 MUST-PASS: a verified row older than 180 days gets a staleness C
   assert.equal(JSON.stringify(payloadOf(ZV_KEY)), before, "the verify check wrote the verified row");
 });
 
+// #164: the owner's run logged a 56 s paid verify check on Oregon's verified row, then "research
+// skipped" — the answer reached nobody. A verified row's verify_check either makes NO model call (no
+// check due) or makes one whose output is exactly ONE stored proposal a person sees; the row is never
+// written, and the log says which.
+const ZW_KEY = CP.codeProfileKey({ state: "ZW", ahj: "" });
+const proposalRows = (key: string) => Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'code_profile.edition_proposal' AND details LIKE ?", [`%"profileKey":"${key}"%`])?.n);
+const { logger } = await import("../src/logger");
+const captureLogs = async <T>(fn: () => Promise<T>): Promise<{ result: T; lines: string[] }> => {
+  const lines: string[] = [];
+  const info = logger.info;
+  logger.info = (scope, message, extra) => { lines.push(message); info(scope, message, extra); };
+  try { return { result: await fn(), lines }; } finally { logger.info = info; }
+};
+
+await check("#164 MUST-PASS: a DUE verify check on a verified row makes one model call, stores exactly one proposal (on the listing), never touches the row, and logs it", async () => {
+  CP.saveVerifiedCodeProfile(db, blank("ZW", "", { adoptedCodes: [{ family: "fire", code: "IFC", edition: "2018" }], amendments: [{ code: "AHJ", summary: "Keep me" }] }), "tester");
+  db.run("UPDATE jurisdiction_code_profiles SET verified_at = ? WHERE profile_key = ?", [new Date(Date.now() - 400 * 86_400_000).toISOString(), ZW_KEY]);
+  const d = CP.codeResearchDecision(db, "ZW", "");
+  assert.equal(d.action, "verify_check", JSON.stringify(d));
+  const before = JSON.stringify(payloadOf(ZW_KEY));
+  const stale = fakeResearcher([{ family: "fire", code: "IFC", edition: "2024", sourceUrl: "https://zw.example.gov/fire" }], true);
+  const { result: r, lines } = await captureLogs(() => CP.runCodeResearch(db, { state: "ZW", ahj: "", profileKey: ZW_KEY, mode: "verify_check" }, stale.provider));
+  assert.equal(stale.asked.length, 1, "the check made no model call");
+  assert.equal(r.saved, false);
+  assert.equal(r.outcome, "proposed", JSON.stringify(r));
+  assert.equal(proposalRows(ZW_KEY), 1, "not exactly one stored proposal");
+  assert.equal(r.proposal, CP.listEditionProposals(db, ZW_KEY)[0]?.fingerprint, "the result does not name the stored proposal");
+  assert.equal(CP.listCodeProfiles(db).find((p) => p.key === ZW_KEY)?.editionProposals?.length, 1, "the proposal is not surfaced on the listing");
+  assert.equal(JSON.stringify(payloadOf(ZW_KEY)), before, "the verify check wrote the verified row");
+  assert.ok(lines.some((l) => /ZW\/\(state default\) is human-verified; 1 edition change\(s\) stored as proposal/.test(l)), `the log does not say a proposal was stored: ${lines.join(" | ")}`);
+  assert.ok(!lines.some((l) => /research skipped/.test(l)), `a research answer was logged as skipped: ${lines.join(" | ")}`);
+  // The same finding 30 days later: still one row, and the result says it is already pending.
+  const again = await CP.runCodeResearch(db, { state: "ZW", ahj: "", profileKey: ZW_KEY, mode: "verify_check" }, stale.provider);
+  assert.equal(again.outcome, "already_proposed", JSON.stringify(again));
+  assert.equal(proposalRows(ZW_KEY), 1, "a repeated finding stored a second proposal");
+  // An answer that names no edition: nothing to propose, and the log says exactly that.
+  const empty = fakeResearcher([], true);
+  const { result: e, lines: eLines } = await captureLogs(() => CP.runCodeResearch(db, { state: "ZW", ahj: "", profileKey: ZW_KEY, mode: "verify_check" }, empty.provider));
+  assert.equal(e.outcome, "nothing_to_compare", JSON.stringify(e));
+  assert.ok(eLines.some((l) => /named no edition to compare, so nothing is proposed/.test(l)), `log: ${eLines.join(" | ")}`);
+  assert.ok(!eLines.some((l) => /research skipped/.test(l)), `a research answer was logged as skipped: ${eLines.join(" | ")}`);
+  assert.equal(proposalRows(ZW_KEY), 1);
+  assert.equal(JSON.stringify(payloadOf(ZW_KEY)), before, "the verify check wrote the verified row");
+});
+
+await check("#164 MUST-EXCLUDE: a verified row with NO check due makes no model call — a re-verified state row, a verified AHJ row", async () => {
+  // A person re-verified ZW after the check was queued: the queued verify_check no longer runs.
+  CP.saveVerifiedCodeProfile(db, blank("ZW", "", { adoptedCodes: [{ family: "fire", code: "IFC", edition: "2018" }], amendments: [{ code: "AHJ", summary: "Keep me" }] }), "tester");
+  assert.equal(CP.codeResearchDecision(db, "ZW", "").reason, "verified_fresh");
+  const before = JSON.stringify(payloadOf(ZW_KEY));
+  const res = fakeResearcher([{ family: "fire", code: "IFC", edition: "2027", sourceUrl: "https://zw.example.gov/fire" }], true);
+  const r = await CP.runCodeResearch(db, { state: "ZW", ahj: "", profileKey: ZW_KEY, mode: "verify_check" }, res.provider);
+  assert.equal(res.asked.length, 0, "a verified row with no check due still paid for a model call");
+  assert.equal(r.modelCalled, false);
+  assert.equal(r.verified, true);
+  assert.equal(proposalRows(ZW_KEY), 1, "a skipped check stored a proposal");
+  assert.equal(JSON.stringify(payloadOf(ZW_KEY)), before);
+  // A verified AHJ row is never researched (the decision says blocked_verified).
+  const ahj = fakeResearcher([{ family: "residential", code: "IRC", edition: "2024", sourceUrl: "https://lockdown.example.gov" }], true);
+  const a = await CP.runCodeResearch(db, { state: "TX", ahj: "City of Lockdown" }, ahj.provider);
+  assert.equal(ahj.asked.length, 0, "a verified AHJ row was researched");
+  assert.equal(a.saved, false);
+});
+
 await check("B3+B4 MUST-PASS (Coos Bay): after the operator approves the proposal, an Oregon city with no row reads the state's OSSC 2025 / OFC 2025 with the state's citation", () => {
   const read0 = CP.getCodeProfile(db, { state: "OR", ahj: "City of Coquilleview" })!;
   assert.ok(!codesOf(read0).includes("OFC 2025"), "precondition: the verified (stale) row still governs before a person acts");
