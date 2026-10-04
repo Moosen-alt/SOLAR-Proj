@@ -999,13 +999,15 @@ export function nonEmailCells(def: AhjFormDefinition, ctx: FillContext): { label
   const blanked = (source: FieldSource): boolean =>
     EMAIL_SNAPSHOT_SOURCE.test(String(source ?? "")) && Boolean(str(ctx.snapshot[String(source).slice("snapshot.".length)]).trim())
     && !resolveSource(source, ctx);
-  const fields = new Set(Object.entries(def.textFields).filter(([, source]) => blanked(source)).map(([name]) => name));
+  // textFields is optional at runtime: a stored flat-form map may carry overlays only.
+  const textFields = def.textFields ?? {};
+  const fields = new Set(Object.entries(textFields).filter(([, source]) => blanked(source)).map(([name]) => name));
   const overlays = new Set((def.overlayFields ?? []).flatMap((f, i) => (blanked(f.source) ? [i] : [])));
   const requiredEntries = Object.entries(def.requiredFields ?? {}).filter(([, source]) => blanked(source));
   const requiredSources = new Set(requiredEntries.map(([, source]) => source));
   const names = [
     ...requiredEntries.map(([label]) => label),
-    ...[...fields].filter((name) => !requiredSources.has(def.textFields[name])),
+    ...[...fields].filter((name) => !requiredSources.has(textFields[name])),
     ...[...overlays].filter((i) => !requiredSources.has(def.overlayFields![i].source)).map((i) => def.overlayFields![i].label?.trim() || "Homeowner email"),
   ];
   const labels = [...new Set(names)].map((n) => `${n} (left blank: the value on file is not an email address)`);

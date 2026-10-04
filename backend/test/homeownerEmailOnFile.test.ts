@@ -138,7 +138,8 @@ console.log("\n[6] normalize: the email slot is saved as an email or nothing (#9
 
 console.log("\n[7] a curated-form Email cell takes an email or nothing, and is named when blanked (#92)");
 {
-  // A row stored before the save-time check can still carry a name: the fill is its own door.
+  // A row stored before the save-time check can still carry a name: the fill is its own door. The
+  // overlay def carries no textFields at all, as a stored flat-form map may not (CI, 2026-10-04).
   const ctx = (email: string) => ({ project: { homeownerName: "Jordan Sample" }, client: {}, snapshot: { homeownerEmail: email } }) as never;
   const fillBoth = async (email: string, required = false) => {
     const acroDoc = await PDFDocument.create();
@@ -149,7 +150,7 @@ console.log("\n[7] a curated-form Email cell takes an email or nothing, and is n
     const flatDoc = await PDFDocument.create();
     flatDoc.addPage([612, 792]);
     const flatOut = path.join(tmpDir, `flat-${email.length}.pdf`);
-    const flat = await fillLoadedForm({ id: "t-flat", formName: "T", matchJurisdictions: [], sourceUrl: "", version: "t", status: "verified", fillMode: "overlay", textFields: {}, overlayFields: [{ source: "snapshot.homeownerEmail", page: 0, x: 245, y: 455, label: "Email" }] } as never, await flatDoc.save(), ctx(email), flatOut);
+    const flat = await fillLoadedForm({ id: "t-flat", formName: "T", matchJurisdictions: [], sourceUrl: "", version: "t", status: "verified", fillMode: "overlay", overlayFields: [{ source: "snapshot.homeownerEmail", page: 0, x: 245, y: 455, label: "Email" }] } as never, await flatDoc.save(), ctx(email), flatOut);
     const filledAcro = (await PDFDocument.load(fs.readFileSync(acroOut))).getForm();
     const acroText = filledAcro.getTextField("Email").getText() ?? "";
     const flatText = (await extractLabels(new Uint8Array(fs.readFileSync(flatOut)))).map((i) => i.str).join(" ");
