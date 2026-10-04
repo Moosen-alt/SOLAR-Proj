@@ -87,6 +87,9 @@ ${letter}` });
   // An 18" pathway against the jurisdiction's 36" fire access rule (issue #142).
   for (const f of buildReviewerReport(mk({ planSetExtractedText: '18" FIRE ACCESS PATHWAY' }), { codeContext: buildCodeContext("OR", "City of Coos Bay", { ...base, designCriteria: {}, prescriptive: {}, fireSetbacks: [{ id: "fire-1", description: "Minimum 36-inch fire access pathways." }] }), documentTexts: [{ label: "Plan set", text: '18" FIRE ACCESS PATHWAY' }] }).findings) allProducibleIds.add(f.id);
   for (const f of buildReviewerReport(capped, { codeContext: buildCodeContext("OR", "City of Coos Bay", { ...base, designCriteria: {}, prescriptive: { maxWindSpeedMphExpC: 100 } }), documentTexts: [{ label: "Plan set", text: "WIND SPEED = 110 MPH EXPOSURE CATEGORY = C" }] }).findings) allProducibleIds.add(f.id);
+  // A local amendment's 30 psf ground snow minimum against the plan's 20 psf (#145).
+  const amendments = [{ code: "IRC", summary: "Ground snow minimum 30 psf", sourceUrl: "https://codes.example.gov/a", check: { kind: "min_value" as const, field: "groundSnowPsf" as const, value: 30, unit: "psf" } }];
+  for (const f of buildReviewerReport(mk({ planSetExtractedText: "GROUND SNOW LOAD = 20 PSF" }), { codeContext: buildCodeContext("OR", "City of Coos Bay", { ...base, amendments, designCriteria: {}, prescriptive: {} }), documentTexts: [{ label: "Plan set", text: "GROUND SNOW LOAD = 20 PSF" }] }).findings) allProducibleIds.add(f.id);
 }
 for (const id of [...MEASURED_FINDING_IDS]) {
   check(`MUST PASS: ${id} is still a real finding this engine emits`, () => {
