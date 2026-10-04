@@ -2469,6 +2469,18 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       addColumnIfMissing(db, "project_metrics", "package_complete_at", "TEXT");
     },
   },
+  {
+    version: 45,
+    name: "jurisdiction_design_observations_precedents",
+    up: (db) => {
+      // WHAT AN ISSUED PLAN CARRIED (#147): its module, inverter, battery, racking, attachment
+      // hardware and roof-attachment detail (permitPrecedents.extractPermitPrecedents), so the next
+      // plan in the same AHJ is compared with what the office already accepted. Product names
+      // only — shown to other tenants as values/counts/dates, never the project or record number.
+      // jurisdiction_design_observations is CREATEd in v34, so this addColumnIfMissing comes after it.
+      addColumnIfMissing(db, "jurisdiction_design_observations", "precedent_json", "TEXT NOT NULL DEFAULT '[]'");
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

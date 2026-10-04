@@ -90,6 +90,12 @@ ${letter}` });
   // A local amendment's 30 psf ground snow minimum against the plan's 20 psf (#145).
   const amendments = [{ code: "IRC", summary: "Ground snow minimum 30 psf", sourceUrl: "https://codes.example.gov/a", check: { kind: "min_value" as const, field: "groundSnowPsf" as const, value: 30, unit: "psf" } }];
   for (const f of buildReviewerReport(mk({ planSetExtractedText: "GROUND SNOW LOAD = 20 PSF" }), { codeContext: buildCodeContext("OR", "City of Coos Bay", { ...base, amendments, designCriteria: {}, prescriptive: {} }), documentTexts: [{ label: "Plan set", text: "GROUND SNOW LOAD = 20 PSF" }] }).findings) allProducibleIds.add(f.id);
+  // An attachment unlike the one an issued permit here carried, where the AHJ has corrected attachments (#147).
+  const precedentCtx = {
+    ...buildCodeContext("OR", "City of Coos Bay", null, [{ projectId: "issued-1", recordNumber: "", issuedAt: "2026-05-01", criteria: [], precedents: [{ dimension: "attachment" as const, value: "Footco FlashFoot 2" }] }]),
+    ahjCorrections: [{ signature: "s", bucket: "B_designer_fix" as const, rootCause: "Attachment detail not per listing", requiredAction: "", count: 1, lastSeenAt: "2026-06-01" }],
+  };
+  for (const f of buildReviewerReport(mk({ attachmentHardware: "Otherco Mount Z" }), { codeContext: precedentCtx }).findings) allProducibleIds.add(f.id);
 }
 for (const id of [...MEASURED_FINDING_IDS]) {
   check(`MUST PASS: ${id} is still a real finding this engine emits`, () => {
