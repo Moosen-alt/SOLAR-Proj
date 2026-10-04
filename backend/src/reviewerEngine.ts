@@ -12,6 +12,7 @@ import { hasMpuScope } from "./serviceScope";
 import { resolveValuation } from "./valuation";
 import { knownPowerClerkUtility } from "./utilityIdentity";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
+import { evaluatePermitPrecedentFindings } from "./permitPrecedents";
 import type { EffectiveCodeContext } from "./codeProfiles";
 
 function payload(project: ProjectRecord, key: string): string {
@@ -115,6 +116,9 @@ export function buildReviewerReport(
   // standalone gate files nothing and its form has none of those fields.
   if (!standalone) addSubmittalDataFindings(project, findings);
   findings.push(...evaluateDesignCodeFindings(project, profile, opts.codeContext, opts.uploadedDocTypes ?? [], opts.documentTexts ?? []));
+  // What issued permits in this AHJ already carried (#147): a callout on a reused product, a
+  // warning — never a blocker — on a departure along a dimension the AHJ has corrected before.
+  if (opts.codeContext) findings.push(...evaluatePermitPrecedentFindings(project, opts.codeContext));
   // Iowa City correction themes: the filed PV worksheet against the plan, and the one-line's
   // service ratings against the rest of the set (the package's own words, not parser notes).
   if (opts.pvWorksheet) findings.push(...pvWorksheetFindings(project, opts.pvWorksheet));

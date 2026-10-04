@@ -87,6 +87,12 @@ ${letter}` });
   // An 18" pathway against the jurisdiction's 36" fire access rule (issue #142).
   for (const f of buildReviewerReport(mk({ planSetExtractedText: '18" FIRE ACCESS PATHWAY' }), { codeContext: buildCodeContext("OR", "City of Coos Bay", { ...base, designCriteria: {}, prescriptive: {}, fireSetbacks: [{ id: "fire-1", description: "Minimum 36-inch fire access pathways." }] }), documentTexts: [{ label: "Plan set", text: '18" FIRE ACCESS PATHWAY' }] }).findings) allProducibleIds.add(f.id);
   for (const f of buildReviewerReport(capped, { codeContext: buildCodeContext("OR", "City of Coos Bay", { ...base, designCriteria: {}, prescriptive: { maxWindSpeedMphExpC: 100 } }), documentTexts: [{ label: "Plan set", text: "WIND SPEED = 110 MPH EXPOSURE CATEGORY = C" }] }).findings) allProducibleIds.add(f.id);
+  // An attachment unlike the one an issued permit here carried, where the AHJ has corrected attachments (#147).
+  const precedentCtx = {
+    ...buildCodeContext("OR", "City of Coos Bay", null, [{ projectId: "issued-1", recordNumber: "", issuedAt: "2026-05-01", criteria: [], precedents: [{ dimension: "attachment" as const, value: "Footco FlashFoot 2" }] }]),
+    ahjCorrections: [{ signature: "s", bucket: "B_designer_fix" as const, rootCause: "Attachment detail not per listing", requiredAction: "", count: 1, lastSeenAt: "2026-06-01" }],
+  };
+  for (const f of buildReviewerReport(mk({ attachmentHardware: "Otherco Mount Z" }), { codeContext: precedentCtx }).findings) allProducibleIds.add(f.id);
 }
 for (const id of [...MEASURED_FINDING_IDS]) {
   check(`MUST PASS: ${id} is still a real finding this engine emits`, () => {

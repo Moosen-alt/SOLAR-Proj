@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import type { AppDb } from "./db";
 import type {
   ApprovedDesignObservation,
+  CommonCorrectionPattern,
   CodeEdition,
   CodeFamily,
   CodeReference,
@@ -34,12 +35,14 @@ import type {
   JurisdictionDesignCriteria,
   JurisdictionEditionProposal,
   LLMProvider,
+  PermitPrecedentItem,
   PrescriptiveLimits,
   FireSetbackRule,
   ProjectRecord,
   UpcomingCodeEdition,
 } from "../../shared/src/types";
 import { knowledgeProfileKey, knowledgeNameMatchScore, isLearningExcluded } from "./knowledgeBase";
+import { extractPermitPrecedents, listAhjCorrectionPatterns } from "./permitPrecedents";
 import { addAuditLog } from "./audit";
 import { extractStatedDesignCriteria, normCodeToken } from "./designCriteria";
 import {
@@ -149,6 +152,10 @@ export interface EffectiveCodeContext {
   /** What ISSUED projects in this AHJ stated (corroboration only — never the AHJ's value).
    *  Loaded by resolveEffectiveCodeContext; absent/empty from the pure builder. */
   approvedDesigns?: ApprovedDesignObservation[];
+  /** This AHJ's correction patterns from the shared knowledge rollup (no raw sample), so the
+   *  issued-permit precedent check knows which dimensions the office has corrected (#147).
+   *  Loaded by resolveEffectiveCodeContext; absent from the pure builder. */
+  ahjCorrections?: CommonCorrectionPattern[];
   /** Where this AHJ's design-criteria lookup stands (readDesignLookupProgress — a job_queue READ).
    *  Loaded by resolveEffectiveCodeContext; absent from the pure builder and when no lookup exists. */
   designLookup?: DesignCriteriaLookupProgress;
@@ -922,7 +929,10 @@ export function resolveEffectiveCodeContext(db: AppDb, state: string, ahj: strin
   try { profile = getCodeProfile(db, { state, ahj }); } catch { profile = null; }
   let approvedDesigns: ApprovedDesignObservation[] = [];
   try { approvedDesigns = listApprovedDesignObservations(db, state, ahj); } catch { approvedDesigns = []; }
-  const ctx = buildCodeContext(state, ahj, profile, approvedDesigns);
+  const built = buildCodeContext(state, ahj, profile, approvedDesigns);
+  let ahjCorrections: CommonCorrectionPattern[] = [];
+  try { ahjCorrections = listAhjCorrectionPatterns(db, state, ahj); } catch { ahjCorrections = []; }
+  const ctx = ahjCorrections.length ? { ...built, ahjCorrections } : built;
   // The gate words "criteria not on file" from where the lookup stands (queued, running, ran and
   // found nothing). A READ of job_queue — this runs on page-load read paths that write nothing.
   let designLookup: DesignCriteriaLookupProgress | undefined;
@@ -1999,15 +2009,18 @@ export function recordApprovedDesignObservation(
         seen.add(k);
         return true;
       });
-    if (!criteria.length) return false;
+    // What the issued plan CARRIED (equipment, attachment hardware, roof detail): the precedent
+    // the next plan here is compared with (permitPrecedents.ts, #147).
+    const precedents = extractPermitPrecedents(project);
+    if (!criteria.length && !precedents.length) return false;
     const before = db.get<Row>("SELECT id FROM jurisdiction_design_observations WHERE project_id = ? AND target_id = ?", [project.id, input.targetId || ""]);
     if (before) return false;
     db.run(
       `INSERT OR IGNORE INTO jurisdiction_design_observations
-        (id, profile_key, state, ahj, project_id, target_id, record_number, issued_at, criteria_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, profile_key, state, ahj, project_id, target_id, record_number, issued_at, criteria_json, precedent_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [newId(), codeProfileKey({ state, ahj }), state, ahj, project.id, input.targetId || "", String(input.recordNumber || "").slice(0, 80),
-        input.issuedAt || nowIso(), JSON.stringify(criteria.slice(0, 24)), nowIso()],
+        input.issuedAt || nowIso(), JSON.stringify(criteria.slice(0, 24)), JSON.stringify(precedents.slice(0, 12)), nowIso()],
     );
     return true;
   } catch (err) {
@@ -2029,7 +2042,12 @@ export function listApprovedDesignObservations(db: AppDb, state: string, ahj: st
     if (text(row.profile_key) !== key && knowledgeNameMatchScore(wanted, text(row.ahj)) < 60) continue;
     let criteria: ApprovedDesignObservation["criteria"] = [];
     try { criteria = JSON.parse(text(row.criteria_json) || "[]"); } catch { criteria = []; }
-    out.push({ projectId: text(row.project_id), recordNumber: text(row.record_number), issuedAt: text(row.issued_at), criteria: Array.isArray(criteria) ? criteria : [] });
+    let precedents: PermitPrecedentItem[] = [];
+    try { precedents = JSON.parse(text(row.precedent_json) || "[]"); } catch { precedents = []; }
+    out.push({
+      projectId: text(row.project_id), recordNumber: text(row.record_number), issuedAt: text(row.issued_at), criteria: Array.isArray(criteria) ? criteria : [],
+      ...(Array.isArray(precedents) && precedents.length ? { precedents } : {}),
+    });
   }
   return out;
 }
