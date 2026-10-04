@@ -15,7 +15,7 @@
 // WHAT THE REAL PLAN SETS ACTUALLY CARRY — MEASURED, NOT ASSUMED
 //
 // Corpus: the operator's drive, L:/INFINITY SOLAR DOCS/01 - CUSTOMERS. Ten customer plan
-// sets sampled (Abby Johnson, Abigail Boileau, Andrae Snegirev, Anthony Aletto, Arturo
+// sets sampled (Casey Testcase, Abigail Boileau, Andrae Snegirev, Anthony Aletto, Arturo
 // Olguin-Ovalle, Bilal Hilowle, Bren Trask, Brian Bartley, Brittany Reavis, Connie
 // Rhinesmith), plus a full sweep of all 23 pages of
 // "Bren Trask - Portland, OR/Bren Trask - Portland, OR.pdf".

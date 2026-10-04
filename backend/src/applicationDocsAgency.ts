@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // WHOSE FORMS APPLY TO A PERMIT TRACK — THE ISSUING AGENCY'S.
 //
-// Operator finding 2026-09-27 (Michael Sheridan, City of Jefferson / Marion County / Pacific
+// Operator finding 2026-09-27 (Jules Testperson, City of Jefferson / Marion County / Pacific
 // Power): "still only just pulling that one doc". The AHJ packet held ONLY the Oregon BCD 5952
 // checklist. The per-job lookup (permit_process_lookups 'or|city of jefferson') says MARION COUNTY
 // issues both permits and cites the county's B-01S prescriptive application — held as a citation
@@ -310,7 +310,7 @@ const httpUrl = (u: unknown): string => {
 /**
  * AGENCY A'S ANCHOR SITES in this job's lookup — the sites of the PAGES the lookup itself cited for A:
  *   - the source pages of every permit whose OWN issuer answer names A: issuingAgency / portalUrl /
- *     documents / fee — a notFound portal / documents / fee answer's page too (Michael's lookup read
+ *     documents / fee — a notFound portal / documents / fee answer's page too (Jules's lookup read
  *     co.marion.or.us/PW/BuildingInspection for Marion County's portal and found none: the page is
  *     still Marion County's). A permit whose own issuer answer is notFound anchors NOTHING, even where
  *     the AHJ-wide answer names A (agency-contain C4, "notFound never vouches" — the skeptic's S3: a

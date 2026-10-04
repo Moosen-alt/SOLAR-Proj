@@ -2,7 +2,7 @@
  * WHICH FILING A DOCUMENT BELONGS TO — the ONE docType → { lane, discipline } table
  * (docs-audit PLAN D3). "Which documents belong to track X?" had several answers: the staging
  * gate was track-scoped (stagingMissingDocuments), while the files handed to the run were not —
- * packagedDocumentsByType returned every document the project holds. Michael Sheridan's
+ * packagedDocumentsByType returned every document the project holds. Jules Testperson's
  * ELECTRICAL run (53266857) was handed 16 keys, among them the BCD 5952 building checklist, the
  * utility bill and the meter photo (V6, V18). And the gate's own rows disagreed with each other:
  * the PE-letter row (`structural_letter`) carried no discipline, so it blocked the ELECTRICAL track

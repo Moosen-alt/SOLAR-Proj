@@ -1,7 +1,7 @@
 // THE PAYLOAD IS SCOPED TO THE TRACK THROUGH ONE DISCIPLINE TABLE (docs-audit PLAN D3).
 //
 // The staging GATE was track-scoped (stagingMissingDocuments) while the files handed to the run
-// were not: packagedDocumentsByType returned every document the project holds. Michael Sheridan's
+// were not: packagedDocumentsByType returned every document the project holds. Jules Testperson's
 // ELECTRICAL run (53266857) was handed 16 keys — among them the BCD 5952 building checklist, the
 // utility bill and the meter photo (V6). The learn run (autoLearn.ts) and the correction/resubmit
 // run (reopenCorrectionOnPortal) called the unfiltered policy directly (V18). And the gate's own
@@ -121,7 +121,7 @@ await check("PREMISE: the every-track map really does hold the 5952, the bill, t
 // ---------------------------------------------------------------------------------------------
 // MICHAEL ELECTRICAL
 // ---------------------------------------------------------------------------------------------
-await check("(p1) MUST-PASS, Michael electrical: the plan-set family + the electrical track's own documents, nothing else", () => {
+await check("(p1) MUST-PASS, Jules electrical: the plan-set family + the electrical track's own documents, nothing else", () => {
   const ele = repo.packagedDocumentsByType(db, michael, "electrical");
   for (const t of PLAN_SET_FAMILY) assert.ok(ele[t], `the electrical run lost the shared ${t}`);
   assert.equal(ele.electrical_application, undefined, "no official electrical application is filled, so none is packaged (never the worksheet)");
@@ -136,7 +136,7 @@ await check("(p1) …and once an official electrical application is filled, it I
   const official = fill(p.id, "electrical_application", "Coos Bay Electrical Permit Application.pdf");
   assert.equal(repo.packagedDocumentsByType(db, p, "electrical").electrical_application, official);
 });
-await check("(x1) MUST-EXCLUDE, Michael electrical: the 5952, the building/permit application, the utility bill, the meter photo, the NEM worksheet", () => {
+await check("(x1) MUST-EXCLUDE, Jules electrical: the 5952, the building/permit application, the utility bill, the meter photo, the NEM worksheet", () => {
   const ele = repo.packagedDocumentsByType(db, michael, "electrical");
   for (const t of ["solar_checklist", "building_application", "permit_application", "utility_bill", "meter_photo", "utility_application", "utility_package_zip", "generated_prescriptive_worksheet"]) {
     assert.equal(ele[t], undefined, `the ELECTRICAL run was handed ${t}`);
@@ -147,13 +147,13 @@ await check("(x1) MUST-EXCLUDE, Michael electrical: the 5952, the building/permi
 // MICHAEL BUILDING
 // ---------------------------------------------------------------------------------------------
 const building = fill(michael.id, "building_application", "Coos Bay Residential Building Permit Application.pdf");
-await check("(p2) MUST-PASS, Michael building: the 5952 and the building application go up with the plan set", () => {
+await check("(p2) MUST-PASS, Jules building: the 5952 and the building application go up with the plan set", () => {
   const bld = repo.packagedDocumentsByType(db, michael, "building");
   assert.ok(bld.solar_checklist, `the building run lost the BCD 5952: ${JSON.stringify(Object.keys(bld))}`);
   assert.equal(bld.building_application, building, "the building run lost its application");
   assert.ok(bld.plan_set && bld.sld && bld.site_plan, "…and the shared plan-set family");
 });
-await check("(x2) MUST-EXCLUDE, Michael building: the utility bill, the meter photo, the electrical track's worksheet", () => {
+await check("(x2) MUST-EXCLUDE, Jules building: the utility bill, the meter photo, the electrical track's worksheet", () => {
   const bld = repo.packagedDocumentsByType(db, michael, "building");
   for (const t of ["utility_bill", "meter_photo", "utility_application", "generated_electrical_worksheet"]) {
     assert.equal(bld[t], undefined, `the BUILDING run was handed ${t}`);

@@ -1078,7 +1078,7 @@ await check("…and 'UNAVAILABLE' when it threw — the list is ABSENT, never em
 // `!closedAt && !resubmitted` (openCorrectionCount, the permit and NEM lanes, the action
 // queue) kept telling the operator to "resolve AHJ corrections before resubmittal" on a
 // job already resubmitted, while the cycle-time KPI that needs resubmitted = 1 never
-// completed. Ann Marineau and Christopher Ivy are about to enter exactly this flow.
+// completed. Emery Placeholder and Drew Example are about to enter exactly this flow.
 //
 // Wired at captureConfirmation, NOT prepareSubmission: staging is not submitting (hard
 // safety rule 1 — automation never clicks final submit), and a staged run can be abandoned

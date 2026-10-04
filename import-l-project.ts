@@ -4,7 +4,7 @@
 // than replaying the one project it was learned on.
 //
 //   npx tsx import-l-project.ts --list [pge|pacificorp]
-//   npx tsx import-l-project.ts "Abby Johnson - Happy Valley OR"
+//   npx tsx import-l-project.ts "Casey Testcase - Happy Valley OR"
 //
 // Writes to the live DB on purpose (the live portal drivers read it). Delete after use.
 import "dotenv/config";
@@ -75,7 +75,7 @@ const n = Math.abs([...folder].reduce((a, c) => a + c.charCodeAt(0), 0)) % 9000 
 const synth: Record<string, string> = {
   accountNumber: `TEST-${n}0000${n % 97}`,
   meterNumber: `TEST-M${n}${n % 89}`,
-  homeownerEmail: "test.homeowner@example.invalid",
+  homeownerEmail: "casey.testcase@example.com",
   homeownerPhone: `541-555-${String(n).padStart(4, "0")}`,
   jobValue: "30000",
 };

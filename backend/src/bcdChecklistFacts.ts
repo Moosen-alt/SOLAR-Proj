@@ -40,7 +40,7 @@ export function bcdChecklistAnswers(project: Pick<ProjectRecord, "parserSnapshot
   // A RECOGNIZED membrane covering (TPO/EPDM/PVC/built-up...) is a known "No", not an
   // unknown — the form's roofing row admits only metal / wood shingle-shake / <=2-layer
   // composition, and Oregon treats membrane-roof PV as non-prescriptive outright
-  // (operator ruling 2026-09-21; Simmons's real permit 187-26-000328-STR went structural).
+  // (operator ruling 2026-09-21; Mockdata's real permit 187-26-000328-STR went structural).
   // In practice such a project routes engineered and this form is never built for it —
   // this keeps the row honest for any copy that does get filled.
   // TILE is a known "No" for the same reason (concrete / clay / S-tile / flat tile are not in the
@@ -59,7 +59,7 @@ export function bcdChecklistAnswers(project: Pick<ProjectRecord, "parserSnapshot
   // question) settles it; otherwise both stated facts must.
   const heightAnswer = flag("moduleHeightFiguresCompliant");
   // ASSUMED YES WHEN NOTHING SAYS OTHERWISE (operator ruling 2026-09-27, "just assume yes"): a
-  // blank height row shipped on Michael Sheridan's checklist because no document states the
+  // blank height row shipped on Jules Testperson's checklist because no document states the
   // standoff and nobody had answered the intake question. A stated height over 18 in, or an
   // explicit "No" to either fact or to the question, still answers No; only the UNKNOWN case
   // is assumed. The question is no longer asked as a blocker (formFactIntakeQuestions).

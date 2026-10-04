@@ -61,7 +61,7 @@ check("PARSED WINS: the plan set's house is what gets filed", () => {
   assert.equal(PARSED.county, "Coos");
 });
 
-// OPERATOR RULING 2026-09-27 (Michael Sheridan's Marion building page refused three blanks: "Just put
+// OPERATOR RULING 2026-09-27 (Jules Testperson's Marion building page refused three blanks: "Just put
 // 0's there, that's what we do normally"): an unstated rooftop-retrofit geometry fact is entered as 0,
 // never another house's number and never a blank that stops the filing. The county is a place, not a
 // measurement: it stays blank.

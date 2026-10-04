@@ -1891,7 +1891,7 @@ export function resolveRecipeFieldValues(
   //
   // The permit goes under the property owner; the interconnection goes under whoever holds
   // the utility ACCOUNT, and they are routinely different people. Live: Ivy's account reads
-  // "PROF CHRIS A IVY" where the project says "Christopher Ivy", and Marineau's account is
+  // "PROF CHRIS A IVY" where the project says "Drew Example", and Placeholder's account is
   // held by CRAIG while the plan set names ANN — a joint account. Filing a NEM application
   // under a name the utility has no account for is a rejection, or worse, a second account.
   //
@@ -1906,7 +1906,7 @@ export function resolveRecipeFieldValues(
   // homeowner* instead "to be safe" — and then a filing names the wrong person the moment
   // the account holder is not the homeowner. That is exactly what happened on PacifiCorp
   // APP-111681, where the customer block was bound to homeownerFirstName/LastName and the
-  // application went out as David Simmons against Stephanie Simmons' account.
+  // application went out as Finley Mockdata against Stephanie Mockdata' account.
   // With the fallback the keys are always populated, so the customer block can be bound to
   // the account holder unconditionally: identical output when the holder IS the homeowner,
   // correct output when they differ.
@@ -2063,7 +2063,7 @@ export function resolveRecipeFieldValues(
     // the recipe instead of the run (see docs/HANDOFF.md, 2026-09-12).
     //
     // Parsed where the plan set states them — never another house's. Where it does not, "0"
-    // (operator ruling 2026-09-27, Michael Sheridan's Marion building page refused three blanks:
+    // (operator ruling 2026-09-27, Jules Testperson's Marion building page refused three blanks:
     // "Just put 0's there, that's what we do normally"): a rooftop retrofit's permit geometry is
     // entered as 0 by the operators themselves, and a blank only stops the filing.
     existingBuildingArea: String(snapshotFlat.existingBuildingArea ?? "").trim() || "0",
@@ -2301,9 +2301,9 @@ export function resolveRecipeFieldValues(
   const feeBrackets = feeBracketQuantityFields(db, project);
   const merged: Record<string, string> = { ...snapshotFlat, ...equipment, ...existingSys, ...projectFields, ...overlay, ...licenceKeys, ...installerSplit, ...certifiedModels, ...feeBrackets };
   // A WHOLE-PHONE VALUE IS TYPED INTO A MASKED BOX VERBATIM. A number stored E.164
-  // ("+15414042243") fed to a "(###) ###-####" mask keeps its first ten digits —
+  // ("+15550100060") fed to a "(###) ###-####" mask keeps its first ten digits —
   // "(154) 140-4224" — and drops the last one: a valid-looking phone belonging to nobody,
-  // live on Simmons's NEM. The segment keys already strip the country code (phoneSegmentKeys);
+  // live on Mockdata's NEM. The segment keys already strip the country code (phoneSegmentKeys);
   // the whole-number keys get the same treatment, formatted the way US portals render it.
   // Anything that isn't a clean 10-digit US number is left untouched — never fabricate.
   for (const [k, v] of Object.entries(merged)) {

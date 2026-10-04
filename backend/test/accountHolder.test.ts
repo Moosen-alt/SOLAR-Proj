@@ -1,16 +1,16 @@
 // THE APPLICANT MUST BE ON THE UTILITY ACCOUNT.
 //
-// David Simmons' PacifiCorp interconnection (APP-111681) was filed on 2026-09-02 and
+// Finley Mockdata' PacifiCorp interconnection (APP-111681) was filed on 2026-09-02 and
 // suspended the next morning:
 //
-//   "David Simmons is not listed on the account. They will need to be added to the account
+//   "Finley Mockdata is not listed on the account. They will need to be added to the account
 //    as a co-customer or have the electric service put into their name; and/or to have the
 //    primary electric account holders name added to the application."
 //
 // Ten business days to fix, or the interconnection request may be withdrawn.
 //
-// Both facts were already in the payload when QC ran: homeownerName "David Simmons" and
-// ubAccountHolder "STEPHANIE SIMMONS", parsed off the bill we had on file. Nothing compared
+// Both facts were already in the payload when QC ran: homeownerName "Finley Mockdata" and
+// ubAccountHolder "STEPHANIE MOCKDATA", parsed off the bill we had on file. Nothing compared
 // them, and the project reached status=submitted.
 //
 // The check has to be GENEROUS about spelling and PRECISE about people: a warning that
@@ -32,14 +32,14 @@ const agree = (a: string, b: string): boolean => namesAgree(a, b);
 // ---------------------------------------------------------------------------
 // The live case
 // ---------------------------------------------------------------------------
-check("THE REGRESSION: David Simmons vs STEPHANIE SIMMONS is flagged", () => {
-  assert.equal(agree("David Simmons", "STEPHANIE SIMMONS"), false);
+check("THE REGRESSION: Finley Mockdata vs STEPHANIE MOCKDATA is flagged", () => {
+  assert.equal(agree("Finley Mockdata", "STEPHANIE MOCKDATA"), false);
 });
 
 check("...and the rule fires on the real payload, naming both parties and the fix", () => {
   const payload = {
-    homeownerName: "David Simmons",
-    ubAccountHolder: "STEPHANIE SIMMONS",
+    homeownerName: "Finley Mockdata",
+    ubAccountHolder: "STEPHANIE MOCKDATA",
     state: "OR",
     ahj: "City of Coos Bay",
     utility: "Pacific Power",
@@ -47,8 +47,8 @@ check("...and the rule fires on the real payload, naming both parties and the fi
   } as unknown as ParserPayload;
   const hit = evaluateBaselineRules(payload).find((r) => r.ruleId === "xcheck-nem-account-holder");
   assert.ok(hit, "no account-holder finding was produced");
-  assert.match(hit!.message, /David Simmons/);
-  assert.match(hit!.message, /STEPHANIE SIMMONS/);
+  assert.match(hit!.message, /Finley Mockdata/);
+  assert.match(hit!.message, /STEPHANIE MOCKDATA/);
   assert.match(hit!.message, /co-customer|in their name|account holder/i);
   assert.equal(hit!.fieldName, "ubAccountHolder");
 });
@@ -60,7 +60,7 @@ check("the rule is registered so it shows up as a known rule, not an anonymous s
 });
 
 check("it never hard-blocks — a co-customer may legitimately be added before filing", () => {
-  const payload = { homeownerName: "David Simmons", ubAccountHolder: "STEPHANIE SIMMONS" } as unknown as ParserPayload;
+  const payload = { homeownerName: "Finley Mockdata", ubAccountHolder: "STEPHANIE MOCKDATA" } as unknown as ParserPayload;
   const hit = evaluateBaselineRules(payload).find((r) => r.ruleId === "xcheck-nem-account-holder");
   assert.equal(hit!.severity, "warning");
   assert.equal(hit!.qcStatus, "warning");
@@ -70,19 +70,19 @@ check("it never hard-blocks — a co-customer may legitimately be added before f
 // The false-alarm side: same person, written differently. These must stay SILENT.
 // ---------------------------------------------------------------------------
 const sameperson: Array<[string, string]> = [
-  ["David Simmons", "DAVID SIMMONS"],
-  ["David Simmons", "Simmons, David"],
-  ["David Simmons", "DAVID W SIMMONS"],
-  ["David W. Simmons", "David Simmons"],
-  ["David Simmons", "D SIMMONS"],
-  ["D. Simmons", "David Simmons"],
-  ["David Simmons", "MR DAVID SIMMONS"],
-  ["David Simmons Jr", "David Simmons"],
-  ["David Simmons", "DAVID SIMMONS JR."],
+  ["Finley Mockdata", "FINLEY MOCKDATA"],
+  ["Finley Mockdata", "Mockdata, Finley"],
+  ["Finley Mockdata", "FINLEY W MOCKDATA"],
+  ["Finley W. Mockdata", "Finley Mockdata"],
+  ["Finley Mockdata", "F MOCKDATA"],
+  ["F. Mockdata", "Finley Mockdata"],
+  ["Finley Mockdata", "MR FINLEY MOCKDATA"],
+  ["Finley Mockdata Jr", "Finley Mockdata"],
+  ["Finley Mockdata", "FINLEY MOCKDATA JR."],
   // Joint accounts: the applicant IS on the account, alongside a spouse.
-  ["David Simmons", "DAVID & STEPHANIE SIMMONS"],
-  ["Stephanie Simmons", "DAVID & STEPHANIE SIMMONS"],
-  ["David Simmons", "STEPHANIE AND DAVID SIMMONS"],
+  ["Finley Mockdata", "FINLEY & STEPHANIE MOCKDATA"],
+  ["Stephanie Mockdata", "FINLEY & STEPHANIE MOCKDATA"],
+  ["Finley Mockdata", "STEPHANIE AND FINLEY MOCKDATA"],
 ];
 for (const [applicant, holder] of sameperson) {
   check(`no false alarm: "${applicant}" vs "${holder}"`, () => {
@@ -94,9 +94,9 @@ for (const [applicant, holder] of sameperson) {
 // Genuine disagreements of PERSON. These must fire.
 // ---------------------------------------------------------------------------
 const different: Array<[string, string]> = [
-  ["David Simmons", "STEPHANIE SIMMONS"],   // spouse — the live case
-  ["David Simmons", "ROBERT JOHNSON"],      // unrelated party
-  ["David Simmons", "COOS BAY RENTALS LLC"], // landlord / entity holds the service
+  ["Finley Mockdata", "STEPHANIE MOCKDATA"],   // spouse — the live case
+  ["Finley Mockdata", "ROBERT JOHNSON"],      // unrelated party
+  ["Finley Mockdata", "COOS BAY RENTALS LLC"], // landlord / entity holds the service
 ];
 for (const [applicant, holder] of different) {
   check(`flagged: "${applicant}" vs "${holder}"`, () => {
@@ -108,12 +108,12 @@ for (const [applicant, holder] of different) {
 // Silence when there is nothing to compare — a missing bill is a different problem.
 // ---------------------------------------------------------------------------
 check("says nothing when the bill's account holder was never parsed", () => {
-  const payload = { homeownerName: "David Simmons", ubAccountHolder: "" } as unknown as ParserPayload;
+  const payload = { homeownerName: "Finley Mockdata", ubAccountHolder: "" } as unknown as ParserPayload;
   assert.equal(evaluateBaselineRules(payload).some((r) => r.ruleId === "xcheck-nem-account-holder"), false);
 });
 
 check("says nothing when the application has no applicant name", () => {
-  const payload = { homeownerName: "", ubAccountHolder: "STEPHANIE SIMMONS" } as unknown as ParserPayload;
+  const payload = { homeownerName: "", ubAccountHolder: "STEPHANIE MOCKDATA" } as unknown as ParserPayload;
   assert.equal(evaluateBaselineRules(payload).some((r) => r.ruleId === "xcheck-nem-account-holder"), false);
 });
 

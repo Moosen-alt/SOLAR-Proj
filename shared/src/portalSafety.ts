@@ -1736,7 +1736,7 @@ export function capturedFieldIsSecret(p: { sensitive?: boolean; identity?: Field
 
 /** SAFETY RULE 2 — a secret EMBEDDED in free text. ONE scrub for every text that leaves the process
  *  for a model: the backend's planner digest (autoLearn.ts, City of Jefferson 2026-09-25: a site-plan
- *  line "...tied to exterior utility meter #77 902 323..." carried the meter number to the model on
+ *  line "...tied to exterior utility meter #80 000 100..." carried the meter number to the model on
  *  every planner call) and the learner's page text, once it has typed the project's own account or
  *  meter number into the portal (a review page echoes it back as text).
  *  Identifier-shaped secrets (5+ digits) are matched digit-for-digit with separators ignored

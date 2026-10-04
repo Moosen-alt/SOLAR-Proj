@@ -18,10 +18,10 @@ const check = (label: string, fn: () => void): void => {
 
 // Verbatim shape of the live Accela record page, both permits.
 const SUBMITTED = "Permit/Application 187-26-000305-STR: Residential Structural Record Status: App Submitted "
-  + "Expiration Date: 02/28/2027 Work Location 773 KENTUCKY AVE COOS BAY OR 97420 Additional Information "
+  + "Expiration Date: 02/28/2027 Work Location 540 MOCKUP AVE COOS BAY OR 97420 Additional Information "
   + "Additional Application Information Attachment Fees Inspections";
 const ISSUED = "Permit/Application 194-26-001471-ELEC: Residential Electrical Record Status: Permit Issued "
-  + "Expiration Date: 02/28/2027 Work Location 773 KENTUCKY AVE COOS BAY OR 97420 Additional Information";
+  + "Expiration Date: 02/28/2027 Work Location 540 MOCKUP AVE COOS BAY OR 97420 Additional Information";
 
 check("the stated status is pulled out of the page", () => {
   assert.equal(extractStatedStatus(SUBMITTED), "App Submitted");

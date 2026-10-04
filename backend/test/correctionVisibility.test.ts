@@ -1,6 +1,6 @@
 // A SUSPENDED FILING HAS TO LOOK SUSPENDED.
 //
-// PacifiCorp suspended David Simmons' interconnection (APP-111681) the morning after it was
+// PacifiCorp suspended Finley Mockdata' interconnection (APP-111681) the morning after it was
 // filed, with ten business days to answer before the request may be withdrawn. The project
 // moved to correction_triaged — and the dashboard board card showed nothing. No chip, no
 // overlay. isBlockedStatus was `status === "blocked"` and nothing else, so the most urgent

@@ -198,7 +198,7 @@ await check("MUST-PASS/EXCLUDE: the one identity — anchored names, in the util
 const pge_ca = project({ state: "CA", city: "Fresno", zip: "93721", street: "2600 Fresno St", ahj: "City of Fresno", utility: "Pacific Gas and Electric Company" });
 const pgeTyped_ca = project({ state: "CA", city: "Fresno", zip: "93721", street: "2601 Fresno St", ahj: "City of Fresno", utility: "PGE" });
 const pud_wa = project({ state: "WA", city: "Raymond", zip: "98577", street: "300 Duryea St", ahj: "City of Raymond", utility: "Pacific County PUD" });
-const pac_or = project({ state: "OR", city: "Coos Bay", zip: "97420", street: "1095 Michigan Ave", ahj: "City of Coos Bay", utility: "Pacific Power" });
+const pac_or = project({ state: "OR", city: "Coos Bay", zip: "97420", street: "5060 Synthetic Ave", ahj: "City of Coos Bay", utility: "Pacific Power" });
 const pge_or = project({ utility: "PGE" });
 await check("MUST-PASS: saving a CA PG&E / CA 'PGE' / WA Pacific County PUD project writes NO PowerClerk portal as that utility's own", () => {
   assert.ok(!/powerclerk/i.test(utilRow("CA", "Pacific Gas and Electric Company")?.portal_url ?? ""), "PG&E got a PowerClerk portal");

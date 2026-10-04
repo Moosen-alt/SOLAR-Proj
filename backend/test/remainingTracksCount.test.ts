@@ -1,9 +1,9 @@
 // "ARE ALL TRACKS IN?" IS A QUESTION ABOUT TRACKS, NOT ABOUT ROWS.
 //
 // Re-staging a track APPENDS another awaiting_human_submit submission row rather than
-// superseding the previous one. Measured on the live database: Christopher Ivy
+// superseding the previous one. Measured on the live database: Drew Example
 // (720b05f3) carries 5 such rows for 2 real tracks — 4x interconnection/nem plus
-// 1x permit/building — and Daniel Daly (cf1c56aa) carries 9 rows for a single nem track.
+// 1x permit/building — and Blake Fixture (cf1c56aa) carries 9 rows for a single nem track.
 //
 // Both captureConfirmation and markCorrectionResubmitted gate on "no OTHER track still
 // awaits a human submit". Counting ROWS made that gate unsatisfiable on every project

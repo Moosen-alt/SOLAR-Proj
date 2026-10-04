@@ -3,9 +3,9 @@
 // The first render of the per-client portal against the live database showed TML fifteen cards
 // for about eight real jobs:
 //
-//   1075 Flanagan Ave      x4   four passes at one job, Aug 25-30
-//   990 17th St NE         x3   two passes plus an Illinois test fixture
-//   15622 SE Vivian Way    x2
+//   5010 Fixture Ave      x4   four passes at one job, Aug 25-30
+//   520 Example St NE         x3   two passes plus an Illinois test fixture
+//   50030 SE Testing Way    x2
 //   800 E Monroe St        x1   owner "Test Testerson"
 //
 // Deleting them was the obvious move and the wrong one. portal-bot/src/demoReplay.ts reads the
