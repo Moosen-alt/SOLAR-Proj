@@ -140,12 +140,12 @@ console.log("\n[7] a curated-form Email cell takes an email or nothing, and is n
 {
   // A row stored before the save-time check can still carry a name: the fill is its own door.
   const ctx = (email: string) => ({ project: { homeownerName: "Jordan Sample" }, client: {}, snapshot: { homeownerEmail: email } }) as never;
-  const fillBoth = async (email: string) => {
+  const fillBoth = async (email: string, required = false) => {
     const acroDoc = await PDFDocument.create();
     acroDoc.addPage([612, 792]);
     acroDoc.getForm().createTextField("Email").addToPage(acroDoc.getPage(0), { x: 60, y: 700, width: 200, height: 16 });
     const acroOut = path.join(tmpDir, `acro-${email.length}.pdf`);
-    const acro = await fillLoadedForm({ id: "t-acro", formName: "T", matchJurisdictions: [], sourceUrl: "", version: "t", status: "verified", fillMode: "acroform", preserveInteractive: true, textFields: { Email: "snapshot.homeownerEmail" } } as never, await acroDoc.save(), ctx(email), acroOut);
+    const acro = await fillLoadedForm({ id: "t-acro", formName: "T", matchJurisdictions: [], sourceUrl: "", version: "t", status: "verified", fillMode: "acroform", preserveInteractive: true, textFields: { Email: "snapshot.homeownerEmail" }, ...(required ? { requiredFields: { "owner email": "snapshot.homeownerEmail" } } : {}) } as never, await acroDoc.save(), ctx(email), acroOut);
     const flatDoc = await PDFDocument.create();
     flatDoc.addPage([612, 792]);
     const flatOut = path.join(tmpDir, `flat-${email.length}.pdf`);
@@ -162,6 +162,9 @@ console.log("\n[7] a curated-form Email cell takes an email or nothing, and is n
   run("…and no second 'no data on file' item for the same cell", !(bad.acro.operatorItems ?? []).some((l) => /^Email\b/.test(l)), JSON.stringify(bad.acro.operatorItems));
   run("overlay: nothing is drawn", !bad.flatText.includes("Jordan Sample"));
   run("…and the cell is named in unmappedRequested", (bad.flat.unmappedRequested ?? []).some((l) => /^Email\b.*not an email address/.test(l)), JSON.stringify(bad.flat.unmappedRequested));
+  const req = await fillBoth("Jordan Sample", true);
+  const reqEmail = (req.acro.unmappedRequested ?? []).filter((l) => /email/i.test(l));
+  run("a REQUIRED email cell is named once, by its required label", reqEmail.length === 1 && /^owner email \(left blank: .*not an email address/.test(reqEmail[0]), JSON.stringify(reqEmail));
   const good = await fillBoth("jordan@example.com");
   run("a real address prints", good.acroText === "jordan@example.com" && good.flatText.includes("jordan@example.com"), JSON.stringify(good.acroText));
   run("…and nothing is named", ![...(good.acro.unmappedRequested ?? []), ...(good.flat.unmappedRequested ?? [])].some((l) => /email/i.test(l)));

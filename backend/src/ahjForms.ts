@@ -992,16 +992,24 @@ const EMAIL_SNAPSHOT_SOURCE = /^snapshot\.\w*email$/i;
  * THE EMAIL CELLS LEFT BLANK BECAUSE THE VALUE ON FILE IS NOT AN EMAIL (#92). resolveSource blanks
  * them; this names each for unmappedRequested — the cell and the reason, never the stored value
  * (hard rule 2's spirit: described, not echoed). Text fields by field name, placements by their
- * printed label. `fields` / `overlays` let the fill skip its generic "no data on file" item.
+ * printed label. `fields` / `overlays` let the fill skip its generic "no data on file" item. A REQUIRED
+ * email (requiredFields) is named once, by its required label (`required`), not again per cell.
  */
-export function nonEmailCells(def: AhjFormDefinition, ctx: FillContext): { labels: string[]; fields: Set<string>; overlays: Set<number> } {
+export function nonEmailCells(def: AhjFormDefinition, ctx: FillContext): { labels: string[]; fields: Set<string>; overlays: Set<number>; required: Set<string> } {
   const blanked = (source: FieldSource): boolean =>
     EMAIL_SNAPSHOT_SOURCE.test(String(source ?? "")) && Boolean(str(ctx.snapshot[String(source).slice("snapshot.".length)]).trim())
     && !resolveSource(source, ctx);
   const fields = new Set(Object.entries(def.textFields).filter(([, source]) => blanked(source)).map(([name]) => name));
   const overlays = new Set((def.overlayFields ?? []).flatMap((f, i) => (blanked(f.source) ? [i] : [])));
-  const names = [...fields, ...[...overlays].map((i) => def.overlayFields![i].label?.trim() || "Homeowner email")];
-  return { labels: [...new Set(names)].map((n) => `${n} (left blank: the value on file is not an email address)`), fields, overlays };
+  const requiredEntries = Object.entries(def.requiredFields ?? {}).filter(([, source]) => blanked(source));
+  const requiredSources = new Set(requiredEntries.map(([, source]) => source));
+  const names = [
+    ...requiredEntries.map(([label]) => label),
+    ...[...fields].filter((name) => !requiredSources.has(def.textFields[name])),
+    ...[...overlays].filter((i) => !requiredSources.has(def.overlayFields![i].source)).map((i) => def.overlayFields![i].label?.trim() || "Homeowner email"),
+  ];
+  const labels = [...new Set(names)].map((n) => `${n} (left blank: the value on file is not an email address)`);
+  return { labels, fields, overlays, required: new Set(requiredEntries.map(([label]) => label)) };
 }
 
 /** The generic licence's track for the form being filled: the form's own track (its form type);
@@ -2024,7 +2032,7 @@ export async function fillLoadedForm(
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.writeFileSync(outputPath, await doc.save());
     return { formId: def.id, formName: resultFormName, status: "filled", outputPath, filledFieldCount: drawn,
-      unmappedRequested: [...checklist.omittedTextFields, ...missingRequired, ...nonEmail.labels], message: completionMessage,
+      unmappedRequested: [...checklist.omittedTextFields, ...missingRequired.filter((l) => !nonEmail.required.has(l)), ...nonEmail.labels], message: completionMessage,
       ...(Object.keys(requestedFieldOwners).length ? { requestedFieldOwners } : {}),
       operatorItems: operatorItemLabels(operatorItems) };
   }
@@ -2281,7 +2289,7 @@ export async function fillLoadedForm(
     status: "filled",
     outputPath,
     filledFieldCount: filled,
-    unmappedRequested: [...unmapped, ...missingRequired, ...nonEmail.labels],
+    unmappedRequested: [...unmapped, ...missingRequired.filter((l) => !nonEmail.required.has(l)), ...nonEmail.labels],
     message: completionMessage,
     ...(Object.keys(requestedFieldOwners).length ? { requestedFieldOwners } : {}),
     operatorItems: operatorItemLabels(openItems),

@@ -49,5 +49,12 @@ const box = (value: string) => {
   run("a blank box saves nothing and is not flagged", PR.emailToSave(box("  ")) === "");
 }
 
+{
+  // new-project.html submits through a <form>: the browser checks validity BEFORE "submit" fires,
+  // so the page must clear the flag on edit or a corrected address can never be submitted.
+  const page = fs.readFileSync(path.join(REPO, "frontend", "new-project.html"), "utf8");
+  run("new-project clears the email flag on every edit", /homeownerEmail\.addEventListener\("input",[^\n]*setCustomValidity\(""\)/.test(page));
+}
+
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
 console.log("\nall checks passed");
