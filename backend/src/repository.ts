@@ -5132,13 +5132,16 @@ export async function rejudgeReviewerGatesAfterLookup(
  * judges `docs.*` / `docs.complete` from it — but QC ran before the lookup landed, and nothing ran
  * it again, so `docs.complete` kept saying "not yet confirmed" over a list now on file and the plan
  * set that triggered the lookup was never checked against it. Called by the worker after a
- * permit_process_lookup job finishes (done or failed for good), after savePermitProcessLookup wrote
- * the row. Same population as rejudgeReviewerGatesAfterLookup: PRE-STAGE projects (qc_passed /
+ * permit_process_lookup job lands 'done', after savePermitProcessLookup wrote the row — never after
+ * one that failed for good (no row was written, and this QC run's lookup trigger would re-queue it).
+ * Same population as rejudgeReviewerGatesAfterLookup: PRE-STAGE projects (qc_passed /
  * ready_to_stage) whose QC has already run, in the looked-up state+AHJ (permitProcessKey — the key
  * the list is read by). The re-run is the document-triggered re-judge (autoStageSteps STEP 1,
- * qcRejudgedOnDocs.test.ts): every row refreshed, no demotion on bill-only new fails. QC reads the
- * database only — no model call, no parser re-run. Synchronous per project, so a second landing in
- * the same tick re-runs the same cheap judgement rather than needing the gate's landing mark.
+ * qcRejudgedOnDocs.test.ts): every row refreshed, no demotion on bill-only new fails. The judgement
+ * reads the database only — no model call, no parser re-run — but QC's trigger block still asks for
+ * the lookup and fee research (the lookup is a no-op there: the row now exists). Synchronous per
+ * project, so a second landing in the same tick re-runs the same cheap judgement rather than
+ * needing the gate's landing mark.
  */
 export function rejudgeQcDocumentsAfterLookup(db: AppDb, target: { state: string; ahj: string }, trigger: string): string[] {
   const st = String(target.state || "").trim();

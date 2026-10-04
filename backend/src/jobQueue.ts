@@ -664,6 +664,13 @@ async function rejudgeAfterJurisdictionLookup(db: AppDb, job: JobRecord): Promis
     // The AHJ's cited required-documents list landed (savePermitProcessLookup wrote it before the job
     // left 'running'): QC's docs.* / docs.complete rows were judged without it, so re-judge them for
     // every pre-stage project in that AHJ (repository.rejudgeQcDocumentsAfterLookup, #112).
+    // ONLY A JOB THAT LANDED 'done'. A lookup that failed for good wrote no row, and the re-judge's
+    // QC run fires ensurePermitProcessLookedUp, whose dedupe deliberately ignores failed jobs: it
+    // would queue the same lookup again, fail again, re-judge again — a model-call loop per AHJ. The
+    // row's own status is read (not the branch we came from), so a watchdog that reclaimed the job
+    // mid-run — the 'done' UPDATE is guarded on 'running' — does not count as landed either.
+    const landed = db.get<{ status: string }>("SELECT status FROM job_queue WHERE id = ?", [job.id]);
+    if (String(landed?.status) !== "done") return;
     const p = job.payload as { state?: unknown; ahj?: unknown };
     try {
       const { rejudgeQcDocumentsAfterLookup } = await import("./repository");

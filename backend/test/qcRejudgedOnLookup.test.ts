@@ -13,9 +13,13 @@
 //                     whose QC has never run (the re-judge refreshes verdicts, it does not start QC).
 //   3 NO MODEL CALL — the worker's provider is the stub; its webLookup is never asked (the lookup row is
 //                     already on file), and the parser output is not rewritten.
+//   4 FAILED FOR GOOD — with the lookup enabled (placeholder key, web lookup stubbed to throw), a job
+//                     that failed for good re-judges nothing: no qc_rerun, and QC's trigger queues no
+//                     fresh lookup for the AHJ (the loop Helm's review on #130 found).
 //
 // KILLS (verified by hand): drop the permit_process_lookup arm in jobQueue.rejudgeAfterJurisdictionLookup
-// -> 1 FAILS; match on state only (no permitProcessKey) -> 2 FAILS.
+// -> 1 FAILS; match on state only (no permitProcessKey) -> 2 FAILS; drop the 'done' check in that arm
+// -> 4 FAILS.
 //
 //   npx tsx backend/test/qcRejudgedOnLookup.test.ts
 import "./_isolate"; // FIRST: temp cwd, so filled/ docs/ never land in the repo's backend/data
@@ -155,6 +159,41 @@ check("2. MUST-EXCLUDE: a project in the AHJ whose QC never ran is not started",
 
 check("3. NO MODEL CALL: the provider's web lookup was never asked", webLookups === 0, `webLookups=${webLookups} result=${finished?.result}`);
 check("3. NO PARSER RE-RUN: the parser output is unchanged", parserJson(here) === parserBefore);
+
+// 4 FAILED FOR GOOD — the lookup ENABLED (switch on, placeholder key: ensurePermitProcessLookedUp is live), the
+// provider's web lookup stubbed to throw (no network), so QC's trigger path is real. A lookup that
+// failed for good wrote no row; re-judging from that branch ran QC, whose trigger re-queued the
+// same lookup (its dedupe ignores failed jobs), which failed the same way — a model-call loop.
+const GONE = { state: "PA", city: "Gull Ridge", ahj: "City of Gull Ridge", utility: "Gull Ridge Power" };
+const gone = mk(GONE);
+rerunQc(db, gone, { holdStatusOnNewBillOnlyFails: true });
+db.run("UPDATE projects SET status = 'qc_passed' WHERE id = ?", [gone]);
+await tick();
+db.run("UPDATE job_queue SET status = 'failed', error = 'parked by test' WHERE status = 'pending'");
+const { ClaudeLLMProvider } = await import("../src/llm");
+let failedAsks = 0;
+ClaudeLLMProvider.prototype.webLookup = async function () {
+  failedAsks += 1;
+  throw new Error("stub provider: web lookup unavailable");
+};
+delete process.env.PERMIT_PROCESS_LOOKUP;
+process.env.ANTHROPIC_API_KEY = "sk-ant-test-not-a-real-key";
+const lookupRows = () => db.query<{ id: string; status: string }>(
+  "SELECT id, status FROM job_queue WHERE job_type = 'permit_process_lookup' AND payload LIKE ?", [`%"ahj":${JSON.stringify(GONE.ahj)}%`]);
+const failedJob = jobQueue.enqueueJob(db, "permit_process_lookup", { state: GONE.state, ahj: GONE.ahj, utility: GONE.utility }, { priority: 3, maxRetries: 1 });
+check("setup: the worker ran the failing lookup job", await jobQueue.processNextJob(db));
+// QC's lookup trigger is fire-and-forget (void async): give it, and any drain it kicks, time to land.
+for (let i = 0; i < 20; i++) await tick();
+process.env.ANTHROPIC_API_KEY = "";
+process.env.PERMIT_PROCESS_LOOKUP = "off";
+check("setup: the lookup job failed for good (the stub provider was asked and threw)",
+  String(db.get<{ status: string }>("SELECT status FROM job_queue WHERE id = ?", [failedJob.id])?.status) === "failed" && failedAsks >= 1,
+  JSON.stringify({ rows: lookupRows(), failedAsks }));
+const rows = lookupRows();
+check("4. FAILED FOR GOOD: no new permit_process_lookup row is queued for that AHJ",
+  rows.length === 1 && rows[0].id === failedJob.id, JSON.stringify(rows));
+check("4. FAILED FOR GOOD: no QC re-run is recorded for the AHJ's project",
+  !db.get("SELECT 1 FROM audit_logs WHERE project_id = ? AND action = 'project.qc_rerun' AND details LIKE '%permit_process_lookup_landed%'", [gone]));
 
 if (failures) {
   console.error(`\n${failures} check(s) failed`);
