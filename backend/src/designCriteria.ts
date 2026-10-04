@@ -2393,10 +2393,13 @@ export function evaluateDesignCriteriaFindings(
     : null;
   const below: StatedDesignCriterion[] = [];
   const belowLines: string[] = [];
-  const collect = (label: string, unit: string, required: string, pick: (c: StatedDesignCriterion) => boolean): void => {
+  // The profile field behind each line: its severity is THAT field's row's (fieldProvenance).
+  const belowFields: string[] = [];
+  const collect = (field: string, label: string, unit: string, required: string, pick: (c: StatedDesignCriterion) => boolean): void => {
     const hits = stated.criteria.filter(pick);
     if (!hits.length) return;
     below.push(...hits);
+    belowFields.push(`designCriteria.${field}`);
     const byValue = new Map<string, { value: string | number; sources: Set<string> }>();
     for (const c of hits) {
       const e = byValue.get(String(c.value)) ?? { value: c.value, sources: new Set<string>() };
@@ -2406,24 +2409,32 @@ export function evaluateDesignCriteriaFindings(
     belowLines.push(`${label}: stated ${describeValues([...byValue.values()], unit)} — ${who} requires ${required}`);
   };
   if (ahjWind != null) {
-    collect("Wind speed", " mph", `${ahjWind} mph (ultimate)`, (c) => c.criterion === "windSpeedMph" && c.qualifier !== "nominal" && typeof c.value === "number" && c.value < ahjWind);
+    collect("windSpeedMph", "Wind speed", " mph", `${ahjWind} mph (ultimate)`, (c) => c.criterion === "windSpeedMph" && c.qualifier !== "nominal" && typeof c.value === "number" && c.value < ahjWind);
   }
   if (ahjExposure) {
-    collect("Wind exposure", "", `Exposure ${ahjExposure}`, (c) => c.criterion === "windExposure" && (EXPOSURE_RANK[String(c.value)] ?? 99) < EXPOSURE_RANK[ahjExposure]);
+    collect("windExposure", "Wind exposure", "", `Exposure ${ahjExposure}`, (c) => c.criterion === "windExposure" && (EXPOSURE_RANK[String(c.value)] ?? 99) < EXPOSURE_RANK[ahjExposure]);
   }
   // The wind lines can block; the ground snow line blocks only on an UNAMBIGUOUS reading
   // (readGroundSnow) — the same question the state-minimum rule asks.
   const linesBeforeSnow = belowLines.length;
   let snowAmbiguous = false;
   if (ahjSnow != null) {
-    collect("Ground snow load", " psf", `${ahjSnow} psf`, (c) => c.criterion === "groundSnowPsf" && c.qualifier === "ground" && typeof c.value === "number" && c.value < ahjSnow);
+    collect("groundSnowLoadPsf", "Ground snow load", " psf", `${ahjSnow} psf`, (c) => c.criterion === "groundSnowPsf" && c.qualifier === "ground" && typeof c.value === "number" && c.value < ahjSnow);
     const reading = belowLines.length > linesBeforeSnow ? readGroundSnow(stated) : null;
     if (reading?.status === "ambiguous") {
       snowAmbiguous = true;
       belowLines[belowLines.length - 1] += ` (${ambiguousPgNote(reading)})`;
     }
   }
-  const belowCanBlock = linesBeforeSnow > 0 || (belowLines.length > 0 && !snowAmbiguous);
+  // WHOSE VALUE, VERIFIED BY WHOM. The merged profile's confidence is the WEAKER layer's, so a
+  // human-verified AHJ row under a seeded state layer (Utah, #110) read as seeded and never blocked.
+  // Each wind / exposure / ground snow line blocks only when the row that supplied ITS field is
+  // verified, as the state-minimum rule does; the ground snow line also needs an unambiguous
+  // reading (readGroundSnow). The #111 lines below carry their own per-line policy (moreBlocks).
+  const basicLines = belowLines.length;
+  const belowBlocks = belowFields.slice(0, basicLines)
+    .filter((_, i) => i < linesBeforeSnow || !snowAmbiguous)
+    .some((f) => fieldProvenance(ctx, f).verified);
   // (b1) THE CHEAP NUMERIC ONES (issue #111): seismic design category, frost depth, risk category,
   // and an ALLOWABLE-STRESS ground snow load against the AHJ's own pg(asd). Same finding, and the
   // same policy as the lines above — but asked PER LINE, of the row that holds that field:
@@ -2443,7 +2454,7 @@ export function evaluateDesignCriteriaFindings(
     same: (c: StatedDesignCriterion) => boolean, isBelow: (c: StatedDesignCriterion) => boolean,
   ): void => {
     const before = belowLines.length;
-    collect(label, unit, required, (c) => same(c) && isBelow(c));
+    collect(field, label, unit, required, (c) => same(c) && isBelow(c));
     if (belowLines.length === before) return;
     const hits = stated.criteria.filter((c) => same(c) && isBelow(c));
     const prov = fieldProvenance(ctx, `designCriteria.${field}`);
@@ -2477,13 +2488,16 @@ export function evaluateDesignCriteriaFindings(
       (c) => c.criterion === "groundSnowPsf" && c.qualifier === "ground_asd" && typeof c.value === "number",
       (c) => (c.value as number) < ahjSnowAsd);
   }
+  const belowProvenance = ctx.profile?.fieldSources
+    ? [...new Set(belowFields.map((f) => fieldProvenance(ctx, f).text))].join(" / ")
+    : provenance(ctx);
   if (belowLines.length) {
     out.push({
       id: "city.struct.design-criteria-below-ahj",
-      severity: (ctx.verified && belowCanBlock) || moreBlocks ? "blocker" : "warning",
+      severity: belowBlocks || moreBlocks ? "blocker" : "warning",
       category: "structural",
       title: "Design criteria below the jurisdiction's requirement",
-      message: `${belowLines.join(". ")}. AHJ value from the ${provenance(ctx)}.${approvedDesignsNote(ctx, [
+      message: `${belowLines.join(". ")}. AHJ value from the ${belowProvenance}.${approvedDesignsNote(ctx, [
         ...(ahjWind != null ? ["windSpeedMph" as const] : []),
         ...(ahjExposure ? ["windExposure" as const] : []),
         ...(ahjSnow != null ? ["groundSnowPsf" as const] : []),
