@@ -5045,18 +5045,42 @@ export function getReviewerReport(db: AppDb, projectId: string): ReviewerReport 
  * has already run, is re-judged: a new reviewer_report.generated audit row, the verdict recorded,
  * and an SSE event so an open project page refetches. Cached vision verdicts only (no new LLM
  * spend). Never touches a portal or a status other than the gate's own stage_detail.
+ *
+ * THE STATE LAYER (#107). A state-layer code_research job carries no AHJ: its editions, adoption
+ * model and state minimums reach every AHJ in the state that inherits them, so `scope: "state"`
+ * re-judges every pre-stage project in the state whose gate has run — same conditions, no AHJ match.
+ * Without it, a project judged "lookup in progress" before the state landed stayed on model
+ * defaults, and city.code.basis-mismatch never fired from the state's editions.
+ *
+ * ONE RE-JUDGE PER LANDING. `landedMark` (lookupLandingMark, taken by the worker in the same
+ * synchronous step that wrote the job's final status) orders the landing against each re-judge. A
+ * project whose lookup re-judge STARTED after that mark already read this landing (the report is
+ * built synchronously from the database), so a state and an AHJ landing in the same tick produce
+ * one re-judge, not two. A landing after the last re-judge started always re-judges.
  */
+let lookupSeq = 0;
+/** A point in the landing/re-judge order (monotonic; a counter, so two marks never tie). */
+export function lookupLandingMark(): number {
+  return ++lookupSeq;
+}
+const lookupRejudgeStartedAt = new Map<string, { mark: number; at: number }>();
+const LOOKUP_REJUDGE_MEMORY_MS = 10 * 60_000;
+
 export async function rejudgeReviewerGatesAfterLookup(
   db: AppDb,
-  target: { state: string; ahj: string },
+  target: { state: string; ahj: string; scope?: "ahj" | "state" },
   trigger: string,
+  opts: { landedMark?: number } = {},
 ): Promise<string[]> {
   const { resolveCriteriaWriteRow } = await import("./codeProfiles");
   const st = String(target.state || "").trim();
   const name = String(target.ahj || "").trim();
-  if (!st || !name) return [];
-  const key = resolveCriteriaWriteRow(db, st, name)?.key;
-  if (!key) return [];
+  const stateScope = target.scope === "state";
+  if (!st || (!stateScope && !name)) return [];
+  const key = stateScope ? "" : resolveCriteriaWriteRow(db, st, name)?.key;
+  if (!stateScope && !key) return [];
+  const now = Date.now();
+  for (const [id, seen] of lookupRejudgeStartedAt) if (now - seen.at > LOOKUP_REJUDGE_MEMORY_MS) lookupRejudgeStartedAt.delete(id);
   const candidates = db.query<Row>(
     `SELECT p.id, p.ahj FROM projects p
       WHERE UPPER(TRIM(p.state)) = ? AND p.status IN ('qc_passed', 'ready_to_stage')
@@ -5067,7 +5091,12 @@ export async function rejudgeReviewerGatesAfterLookup(
   for (const row of candidates) {
     const projectId = text(row.id);
     try {
-      if (resolveCriteriaWriteRow(db, st, text(row.ahj))?.key !== key) continue;
+      if (!stateScope && resolveCriteriaWriteRow(db, st, text(row.ahj))?.key !== key) continue;
+      const already = lookupRejudgeStartedAt.get(projectId);
+      if (opts.landedMark != null && already != null && already.mark > opts.landedMark) continue;
+      // Recorded before the work: a re-judge that throws still suppresses a sibling landing it would
+      // have covered (best effort, like the rest of this re-judge — the next gate run corrects it).
+      lookupRejudgeStartedAt.set(projectId, { mark: lookupLandingMark(), at: Date.now() });
       const detail = getProjectDetail(db, projectId);
       let report = buildReviewerReportFor(db, detail.project);
       try {
@@ -5090,7 +5119,8 @@ export async function rejudgeReviewerGatesAfterLookup(
   if (rejudged.length) {
     const { sseBroadcast } = await import("./events");
     for (const projectId of rejudged) {
-      sseBroadcast({ type: "reviewer_gate_rejudged", projectId, message: `Reviewer gate re-judged: ${name} design-criteria lookup landed.` });
+      const what = stateScope ? `${st.toUpperCase()} state code lookup` : `${name} design-criteria lookup`;
+      sseBroadcast({ type: "reviewer_gate_rejudged", projectId, message: `Reviewer gate re-judged: ${what} landed.` });
     }
   }
   return rejudged;
