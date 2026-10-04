@@ -1,6 +1,7 @@
 import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, ReviewerFindingEvidence, StructureTypeFact } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
 import { FIRE_PATHWAY_PATTERNS, packageShowsSld } from "./projectEvidence";
+import { evaluateElectricalSizingFindings } from "./electricalSizing";
 import { pathWordingScope, resolvePermitPath, usStateCode } from "./permitPath";
 import { classifyRoofCovering, statedRoofDeadLoads, tileAttachmentFromText, tileAttachmentMethodOf, TILE_MIN_ROOF_DEAD_LOAD_PSF } from "./roofCovering";
 import {
@@ -1294,6 +1295,17 @@ export function evaluateDesignCodeFindings(
       codeReferences: [supplySideRef, electricalRef],
     }));
   }
+
+  // RECOMPUTE THE SIZING (#144): the busbar screen with the inverter's real output current, the
+  // output circuit's OCPD and conductor, the cold-weather string voltage, and voltage drop. The
+  // busbar part runs only on a LOAD-side classification (the chain above), and not when the
+  // breaker-rating screen already reported the same busbar as a blocker.
+  out.push(...evaluateElectricalSizingFindings(project, {
+    documentTexts,
+    loadSide: !saysSupplySide && /load.side|breaker|back.?feed|bus/i.test(intercoText),
+    skipBusbar: out.some((f) => f.id === "city.elec.load-side-over-120"),
+    cite,
+  }));
 
   const moduleFields = [str(project, "moduleMake"), str(project, "moduleModel"), str(project, "moduleWattage"), str(project, "moduleQty")].filter(Boolean);
   const inverterFields = [str(project, "invModel"), str(project, "pvMicroModel"), str(project, "inverterModel"), str(project, "invQty"), str(project, "pvMicroQty")].filter(Boolean);

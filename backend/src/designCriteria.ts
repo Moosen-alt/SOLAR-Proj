@@ -1592,6 +1592,15 @@ export function packageTextSources(project: ProjectRecord, extraTexts: DesignTex
     .map(({ label, text }) => ({ label, text }));
 }
 
+/** The package's OWN sheets only (per-document texts, the sheet text) — never the parser's
+ *  narrative summaries, which are a reading of the documents. What "document-stated" means for
+ *  the electrical sizing checks (electricalSizing.ts). */
+export function sheetTextSources(project: ProjectRecord, extraTexts: DesignTextSource[] = []): DesignTextSource[] {
+  return readSources(project, extraTexts)
+    .filter((s) => s.sheet)
+    .map(({ label, text }) => ({ label, text }));
+}
+
 /**
  * Every design requirement a correction's text STATES, deterministically (no LLM). Unit- and
  * label-anchored: a number is a ground snow load only when LABELLED ground snow / Pg and

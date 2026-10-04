@@ -1791,6 +1791,49 @@ export interface StatedDesignCriteria {
   codeBasis: StatedCodeBasisEntry[];
 }
 
+/**
+ * The parser-snapshot keys the electrical sizing checks (backend/src/electricalSizing.ts) read.
+ * ParserPayload stays an open record; this names the subset so the parser prompt (llm.ts), the
+ * parser page's LLM_SNAPSHOT_KEYS and the checker agree on spelling. All are SCALARS — the
+ * planner's design digest never carries them as text (CLAUDE.md, LLM cost).
+ */
+export interface ElectricalSizingParserFields {
+  busRating?: string | number;
+  mainBreaker?: string | number;
+  /** The PV backfeed breaker / inverter output circuit OCPD, amps. */
+  pvBreaker?: string | number;
+  /** Per-unit rated output CURRENT in amps despite the name (llm.ts). */
+  invOutputW?: string | number;
+  invQty?: string | number;
+  pvMicroOutputW?: string | number;
+  pvMicroQty?: string | number;
+  moduleVoc?: string | number;
+  moduleVocTempCoeff?: string | number;
+  modulesPerString?: string | number;
+  siteLowTempC?: string | number;
+  pvMicroMaxDcInputV?: string | number;
+  /** String inverter's maximum DC input voltage, volts. */
+  invMaxDcInputV?: string | number;
+  /** Site high design ambient temperature (ASHRAE 2 % / 0.4 %), °C — the 310.15(B) correction. */
+  siteHighTempC?: string | number;
+  /** Inverter output circuit conductor as printed, e.g. "#10 AWG THWN-2 CU". */
+  acConductor?: string;
+  /** Current-carrying conductors in that raceway — the 310.15(C)(1) adjustment. */
+  acConductorCount?: string | number;
+  /** One-way length of the inverter output circuit, feet, when the SLD states it. */
+  acRunLengthFt?: string | number;
+  serviceVoltage?: string | number;
+}
+export type ElectricalSizingInputKey = keyof ElectricalSizingParserFields;
+
+/** One input of a sizing check and where it came from: `documentStated` when the package's own
+ *  sheet text states this value under its label, false when only the parser read it. */
+export interface ElectricalSizingInput {
+  key: ElectricalSizingInputKey;
+  value: number;
+  documentStated: boolean;
+}
+
 export interface JurisdictionCodeAmendment {
   code: string;
   section?: string;

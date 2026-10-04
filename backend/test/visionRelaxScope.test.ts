@@ -55,6 +55,11 @@ for (const variant of [
   { moduleQty: "40", moduleWattage: "400" },                            // DC cross-check mismatch
   { interco: "Load-side breaker or supply-side tap" },                  // ambiguous
   { interco: "Net Metering" },                                          // unclassified
+  // Electrical sizing (#144): busbar on the 48 A inverter current (no breaker), 690.7 string Voc,
+  // inputs missing (no conductor) …
+  { pvBreaker: "", invMake: "Synthetic", invModel: "SI-1", invOutputW: "48", moduleVoc: "49.5", siteLowTempC: "-10", modulesPerString: "14" },
+  // … OCPD under 1.25 x 24.2 A, over #14's ampacity, and a 150 ft run's voltage drop.
+  { pvBreaker: "25", pvMicroMake: "Enphase", pvMicroModel: "IQ8M", pvMicroQty: "20", pvMicroOutputW: "1.21", acConductor: "#14 AWG THWN-2 CU", acRunLengthFt: "150" },
 ]) {
   const p = mk(variant as Record<string, string>);
   if ("interco" in variant) (p as unknown as { interconnectionMethod: string }).interconnectionMethod = String((variant as Record<string, string>).interco);
