@@ -1056,6 +1056,9 @@ export interface SubmissionRecord {
   projectId: string;
   portalProfileId: string | null;
   submissionType: "permit" | "interconnection" | "correction" | "revision";
+  /** The filing's discipline (`permit_type`: building, electrical, combo, mpu, nem, …) — names the
+   *  filing in the dashboard's corrections picker (#58). */
+  permitType?: string;
   status: "staged" | "awaiting_human_submit" | "paused_for_human" | "submitted" | "failed" | "approved";
   applicationNumber: string;
   permitNumber: string;
@@ -1425,6 +1428,42 @@ export interface CodeEdition {
   origin?: CodeEditionOrigin;
   /** READ-TIME ONLY (getCodeProfile): this AHJ inherits the entry from its state's row. */
   inheritedFrom?: "state";
+}
+
+/** The NEC editions the plan-review rules know article by article (backend/src/necEditions.ts). */
+export type NecEditionYear = 2014 | 2017 | 2020 | 2023;
+
+/** What one NEC edition asks of a PV plan set for rapid shutdown, labels and interconnection.
+ *  A `null` article means the table does not state that edition's number with confidence: the
+ *  rule falls back to the generic citation rather than print a guessed subsection. */
+export interface NecEditionRequirements {
+  edition: NecEditionYear;
+  rapidShutdown: {
+    article: string;
+    /** The controlled-conductor limits this edition states, in its own terms. */
+    limits: string;
+    /** Inside-the-array-boundary requirement (2017+), or null where the edition has none. */
+    insideBoundaryArticle: string | null;
+    /** True when the edition expects a listed PV hazard control system / listed RSD equipment. */
+    requiresListedEquipment: boolean;
+    /** Initiation-device article when the edition expects its location on the plans, else null. */
+    initiationDeviceArticle: string | null;
+  };
+  labels: {
+    rapidShutdown: string;
+    rapidShutdownWording: string;
+    disconnect: string | null;
+    dcSource: string | null;
+    pointOfInterconnection: string | null;
+    powerSourceDirectory: string;
+    standAloneDirectory: string | null;
+    dcConductorMarking: string | null;
+  };
+  interconnection: {
+    supplySide: string;
+    loadSide: string;
+    busbar120: string | null;
+  };
 }
 
 /** The canonical code families a state's own code names map onto (ORSC -> residential,
@@ -1815,6 +1854,49 @@ export interface StatedDesignCriteria {
   documentTextRead: boolean;
   criteria: StatedDesignCriterion[];
   codeBasis: StatedCodeBasisEntry[];
+}
+
+/**
+ * The parser-snapshot keys the electrical sizing checks (backend/src/electricalSizing.ts) read.
+ * ParserPayload stays an open record; this names the subset so the parser prompt (llm.ts), the
+ * parser page's LLM_SNAPSHOT_KEYS and the checker agree on spelling. All are SCALARS — the
+ * planner's design digest never carries them as text (CLAUDE.md, LLM cost).
+ */
+export interface ElectricalSizingParserFields {
+  busRating?: string | number;
+  mainBreaker?: string | number;
+  /** The PV backfeed breaker / inverter output circuit OCPD, amps. */
+  pvBreaker?: string | number;
+  /** Per-unit rated output CURRENT in amps despite the name (llm.ts). */
+  invOutputW?: string | number;
+  invQty?: string | number;
+  pvMicroOutputW?: string | number;
+  pvMicroQty?: string | number;
+  moduleVoc?: string | number;
+  moduleVocTempCoeff?: string | number;
+  modulesPerString?: string | number;
+  siteLowTempC?: string | number;
+  pvMicroMaxDcInputV?: string | number;
+  /** String inverter's maximum DC input voltage, volts. */
+  invMaxDcInputV?: string | number;
+  /** Site high design ambient temperature (ASHRAE 2 % / 0.4 %), °C — the 310.15(B) correction. */
+  siteHighTempC?: string | number;
+  /** Inverter output circuit conductor as printed, e.g. "#10 AWG THWN-2 CU". */
+  acConductor?: string;
+  /** Current-carrying conductors in that raceway — the 310.15(C)(1) adjustment. */
+  acConductorCount?: string | number;
+  /** One-way length of the inverter output circuit, feet, when the SLD states it. */
+  acRunLengthFt?: string | number;
+  serviceVoltage?: string | number;
+}
+export type ElectricalSizingInputKey = keyof ElectricalSizingParserFields;
+
+/** One input of a sizing check and where it came from: `documentStated` when the package's own
+ *  sheet text states this value under its label, false when only the parser read it. */
+export interface ElectricalSizingInput {
+  key: ElectricalSizingInputKey;
+  value: number;
+  documentStated: boolean;
 }
 
 export interface JurisdictionCodeAmendment {
@@ -3352,6 +3434,9 @@ export interface AhjFormUrlResult {
    *  acquisition can take a document link the model saw but did not list (a CivicPlus
    *  /DocumentCenter/View/<id>/<name> link has no ".pdf"). Data, never an instruction. */
   searchResults?: Array<{ url: string; title: string }>;
+  /** Results (and model-listed links) dropped because they name a same-named place in ANOTHER state
+   *  (formSearchScope, issue #162): "City of Monroe, MI" for the City of Monroe, Oregon. */
+  discardedOutOfState?: Array<{ url: string; title: string; state: string }>;
 }
 
 export interface AhjFieldMapResult {

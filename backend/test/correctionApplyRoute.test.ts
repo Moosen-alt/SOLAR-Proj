@@ -7,6 +7,8 @@
 //      closes it — without re-running the project half (the designer wait) a second time.
 //   2. A jurisdiction-only approval must CLOSE the review item (not leave it pending with nothing
 //      to click) and mark the correction human-reviewed — while the correction itself stays open.
+//   3. (#58) POST /api/projects/:id/corrections with an unparseable noticedAt is a 400 that writes
+//      nothing — not a correction silently stored with no notice date.
 //
 // Fixtures are synthetic and written through the real write path (addManualCorrection) before
 // the server boots on the same file.
@@ -201,6 +203,17 @@ try {
   await run("a second click on a closed item is refused (409), not a silent re-apply", async () => {
     const res = await apply(ids.cOnly, {});
     assert.equal(res.status, 409, (await res.text()).slice(0, 300));
+  });
+
+  await run("#58: an unparseable noticedAt on POST /api/projects/:id/corrections is a 400 and writes no correction", async () => {
+    const count = () => read<{ n: number }>("SELECT COUNT(*) AS n FROM corrections WHERE project_id = ?", [ids.pOnly]).n;
+    const before = count();
+    const res = await fetch(`${BASE}/api/projects/${ids.pOnly}/corrections`, {
+      method: "POST", headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ correctionText: "Provide the stamped structural letter.", noticedAt: "not a date" }),
+    });
+    assert.equal(res.status, 400, (await res.text()).slice(0, 300));
+    assert.equal(count(), before, "a correction row was written despite the 400");
   });
 } finally {
   server.kill("SIGTERM");

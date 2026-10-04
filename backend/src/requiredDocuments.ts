@@ -58,7 +58,7 @@ import {
   designText, INVERTER_LISTING_PATTERNS, LOAD_SIDE_CALC_PATTERNS, MODULE_LISTING_PATTERNS, POWER_SOURCE_DIRECTORY_PATTERNS, RAPID_SHUTDOWN_PATTERNS, SUPPLY_SIDE_DETAIL_PATTERNS,
 } from "./codeReviewRules";
 import { FIRE_PATHWAY_PATTERNS } from "./projectEvidence";
-import { codeFamilyOf } from "./codeFamilies";
+import { adoptedNecEdition } from "./necEditions";
 
 export interface RequiredDocItem {
   /** project_documents.doc_type this maps to (or a synthetic key for path docs). */
@@ -288,16 +288,9 @@ function necLabel(nec: number | null): string {
   return nec == null ? "NEC" : `NEC ${nec}`;
 }
 
-/** The NEC edition year the jurisdiction has adopted for the ELECTRICAL family (a state code such
- *  as the OESC counts by the NEC year it is based on), or null when no electrical entry is on file. */
-export function adoptedNecEdition(adoptedCodes: CodeEdition[] | undefined): number | null {
-  for (const c of adoptedCodes ?? []) {
-    if (codeFamilyOf(c) !== "electrical") continue;
-    const year = String(c.basedOn || "").match(/\b(?:19|20)\d{2}\b/)?.[0] ?? String(c.edition || "").match(/\b(?:19|20)\d{2}\b/)?.[0];
-    if (year) return Number(year);
-  }
-  return null;
-}
+// adoptedNecEdition lives in necEditions.ts beside the edition table the reviewer rules read; it is
+// re-exported here for the callers that imported it from this module.
+export { adoptedNecEdition };
 
 export interface SheetContentGap {
   docType: string;

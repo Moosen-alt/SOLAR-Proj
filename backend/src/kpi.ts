@@ -321,14 +321,18 @@ export function utilityDeficiencyCureDays(db: AppDb, project: { state?: string; 
   // The UTILITY's row (state|—|utility, the key timeline samples and the utility resolver use),
   // exact first, then the fuzzy name match (operator short names) — but only a utility-only row:
   // an AHJ+utility project profile is the jurisdiction's record, not the utility's.
-  const readDays = (where: string, param: string): number =>
-    Number(db.get<Row>(`SELECT deficiency_cure_days AS d FROM permit_utility_knowledge WHERE ${where} AND ahj = ''`, [param])?.d ?? 0);
+  // null = the row has no window yet (the seed may answer); an explicit 0 is "none on record" — a
+  // person cleared it — so it takes the default and the seed is not read back in for it.
+  const readDays = (where: string, param: string): number | null => {
+    const d = db.get<Row>(`SELECT deficiency_cure_days AS d FROM permit_utility_knowledge WHERE ${where} AND ahj = ''`, [param])?.d;
+    return d == null ? null : Number(d) || 0;
+  };
   if (project.utility) {
     const exact = readDays("profile_key = ?", knowledgeProfileKey({ state: project.state, ahj: "", utility: project.utility }));
-    if (exact > 0) return exact;
+    if (exact !== null) return exact > 0 ? exact : DEFAULT_CORRECTION_SLA_DAYS;
     const fuzzy = findKnowledgeForLearn(db, { state: project.state, utility: project.utility }).utility;
-    const matched = fuzzy ? readDays("id = ?", fuzzy.id) : 0;
-    if (matched > 0) return matched;
+    const matched = fuzzy ? readDays("id = ?", fuzzy.id) : null;
+    if (matched !== null) return matched > 0 ? matched : DEFAULT_CORRECTION_SLA_DAYS;
   }
   return seededDeficiencyCureDays(project.state, project.utility) ?? DEFAULT_CORRECTION_SLA_DAYS;
 }
@@ -605,6 +609,16 @@ export function touchProjectMetrics(db: AppDb, projectId: string): void {
   touchFilingMetrics(db, projectId, now);
 }
 
+/**
+ * THE ONE OVERDUE CLOCK, as SQL, for the readers that count in the database (getKpiReport's
+ * overdue counts, repository.listOverdueCorrections): due_at when stamped, else the notice's own
+ * date (falling back to ingestion) plus sla_days — the same start breachedSla, mapCorrection and
+ * setCorrectionsSlaDays use. Binds two parameters, both today's date (YYYY-MM-DD).
+ */
+export function correctionOverdueSql(alias = "c"): string {
+  return `(${alias}.due_at < ? OR (${alias}.due_at IS NULL AND date(COALESCE(${alias}.noticed_at, ${alias}.created_at), '+' || ${alias}.sla_days || ' days') < ?))`;
+}
+
 /** Past its cure window: due_at when stamped, else the notice's own date (falling back to
  *  ingestion) plus sla_days, against when it closed (or now). */
 function breachedSla(c: Row): boolean {
@@ -655,7 +669,7 @@ export function getKpiReport(
       `SELECT COUNT(*) as cnt FROM corrections c
        JOIN projects p ON p.id = c.project_id${orgId ? " AND p.org_id = ?" : ""}
        WHERE c.closed_at IS NULL
-         AND (c.due_at < ? OR (c.due_at IS NULL AND date(c.created_at, '+' || c.sla_days || ' days') < ?))`,
+         AND ${correctionOverdueSql("c")}`,
       [...orgP, today, today],
     )?.cnt ?? 0,
   );
@@ -701,7 +715,7 @@ export function getKpiReport(
         `SELECT COUNT(*) as cnt FROM corrections c
          JOIN projects p ON c.project_id = p.id${orgId ? " AND p.org_id = ?" : ""}
          WHERE p.assigned_user_id = ? AND c.closed_at IS NULL
-           AND (c.due_at < ? OR (c.due_at IS NULL AND date(c.created_at, '+' || c.sla_days || ' days') < ?))`,
+           AND ${correctionOverdueSql("c")}`,
         [...orgP, uid, today, today],
       )?.cnt ?? 0,
     );

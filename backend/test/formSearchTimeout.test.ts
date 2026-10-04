@@ -4,8 +4,8 @@
 //   (1) the abort returns the leads gathered so far (the URLs the searches had already returned) as
 //       not-found detail, with the budget and the number of pages seen — never a bare SDK error;
 //   (2) the same search is not re-run in the same pass (a second form type would pay another 4 min),
-//       and the attempt is recorded so the NEXT trigger's search is told to scope to the state and
-//       its issuer instead of repeating the broad query; a completed search clears the record;
+//       and the attempt is recorded so the NEXT trigger's search is told to try the county or state
+//       issuer's forms instead of repeating the broad query; a completed search clears the record;
 //   (3) the message the App Docs panel shows reads "timed out after 4 min; N page(s) seen; try Find
 //       official form again or upload the blank".
 // No network, no model: the SDK stream is a fake that NEVER resolves (only our abort ends it), and
@@ -142,13 +142,13 @@ await check("B a timed-out search is reported in budget terms with its leads, an
   assert.ok(plan.recentFormSearchTimeout(project.ahj, project.state), "the attempt is recorded");
 });
 
-await check("C the next trigger's search is told the broad one timed out and to scope to the state / its issuer", async () => {
+await check("C the next trigger's search is told the broad one timed out and to try the county / state issuer instead", async () => {
   calls = []; timeOut = false;
   await auto.ensureAhjFormTemplate(db, llm, project, "building_application", { formsPage: fp, searchPass: {} });
   assert.equal(calls.length, 1, "the next trigger searches (once)");
   const ctx = String(calls[0].knownContext || "");
   assert.match(ctx, /previous search for Town of Fixtureville timed out after 4 min \(7 page\(s\) seen\)/);
-  assert.match(ctx, /"MA" in every query/);
+  assert.match(ctx, /Do not repeat the same broad search/);
   assert.match(ctx, /county's or the state building agency's forms/);
 });
 
@@ -166,5 +166,5 @@ await check("E the operator's sentence: budget, pages, leads (at most three), wh
 });
 
 if (failures) { console.error(`formSearchTimeout: ${failures} check(s) FAILED`); process.exit(1); }
-console.log("formSearchTimeout: all checks passed — a 240 s abort keeps its leads and reports the budget and pages seen; one search per pass after a timeout; the next trigger is steered to the state-scoped path; no network");
+console.log("formSearchTimeout: all checks passed — a 240 s abort keeps its leads and reports the budget and pages seen; one search per pass after a timeout; the next trigger is steered to the county / state issuer; no network");
 process.exit(0);

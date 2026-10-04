@@ -33,6 +33,13 @@ const MEASURED = [
   "city.struct.anchor-spacing-exceeds-ahj",
   "city.plan.ul-listings-missing",
   "city.struct.wind-exceeds-prescriptive-cap",
+  // Electrical sizing recomputed from the SLD (electricalSizing.ts, #144).
+  "city.elec.sizing-busbar-120",
+  "city.elec.sizing-ocpd-under-125",
+  "city.elec.sizing-ocpd-over-ampacity",
+  "city.elec.sizing-string-voc",
+  "city.elec.sizing-voltage-drop",
+  "city.elec.sizing-inputs-missing",
   "city.fire.pathway-below-required",
 ];
 
@@ -55,6 +62,11 @@ const produced: ReviewerFinding[] = [
   ...buildReviewerReport(project, { codeContext: buildCodeContext("OR", "City of Testport", profile({})), documentTexts: docs }).findings,
   // On the prescriptive path, the plan's 110 mph in Exposure C is above a 100 mph Exposure C cap.
   ...buildReviewerReport({ ...project, parserSnapshot: { ...project.parserSnapshot, permitPath: "Prescriptive" } } as unknown as ProjectRecord, { codeContext: buildCodeContext("OR", "City of Testport", profile({ prescriptive: { maxWindSpeedMphExpC: 100 } })), documentTexts: docs }).findings,
+  // Sizing: a 48 A string inverter on a 200/200 bus with no breaker rating (busbar on the current),
+  // 14 x 49.5 V Voc at -10 C (> 600 V), no output conductor stated (inputs missing) …
+  ...buildReviewerReport({ ...project, parserSnapshot: { ...project.parserSnapshot, invMake: "Synthetic", invModel: "SI-1", invOutputW: "48", busRating: "200", mainBreaker: "200", moduleVoc: "49.5", siteLowTempC: "-10", modulesPerString: "14" } } as unknown as ProjectRecord).findings,
+  // … and 20 x 1.21 A micros on a 25 A breaker over #14 CU with a 150 ft run (under 1.25 x, over ampacity, drop).
+  ...buildReviewerReport({ ...project, parserSnapshot: { ...project.parserSnapshot, pvMicroMake: "Enphase", pvMicroModel: "IQ8M", pvMicroQty: "20", pvMicroOutputW: "1.21", pvBreaker: "25", acConductor: "#14 AWG THWN-2 CU", acRunLengthFt: "150" } } as unknown as ProjectRecord).findings,
   // An 18" pathway against the jurisdiction's 36" (issue #142).
   ...buildReviewerReport(project, { codeContext: buildCodeContext("OR", "City of Testport", profile({ fireSetbacks: [{ id: "fire-1", description: "Minimum 36-inch fire access pathways." }] })), documentTexts: [{ label: "Plan set", text: '18" FIRE ACCESS PATHWAY' }] }).findings,
 ];
