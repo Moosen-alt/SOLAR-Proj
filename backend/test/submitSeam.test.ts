@@ -707,7 +707,7 @@ check("1k. and the approve button stays available (a later track still needs it)
     const noop = async () => {};
     const loaders = Object.fromEntries(["loadKnowledgeBase", "loadOpsPlan", "loadSubmitGate", "loadRunbook", "loadHandoffPacket",
       "loadCommunicationDrafts", "loadLiveReadiness", "loadProjectTimeline", "loadProcessMap", "loadInstallerPacket", "loadProjectDocuments",
-      "loadSubmittalTracks", "loadPaymentQuotes", "loadFeeSheet", "loadPortalQuestions", "loadStageResults", "loadStaleReadings", "loadNextStep"].map((n) => [n, noop]));
+      "loadSubmittalTracks", "loadPaymentQuotes", "loadFeeSheet", "loadPortalQuestions", "loadStageResults", "loadCorrectionNotice", "loadStaleReadings", "loadNextStep"].map((n) => [n, noop]));
     const selLib = load(els, st, {
       safeRender: () => {}, api: async () => ({ project: { id: "p2" } }), clearMessage: () => {}, showPage: () => {},
       renderProjects: () => {}, renderOpsActions: () => {}, renderDetail: () => {}, window: { location: { hash: "" } }, ...loaders,
