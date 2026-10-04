@@ -299,7 +299,7 @@
   <script src="/vendor/tesseract-5.1.1.min.js"></script>
   <!-- The review-list rules (meter cross-check, notes, resolution, scope callout, locates)
        live in their own DOM-free file so the backend unit test loads the SAME code. -->
-  <script src="parser-review.js?v=9"></script>
+  <script src="parser-review.js?v=10"></script>
 </head>
 
 <body>
@@ -3583,24 +3583,12 @@ function detectSplitPages(){
       .map(p => p.page);
   };
 
-  let moduleSpecs = dsFind([
-    /PV MODULE SPECIFICATION SHEET/i,
-    /PV MODULE\s*\/\s*INV SPECIFICATION SHEET/i,
-    /Q\.TRON AC/i,
-    /ZXM7-SH108/i,
-    /ZNSHINESOLAR/i,
-    /MODULE SPECIFICATION/i
-  ]);
-
-  let inverterSpecs = dsFind([
-    /MICROINVERTER SPECIFICATION SHEET/i,
-    /PV MODULE\s*\/\s*INV SPECIFICATION SHEET/i,
-    /DS3 Series/i,
-    /Q\.TRON AC/i,
-    /Q\.MI/i,
-    /MICROINVERTER/i,
-    /INVERTER SPECIFICATION/i
-  ]);
+  // Module / inverter spec pages by the backend splitter's rule (parser-review.js §8): a
+  // calculations sheet is never a spec sheet, and a title-only EQUIPMENT SPECIFICATION page is
+  // undecided rather than guessed (#90).
+  const specs = window.ParserReview.specSheetPages(ds.map(p => ({page: p.page, text: normalizeText(p.text || '')})));
+  const moduleSpecs = specs.moduleSpecs;
+  const inverterSpecs = specs.inverterSpecs;
 
   const combinerSpecs = dsFind([
     /COMBINER SPECIFICATION SHEET/i,
@@ -3656,10 +3644,6 @@ function detectSplitPages(){
     /SPLICE KIT/i
   ]);
 
-  // Combined Q.TRON sheets contain module and inverter info together.
-  if (!moduleSpecs.length && inverterSpecs.length) moduleSpecs = [...inverterSpecs];
-  if (!inverterSpecs.length && moduleSpecs.length) inverterSpecs = [...moduleSpecs];
-
   return {
     cover: uniqNums([cover]),
     plot: uniqNums([plot]),
@@ -3673,6 +3657,7 @@ function detectSplitPages(){
     siteAndPlot: uniqNums([plot, site]),
     moduleSpecs: uniqNums(moduleSpecs),
     inverterSpecs: uniqNums(inverterSpecs),
+    undecidedSpecs: uniqNums(specs.undecidedSpecs),
     combinerSpecs: uniqNums(combinerSpecs),
     acDisconnectSpecs: uniqNums(acDisconnectSpecs),
     batterySpecs: uniqNums(batterySpecs),
@@ -3697,8 +3682,8 @@ function updateSplitUi(){
   setVal('splitPagesText', [
     `01 SLD / 3-line: ${map.sld.join(', ') || 'missing'}`,
     `02 Site + plot plan: ${map.siteAndPlot.join(', ') || 'missing'}`,
-    `03 Module specs: ${map.moduleSpecs.join(', ') || 'missing'}`,
-    `04 Inverter specs: ${map.inverterSpecs.join(', ') || 'missing'}`,
+    `03 Module specs: ${window.ParserReview.specMapValue(map.moduleSpecs, map.undecidedSpecs)}`,
+    `04 Inverter specs: ${window.ParserReview.specMapValue(map.inverterSpecs, map.undecidedSpecs)}`,
     `05 Combiner specs: ${map.combinerSpecs.join(', ') || 'missing'}`,
     `06 AC disconnect specs: ${map.acDisconnectSpecs.join(', ') || 'missing'}`,
     `07 Battery / ESS specs: ${map.batterySpecs.join(', ') || 'not detected'}`,
@@ -3711,7 +3696,8 @@ function updateSplitUi(){
     `- Warning labels: ${map.labels.join(', ') || 'missing'}`,
     `- Junction box specs: ${map.junctionSpecs.join(', ') || 'missing'}`,
     `- Wiring specs: ${map.wiringSpecs.join(', ') || 'missing'}`,
-    `- Racking / mounting specs: ${map.rackingSpecs.join(', ') || 'missing'}`
+    `- Racking / mounting specs: ${map.rackingSpecs.join(', ') || 'missing'}`,
+    window.ParserReview.SPEC_MAP_RULE
   ].join('\n'));
 
   const missing = [];
@@ -3819,7 +3805,9 @@ function detectProjectDoxSheetName(text='', code=''){
     ['Battery ESS Specification Sheet', /BATTERY DATA SHEET|INVERTER\/BATT DATA SHEET|POWERWALL|ENERGY STORAGE/i],
     ['Gateway Specification Sheet', /GATEWAY 3 DATA SHEET|BACKUP GATEWAY|TESLA GATEWAY/i]
   ];
-  const hit = candidates.find(([name, re]) => re.test(t));
+  // A calculations sheet tabulates the module / inverter specs; it is never named as one (#90).
+  const calcs = window.ParserReview.isCalcsSheet(t);
+  const hit = candidates.find(([name, re]) => !(calcs && /^(?:PV Module|Microinverter|Inverter) /.test(name)) && re.test(t));
   if (hit) return hit[0];
 
   const sheetName = t.match(/Sheet Name\s+([A-Z0-9][A-Z0-9 .\/&#\-]{3,80}?)(?=\s+(?:INFINITY|Initial Design|Rev|Sheet Size|Sheet Number|Scale|SCALE|$))/i);

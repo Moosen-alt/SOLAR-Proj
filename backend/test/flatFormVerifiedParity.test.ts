@@ -12,7 +12,12 @@
 // on the parent of 4c04768 (release #11 + the row snap of #22). Marks are included. Covered:
 //   - each public fixture (Yamhill, Valencia, ABQ upright, ABQ laid on its side) with a VERIFIED map,
 //     row snap on and FLAT_FORM_ROW_SNAP=0;
-//   - each fixture with an UNVERIFIED map under FLAT_FORM_ROW_SNAP=0 (the full revert).
+//   - each fixture with an UNVERIFIED map under FLAT_FORM_ROW_SNAP=0 (the full revert);
+//   - a synthetic row with a 13pt CHECKBOX in it (issue #46): #37 reads a 6-14pt stroked square as a
+//     box and drops its sides from the rules, but release #11 read them as rules — a verified
+//     point-row ended at the box's left side. Its ledger was captured on b0ffd2b0 (pre-#37), and an
+//     UNVERIFIED snap-on fill of the same blank runs first, so geometry cached for an unverified map
+//     is never handed to a verified one.
 // Every value is fictional; the maps are shaped like the live ones, with a few maxWidths tight enough
 // to cut.
 //
@@ -22,7 +27,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { PDFDocument, PDFPage, StandardFonts, degrees } from "pdf-lib";
+import { PDFDocument, PDFPage, StandardFonts, degrees, rgb } from "pdf-lib";
 import { REPO } from "./_isolate";
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "flat-form-verified-parity-"));
@@ -124,6 +129,28 @@ async function sidewaysBlank(): Promise<Uint8Array> {
   return doc.save();
 }
 const SIDEWAYS = ABQ.map((p) => ({ ...p, x: 612 - p.y, y: p.x }));
+// One writing row (rules at 680 and 702) holding a caption, a 13pt stroked checkbox and its caption,
+// plus enough printed text elsewhere for a text layer.
+async function checkboxBlank(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([612, 792]);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  page.drawText("EXAMPLE COUNTY BUILDING PERMIT", { x: 50, y: 760, size: 9, font });
+  for (const [i, t] of ["Section A - Owner", "Section B - Site", "Section C - Work", "Section D - Fees", "Section E - Signature", "Office use only", "Rev. 2026"].entries()) {
+    page.drawText(t, { x: 50, y: 380 + i * 20, size: 9, font });
+  }
+  page.drawText("Owner name:", { x: 50, y: 684, size: 9, font });
+  page.drawText("Owner occupied", { x: 318, y: 684, size: 9, font });
+  page.drawRectangle({ x: 300, y: 683, width: 13, height: 13, borderColor: rgb(0, 0, 0), borderWidth: 0.75 });
+  page.drawLine({ start: { x: 50, y: 680 }, end: { x: 560, y: 680 }, thickness: 0.75, color: rgb(0, 0, 0) });
+  page.drawLine({ start: { x: 50, y: 702 }, end: { x: 560, y: 702 }, thickness: 0.75, color: rgb(0, 0, 0) });
+  return doc.save();
+}
+// A point-row placement (its label is not printed) whose row ends at the checkbox's left side.
+const CHECKBOX = [
+  P("client.installerCompanyName", 200, 682, "Applicant (company)"),
+  P("lit:X", 303, 686, "Owner occupied"),
+];
 
 // THE PRE-#37 LEDGER: every drawText of each fill below on the parent of 4c04768 (coordinates to 0.001pt).
 const PRE_37: Record<string, Call[]> = {
@@ -262,6 +289,19 @@ const PRE_37: Record<string, Call[]> = {
     ["X", 161, 514, 9, 0],
     ["X", 523, 390, 9, 0],
   ],
+  // Captured on b0ffd2b0: the row ends 2pt left of the box (x 298), so the value shrinks to 7.5pt.
+  "checkbox|verified|snap=1": [
+    ["Sunward Example Solar LLC", 200, 682.375, 7.5, 0],
+    ["X", 318, 696, 9, 0],
+  ],
+  "checkbox|verified|snap=0": [
+    ["Sunward Example Solar LLC", 200, 682, 9, 0],
+    ["X", 318, 696, 9, 0],
+  ],
+  "checkbox|unverified|snap=0": [
+    ["Sunward Example Solar LLC", 200, 682, 9, 0],
+    ["X", 318, 696, 9, 0],
+  ],
 };
 
 const forms: Array<[string, Uint8Array, ReturnType<typeof P>[]]> = [
@@ -269,6 +309,7 @@ const forms: Array<[string, Uint8Array, ReturnType<typeof P>[]]> = [
   ["valencia", fixture("valencia-multi-purpose-permit-application.pdf"), VALENCIA],
   ["abq", abq, ABQ],
   ["abqSide", await sidewaysBlank(), SIDEWAYS],
+  ["checkbox", await checkboxBlank(), CHECKBOX],
 ];
 const runs: Array<{ verified: boolean; snap: "1" | "0"; what: string }> = [
   { verified: true, snap: "1", what: "a VERIFIED map, row snap on" },
@@ -276,6 +317,12 @@ const runs: Array<{ verified: boolean; snap: "1" | "0"; what: string }> = [
   { verified: false, snap: "0", what: "an UNVERIFIED map, FLAT_FORM_ROW_SNAP=0 (the full revert)" },
 ];
 let k = 0;
+// The geometry cache is keyed by the blank: an UNVERIFIED snap-on fill of the checkbox blank first, so
+// a verified fill after it would see #37's box-stripped rules if the cache did not tell the maps apart.
+await check("checkbox blank, an UNVERIFIED map with row snap on fills (warms the geometry cache)", async () => {
+  const res = await fillLoadedForm(defOf(CHECKBOX, false), forms[forms.length - 1][1], ctx, path.join(tmpDir, `filled-${++k}.pdf`));
+  assert.equal(res.status, "filled", `fill failed: ${res.message}`);
+});
 for (const [name, blank, placements] of forms) {
   for (const run of runs) {
     const key = `${name}|${run.verified ? "verified" : "unverified"}|snap=${run.snap}`;

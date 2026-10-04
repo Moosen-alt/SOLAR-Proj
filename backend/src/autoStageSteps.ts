@@ -128,11 +128,18 @@ export async function processStageStep(db: AppDb, projectId: string, opts: Stage
     let gaps: string[] = [];
     if (planSet) {
       try {
-        const { reconcileSplitParts } = await import("./docSplitter");
+        const { reconcileSplitParts, undecidedSpecSummary } = await import("./docSplitter");
         const reconciled = await reconcileSplitParts(db, projectId);
         gaps = reconciled.gaps;
         if (reconciled.withdrawn.length) {
-          logger.info("stage-auto", "stale split parts withdrawn", { project: projectId, withdrawn: reconciled.withdrawn.join(",") });
+          // A withdrawn spec part usually leaves its type to a person (#91): name the spec-named
+          // pages they choose from, here too — a pass that does not re-split logs nothing else.
+          logger.info("stage-auto", "stale split parts withdrawn", {
+            project: projectId,
+            withdrawn: reconciled.withdrawn.join(","),
+            ...(reconciled.undecidedSpecPages.length
+              ? { undecidedSpecPages: undecidedSpecSummary(reconciled.undecidedSpecPages, reconciled.undecidedSpecFiledAs) } : {}),
+          });
         }
       } catch { gaps = []; /* a failed check leaves the existing split standing */ }
     }
@@ -145,7 +152,7 @@ export async function processStageStep(db: AppDb, projectId: string, opts: Stage
     if (planSet && (splitNewer === 0 || gaps.length > 0)) {
       step("split");
       try {
-        const { buildUtilityPackage } = await import("./docSplitter");
+        const { buildUtilityPackage, undecidedSpecSummary } = await import("./docSplitter");
         const pkg = await buildUtilityPackage(db, projectId, "all");
         ran.push(`split(${(pkg.parts || []).length})`);
         // Name what the split did NOT produce: "parts=5" alone hid that the site plan was never
@@ -157,7 +164,7 @@ export async function processStageStep(db: AppDb, projectId: string, opts: Stage
           unclassifiedPages: (pkg.unclassifiedPages || []).join(",") || "none",
           // Title-only EQUIPMENT SPECIFICATION cut-sheets the splitter could not tell apart (#66):
           // why module_spec / inverter_spec may be "missing" from a set that has cut-sheets.
-          ...(pkg.undecidedSpecPages?.length ? { undecidedSpecPages: pkg.undecidedSpecPages.join(",") } : {}),
+          ...(pkg.undecidedSpecPages?.length ? { undecidedSpecPages: undecidedSpecSummary(pkg.undecidedSpecPages, pkg.undecidedSpecFiledAs ?? {}) } : {}),
           ...(gaps.length ? { resplitFor: gaps.join(",") } : {}),
         });
       } catch (err) {

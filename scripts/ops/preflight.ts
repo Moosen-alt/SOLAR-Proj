@@ -15,6 +15,7 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import { AUTOMATIC_SNAPSHOT_RE } from "../../backend/src/offboxBackup";
+import { DEFAULT_LISTEN_HOST, isLoopbackListenHost, resolveListenHost } from "../../backend/src/listenHost";
 
 const env = process.env;
 const asJson = process.argv.includes("--json");
@@ -83,11 +84,22 @@ add("access", "AUTH_SECRET", !authSecret ? "WARN" : authSecret === sessionKey ? 
     : authSecret === sessionKey ? "identical to SESSION_ENCRYPTION_KEY - set its own value"
       : authSecret.length < 32 ? `only ${authSecret.length} characters - use 32+ random characters` : `set (${authSecret.length} characters)`);
 
-const host = String(env.SERVER_HOST ?? "").trim();
-const localOnly = ["127.0.0.1", "::1", "localhost"].includes(host);
-add("access", "SERVER_HOST", localOnly ? "PASS" : authOn ? "WARN" : "FAIL",
-  localOnly ? `${host}: reachable only from this machine (customer links then need a tunnel - see OPERATIONS.md)`
-    : `${host || "unset (0.0.0.0)"}: listening on every network interface - keep the Node firewall rule off the Public profile`);
+// The bind decision is server.ts's (backend/src/listenHost.ts, issue #82) - read from there, never
+// re-derived, so preflight cannot report a host the server would not actually listen on.
+const listen = resolveListenHost(env);
+const host = String(env.SERVER_HOST ?? "").trim() || DEFAULT_LISTEN_HOST;
+if (isLoopbackListenHost(host)) {
+  add("access", "SERVER_HOST", "PASS",
+    `${env.SERVER_HOST?.trim() ? host : `unset (${host})`}: reachable only from this machine (customer links then need a tunnel - see OPERATIONS.md)`);
+} else if (authOn) {
+  add("access", "SERVER_HOST", "WARN", `${host}: listening beyond this machine - keep the Node firewall rule off the Public profile`);
+} else if (!listen.ok) {
+  add("access", "SERVER_HOST", "FAIL", `${host} with AUTH_ENABLED off: the server will refuse to start - turn auth on, or remove SERVER_HOST`);
+} else {
+  // Only ALLOW_UNAUTHENTICATED_NETWORK=1 gets here: the server starts, and that is the failure.
+  add("access", "SERVER_HOST", "FAIL",
+    `${host} with AUTH_ENABLED off and ALLOW_UNAUTHENTICATED_NETWORK=1: the server starts, and anyone who can reach the port has full access to customer data and the approve/credential endpoints`);
+}
 
 const finalSubmit = String(env.PORTAL_ALLOW_FINAL_SUBMIT ?? "").trim() === "1";
 add("access", "PORTAL_ALLOW_FINAL_SUBMIT", !finalSubmit ? "PASS" : authOn ? "WARN" : "FAIL",

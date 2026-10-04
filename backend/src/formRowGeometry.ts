@@ -176,10 +176,16 @@ const CACHE_MAX = 24;
 /**
  * Every page's rules and bands, read once per blank (cached by the blank's sha256). [] on any
  * failure — the caller then places values exactly as before.
+ *
+ * `unverifiedMap`: the map nobody verified. Only then are a checkbox's sides kept OUT of the rules
+ * (#37). A VERIFIED map's rows are read as release #11 read them — a box's sides are rules too, so a
+ * point-row beside a checkbox ends where it ended when a person confirmed it (hard rule 3, issue
+ * #46). Part of the cache key: the two readings of one blank never share an entry. Required, so no
+ * caller gets either by default.
  */
-export async function extractPageGeometry(pdfBytes: Uint8Array, angles: Record<number, number> = {}): Promise<PageGeometry[]> {
+export async function extractPageGeometry(pdfBytes: Uint8Array, angles: Record<number, number>, unverifiedMap: boolean): Promise<PageGeometry[]> {
   const turned = Object.entries(angles).filter(([, a]) => a).map(([p, a]) => `${p}:${a}`).join(",");
-  const key = `${createHash("sha256").update(pdfBytes).digest("hex")}|${turned}`;
+  const key = `${createHash("sha256").update(pdfBytes).digest("hex")}|${turned}|${unverifiedMap ? "unverified" : "verified"}`;
   const hit = cache.get(key);
   if (hit) return hit;
   let pages: PageGeometry[] = [];
@@ -247,13 +253,14 @@ export async function extractPageGeometry(pdfBytes: Uint8Array, angles: Record<n
           const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
           const w = x1 - x0, h = y1 - y0;
           // A CHECKBOX: a closed, stroked, axis-aligned square of 6-14pt. Kept as a box (a check mark
-          // is drawn inside it), never as rules — its sides would read as cell dividers.
+          // is drawn inside it), never as rules — its sides would read as cell dividers. (A verified
+          // map keeps release #11's reading: the box's sides fall through to the rules as well.)
           const corners = sp.pts.filter((p, k) => k === 0 || Math.abs(p[0] - sp.pts[k - 1][0]) + Math.abs(p[1] - sp.pts[k - 1][1]) > 0.01);
           const closedRect = (sp.closed || (corners.length === 5 && Math.abs(corners[4][0] - corners[0][0]) + Math.abs(corners[4][1] - corners[0][1]) < 0.01))
             && corners.length >= 4 && corners.length <= 5 && corners.every((p) => (Math.abs(p[0] - x0) < 0.3 || Math.abs(p[0] - x1) < 0.3) && (Math.abs(p[1] - y0) < 0.3 || Math.abs(p[1] - y1) < 0.3));
           if (isStroke && closedRect && w >= BOX_MIN && w <= BOX_MAX && h >= BOX_MIN && h <= BOX_MAX && Math.abs(w - h) <= 4) {
             if (!boxes.some((b) => Math.abs((b.x0 + b.x1) / 2 - (x0 + x1) / 2) < 1.5 && Math.abs((b.y0 + b.y1) / 2 - (y0 + y1) / 2) < 1.5)) boxes.push({ page: pageIndex, x0, y0, x1, y1 });
-            continue;
+            if (unverifiedMap) continue;
           }
           if (isFill) {
             if (h <= RULE_MAX_THICKNESS && w >= RULE_MIN_LENGTH) {

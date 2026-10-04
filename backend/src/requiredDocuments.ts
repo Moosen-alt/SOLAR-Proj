@@ -235,10 +235,18 @@ function planSetPresent(docsByType: Record<string, string>): boolean {
   return Boolean(docsByType.plan_set || docsByType.plan || docsByType.plan_pdf);
 }
 
+// The parser page's split map carries this line once its spec rows follow the backend
+// splitter's rule (frontend/parser-review.js SPEC_MAP_RULE, #90). A map without it was written
+// when a WIRING CALCULATIONS sheet (whose body tabulates "INVERTER SPECIFICATIONS") could be
+// mapped as the inverter / module spec, and nothing in the line says which it was — so its
+// spec rows are not trusted; a re-parse rewrites the map. Its other rows still count.
+const SPEC_MAP_RULE_LINE = /^Spec rule:.*calculation sheets excluded/im;
+const SPEC_DOC_TYPES = new Set(["module_spec", "inverter_spec"]);
+
 // Is a sheet identified inside the uploaded plan set? Requires the plan-set FILE to
 // exist AND the parse of that real file to map the sheet (READY in packetReadiness or a
 // page range in the split map) — not a bare keyword anywhere in free text.
-function sheetInPlanSet(project: ProjectRecord, docType: string, docsByType: Record<string, string>): boolean {
+export function sheetInPlanSet(project: ProjectRecord, docType: string, docsByType: Record<string, string>): boolean {
   if (!planSetPresent(docsByType)) return false;
   const hint = PLAN_SHEET_HINTS[docType];
   if (!hint) return false;
@@ -250,9 +258,12 @@ function sheetInPlanSet(project: ProjectRecord, docType: string, docsByType: Rec
     .some((line) => hint.test(line) && /\bREADY\b/i.test(line) && !/\bMISSING\b/i.test(line));
   // split map lines look like "02 SLD 3-Line ...: page 3", or — what the parser page actually
   // writes (parser.html splitPagesText) — "02 Site + plot plan: 2, 3" / "...: missing". A line
-  // ending in a page list counts; "missing" / "not detected" never does.
-  const splitLine = split.split(/\n+/).some((line) =>
-    hint.test(line) && (/\bpages?\b/i.test(line) || /:\s*\d+(?:\s*,\s*\d+)*\s*$/.test(line)));
+  // ending in a page list counts; "missing" / "not detected" never does, nor "undecided (pages
+  // 11, 12 …)": spec-named pages the page could not tell apart are not the sheet (#90).
+  const trustSplit = !SPEC_DOC_TYPES.has(docType) || SPEC_MAP_RULE_LINE.test(split);
+  const splitLine = trustSplit && split.split(/\n+/).some((line) =>
+    hint.test(line) && !/\bundecided\b/i.test(line)
+    && (/\bpages?\b/i.test(line) || /:\s*\d+(?:\s*,\s*\d+)*\s*$/.test(line)));
   return readyLine || splitLine;
 }
 
