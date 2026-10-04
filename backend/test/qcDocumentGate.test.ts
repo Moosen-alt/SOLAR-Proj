@@ -133,6 +133,99 @@ check("MUST AGREE with the staging gate — same inventory, read earlier", () =>
 });
 
 // ---------------------------------------------------------------------------
+// A PERSON-VERIFIED REQUIRED LIST BLOCKS; A SEEDED ONE ADVISES (#113, hard rule 3's shape).
+//
+// The per-job lookup's cited list used to feed ONLY docs.complete's warning: confidence was never
+// read, so a list a person had checked against the AHJ's page carried no more force than one a
+// lookup wrote. Now a verified list's slot items that are not attached are blocking docs.<slot>
+// rows (in missingBlocking, so the submit gate refuses), citing the page and words; a seeded list
+// is advice; a line no slot holds is advice on either confidence, and says why.
+// ---------------------------------------------------------------------------
+{
+  const { savePermitProcessLookup } = await import("../src/permitProcess");
+  const { getSubmitGateReport } = await import("../src/repository");
+  const { requiredListCheck } = await import("../src/requiredDocuments");
+  const STATE = "PA";
+  const AHJ = "Borough of Verity Falls";
+  const URL = "https://www.verityfalls-pa.example/building/solar-submittals";
+  const QUOTE = "Submit a copy of the current utility bill and a waste debris form with every solar permit.";
+  const none = () => ({ value: null, sourceUrl: "", quote: "", origin: "lookup" as const, notFound: "not searched" });
+  const LIST = ["Plan set", "Copy of the current utility bill", "Waste debris form"];
+  const saveList = (verified: boolean) => savePermitProcessLookup(db, {
+    state: STATE, ahj: AHJ, lookedUpAt: new Date().toISOString(), issuingAgency: none(), permitStructure: none(),
+    permits: [{ discipline: "structural", label: "Building permit", issuingAgency: none(), portalUrl: none(), recordType: none(), fee: none(),
+      documents: { value: LIST, sourceUrl: URL, quote: QUOTE, origin: "lookup" } }],
+    ...(verified ? { confidence: "verified" as const } : {}),
+  } as never, verified ? { verifiedBy: "test reviewer" } : {});
+  const FULL_UNIVERSAL = ["plan_set", "site_plan", "sld", "structural", "module_spec", "inverter_spec", "labels"];
+  const mkVerity = () => createProject(db, {
+    clientId: client.id, owner: `Verity Owner ${++n}`, street: `${n} Verity Ln`, city: "Verity Falls",
+    state: STATE, ahj: AHJ, utility: "Verity Falls Electric", dcKw: "8", acKw: "6.4",
+  }).project;
+  const proj = (pid: string) => ({ ...(db.get<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [pid]) as object), id: pid, state: STATE, ahj: AHJ, utility: "Verity Falls Electric", parserSnapshot: {} }) as never;
+  const docGate = (pid: string) => getSubmitGateReport(db, pid).checks.find((c: { id: string }) => c.id === "document-inventory") as { status: string; evidence: string[] };
+
+  saveList(false);
+  const seeded = mkVerity();
+  for (const d of FULL_UNIVERSAL) attach(seeded.id, d);
+  check("#113 SEEDED: a seeded list's missing slot item is advisory only — not in missingBlocking, no docs.<slot> error", () => {
+    const inv = documentInventory(db, proj(seeded.id));
+    assert.ok(!inv.missingBlocking.some((d) => d.docType === "utility_bill"), JSON.stringify(inv.missingBlocking.map((d) => d.docType)));
+    const rules = docRules(seeded.id);
+    assert.ok(!rules.some((r) => r.rule_id === "docs.utility_bill" && r.severity === "error"), JSON.stringify(rules));
+    const complete = rules.find((r) => r.rule_id === "docs.complete");
+    assert.equal(complete?.qc_status, "warning");
+    assert.match(complete!.message, /utility bill/);
+    assert.notEqual(docGate(seeded.id).status, "blocker", JSON.stringify(docGate(seeded.id)));
+  });
+  check("#113 NO SLOT: a line no slot holds is advisory and says it could not be matched (seeded)", () => {
+    const complete = docRules(seeded.id).find((r) => r.rule_id === "docs.complete");
+    assert.match(complete!.message, /Waste debris form \(could not match to a document type; attach as additional/);
+  });
+
+  // The same row, verified by a person.
+  saveList(true);
+  const verified = mkVerity();
+  for (const d of FULL_UNIVERSAL) attach(verified.id, d);
+  check("#113 VERIFIED: the same missing item now blocks — in missingBlocking, citing the page and the words", () => {
+    const inv = documentInventory(db, proj(verified.id));
+    const row = inv.missingBlocking.find((d) => d.docType === "utility_bill");
+    assert.ok(row, JSON.stringify(inv.missingBlocking.map((d) => d.docType)));
+    assert.ok(row!.why.includes(URL) && row!.why.includes(QUOTE), row!.why);
+    assert.equal(row!.verifiedList?.sourceUrl, URL);
+  });
+  check("#113 VERIFIED: QC raises a docs.utility_bill error row (warning status, error severity)", () => {
+    const rules = docRules(verified.id);
+    const r = rules.find((x) => x.rule_id === "docs.utility_bill");
+    assert.ok(r && r.severity === "error" && r.qc_status === "warning", JSON.stringify(rules));
+    assert.ok(r!.message.includes(URL), r!.message);
+  });
+  check("#113 VERIFIED: the submit gate refuses, with the citation", () => {
+    const g = docGate(verified.id);
+    assert.equal(g.status, "blocker", JSON.stringify(g));
+    assert.ok(g.evidence.some((e) => /MISSING \(required\)/.test(e) && e.includes(URL)), JSON.stringify(g.evidence));
+  });
+  check("#113 NO SLOT stays advisory when verified too — never a blocking row, and said so", () => {
+    const inv = documentInventory(db, proj(verified.id));
+    assert.ok(!inv.missingBlocking.some((d) => /waste debris/i.test(d.label)), JSON.stringify(inv.missingBlocking.map((d) => d.label)));
+    const complete = docRules(verified.id).find((r) => r.rule_id === "docs.complete");
+    assert.match(complete!.message, /Waste debris form \(could not match to a document type; attach as additional/);
+    assert.match(complete!.message, /verified by a person/);
+  });
+  check("#113 VERIFIED + PRESENT: an attached verified item is a pass row, and the gate no longer blocks on it", () => {
+    attach(verified.id, "utility_bill");
+    const inv = documentInventory(db, proj(verified.id));
+    const p = inv.presence.find((d) => d.docType === "utility_bill");
+    assert.ok(p?.present && p.blocking, JSON.stringify(p));
+    assert.ok(!inv.missingBlocking.some((d) => d.docType === "utility_bill"));
+    const item = requiredListCheck(db, proj(verified.id), inv).items.find((i) => /utility bill/.test(i.text));
+    assert.equal(item?.present, true, JSON.stringify(item));
+    assert.ok(!docRules(verified.id).some((r) => r.rule_id === "docs.utility_bill"));
+    assert.notEqual(docGate(verified.id).status, "blocker", JSON.stringify(docGate(verified.id)));
+  });
+}
+
+// ---------------------------------------------------------------------------
 // ONLY ProjectDox NEEDS PER-SHEET UPLOADS. The splitter says so in its own header:
 // "ProjectDox requires each sheet uploaded to its own document slot. Standard
 // Accela/EnerGov portals receive the FULL plan set as a single PDF." The QC gate

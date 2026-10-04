@@ -1241,6 +1241,9 @@ export interface ApplicationDocumentPackage {
     lane: "permit" | "nem";
     /** Why a clean submittal needs it, in the jurisdiction's own terms. */
     why: string;
+    /** Set when a person-verified per-job lookup's list made this row blocking: the list line and
+     *  the page and words it was cited on (requiredDocuments.applyVerifiedRequiredList). */
+    verifiedList?: { text: string; sourceUrl: string; quote: string };
   }>;
   /**
    * WHETHER missingDocuments ABOVE IS AN ANSWER AT ALL. An ABSENT list and an EMPTY list

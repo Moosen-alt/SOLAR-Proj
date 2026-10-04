@@ -450,7 +450,7 @@ export function runQcForProject(db: AppDb, projectId: string, options: QcRunOpti
           `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
            VALUES (?, ?, 'warning', 'docs.complete', 'Required documents', ?, 'warning', ?)`,
           [id(), projectId,
-            `Not every document on the required list${where} is attached (${list.missing.length} of ${list.items.length} missing, list from ${list.sourceLabel}): ${list.missing.map((m) => m.docTypes.length ? m.text : `${m.text} (no document slot holds this — attach it as an additional document)`).join("; ")}.${filledNote}`,
+            `Not every document on the required list${where} is attached (${list.missing.length} of ${list.items.length} missing, list from ${list.sourceLabel}): ${list.missing.map((m) => m.docTypes.length ? m.text : `${m.text} (could not match to a document type; attach as additional — no document slot holds this, so its absence cannot be proven and it never blocks)`).join("; ")}.${filledNote}`,
             createdAt],
         );
       } else if (!gateDocs.owed.length && !inv.missingAdvisory.length) {

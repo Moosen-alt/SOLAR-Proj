@@ -4919,7 +4919,7 @@ function assembleApplicationDocumentPackage(db: AppDb, projectId: string) {
   try {
     const inventory = documentInventory(db, detail.project);
     const gateDocs = owedMissingDocuments(db, detail.project, inventory);
-    const row = (d: DocPresence) => ({ docType: d.docType, label: d.label, lane: d.lane, why: d.why });
+    const row = (d: DocPresence) => ({ docType: d.docType, label: d.label, lane: d.lane, why: d.why, ...(d.verifiedList ? { verifiedList: d.verifiedList } : {}) });
     // Nothing known about this AHJ's applications: the packet says so instead of an all-clear.
     if (inventory.applicationSetUnknown) pkg.applicationSetUnknown = inventory.applicationSetUnknown;
     pkg.missingDocuments = gateDocs.owed.map(row);
