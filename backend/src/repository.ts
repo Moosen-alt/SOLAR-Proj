@@ -7089,6 +7089,7 @@ export async function runDuePermitChecks(
           addAuditLog(db, projectId, "system", "permit monitor", fit.code === "track_conflict" ? "portal.track_host_conflict" : "portal.entity_host_conflict", {
             targetId: text(target.id), track, recipeId: recipe.id, url: fit.url, code: fit.code, reason: fit.reason,
           });
+          noteReason(`the recorded portal was not used for this filing: ${fit.reason}`);
           recipe = null;
         }
       }
@@ -7120,6 +7121,8 @@ export async function runDuePermitChecks(
           noteReason("the portal page read was a sign-in wall");
         }
       }
+    } else {
+      noteReason("the filing has no application or permit number to look up");
     }
 
     const portalType = targetType === "nem" ? "powerclerk_pge" : "accela_oregon";

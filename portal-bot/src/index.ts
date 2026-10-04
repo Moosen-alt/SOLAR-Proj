@@ -947,7 +947,7 @@ export async function checkStatusWithAdapter(
     }
 
     const text = await adapter.checkStatus(applicationNumbers);
-    if (!text) report(String((adapter as { lastStatusReason?: string }).lastStatusReason || "the portal page held no status for this application"));
+    if (!text) report(adapter.lastStatusReason || "the portal page held no status for this application");
     return text;
   } catch (err) {
     report(`the status read failed: ${err instanceof Error ? err.message.slice(0, 200) : String(err)}`);

@@ -8,13 +8,22 @@
 //                   (10,15,25: not a pager); the filing is on page 3
 //   /list?page=     a 2-page list paged by a "Next" link; the filing is on page 2
 //   /list2          a list whose only "next"-like control is "Next: Submit application"
+//   /list3          a "Next" whose words to a person are "Next" but whose aria-label submits
+//   /searchlist2    a search box Enter does not run, beside an ICON-ONLY button labelled (aria-label)
+//                   "Submit application" — its class says "search", its words say submit
+//   /home6          a "Projects" link whose title says "Start a new project"
+//   /home4, /home5  a "Projects" link to ANOTHER host (a second server, OTHER): plainly (href), and by
+//                   script (href="#" + onclick). OTHER's list holds the very number looked for.
 //   /login          a sign-in form
 //   /new, /submit   must never be requested
 //
 //   MUST-PASS    found on page 3 via the Projects link + page select; found via "Next";
 //                RecipeAdapter.checkStatus with portalUrl = /login still finds it and never loads /login
 //   MUST-EXCLUDE "New Project" is never followed; the page-size select is not walked; a number that
-//                is on no page -> null with how many pages were read; a login page -> named as such
+//                is on no page -> null with how many pages were read; a login page -> named as such;
+//                a control is refused by ANY of its names (text, aria-label, title), not only its text
+//                (Helm, PR #169, rule 1); a list on another host is never read, whether the link says
+//                so (never requested) or a script takes the browser there (read stops, unread) (rule 5)
 //
 // Run: npx tsx portal-bot/src/statusFinder.dom.smoke.ts
 import http from "node:http";
@@ -47,12 +56,34 @@ const searchList = (page: number, q: string) => shell(`<h1>Projects</h1>
   <label>Page <select onchange="location.href='/searchlist?page='+this.value">${[1, 2, 3, 4, 5].map((n) => `<option${n === page ? " selected" : ""}>${n}</option>`).join("")}</select></label>
   <table><tbody>${q ? ALL.filter((r) => r.includes(q)).join("") : ALL.slice((page - 1) * 2, page * 2).join("")}</tbody></table>`);
 
+// ANOTHER HOST (a second origin): its "Projects" list holds the very number looked for, so a read that
+// follows a link there would "find" it. A status read must never read it (rule 5).
+const otherHits: string[] = [];
+const other = http.createServer((q, r) => {
+  const u = new URL(q.url ?? "/", "http://127.0.0.1");
+  otherHits.push(u.pathname + u.search);
+  r.writeHead(200, { "Content-Type": "text/html" });
+  r.end(shell(`<h1>Projects</h1><table><tbody>${row("APP-555001", "Application Approved")}</tbody></table>`));
+});
+await new Promise<void>((ok) => other.listen(0, "127.0.0.1", () => ok()));
+const otherBase = `http://127.0.0.1:${(other.address() as { port: number }).port}`;
+
 const server = http.createServer((q, r) => {
   const u = new URL(q.url ?? "/", "http://127.0.0.1");
   hits.push(u.pathname + u.search);
   const page = Number(u.searchParams.get("page") || "1");
   const html = u.pathname === "/home" ? HOME
     : u.pathname === "/home2" ? shell(`<h1>Program Home</h1><a href="/searchlist">Projects</a>`)
+    : u.pathname === "/home3" ? shell(`<h1>Program Home</h1><a href="/searchlist2">Projects</a>`)
+    : u.pathname === "/searchlist2" ? shell(`<h1>Projects</h1>
+        <div class="toolbar"><select><option selected>Search All Columns</option></select><input id="q">
+        <button aria-label="Submit application" class="btn-search" onclick="location.href='/submit'"><i class="fa fa-search"></i></button></div>
+        <table><tbody>${row("APP-600001", "Draft")}</tbody></table>`)
+    : u.pathname === "/apps3" ? shell(`<h1>Home</h1><a href="/list3">Applications</a>`)
+    : u.pathname === "/list3" ? shell(`<h1>Applications</h1><table><tbody>${row("APP-400002", "Draft")}</tbody></table><a href="/submit" aria-label="Next: submit this application">Next</a>`)
+    : u.pathname === "/home6" ? shell(`<h1>Program Home</h1><a href="/new" title="Start a new project">Projects</a>`)
+    : u.pathname === "/home4" ? shell(`<h1>Program Home</h1><a href="${otherBase}/projects">Projects</a>`)
+    : u.pathname === "/home5" ? shell(`<h1>Program Home</h1><a href="#" onclick="location.href='${otherBase}/projects'; return false;">Projects</a>`)
     : u.pathname === "/searchlist" ? searchList(page, u.searchParams.get("q") ?? "")
     : u.pathname === "/projects" ? projectsPage(page)
     : u.pathname === "/list" ? listPage(page)
@@ -132,6 +163,47 @@ await check("MUST-EXCLUDE a 'Next' control whose words submit is never clicked",
   assert.ok(!hits.includes("/submit"), "a 'Next: Submit application' control was clicked on a read-only pass");
 });
 
+await check("MUST-EXCLUDE an icon-only search button whose aria-label submits is never clicked", async () => {
+  hits.length = 0;
+  await page.goto(`${base}/home3`);
+  const r = await findFilingStatus(page, ["APP-660001"], { settleMs: 5000 });
+  assert.equal(r.text, null);
+  assert.ok(!hits.includes("/submit"), `an icon-only "Submit application" button was clicked as the search button: ${JSON.stringify(hits)}`);
+});
+
+await check("MUST-EXCLUDE a 'Next' whose aria-label submits is never clicked, though its text is only 'Next'", async () => {
+  hits.length = 0;
+  await page.goto(`${base}/apps3`);
+  const r = await findFilingStatus(page, ["APP-123456"], { settleMs: 5000 });
+  assert.equal(r.text, null);
+  assert.ok(!hits.includes("/submit"), `a "Next" labelled "submit this application" was clicked: ${JSON.stringify(hits)}`);
+});
+
+await check("MUST-EXCLUDE a 'Projects' link whose title starts a new project is never followed", async () => {
+  hits.length = 0;
+  await page.goto(`${base}/home6`);
+  const r = await findFilingStatus(page, ["APP-123456"], { settleMs: 5000 });
+  assert.equal(r.text, null);
+  assert.match(r.reason, /no projects\/applications list link/);
+  assert.ok(!hits.includes("/new"), "a link titled 'Start a new project' was followed");
+});
+
+await check("MUST-EXCLUDE a list link to another host is never followed, and the reason says so", async () => {
+  otherHits.length = 0;
+  await page.goto(`${base}/home4`);
+  const r = await findFilingStatus(page, ["APP-555001"], { settleMs: 5000 });
+  assert.equal(r.text, null, `read a list on another host: ${r.text}`);
+  assert.match(r.reason, /goes to another host \(127\.0\.0\.1:\d+\); a status read never follows it/);
+  assert.deepEqual(otherHits, [], "the other host was requested");
+});
+
+await check("MUST-EXCLUDE a list link a script sends to another host: the read stops there, unread", async () => {
+  await page.goto(`${base}/home5`);
+  const r = await findFilingStatus(page, ["APP-555001"], { settleMs: 5000 });
+  assert.equal(r.text, null, `read a list on another host: ${r.text}`);
+  assert.match(r.reason, /opening "Projects" left the signed-in portal \(127\.0\.0\.1:\d+\) for 127\.0\.0\.1:\d+/);
+});
+
 await check("MUST-EXCLUDE a sign-in page is named as such, nothing is read", async () => {
   await page.goto(`${base}/login`);
   const r = await findFilingStatus(page, ["APP-123456"], { settleMs: 5000 });
@@ -157,5 +229,6 @@ await check("MUST-PASS RecipeAdapter.checkStatus stays on the signed-in page: po
 
 await browser.close();
 server.close();
+other.close();
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
 console.log("\nall status-finder checks passed");
