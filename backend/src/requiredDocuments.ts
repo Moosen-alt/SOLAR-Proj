@@ -1212,7 +1212,9 @@ function applyVerifiedRequiredList(project: ProjectRecord, required: RequiredDoc
       for (const r of held) {
         if (r.blocking || r.verifiedList) continue;
         r.blocking = true;
-        r.why = `${r.why} ${cite}`.trim();
+        // Cite first here too: the row's own why runs ahead of it otherwise (labels' is long enough
+        // to push the URL past the gate's line cap — #121), and the cite is why the row now blocks.
+        r.why = `${cite} ${r.why}`.trim();
         r.verifiedList = verifiedList;
       }
       continue;
