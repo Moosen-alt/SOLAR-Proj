@@ -1774,7 +1774,7 @@ export async function fillLoadedForm(
           if (rowSnapOn) {
             snapTools = frameTools;
             const angles = Object.fromEntries([...frames.values()].filter((f) => f.angle).map((f) => [f.page, f.angle]));
-            geometry = await snapTools.extractPageGeometry(templateBytes, angles);
+            geometry = await snapTools.extractPageGeometry(templateBytes, angles, newMechanics);
           }
         }
       } catch { /* keep anchorFor null → use stored x/y */ }

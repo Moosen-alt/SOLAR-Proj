@@ -142,7 +142,7 @@ function rowViolations(g: Geo, items: Item[], lines: Line[], expect: Array<{ lab
 // ---------------------------------------------------------------------------------------------
 const yamhill = new Uint8Array(fs.readFileSync(path.join(REPO, "backend", "test", "fixtures", "yamhill-building-application.pdf")));
 const yItems = await extractLabels(yamhill);
-const yGeo = (await extractPageGeometry(yamhill))[0];
+const yGeo = (await extractPageGeometry(yamhill, {}, true))[0];
 // The stored map as the vision pass + re-map left it (labels, sources, coordinates — no project data).
 const P = (source: string, x: number, y: number, label: string, maxWidth?: number) => ({ source, page: 0, x, y, size: 9, ...(maxWidth ? { maxWidth } : {}), label });
 const YAMHILL_PLACEMENTS = [
@@ -360,7 +360,7 @@ async function syntheticBlank(): Promise<Uint8Array> {
 }
 const syn = await syntheticBlank();
 const sItems = await extractLabels(syn);
-const sGeo = (await extractPageGeometry(syn))[0];
+const sGeo = (await extractPageGeometry(syn, {}, true))[0];
 // A vision map's drift: every baseline 3.5pt low (ON the row's rule), a colon dropped, a section-
 // qualified label, a header caption with no colon, the parcel box bound to the description.
 const SYN_PLACEMENTS = [
@@ -433,7 +433,7 @@ async function syntheticBlank2(): Promise<Uint8Array> {
 }
 const syn2 = await syntheticBlank2();
 const s2Items = await extractLabels(syn2);
-const s2Geo = (await extractPageGeometry(syn2))[0];
+const s2Geo = (await extractPageGeometry(syn2, {}, true))[0];
 await check("SHADED LABEL CELL: the value goes in the white cell beside it on the same row (never the rows below, never the shaded cell)", async () => {
   const def = { ...yamhillDef([P("project.homeownerName", 150, 699.8, "Owner Name", 200)]), id: "tmpl-synthetic-2" };
   const lines = await drawnLines((await fill(def, syn2, ctx)).bytes, s2Items);

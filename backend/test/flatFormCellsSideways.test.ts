@@ -104,7 +104,7 @@ async function readBlank(bytes: Uint8Array): Promise<Blank> {
   const page = (await PDFDocument.load(bytes)).getPage(0);
   const frame = pageFrame(raw, 0, page.getWidth(), page.getHeight());
   const items = splitBlankRuns(itemsInFrame(raw, frame)).filter((i) => i.page === 0);
-  const geo = (await extractPageGeometry(bytes, frame.angle ? { 0: frame.angle } : {}))[0];
+  const geo = (await extractPageGeometry(bytes, frame.angle ? { 0: frame.angle } : {}, true))[0];
   return { bytes, raw, items, geo, angle: frame.angle, width: page.getWidth(), height: page.getHeight() };
 }
 async function drawnLines(filled: Uint8Array, blank: Blank): Promise<Line[]> {
