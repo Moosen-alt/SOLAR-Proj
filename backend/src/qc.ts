@@ -5,8 +5,9 @@ import { id } from "./ids";
 import { parseJson } from "./json";
 import { fieldAliases, parserField } from "./normalize";
 import { logger } from "./logger";
-import { documentInventory, owedMissingDocuments, requiredListCheck } from "./requiredDocuments";
+import { documentInventory, owedMissingDocuments, requiredListCheck, sheetContentGaps } from "./requiredDocuments";
 import { startedAtLabel } from "./formAcquisitionPlan";
+import { planSetTextForProject } from "./projectDocuments";
 import { nowIso } from "./time";
 import { addAuditLog } from "./audit";
 import { QC_STATUS_WRITTEN_ACTION, touchProjectMetrics } from "./kpi";
@@ -372,7 +373,20 @@ export function runQcForProject(db: AppDb, projectId: string, options: QcRunOpti
     //
     // SAME INVENTORY, read earlier — deliberately not a second list. Two lists that can disagree
     // is how the portal ends up being the thing that tells you.
+    // Jurisdiction-adopted code context: any state/county with recorded prescriptive
+    // limits gets the baseline screens (data-driven); Oregon behavior unchanged. Resolved once,
+    // here, because the sheet-content rows below name NEC sections by its adopted edition too.
+    const codeCtx = resolveEffectiveCodeContext(db, clean(payload.state), clean(payload.ahj));
     try {
+      // THE SAME PROJECT THE STAGING GATE SEES. planSetExtractedText is a non-persistent overlay
+      // (getProjectDetail re-derives it from project_documents; updateProject strips it), so
+      // parser_json alone never carries the uploaded sheets' text — and the sheet-content check
+      // would report "not found" on a PDF that states it. Same overlay as historicalFailures:
+      // the parser's own text wins when it already carries the field.
+      let planSetText = "";
+      if (!clean(payload.planSetExtractedText)) {
+        try { planSetText = planSetTextForProject(db, projectId); } catch { planSetText = ""; }
+      }
       const qcProject = {
         id: projectId,
         ahj: ctx.ahj,
@@ -380,7 +394,7 @@ export function runQcForProject(db: AppDb, projectId: string, options: QcRunOpti
         utility: clean((project as unknown as Record<string, unknown>).utility) || clean(payload.utility) || "",
         systemSizeDcKw: (project as unknown as Record<string, unknown>).system_size_dc_kw == null
           ? null : Number((project as unknown as Record<string, unknown>).system_size_dc_kw),
-        parserSnapshot: payload,
+        parserSnapshot: planSetText ? { ...payload, planSetExtractedText: planSetText } : payload,
       } as never;
       const inv = documentInventory(db, qcProject);
       // ONE QUESTION, ONE PREDICATE: what the operator OWES (owedMissingDocuments — the submit
@@ -425,6 +439,20 @@ export function runQcForProject(db: AppDb, projectId: string, options: QcRunOpti
       for (const d of inv.missingAdvisory) {
         warningCount += 1;
         say("warning", "warning", d.docType, d.label, String(d.why || ""));
+      }
+      // PRESENT IS NOT THE SAME AS SHOWING WHAT IT PROMISES. A sheet counts as present from its
+      // title; sheetContentGaps reads the plan-set text for the elements the row's `why` names
+      // (705.12 interconnection, R324.6 pathways, UL 1741 …) and says which it could not find.
+      // ADVISORY ONLY — an info-severity warning row; the city.* reviewer rules decide blockers.
+      for (const g of sheetContentGaps(qcProject, inv.presence, codeCtx.adoptedCodes)) {
+        warningCount += 1;
+        db.run(
+          `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
+           VALUES (?, ?, 'warning', ?, 'Required document content', ?, 'info', ?)`,
+          [id(), projectId, `docs.${g.docType}.content`,
+            `${g.label} present (${g.via || "on file"}); no ${g.missing.join(" or ")} text found in the extracted package text (uploaded plan-set text where a text layer exists, plus the parser's summary fields — image-only pages are not read). Advisory — confirm the sheet shows it; the code-review findings decide what blocks.`,
+            createdAt],
+        );
       }
       // THE JOB'S OWN REQUIRED LIST, NOT THE UNIVERSAL SET (MF6, e2e-gap close 2026-09-26). This
       // row passed with "Every document this filing needs for Waltham City is attached" while the
@@ -479,9 +507,6 @@ export function runQcForProject(db: AppDb, projectId: string, options: QcRunOpti
       );
     }
 
-    // Jurisdiction-adopted code context: any state/county with recorded prescriptive
-    // limits gets the baseline screens (data-driven); Oregon behavior unchanged.
-    const codeCtx = resolveEffectiveCodeContext(db, clean(payload.state), clean(payload.ahj));
     // THE PROJECT'S OWN CLIENT'S STANDARD DISCONNECT PART, so the plan-set cross-check can fire
     // (leak sweep 2026-09-28: nothing ever put it in this payload, so the check was dead code while
     // the portal filing used the part). Read from the project's own client row — never another's.

@@ -35,7 +35,7 @@
 // ---------------------------------------------------------------------------
 
 import type { AppDb } from "./db";
-import type { ProjectRecord } from "../../shared/src/types";
+import type { CodeEdition, ProjectRecord } from "../../shared/src/types";
 import { projectDocsByType } from "./projectDocuments";
 import { duplicateUploads, uploadedSubmissionDocuments } from "./submissionDocuments";
 import { filledFormsByDocType, applicationKindForPath, loadStoredTemplates, formAllowedForPath, formContradictsPath } from "./ahjForms";
@@ -54,6 +54,11 @@ import {
 import { filledApplicationForms, heldUnfillableAgencyBlanks } from "./ahjForms";
 import { requirementSlots } from "./requirementSlots";
 import { stageAcquiresForm, stageAcquisitionFor, type StageAcquiredForm, type StageAcquisition } from "./formAcquisitionPlan";
+import {
+  designText, INVERTER_LISTING_PATTERNS, LOAD_SIDE_CALC_PATTERNS, MODULE_LISTING_PATTERNS, POWER_SOURCE_DIRECTORY_PATTERNS, RAPID_SHUTDOWN_PATTERNS, SUPPLY_SIDE_DETAIL_PATTERNS,
+} from "./codeReviewRules";
+import { FIRE_PATHWAY_PATTERNS } from "./projectEvidence";
+import { codeFamilyOf } from "./codeFamilies";
 
 export interface RequiredDocItem {
   /** project_documents.doc_type this maps to (or a synthetic key for path docs). */
@@ -228,14 +233,103 @@ function snap(project: ProjectRecord, key: string): string {
 // Plan-set sheet labels we look for in the parser's readiness / split text, used as a
 // secondary signal that a sheet is present INSIDE the combined plan-set PDF (the plan
 // set file itself must still physically exist — we never count prose alone).
-const PLAN_SHEET_HINTS: Record<string, RegExp> = {
+const PLAN_SHEET_HINT_TABLE = {
   sld: /\b(sld|one-?line|single-?line|3-?line|three-?line)\b/i,
   site_plan: /\b(site\s*plan|plot\s*plan|site\/?roof)\b/i,
   structural: /\b(structural|roof\s*fram|rafter|truss|attachment\s*detail|mount\s*detail)\b/i,
   module_spec: /\bmodule\s*spec/i,
   inverter_spec: /\b(inverter|microinverter)\s*spec|\bUL[\s-]*1741\b/i,
   labels: /\b(label|placard)/i,
+} satisfies Record<string, RegExp>;
+type PlanSheetType = keyof typeof PLAN_SHEET_HINT_TABLE;
+const PLAN_SHEET_HINTS: Record<string, RegExp> = PLAN_SHEET_HINT_TABLE;
+
+// WHAT EACH SHEET'S `why` PROMISES, as text. PLAN_SHEET_HINTS decides that a sheet is PRESENT from
+// its TITLE — so a plan set with a sheet titled "Single Line Diagram" and no interconnection detail
+// passed docs.sld, and the row's own `why` ("rapid shutdown + NEC 705.12") was never checked. This
+// table is the content layer beside it, keyed by the same docTypes so the two cannot drift: for each
+// present sheet, the elements its `why` names, and the patterns that count as showing them.
+//
+// THE PATTERNS ARE THE city.* REVIEWER RULES' OWN (codeReviewRules / projectEvidence), imported,
+// never restated: an advisory here and a reviewer finding there must agree about the same words.
+// ADVISORY ONLY. The city.* rules remain the authority on blockers; this layer only says, on the
+// QC screen, which promised element the readable text does not show.
+//
+// EDITION-AWARE. The wording an element is NAMED by follows the jurisdiction's adopted NEC: 690.12
+// moved from the 10 ft boundary (2014) to the array boundary / PV hazard control (2017+), and the
+// supply-side connection moved out of 705.12(A) into its own 705.11 in 2020.
+interface SheetContentElement { element: string; patterns: RegExp[] }
+const PV_HAZARD_CONTROL = /\bPV\s*hazard\s*control|\bPVHCS\b/i;
+const POINT_OF_INTERCONNECTION = /\bpoint\s+of\s+(?:inter)?connection\b|\bPOI\b/i;
+// Keyed by PlanSheetType, so a content entry for a sheet the hints do not know is a compile error.
+const SHEET_CONTENT_ELEMENTS: Partial<Record<PlanSheetType, (nec: number | null) => SheetContentElement[]>> = {
+  sld: (nec) => [
+    {
+      element: `${necLabel(nec)} 690.12 rapid shutdown${nec == null ? "" : nec >= 2017 ? " (array boundary / PV hazard control)" : " (10 ft boundary)"}`,
+      patterns: nec != null && nec >= 2017 ? [...RAPID_SHUTDOWN_PATTERNS, PV_HAZARD_CONTROL] : RAPID_SHUTDOWN_PATTERNS,
+    },
+    {
+      element: nec != null && nec < 2020
+        ? `${necLabel(nec)} 705.12 interconnection point (supply side 705.12(A) / load side 705.12(D))`
+        : `${necLabel(nec)} 705.11 supply-side / 705.12 load-side interconnection point`,
+      patterns: [...LOAD_SIDE_CALC_PATTERNS, ...SUPPLY_SIDE_DETAIL_PATTERNS, POINT_OF_INTERCONNECTION],
+    },
+  ],
+  site_plan: () => [{ element: "R324.6 fire access pathways", patterns: FIRE_PATHWAY_PATTERNS }],
+  module_spec: () => [{ element: "module listing (UL 61730 / UL 1703)", patterns: MODULE_LISTING_PATTERNS }],
+  inverter_spec: () => [{ element: "UL 1741(-SB) listing", patterns: INVERTER_LISTING_PATTERNS }],
+  labels: (nec) => [
+    { element: `${necLabel(nec)} 705.10 power-source directory`, patterns: POWER_SOURCE_DIRECTORY_PATTERNS },
+    { element: `${necLabel(nec)} 690.12 rapid shutdown label`, patterns: nec != null && nec >= 2017 ? [...RAPID_SHUTDOWN_PATTERNS, PV_HAZARD_CONTROL] : RAPID_SHUTDOWN_PATTERNS },
+  ],
 };
+
+function necLabel(nec: number | null): string {
+  return nec == null ? "NEC" : `NEC ${nec}`;
+}
+
+/** The NEC edition year the jurisdiction has adopted for the ELECTRICAL family (a state code such
+ *  as the OESC counts by the NEC year it is based on), or null when no electrical entry is on file. */
+export function adoptedNecEdition(adoptedCodes: CodeEdition[] | undefined): number | null {
+  for (const c of adoptedCodes ?? []) {
+    if (codeFamilyOf(c) !== "electrical") continue;
+    const year = String(c.basedOn || "").match(/\b(?:19|20)\d{2}\b/)?.[0] ?? String(c.edition || "").match(/\b(?:19|20)\d{2}\b/)?.[0];
+    if (year) return Number(year);
+  }
+  return null;
+}
+
+export interface SheetContentGap {
+  docType: string;
+  label: string;
+  via: string;
+  /** The promised elements no readable text shows, in the edition's wording. */
+  missing: string[];
+}
+
+/**
+ * For each PRESENT sheet in SHEET_CONTENT_ELEMENTS, the elements its `why` promises that the
+ * package text does not show. TEXT ONLY — no new extraction or vision call: it reads the same text
+ * the city.* rules read (designText), minus the two sheet-TITLE maps (splitPagesText,
+ * packetReadinessText) that presence was decided from, so a title cannot vouch for its own content.
+ * No readable body text at all → no rows: nothing was read, which is not evidence of absence.
+ */
+export function sheetContentGaps(project: ProjectRecord, presence: DocPresence[], adoptedCodes?: CodeEdition[]): SheetContentGap[] {
+  const body = designText({
+    ...project,
+    parserSnapshot: { ...(project.parserSnapshot || {}), splitPagesText: "", packetReadinessText: "" },
+  } as ProjectRecord);
+  if (!body.trim()) return [];
+  const nec = adoptedNecEdition(adoptedCodes);
+  const gaps: SheetContentGap[] = [];
+  for (const p of presence) {
+    const elements = p.present ? SHEET_CONTENT_ELEMENTS[p.docType as PlanSheetType]?.(nec) : undefined;
+    if (!elements) continue;
+    const missing = elements.filter((e) => !e.patterns.some((re) => re.test(body))).map((e) => e.element);
+    if (missing.length) gaps.push({ docType: p.docType, label: p.label, via: p.via, missing });
+  }
+  return gaps;
+}
 
 function planSetPresent(docsByType: Record<string, string>): boolean {
   return Boolean(docsByType.plan_set || docsByType.plan || docsByType.plan_pdf);
