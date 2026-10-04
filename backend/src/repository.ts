@@ -3433,8 +3433,26 @@ const GATE_EVIDENCE_CAP = 6;
  *  the form fill reads too; re-exported so existing callers keep working. */
 export { contractorLicenceForState } from "./clients";
 
+const GATE_EVIDENCE_LINE_CAP = 190;
+const GATE_EVIDENCE_LINE_HARD_CAP = 400;
+
+/** One gate evidence line, capped — but never mid-URL: a cited page is what the operator opens to
+ *  check the line (a verified list's citation, #121), so the cap stretches to the end of the first
+ *  URL it would cut, up to a hard ceiling. */
+function gateEvidenceLine(line: string): string {
+  const cleaned = text(line).replace(/\s+/g, " ").trim();
+  let limit = GATE_EVIDENCE_LINE_CAP;
+  for (const m of cleaned.matchAll(/https?:\/\/[^\s)"]+/g)) {
+    const end = (m.index ?? 0) + m[0].length;
+    if (end < limit) continue;
+    if ((m.index ?? 0) < limit) limit = Math.min(GATE_EVIDENCE_LINE_HARD_CAP, end + 2);
+    break;
+  }
+  return shorten(cleaned, limit);
+}
+
 function submitGateCheck(input: SubmitGateCheck): SubmitGateCheck {
-  const lines = input.evidence.filter(Boolean).map((line) => shorten(text(line), 190));
+  const lines = input.evidence.filter(Boolean).map(gateEvidenceLine);
   const named = lines.filter((line) => GATE_EVIDENCE_NAMES_A_DOCUMENT.test(line)).length;
   let otherRoom = Math.max(0, GATE_EVIDENCE_CAP - named);
   return {
