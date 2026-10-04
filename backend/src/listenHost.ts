@@ -20,8 +20,9 @@ export type ListenHostDecision =
 export const DEFAULT_LISTEN_HOST = "127.0.0.1";
 
 /** EXACT loopback names only — not startsWith("127.") (that passes "127.evil.example") and not
- *  the whole 127/8: a wider allowance only widens what a no-login server would accept. */
-function isLoopbackListenHost(host: string): boolean {
+ *  the whole 127/8: a wider allowance only widens what a no-login server would accept.
+ *  Exported for scripts/ops/preflight.ts, which reports this same decision. */
+export function isLoopbackListenHost(host: string): boolean {
   const h = host.toLowerCase();
   return h === "127.0.0.1" || h === "::1" || h === "localhost";
 }

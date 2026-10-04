@@ -84,12 +84,15 @@ const today = preflight({
 });
 check("exits 1", () => assert.equal(today.code, 1, today.out));
 for (const [name, re] of [
-  ["AUTH_ENABLED", /FAIL/], ["admin login", /FAIL/], ["PORTAL_ALLOW_FINAL_SUBMIT", /FAIL .*with no login/], ["SERVER_HOST", /FAIL/],
+  ["AUTH_ENABLED", /FAIL/], ["admin login", /FAIL/], ["PORTAL_ALLOW_FINAL_SUBMIT", /FAIL .*with no login/],
   ["PUBLIC_BASE_URL", /FAIL/], ["BACKUP_SECOND_DIR", /FAIL/], ["watchdog channel", /FAIL .*SMTP set but WATCHDOG_ALERT_TO is empty/],
   ["watchdog running", /FAIL/], ["BACKUP_INTERVAL_HOURS", /WARN .*1-4 h recommended/], ["BACKUP_KEEP", /PASS .*14\.0 days/], ["WATCHDOG_HEARTBEAT_URL", /WARN/],
 ] as [string, RegExp][]) {
   check(`${name}: ${re.source}`, () => assert.match(line(today.out, name), re));
 }
+check("SERVER_HOST unset is loopback since #82 (server.ts binds 127.0.0.1), so a PASS even with auth off", () => {
+  assert.match(line(today.out, "SERVER_HOST"), /PASS .*unset \(127\.0\.0\.1\): reachable only from this machine/);
+});
 check("BACKUP_DIR with a fresh snapshot is a PASS even today", () => assert.match(line(today.out, "BACKUP_DIR"), /PASS/));
 
 console.log("preflight: the configured shape");
@@ -113,6 +116,25 @@ const armed = preflight({
 check("MUST-EXCLUDE: AUTH_SECRET equal to the session key is a FAIL, not a PASS", () => assert.match(line(armed.out, "AUTH_SECRET"), /FAIL .*identical/));
 check("final submit armed WITH a login is a WARN naming the per-run approval (the operator's ruling), not a FAIL", () => {
   assert.match(line(armed.out, "PORTAL_ALLOW_FINAL_SUBMIT"), /WARN .*per-run approval/);
+});
+console.log("preflight: SERVER_HOST reports the server's own bind decision (listenHost.ts)");
+const hostCase = (extra: Record<string, string>): string =>
+  line(preflight({ AUTOPILOT_DB_PATH: withAdmin, BACKUP_DIR: backupDir, ...extra }).out, "SERVER_HOST");
+check("explicit loopback with auth off: PASS", () => {
+  assert.match(hostCase({ AUTH_ENABLED: "false", SERVER_HOST: "::1" }), /PASS .*::1: reachable only from this machine/);
+});
+check("auth on + non-loopback: WARN with the firewall note", () => {
+  assert.match(hostCase({ AUTH_ENABLED: "true", SERVER_HOST: "0.0.0.0" }), /WARN .*0\.0\.0\.0: .*firewall rule off the Public profile/);
+});
+check("auth off + non-loopback, no opt-in: FAIL - the server will refuse to start", () => {
+  assert.match(hostCase({ AUTH_ENABLED: "false", SERVER_HOST: "0.0.0.0" }), /FAIL .*server will refuse to start/);
+});
+check("MUST-EXCLUDE: a look-alike loopback name (127.evil.example) is not a PASS", () => {
+  assert.match(hostCase({ AUTH_ENABLED: "false", SERVER_HOST: "127.evil.example" }), /FAIL .*refuse to start/);
+});
+check("auth off + non-loopback WITH ALLOW_UNAUTHENTICATED_NETWORK=1: still FAIL (it starts, exposed)", () => {
+  assert.match(hostCase({ AUTH_ENABLED: "false", SERVER_HOST: "0.0.0.0", ALLOW_UNAUTHENTICATED_NETWORK: "1" }),
+    /FAIL .*ALLOW_UNAUTHENTICATED_NETWORK=1: the server starts, and anyone/);
 });
 console.log("preflight: the admin seed does not promote");
 const seedExisting = preflight({ AUTOPILOT_DB_PATH: noPw, AUTH_ENABLED: "true", ADMIN_EMAIL: "Owner@ops.invalid", ADMIN_PASSWORD: SECRETS.adminPw, BACKUP_DIR: backupDir });
