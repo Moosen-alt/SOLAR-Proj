@@ -739,11 +739,16 @@ export function saveResearchedCodeProfile(
     }
   }
   if (existing && text(existing.confidence) === "verified") {
+    // Every outcome is logged as what it is (issue #164): a research answer is never reported as
+    // "skipped" — the paid call ran, and the log says whether a person now has something to review.
+    const where = `${profile.state}/${profile.ahj || "(state default)"}`;
     if (isResearch && profile.adoptedCodes?.length) {
       const proposal = proposeEditionUpdate(db, mapRow(existing), profile, incomingProvenance?.method === "reference_truth" ? "reference" : "research");
-      logger.info("code-profiles", `research not saved — ${profile.state}/${profile.ahj || "(state default)"} is human-verified${proposal ? `; ${proposal.changes.length} edition change(s) proposed for a person` : " and agrees with it"}`);
+      logger.info("code-profiles", `research not saved — ${where} is human-verified${!proposal ? " and agrees with it" : proposal.isNew ? `; ${proposal.changes.length} edition change(s) stored as proposal ${proposal.fingerprint} for a person` : `; the same finding is already pending as proposal ${proposal.fingerprint}`}`);
+    } else if (isResearch) {
+      logger.info("code-profiles", `research not saved — ${where} is human-verified and the answer named no edition to compare, so nothing is proposed`);
     } else {
-      logger.info("code-profiles", `research skipped — ${profile.state}/${profile.ahj || "(state default)"} is human-verified`);
+      logger.info("code-profiles", `import skipped — ${where} is human-verified`);
     }
     return getCodeProfile(db, profile)!;
   }
@@ -1551,6 +1556,24 @@ export async function runCodeResearch(db: AppDb, payload: Partial<CodeResearchJo
   const state = String(payload.state || "");
   const ahj = String(payload.ahj || "");
   const families = Array.isArray(payload.families) ? payload.families.filter(isCodeFamily) : undefined;
+  // The row the save would land on: the exact key, or — for an AHJ — the human-verified row its
+  // name resolves to by fuzzy match ("City of Portland" -> or|portland), which the save refuses to
+  // shadow. Either way the result is "not saved", never a saved:true over an unchanged row.
+  const writeTarget = ahj.trim() ? resolveCriteriaWriteRow(db, state, ahj) : null;
+  const key = writeTarget?.kind === "blocked_verified" ? writeTarget.key : codeProfileKey({ state, ahj });
+  const targetRow = () => db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [key]);
+  const targetVerified = text(targetRow()?.confidence) === "verified";
+  // A HUMAN-VERIFIED TARGET IS ONLY EVER LOOKED UP AS A DUE STALENESS CHECK (issue #164). Nothing
+  // can be written to it, so the paid call runs only when the shared rule says the check is due
+  // NOW — not for a job queued before a person (re-)verified the row, an AHJ row (never
+  // researched), or a backfill/replayed payload. Asked at run time: the queue can lag the row.
+  if (targetVerified) {
+    const due = codeResearchDecision(db, state, ahj);
+    if (due.action !== "verify_check") {
+      logger.info("code-profiles", `code research not run — ${state}/${ahj || "(state default)"} is human-verified and no staleness check is due (${due.reason}); no model call`);
+      return { saved: false, verified: true, modelCalled: false, reason: `human-verified, no check due (${due.reason})` };
+    }
+  }
   const llm = provider ?? (await import("./llm")).createLLMProvider();
   const research = await llm.researchJurisdictionCodes({ state, ahj, ...(families?.length ? { families } : {}) });
   const prov = provenanceOf(research.profile);
@@ -1572,6 +1595,7 @@ export async function runCodeResearch(db: AppDb, payload: Partial<CodeResearchJo
     if (TRANSIENT_RESEARCH_FAILURE.test(failureNotes) && llm.webLookup) {
       const light = await lightCodeResearch(llm, { state, ahj, families });
       if (light.profile) {
+        if (targetVerified) return { ...verifyCheckOutcome(db, key, targetRow(), light.profile, families), light: true, fullFailure: failureNotes.slice(0, 300) };
         const saved = saveResearchedCodeProfile(db, light.profile, { ...(families?.length ? { families } : {}) });
         return { saved: true, key: saved.key, confidence: saved.confidence, adoptedCodes: saved.adoptedCodes.length, light: true, lightKept: light.kept, lightDropped: light.dropped.slice(0, 6), fullFailure: failureNotes.slice(0, 300) };
       }
@@ -1579,20 +1603,35 @@ export async function runCodeResearch(db: AppDb, payload: Partial<CodeResearchJo
     }
     return { saved: false, reason: "not web-grounded — model memory is never stored as an edition", ...evidence, notes: failureNotes.slice(0, 600) };
   }
+  if (targetVerified) return { ...verifyCheckOutcome(db, key, targetRow(), research.profile, families), ...evidence };
   if (!research.profile.adoptedCodes.length && !research.profile.adoptionModel) return { saved: false, reason: "research found no adopted codes", ...evidence };
-  // The row the save would land on: the exact key, or — for an AHJ — the human-verified row its
-  // name resolves to by fuzzy match ("City of Portland" -> or|portland), which the save refuses to
-  // shadow. Either way the result is "not saved", never a saved:true over an unchanged row.
-  const writeTarget = ahj.trim() ? resolveCriteriaWriteRow(db, state, ahj) : null;
-  const key = writeTarget?.kind === "blocked_verified" ? writeTarget.key : codeProfileKey({ state, ahj });
-  const targetVerified = text(db.get<Row>("SELECT confidence FROM jurisdiction_code_profiles WHERE profile_key = ?", [key])?.confidence) === "verified";
-  const before = targetVerified ? listEditionProposals(db, key).map((p) => p.fingerprint) : [];
   const saved = saveResearchedCodeProfile(db, research.profile, { ...(families?.length ? { families } : {}) });
-  if (targetVerified) {
-    const after = listEditionProposals(db, key);
-    return { saved: false, verified: true, proposals: after.length, newProposal: after.some((p) => !before.includes(p.fingerprint)), ...evidence };
-  }
   return { saved: true, key: saved.key, confidence: saved.confidence, adoptedCodes: saved.adoptedCodes.length, ...evidence };
+}
+
+/**
+ * A DUE STALENESS CHECK ON A HUMAN-VERIFIED ROW: its answer goes through the save (which never
+ * writes a verified row — hard rule 3 — and records a disagreement as ONE edition proposal, listed on
+ * GET /api/code-profiles), and the job result says what a person now has:
+ *   "proposed"           a new proposal (its fingerprint) awaits a person;
+ *   "already_proposed"   the same finding was already recorded (pending, or dismissed by a
+ *                        person) — no second row;
+ *   "agrees"             the verified row already states every edition found;
+ *   "nothing_to_compare" the answer named no edition, so there is nothing to propose.
+ */
+function verifyCheckOutcome(db: AppDb, key: string, row: Row | null | undefined, found: JurisdictionCodeProfile, families?: CodeFamily[]): Record<string, unknown> {
+  const before = new Set(listEditionProposals(db, key).map((p) => p.fingerprint));
+  saveResearchedCodeProfile(db, found, { ...(families?.length ? { families } : {}) });
+  const after = listEditionProposals(db, key);
+  const added = after.filter((p) => !before.has(p.fingerprint));
+  const outcome = added.length ? "proposed"
+    : !found.adoptedCodes.length ? "nothing_to_compare"
+    : row && editionChanges(mapRow(row).adoptedCodes, found.adoptedCodes).length ? "already_proposed"
+    : "agrees";
+  return {
+    saved: false, verified: true, modelCalled: true, outcome, proposals: after.length, newProposal: added.length > 0,
+    ...(added.length ? { proposal: added[0].fingerprint } : {}),
+  };
 }
 
 /** A full research that failed for a reason a lighter pass can survive (the budget, the API, a cut-off
