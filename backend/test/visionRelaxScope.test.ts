@@ -76,6 +76,9 @@ ${letter}` });
   }
   // No editions on file (model-code defaults): the plan's code basis gets the unverified callout.
   for (const f of buildReviewerReport(p, { codeContext: buildCodeContext("OR", "City of Coos Bay", null), documentTexts: [{ label: "Plan set", text: plan }] }).findings) allProducibleIds.add(f.id);
+  // On the prescriptive path, a stated 110 mph Exposure C over a 100 mph Exposure C cap (issue #111).
+  const capped = mk({ permitPath: "Prescriptive", planSetExtractedText: "WIND SPEED = 110 MPH EXPOSURE CATEGORY = C" });
+  for (const f of buildReviewerReport(capped, { codeContext: buildCodeContext("OR", "City of Coos Bay", { ...base, designCriteria: {}, prescriptive: { maxWindSpeedMphExpC: 100 } }), documentTexts: [{ label: "Plan set", text: "WIND SPEED = 110 MPH EXPOSURE CATEGORY = C" }] }).findings) allProducibleIds.add(f.id);
 }
 for (const id of [...MEASURED_FINDING_IDS]) {
   check(`MUST PASS: ${id} is still a real finding this engine emits`, () => {
