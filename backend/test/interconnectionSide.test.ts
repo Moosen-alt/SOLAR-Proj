@@ -23,7 +23,9 @@ const check = (label: string, fn: () => void): void => {
 
 // A roof-mount PV job whose ratings BREACH the 120% screen: 200A main + 50A PV on a 200A bus
 // is 250A against a 240A allowance. Whether that is a finding depends entirely on which side
-// of the service the connection is made — which is the whole point.
+// of the service the connection is made — which is the whole point. The plan set states the
+// ratings, so the overage is a BLOCKER (a parser-only value only warns, #152); no inverter output
+// current is stated, so the one busbar rule (city.elec.sizing-busbar-120, #153) reads the breaker.
 const project = (interco: string): ProjectRecord => ({
   id: `interco-${interco.replace(/\W+/g, "-")}`,
   clientId: "client-interco",
@@ -44,6 +46,7 @@ const project = (interco: string): ProjectRecord => ({
     state: "OR", ahj: "City of Lincoln City", utility: "Pacific Power",
     mounting: "Roof mount", interco,
     busRating: "200A", mainBreaker: "200A", pvBreaker: "50",
+    planSetExtractedText: "MAIN SERVICE PANEL: BUS RATING 200A. MAIN BREAKER 200A. PV BREAKER 50A.",
   },
 } as unknown as ProjectRecord);
 
@@ -55,7 +58,7 @@ const severityOf = (interco: string, id: string): string =>
 
 console.log("\n1. THE FALSE BLOCKER — a supply-side tap is not judged by the load-side rule");
 check("MUST PASS: \"Supply Breaker\" does NOT raise the 120% busbar blocker", () => {
-  assert.equal(has("Supply Breaker", "city.elec.load-side-over-120"), false,
+  assert.equal(has("Supply Breaker", "city.elec.sizing-busbar-120"), false,
     "a supply-side tap was blocked by a load-side rule the cited code does not support");
 });
 
@@ -74,20 +77,20 @@ check("...and it is not silently cleared either — 705.11 gets its own callout"
 // designs will catch these, and should hear about it from a test rather than from an AHJ.
 for (const phrasing of ["Supply side tap", "Line-side connection", "Supply-side tap ahead of the main", "Feed-thru lug tap"]) {
   check(`FORWARD PIN (passes pre-fix): "${phrasing}" must stay off the load-side rule`, () => {
-    assert.equal(has(phrasing, "city.elec.load-side-over-120"), false, phrasing);
+    assert.equal(has(phrasing, "city.elec.sizing-busbar-120"), false, phrasing);
   });
 }
 
 console.log("\n2. THE OPPOSITE ERROR — a genuine load-side overage must still block");
 for (const phrasing of ["Load-side breaker", "Load side breaker at the main panel", "Backfed breaker"]) {
   check(`MUST EXCLUDE: "${phrasing}" still raises the 120% blocker`, () => {
-    assert.equal(has(phrasing, "city.elec.load-side-over-120"), true,
+    assert.equal(has(phrasing, "city.elec.sizing-busbar-120"), true,
       `a real load-side overage stopped being reported: ${phrasing}`);
   });
 }
 
 check("...and the load-side blocker really is a blocker, not softened", () => {
-  assert.equal(severityOf("Load-side breaker", "city.elec.load-side-over-120"), "blocker");
+  assert.equal(severityOf("Load-side breaker", "city.elec.sizing-busbar-120"), "blocker");
 });
 
 console.log("\n3. AMBIGUITY IS REPORTED, NOT GUESSED");
@@ -95,7 +98,7 @@ check("an interconnection naming BOTH sides is flagged ambiguous rather than pic
   const both = "Load-side breaker or supply-side tap";
   assert.equal(has(both, "city.elec.interconnection-ambiguous"), true,
     "the gate silently chose a side when the design named two");
-  assert.equal(has(both, "city.elec.load-side-over-120"), false,
+  assert.equal(has(both, "city.elec.sizing-busbar-120"), false,
     "an ambiguous design was blocked by one of the two possible rules");
 });
 
@@ -105,7 +108,7 @@ check("MUST EXCLUDE: 175A main + 40A PV on a 200A bus raises no 120% finding", (
   (ok.parserSnapshot as Record<string, unknown>).mainBreaker = "175A";
   (ok.parserSnapshot as Record<string, unknown>).pvBreaker = "40";
   const ids = buildReviewerReport(ok).findings.map((f) => f.id);
-  assert.ok(!ids.includes("city.elec.load-side-over-120"),
+  assert.ok(!ids.includes("city.elec.sizing-busbar-120"),
     "215A on a 240A allowance was reported as exceeding it");
 });
 
@@ -168,7 +171,7 @@ for (const phrasing of UNCLASSIFIED) {
 check("...and the unknown is NOT forced into the load-side rule", () => {
   // Routing unknowns into the 705.12 branch would demand a busbar calc from what may well be
   // a supply-side tap — trading a silent hole for a false demand.
-  assert.equal(has("Net Metering", "city.elec.load-side-over-120"), false,
+  assert.equal(has("Net Metering", "city.elec.sizing-busbar-120"), false,
     "an unclassified method was judged by the load-side screen");
   assert.equal(severityOf("Net Metering", "city.elec.interconnection-unclassified"), "warning");
 });
@@ -199,7 +202,7 @@ check("the ambiguous finding cites BOTH, because that is what it is about", () =
     `a finding that says "705.11 versus 705.12" cites only "${cited}"`);
 });
 check("MUST EXCLUDE: the load-side blocker still cites 705.12", () => {
-  assert.ok(/705\.12/.test(citationsFor("Load-side breaker", "city.elec.load-side-over-120")),
+  assert.ok(/705\.12/.test(citationsFor("Load-side breaker", "city.elec.sizing-busbar-120")),
     "the load-side blocker lost its own code reference");
 });
 

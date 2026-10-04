@@ -39,7 +39,7 @@ const NEC_URL = "https://www.nfpa.org/codes-and-standards/nfpa-70-standard-devel
 const busbarRef: CodeReference = {
   code: "NEC", section: "705.12(B)(3)(2)", title: "Load-side connections — the 120 percent busbar rule",
   adoptionScope: "PV connected on the load side of service equipment.", sourceUrl: NEC_URL,
-  note: "125 percent of the power source output circuit current plus the busbar's main OCPD may not exceed 120 percent of the busbar rating.",
+  note: "125 percent of the power source output circuit current (before the 2017 edition: the PV breaker rating) plus the busbar's main OCPD may not exceed 120 percent of the busbar rating.",
 };
 const ocpdRef: CodeReference = {
   code: "NEC", section: "690.9 / 240.4 / 310.15", title: "Inverter output circuit OCPD and conductor ampacity",
@@ -175,6 +175,8 @@ const READERS: Partial<Record<ElectricalSizingInputKey, Reader>> = {
 
 const same = (a: number, b: number): boolean => Math.abs(a - b) <= Math.max(0.011, Math.abs(b) * 0.005);
 
+const CURRENT_KEYS = new Set(["busRating", "mainBreaker", "pvBreaker", "invOutputW", "pvMicroOutputW"]);
+
 function snapshotNumber(project: ProjectRecord, key: string): number | null {
   const raw = project.parserSnapshot?.[key];
   if (raw == null || raw === "") return null;
@@ -183,7 +185,14 @@ function snapshotNumber(project: ProjectRecord, key: string): number | null {
   // One number means one number; "200A (Note 3)" is not 2003 (see codeReviewRules.parseRating).
   if (!nums) return null;
   const withUnit = String(raw).match(/-?\d+(?:\.\d+)?(?=\s*(?:A\b|AMPS?\b|V\b|VOLTS?\b|°|FT\b|FEET\b|'|%))/gi);
-  const pick = nums.length === 1 ? nums[0] : withUnit && new Set(withUnit).size === 1 ? withUnit[0] : null;
+  // A current field may also print a voltage ("200A, 120/240V"): for these keys the amp-unit
+  // value decides, as codeReviewRules.parseRating reads it, so the busbar rule (#153) reads the
+  // same rating the load-side calc-missing door does.
+  const amps = CURRENT_KEYS.has(key) ? String(raw).match(/-?\d+(?:\.\d+)?(?=\s*(?:A\b|AMPS?\b))/gi) : null;
+  const pick = nums.length === 1 ? nums[0]
+    : withUnit && new Set(withUnit).size === 1 ? withUnit[0]
+    : amps && new Set(amps).size === 1 ? amps[0]
+    : null;
   const value = pick == null ? null : Number.parseFloat(pick);
   return value != null && Number.isFinite(value) ? value : null;
 }
@@ -251,11 +260,15 @@ export function conductorStatedAsOutputCircuit(conductor: ParsedConductor, sheet
 export interface ElectricalSizingOptions {
   /** Per-document texts (one per uploaded document); the snapshot's sheet text is read too. */
   documentTexts?: DesignTextSource[];
-  /** The interconnection classifies as LOAD side — only then is 705.12(B)(3)(2) the test. */
+  /** The interconnection classifies as LOAD side — only then is the 705.12 busbar screen the test. */
   loadSide?: boolean;
-  /** city.elec.load-side-over-120 already reported this busbar on the breaker rating; a second
-   *  blocker for the same violation is noise. */
-  skipBusbar?: boolean;
+  /** The jurisdiction's adopted NEC edition (necEditions.adoptedNecEdition, read by the caller only
+   *  from a profile that records editions), or null when unknown. Before 2017 the busbar screen
+   *  reads the PV breaker rating, not the inverter output current. */
+  adoptedNecEdition?: number | null;
+  /** The adopted edition's own busbar-screen section (necEditions' interconnection.busbar120, e.g.
+   *  2014: 705.12(D)(2)(3)(b)). Omitted: 705.12(B)(3)(2), the 2020 numbering. */
+  busbarSection?: string;
   /** The jurisdiction's adopted-edition citation resolver (codeReviewRules' `cite`). */
   cite?: (code: string, fallback: CodeReference) => CodeReference;
 }
@@ -301,30 +314,66 @@ export function evaluateElectricalSizingFindings(project: ProjectRecord, opts: E
   const current = outputCurrent(project, sheetText, micro);
 
   // (a) 705.12(B)(3)(2): 125 % of the inverter output current + the main OCPD <= 120 % of the bus.
-  if (opts.loadSide && !opts.skipBusbar && current) {
+  //
+  // THE ONE BUSBAR RULE (#153). The legacy city.elec.load-side-over-120 tested the PV BREAKER
+  // rating, the pre-2017 wording. Since the 2017 NEC the source term is "125 percent of the power
+  // source output circuit current", and the breaker is always at least that (rounded up to a
+  // standard size), so the breaker test blocked compliant designs: 200 A bus, 200 A main, 50 A
+  // breaker, 32 A inverter is 250 A on the breaker but 1.25 x 32 + 200 = 240 A on the current,
+  // which passes. The breaker reading is kept in two places, and the message says which:
+  //   - the adopted NEC is older than 2017 — the breaker IS that edition's test;
+  //   - the output current is unknown or implausible — the breaker is the conservative proxy
+  //     (it can only overstate 1.25 x I), and the message says the current-based test may pass.
+  // Severity follows provenance like every other recompute here: parser-only inputs only warn.
+  const breaker = input("pvBreaker");
+  const nec = opts.adoptedNecEdition ?? null;
+  const preNec2017 = nec != null && nec < 2017;
+  if (opts.loadSide) {
+    // The section every busbar message and citation prints, and its parent (the calculation as a
+    // whole): 705.12(B)(3)(2) -> 705.12(B)(3); 2014's 705.12(D)(2)(3)(b) -> 705.12(D)(2)(3).
+    const sec = opts.busbarSection || busbarRef.section;
+    const parentSec = sec.replace(/\([^()]*\)$/, "");
     const bus = input("busRating");
     const main = input("mainBreaker");
-    if (bus && main && bus.value > 0) {
-      const lhs = current.amps * 1.25 + main.value;
+    const source = !preNec2017 && current
+      ? { amps: current.amps * 1.25, inputs: current.inputs, text: `inverter output current ${current.calc}; 1.25 x ${fmt(current.amps)} A = ${fmt(current.amps * 1.25)} A`, onBreaker: false }
+      : breaker && breaker.value > 0
+        ? { amps: breaker.value, inputs: [breaker], text: `PV breaker ${fmt(breaker.value)} A${tag(breaker)}`, onBreaker: true }
+        : null;
+    if (source && bus && main && bus.value > 0) {
+      const lhs = source.amps + main.value;
       const allowance = bus.value * 1.2;
       if (lhs > allowance + 1e-9) {
-        const used = [...current.inputs, bus, main];
+        const used = [...source.inputs, bus, main];
+        const basis = !source.onBreaker
+          ? ""
+          : preNec2017
+            ? ` Measured on the PV breaker rating because the adopted NEC is the ${nec} edition (the 2017+ wording uses 125 percent of the inverter output current).`
+            : " Measured on the PV breaker rating because the inverter output current is not stated; 125 percent of that current is the 2017+ NEC test and may pass.";
         out.push(finding({
           id: "city.elec.sizing-busbar-120",
           severity: severityOf(used),
-          title: "Busbar over 120 percent with the inverter's actual output current",
-          message: `705.12(B)(3)(2): inverter output current ${current.calc}; 1.25 x ${fmt(current.amps)} A = ${fmt(current.amps * 1.25)} A + ${fmt(main.value)} A main${tag(main)} = ${fmt(lhs)} A, above 120 % of the ${fmt(bus.value)} A${tag(bus)} busbar (1.2 x ${fmt(bus.value)} = ${fmt(allowance)} A) by ${fmt(lhs - allowance)} A.${provenance(used)}`,
-          cityFeedback: "The load-side connection exceeds the 120 percent busbar allowance using the inverter's own output current. Revise: de-rate the main, connect supply side, upgrade the service panel, or provide another 705.12(B)(3) compliant method.",
-          designTeamAction: "Correct the interconnection and show the 705.12(B)(3)(2) calculation with the inverter output current on the SLD.",
-          evidenceNeeded: ["Busbar rating", "Main breaker rating", "Inverter maximum continuous output current and quantity", "705.12(B)(3) calculation"],
-          codeReferences: [cite("NEC", busbarRef)],
+          // "Load-side" in the title maps the finding to the SLD topic (reviewerEngine.topicForFinding),
+          // so the report keeps the one-line's crop slot the retired load-side-over-120 carried. The
+          // id is in MEASURED_FINDING_IDS, so vision still never relaxes it.
+          title: source.onBreaker ? "Load-side busbar over 120 percent on the PV breaker rating" : "Load-side busbar over 120 percent with the inverter's actual output current",
+          message: `${sec}: ${source.text} + ${fmt(main.value)} A main${tag(main)} = ${fmt(lhs)} A, above 120 % of the ${fmt(bus.value)} A${tag(bus)} busbar (1.2 x ${fmt(bus.value)} = ${fmt(allowance)} A) by ${fmt(lhs - allowance)} A.${basis}${provenance(used)}`,
+          cityFeedback: source.onBreaker
+            ? `The load-side connection exceeds the 120 percent busbar allowance on the PV breaker rating. Revise: de-rate the main, connect supply side, upgrade the service panel, or provide another ${parentSec} compliant method.`
+            : `The load-side connection exceeds the 120 percent busbar allowance using the inverter's own output current. Revise: de-rate the main, connect supply side, upgrade the service panel, or provide another ${parentSec} compliant method.`,
+          designTeamAction: source.onBreaker && !preNec2017
+            ? `State the inverter's maximum continuous output current and quantity on the SLD (the 2017+ test may then pass), or correct the interconnection and show the ${sec} calculation.`
+            : `Correct the interconnection and show the ${sec} calculation on the SLD.`,
+          evidenceNeeded: source.onBreaker
+            ? ["Busbar rating", "Main breaker rating", "PV breaker / OCPD rating", ...(preNec2017 ? [] : ["Inverter maximum continuous output current and quantity"]), `${parentSec} calculation`]
+            : ["Busbar rating", "Main breaker rating", "Inverter maximum continuous output current and quantity", `${parentSec} calculation`],
+          codeReferences: [cite("NEC", { ...busbarRef, section: sec })],
         }));
       }
     }
   }
 
   // (b) The inverter output circuit: OCPD >= 1.25 x Imax, and OCPD <= the conductor's ampacity.
-  const breaker = input("pvBreaker");
   const conductorRaw = snap("acConductor");
   const conductor = conductorRaw ? parseConductor(conductorRaw) : null;
   if (breaker && current) {

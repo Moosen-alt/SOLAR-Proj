@@ -277,41 +277,42 @@
       "evidenceStatus": "missing"
     },
     {
-      "id": "city.elec.load-side-over-120",
-      "severity": "blocker",
-      "category": "electrical",
-      "title": "Load-side interconnection exceeds 120 percent bus screen",
-      "message": "Captured ratings produce 200A main + 70A PV on a 200A bus, which exceeds 120 percent of bus rating.",
-      "cityFeedback": "Revise the interconnection design. The load-side calculation shown by the captured data does not satisfy the common 120 percent busbar screen. Provide a compliant alternate calculation, breaker relocation, de-rated main, supply-side connection, service upgrade, or engineered basis as applicable.",
-      "designTeamAction": "Correct the interconnection method and update the one-line/load calculation.",
+      "id": "city.elec.sizing-busbar-120",
+      "severity": "warning",
+      "title": "Load-side busbar over 120 percent on the PV breaker rating",
+      "message": "705.12(B)(3)(2): PV breaker 70 A (parser) + 200 A main (parser) = 270 A, above 120 % of the 200 A (parser) busbar (1.2 x 200 = 240 A) by 30 A. Measured on the PV breaker rating because the inverter output current is not stated; 125 percent of that current is the 2017+ NEC test and may pass. Values marked (parser) were read by the parser but not found stated on the sheets (pvBreaker, busRating, mainBreaker); confirm them before treating this as a rejection.",
+      "cityFeedback": "The load-side connection exceeds the 120 percent busbar allowance on the PV breaker rating. Revise: de-rate the main, connect supply side, upgrade the service panel, or provide another 705.12(B)(3) compliant method.",
+      "designTeamAction": "State the inverter's maximum continuous output current and quantity on the SLD (the 2017+ test may then pass), or correct the interconnection and show the 705.12(B)(3)(2) calculation.",
       "evidenceNeeded": [
-        "MSP bus rating",
+        "Busbar rating",
         "Main breaker rating",
-        "PV breaker/OCPD rating",
-        "705.12 calculation or alternate basis"
+        "PV breaker / OCPD rating",
+        "Inverter maximum continuous output current and quantity",
+        "705.12(B)(3) calculation"
       ],
       "codeReferences": [
         {
           "code": "NEC",
-          "section": "705.12",
-          "title": "Load-side source connections",
+          "section": "705.12(B)(3)(2)",
+          "title": "Load-side connections — the 120 percent busbar rule",
           "adoptionScope": "PV connected on the load side of service equipment.",
-          "sourceUrl": "https://codes.iccsafe.org/s/ISEP2021P1/national-electrical-code-nec-solar-provisions/ISEP2021P1-NEC-Sec705.12",
-          "note": "Verify against the adopted NEC edition; plan reviewers commonly expect bus/main/PV breaker math to be explicit."
+          "sourceUrl": "https://www.nfpa.org/codes-and-standards/nfpa-70-standard-development/70",
+          "note": "125 percent of the power source output circuit current (before the 2017 edition: the PV breaker rating) plus the busbar's main OCPD may not exceed 120 percent of the busbar rating."
         }
       ],
+      "category": "electrical",
       "installerCallout": true,
       "evidenceFound": [
         {
           "kind": "source_excerpt",
-          "label": "SLD found — MSP bus rating not verified",
+          "label": "SLD found — busbar rating not verified",
           "source": "Split page mapping",
           "excerpt": "one-line diagram rapid shutdown site plan roof plan",
           "confidence": "high",
           "pageHint": "Split page mapping",
           "screenshotPath": "",
           "verifier": "parser",
-          "note": "This shows the SLD is on the set. It does not show MSP bus rating; check the source sheet for that."
+          "note": "This shows the SLD is on the set. It does not show busbar rating; check the source sheet for that."
         },
         {
           "kind": "screenshot_placeholder",
@@ -856,41 +857,42 @@
       "evidenceStatus": "missing"
     },
     {
-      "id": "city.elec.load-side-over-120",
-      "severity": "blocker",
-      "category": "electrical",
-      "title": "Load-side interconnection exceeds 120 percent bus screen",
-      "message": "Captured ratings produce 200A main + 70A PV on a 200A bus, which exceeds 120 percent of bus rating.",
-      "cityFeedback": "Revise the interconnection design. The load-side calculation shown by the captured data does not satisfy the common 120 percent busbar screen. Provide a compliant alternate calculation, breaker relocation, de-rated main, supply-side connection, service upgrade, or engineered basis as applicable.",
-      "designTeamAction": "Correct the interconnection method and update the one-line/load calculation.",
+      "id": "city.elec.sizing-busbar-120",
+      "severity": "warning",
+      "title": "Load-side busbar over 120 percent on the PV breaker rating",
+      "message": "705.12(B)(3)(2): PV breaker 70 A (parser) + 200 A main (parser) = 270 A, above 120 % of the 200 A (parser) busbar (1.2 x 200 = 240 A) by 30 A. Measured on the PV breaker rating because the inverter output current is not stated; 125 percent of that current is the 2017+ NEC test and may pass. Values marked (parser) were read by the parser but not found stated on the sheets (pvBreaker, busRating, mainBreaker); confirm them before treating this as a rejection.",
+      "cityFeedback": "The load-side connection exceeds the 120 percent busbar allowance on the PV breaker rating. Revise: de-rate the main, connect supply side, upgrade the service panel, or provide another 705.12(B)(3) compliant method.",
+      "designTeamAction": "State the inverter's maximum continuous output current and quantity on the SLD (the 2017+ test may then pass), or correct the interconnection and show the 705.12(B)(3)(2) calculation.",
       "evidenceNeeded": [
-        "MSP bus rating",
+        "Busbar rating",
         "Main breaker rating",
-        "PV breaker/OCPD rating",
-        "705.12 calculation or alternate basis"
+        "PV breaker / OCPD rating",
+        "Inverter maximum continuous output current and quantity",
+        "705.12(B)(3) calculation"
       ],
       "codeReferences": [
         {
           "code": "NEC",
-          "section": "705.12",
-          "title": "Load-side source connections",
+          "section": "705.12(B)(3)(2)",
+          "title": "Load-side connections — the 120 percent busbar rule",
           "adoptionScope": "PV connected on the load side of service equipment.",
-          "sourceUrl": "https://codes.iccsafe.org/s/ISEP2021P1/national-electrical-code-nec-solar-provisions/ISEP2021P1-NEC-Sec705.12",
-          "note": "Verify against the adopted NEC edition; plan reviewers commonly expect bus/main/PV breaker math to be explicit."
+          "sourceUrl": "https://www.nfpa.org/codes-and-standards/nfpa-70-standard-development/70",
+          "note": "125 percent of the power source output circuit current (before the 2017 edition: the PV breaker rating) plus the busbar's main OCPD may not exceed 120 percent of the busbar rating."
         }
       ],
+      "category": "electrical",
       "installerCallout": true,
       "evidenceFound": [
         {
           "kind": "source_excerpt",
-          "label": "SLD found — MSP bus rating not verified",
+          "label": "SLD found — busbar rating not verified",
           "source": "Split page mapping",
           "excerpt": "one-line diagram rapid shutdown site plan roof plan",
           "confidence": "high",
           "pageHint": "Split page mapping",
           "screenshotPath": "",
           "verifier": "parser",
-          "note": "This shows the SLD is on the set. It does not show MSP bus rating; check the source sheet for that."
+          "note": "This shows the SLD is on the set. It does not show busbar rating; check the source sheet for that."
         },
         {
           "kind": "screenshot_placeholder",

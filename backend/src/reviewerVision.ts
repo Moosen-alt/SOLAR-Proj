@@ -86,13 +86,13 @@ function writeCache(db: AppDb, projectId: string, findingId: string, sig: string
 // high-confidence "the SLD is on the sheet" verdict downgraded a real NEC 705.12 violation
 // (200A main + 50A PV on a 200A bus = 250A against a 240A allowance) from blocker to a
 // non-blocking callout reading "Vision-verified on the plan set". Vision confirmed the
-// calculation is PRESENT; it never said the calculation PASSES.
+// calculation is PRESENT; it never said the calculation PASSES. (That rule is retired; its
+// busbar arithmetic is city.elec.sizing-busbar-120 now, listed below with the sizing ids, #153.)
 //
 // Skipping these also saves the vision call, since there was never an answer worth buying.
 // The ids are pinned by a test that also asserts each is still produced by the engine — a
 // hardcoded set like this otherwise rots silently the first time a rule is renamed.
 export const MEASURED_FINDING_IDS: ReadonlySet<string> = new Set([
-  "city.elec.load-side-over-120",   // arithmetic on bus/main/PV ratings
   "city.elec.dc-size-mismatch",     // module count x wattage vs declared DC size
   "city.elec.interconnection-ambiguous",    // the design names two sides; a photo cannot pick
   "city.elec.interconnection-unclassified", // seeing an SLD does not classify the method

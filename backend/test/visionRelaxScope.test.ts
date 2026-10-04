@@ -6,7 +6,8 @@
 // city.elec.load-side-over-120 to "sld" (its title contains "load-side"), so a high-confidence
 // "the SLD is on the sheet" verdict downgraded a MEASURED NEC 705.12 violation — 200A main +
 // 50A PV on a 200A bus, 250A against a 240A allowance — from blocker to a non-blocking callout
-// reading "Vision-verified on the plan set".
+// reading "Vision-verified on the plan set". (That rule is retired; the busbar arithmetic is
+// city.elec.sizing-busbar-120 since #153, and the same protection holds for it.)
 //
 // Vision confirmed the calculation is PRESENT. It never said the calculation PASSES. Those are
 // different claims, and only the first is something a picture can answer.
@@ -33,7 +34,7 @@ const mk = (over: Record<string, string> = {}): ProjectRecord => ({
     state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power",
     mounting: "Roof mount", interco: "Load-side breaker",
     busRating: "200A", mainBreaker: "200A", pvBreaker: "50",
-    planSetExtractedText: '36" FIRE ACCESS PATHWAY. 705.12 BUSBAR CALC ON PV-4. ATTACHMENT DETAIL: LAG SCREW.',
+    planSetExtractedText: '36" FIRE ACCESS PATHWAY. 705.12 BUSBAR CALC ON PV-4: BUS RATING 200A, MAIN BREAKER 200A, PV BREAKER 50A. ATTACHMENT DETAIL: LAG SCREW.',
     ...over,
   },
 } as unknown as ProjectRecord);
@@ -110,10 +111,10 @@ for (const id of [
 
 console.log("\n4. THE VIOLATION THIS PROTECTS IS REAL");
 check("the fixture genuinely breaches the 120% screen", () => {
-  const f = buildReviewerReport(mk()).findings.find((x) => x.id === "city.elec.load-side-over-120");
+  const f = buildReviewerReport(mk()).findings.find((x) => x.id === "city.elec.sizing-busbar-120");
   assert.ok(f, "the control fixture does not raise the violation — the test proves nothing");
   assert.equal(f!.severity, "blocker");
-  assert.ok(/250A|200A main/.test(f!.message), `unexpected message: ${f!.message}`);
+  assert.ok(/= 250 A, above 120 % of the 200 A busbar/.test(f!.message), `unexpected message: ${f!.message}`);
 });
 
 console.log(failures === 0

@@ -78,10 +78,10 @@ check("busbar: a supply-side (not load-side) design is not measured against 705.
   assert.equal(byId(run({ ...STRING_FIELDS, planSetExtractedText: STRING_SHEET }, false), "city.elec.sizing-busbar-120"), undefined);
 });
 
-check("busbar through the engine: one blocker for the violation, not two (the breaker screen already reports it)", () => {
+check("busbar through the engine: ONE busbar blocker, the sizing rule (the legacy breaker screen is retired, #153)", () => {
   const report = buildReviewerReport(mk({ ...STRING_FIELDS, planSetExtractedText: STRING_SHEET }));
-  assert.ok(report.findings.some((f) => f.id === "city.elec.load-side-over-120" && f.severity === "blocker"));
-  assert.ok(!report.findings.some((f) => f.id === "city.elec.sizing-busbar-120"), "duplicate busbar blocker");
+  const busbar = report.findings.filter((f) => /busbar|load-side-over-120/.test(f.id));
+  assert.deepEqual(busbar.map((f) => `${f.severity}:${f.id}`), ["blocker:city.elec.sizing-busbar-120"]);
 });
 
 check("busbar through the engine: with no breaker rating, the current-based screen still runs", () => {

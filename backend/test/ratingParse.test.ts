@@ -42,7 +42,7 @@ const mk = (over: Record<string, string>): ProjectRecord => ({
 const idsOf = (over: Record<string, string>): string[] =>
   buildReviewerReport(mk(over)).findings.map((f) => f.id);
 const blocks = (over: Record<string, string>): boolean =>
-  idsOf(over).includes("city.elec.load-side-over-120");
+  idsOf(over).includes("city.elec.sizing-busbar-120");
 
 console.log("\n1. THE SILENT FALSE CLEAR — a real violation must not vanish behind a note");
 check("baseline: the clean violation blocks (proves the fixture really is a violation)", () => {
@@ -58,9 +58,9 @@ for (const busRating of ["200A (Note 3)", "200A, 120/240V", "200 AMP MSP, 42 SPA
 
 check("...and the message quotes the REAL rating, not a concatenation", () => {
   const f = buildReviewerReport(mk({ busRating: "200A (Note 3)" })).findings
-    .find((x) => x.id === "city.elec.load-side-over-120");
+    .find((x) => x.id === "city.elec.sizing-busbar-120");
   assert.ok(f, "no blocker to inspect");
-  assert.ok(/200A bus/.test(f!.message), `operator was shown a fabricated bus rating: ${f!.message}`);
+  assert.ok(/of the 200 A (\(parser\) )?busbar/.test(f!.message), `operator was shown a fabricated bus rating: ${f!.message}`);
   assert.ok(!/2003/.test(f!.message), `the concatenated number 2003 reached the operator: ${f!.message}`);
 });
 
@@ -85,7 +85,7 @@ check("two competing amp values produce the calc-missing finding, not a calculat
   const ids = idsOf({ pvBreaker: "50A (fuses in 60A AC disconnect at line-side tap)" });
   assert.ok(ids.includes("city.elec.load-side-calc-missing"),
     "an unreadable rating passed silently instead of asking for the calculation");
-  assert.ok(!ids.includes("city.elec.load-side-over-120"),
+  assert.ok(!ids.includes("city.elec.sizing-busbar-120"),
     "the gate computed a verdict from a rating it could not read");
 });
 

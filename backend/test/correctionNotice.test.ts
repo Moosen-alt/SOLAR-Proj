@@ -49,7 +49,7 @@ const findings: ReviewerFinding[] = [
     codeReferences: [{ code: "2021 IRC", section: "R324.6", title: "Roof access and pathways", adoptionScope: "Sample City: adopted IRC 2021.", sourceUrl: "", note: "" }],
     evidenceFound: [{ kind: "absence_check", label: "Fire pathway — not found in the package", source: "Parsed project package", excerpt: "No matching evidence found.", confidence: "low", pageHint: "", screenshotPath: "", verifier: "rule_engine", note: "" }],
   }),
-  f("city.elec.load-side-over-120", "blocker", "electrical", {
+  f("city.elec.sizing-busbar-120", "blocker", "electrical", {
     codeReferences: [
       { code: "2020 NEC", section: "705.12(B)(3)(2)", title: "120% rule", adoptionScope: "", sourceUrl: "", note: "" },
       { code: "2020 NEC", section: "705.12(B)(3)(2)", title: "120% rule", adoptionScope: "", sourceUrl: "", note: "" },
@@ -94,7 +94,7 @@ await check("grouped like an AHJ letter, in letter order; fire-pathway checks un
 await check("holds first within each group, then comments, then info; numbered 1..n through the letter", () => {
   assert.deepEqual(notice.items.map((i) => i.findingId), [
     "city.struct.loads-missing", "city.struct.attachment-detail-missing",
-    "city.elec.load-side-over-120", "city.elec.rapid-shutdown-missing", "city.elec.labels-missing",
+    "city.elec.sizing-busbar-120", "city.elec.rapid-shutdown-missing", "city.elec.labels-missing",
     "city.fire.pathways-missing", "reviewer.plan.site", "reviewer.core.utility",
   ]);
   assert.deepEqual(notice.items.map((i) => i.number), [1, 2, 3, 4, 5, 6, 7, 8]);
@@ -110,18 +110,18 @@ await check("weight is the gate's severity, unchanged (blocker→hold, warning�
 });
 
 await check("citations are the finding's own adopted-edition references, deduped", () => {
-  const elec = notice.items.find((i) => i.findingId === "city.elec.load-side-over-120")!;
+  const elec = notice.items.find((i) => i.findingId === "city.elec.sizing-busbar-120")!;
   assert.deepEqual(elec.citations, ["2020 NEC 705.12(B)(3)(2) — 120% rule"]);
   const fire = notice.items.find((i) => i.findingId === "city.fire.pathways-missing")!;
   assert.deepEqual(fire.citations, ["2021 IRC R324.6 — Roof access and pathways"]);
 });
 
 await check("plan states / required / sheet: from the evidence, and the sheet only where plan text was read", () => {
-  const elec = notice.items.find((i) => i.findingId === "city.elec.load-side-over-120")!;
+  const elec = notice.items.find((i) => i.findingId === "city.elec.sizing-busbar-120")!;
   assert.equal(elec.planStates, 'Plan set: "200A bus, 200A main, 60A PV breaker"');
   assert.equal(elec.sheet, "PV-3 single line");
-  assert.equal(elec.required, "Fix city.elec.load-side-over-120");
-  assert.equal(elec.comment, "City says city.elec.load-side-over-120");
+  assert.equal(elec.required, "Fix city.elec.sizing-busbar-120");
+  assert.equal(elec.comment, "City says city.elec.sizing-busbar-120");
   const fire = notice.items.find((i) => i.findingId === "city.fire.pathways-missing")!;
   assert.equal(fire.planStates, "Not shown in the submitted package.");
   assert.equal(fire.sheet, "");
@@ -155,7 +155,7 @@ await check("plain text: header, provenance, counts, sections in order, each ite
   assert.match(text, /3 hold\(s\) · 4 comment\(s\) · 1 informational/);
   const order = ["STRUCTURAL", "ELECTRICAL", "FIRE", "PLAN COMPLETENESS", "LOCAL REQUIREMENTS", "PRIOR CORRECTIONS"].map((h) => text.indexOf(`\n${h}`));
   assert.ok(order.every((n, i) => n > 0 && (i === 0 || n > order[i - 1])), `section order ${order.join(",")}`);
-  assert.match(text, / 3\. \[HOLD\] Title city\.elec\.load-side-over-120\n {4}Code: 2020 NEC 705\.12\(B\)\(3\)\(2\) — 120% rule\n/);
+  assert.match(text, / 3\. \[HOLD\] Title city\.elec\.sizing-busbar-120\n {4}Code: 2020 NEC 705\.12\(B\)\(3\)\(2\) — 120% rule\n/);
   assert.match(text, /Sheet: PV-3 single line/);
   assert.match(text, /- Fire pathway not dimensioned \(×3\): Do Fire pathway not dimensioned/);
   const empty = renderCorrectionNoticeText(buildCorrectionNotice({ ...report, findings: [f("x", "pass", "project_data")] }, { ...ctx, priorCauses: [] }));

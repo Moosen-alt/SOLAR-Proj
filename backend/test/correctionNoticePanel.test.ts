@@ -37,7 +37,7 @@ const notice = buildCorrectionNotice({
   finalSubmitGate: { mustShowAhjPreviewWindow: false, finalSubmitButtonAloneIsEnough: false, requirements: [] },
   findings: [
     f("reviewer.core.utility", "callout", "project_data", { designTeamAction: "" }),
-    f("city.elec.load-side-over-120", "blocker", "electrical", {
+    f("city.elec.sizing-busbar-120", "blocker", "electrical", {
       title: "Backfeed <script>alert(1)</script> over 120%",
       codeReferences: [{ code: "2020 NEC", section: "705.12", title: "Load-side & supply", adoptionScope: "", sourceUrl: "", note: "" }],
       evidenceFound: [{ kind: "source_excerpt", label: "SLD", source: "Plan set", excerpt: 'Main "200A" <b>bus</b>', confidence: "high", pageHint: "PV-3", screenshotPath: "", verifier: "parser", note: "" }],
@@ -69,7 +69,7 @@ check("sections in letter order; each item shows number, weight, code, comment, 
   assert.match(html, /<strong>2\.<\/strong> <span class="badge text-danger">Hold<\/span>/);
   assert.match(html, /Code:<\/span> 2020 NEC 705\.12 — Load-side &amp; supply/);
   assert.match(html, /Plan states:<\/span> Plan set: &quot;Main &quot;200A&quot; &lt;b&gt;bus&lt;\/b&gt;&quot;/);
-  assert.match(html, /Required:<\/span> Fix city\.elec\.load-side-over-120/);
+  assert.match(html, /Required:<\/span> Fix city\.elec\.sizing-busbar-120/);
   assert.match(html, /Sheet:<\/span> PV-3/);
 });
 
