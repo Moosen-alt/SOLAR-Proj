@@ -2630,6 +2630,116 @@
    ]
   },
   {
+   "state": "UT",
+   "asOf": "2026-10-04",
+   "adoptionModel": {
+    "model": "statewide_uniform",
+    "sourceUrl": "https://le.utah.gov/xcode/Title15A/Chapter1/15A-1-S204.html",
+    "quote": "Except as provided in Subsections (6), (7), (9), and (10), or as expressly provided in state law, a state executive branch entity or political subdivision of the state may not, after December 1, 2016, adopt or enforce a rule, ordinance, or requirement that applies to a subject specifically addressed by, and that is more restrictive than, the State Construction Code.",
+    "note": "The Legislature adopts the State Construction Code by statute (Utah Code 15A-1-204(2)); it is the code 'that the state and each political subdivision of the state shall follow' (15A-1-204(1)(a)). The Uniform Building Code Commission only recommends updates to the Business and Labor Interim Committee (15A-1-204(3)-(5)). Local variations exist only as amendments the Legislature itself enacts in Title 15A Chapter 4 ('Local Amendments Incorporated as Part of State Construction Code'), so a city cannot adopt its own edition. FIRE: the State Fire Code (Title 15A Chapter 5) incorporates the IFC by reference statewide (15A-5-103)."
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "IRC",
+     "edition": "2021",
+     "title": "Utah State Construction Code (2021 IRC as amended by Utah Code 15A-3 Part 2)",
+     "basedOn": "2021 IRC",
+     "effectiveDate": "2023-07-01",
+     "previousEdition": "2015",
+     "sourceUrl": "https://le.utah.gov/xcode/Title15A/Chapter2/15A-2-S103.html",
+     "quote": "(b) the 2021 edition of the International Residential Code, issued by the International Code Council;",
+     "notes": "Unchanged by H.B. 65 (2026), which moved the commercial I-codes to 2024 but kept the 2021 IRC. The 2021 IRC took effect July 1, 2023 (H.B. 532, 2023, 'This bill takes effect on July 1, 2023'): https://le.utah.gov/~2023/bills/hbillenr/HB0532.htm"
+    },
+    {
+     "family": "building",
+     "code": "IBC",
+     "edition": "2024",
+     "title": "Utah State Construction Code (2024 IBC incl. Appendices C and J, as amended by Utah Code 15A-3 Part 1)",
+     "basedOn": "2024 IBC",
+     "effectiveDate": "2026-07-01",
+     "previousEdition": "2021",
+     "sourceUrl": "https://le.utah.gov/xcode/Title15A/Chapter2/15A-2-S103.html",
+     "quote": "(a) the 2024 edition of the International Building Code, including Appendices C and J, issued by the International Code Council;",
+     "notes": "Adopted by H.B. 65 (2026 General Session), effective July 1, 2026: https://le.utah.gov/Session/2026/bills/enrolled/HB0065.pdf"
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2023",
+     "title": "National Electrical Code (NFPA 70) as part of the Utah State Construction Code",
+     "basedOn": "2023 NEC",
+     "previousEdition": "2020",
+     "sourceUrl": "https://le.utah.gov/xcode/Title15A/Chapter2/15A-2-S103.html",
+     "quote": "(g) the 2023 edition of the National Electrical Code, issued by the National Fire Protection Association;",
+     "notes": "The 2023 NEC was already in 15A-2-103 before H.B. 65 (2026) (not bracketed as a change in that bill); the date it replaced the 2020 NEC (H.B. 532, 2023) was not confirmed from an official page, so no effectiveDate is given."
+    },
+    {
+     "family": "fire",
+     "code": "IFC",
+     "edition": "2024",
+     "title": "Utah State Fire Code (2024 IFC, excluding appendices, as amended by Utah Code 15A-5 Part 2)",
+     "basedOn": "2024 IFC",
+     "effectiveDate": "2026-07-01",
+     "sourceUrl": "https://le.utah.gov/xcode/Title15A/Chapter5/15A-5-S103.html",
+     "quote": "(1) the International Fire Code, 2024 edition, excluding appendices, as issued by the International Code Council, Inc., except as amended by Part 2, Statewide Amendments and Additions to International Fire Code Incorporated as Part of State Fire Code;",
+     "notes": "Section version effective 7/1/2026, amended by Chapter 34, 2026 General Session."
+    },
+    {
+     "family": "energy",
+     "code": "IECC",
+     "edition": "2024",
+     "title": "Utah State Construction Code (2024 IECC as amended by Utah Code 15A-3 Part 8)",
+     "basedOn": "2024 IECC",
+     "effectiveDate": "2026-07-01",
+     "previousEdition": "2021",
+     "sourceUrl": "https://le.utah.gov/xcode/Title15A/Chapter2/15A-2-S103.html",
+     "quote": "(h) the 2024 edition of the International Energy Conservation Code, issued by the International Code Council;",
+     "notes": "Adopted by H.B. 65 (2026), effective July 1, 2026. One- and two-family dwellings designed under the 2021 IRC follow IRC Chapter 11 as amended in 15A-3 Part 2 (H.B. 65 amends IRC section N1102.1.5.1, 'RESCheck 2012 Utah Energy Conservation Code'): https://le.utah.gov/Session/2026/bills/enrolled/HB0065.pdf"
+    },
+    {
+     "family": "mechanical",
+     "code": "IMC",
+     "edition": "2024",
+     "title": "Utah State Construction Code (2024 IMC as amended by Utah Code 15A-3 Part 4)",
+     "basedOn": "2024 IMC",
+     "effectiveDate": "2026-07-01",
+     "previousEdition": "2021",
+     "sourceUrl": "https://le.utah.gov/xcode/Title15A/Chapter2/15A-2-S103.html",
+     "quote": "(e) the 2024 edition of the International Mechanical Code, issued by the International Code Council;"
+    },
+    {
+     "family": "plumbing",
+     "code": "IPC",
+     "edition": "2024",
+     "title": "Utah State Construction Code (2024 IPC as amended by Utah Code 15A-3 Part 3)",
+     "basedOn": "2024 IPC",
+     "effectiveDate": "2026-07-01",
+     "previousEdition": "2021",
+     "sourceUrl": "https://le.utah.gov/xcode/Title15A/Chapter2/15A-2-S103.html",
+     "quote": "(d) the 2024 edition of the International Plumbing Code, issued by the International Code Council;"
+    }
+   ],
+   "citations": [
+    {
+     "label": "UT code adoption model: Utah Code 15A-1-204 (seeded 2026-10-04)",
+     "sourceUrl": "https://le.utah.gov/xcode/Title15A/Chapter1/15A-1-S204.html"
+    },
+    {
+     "label": "UT adopted editions: Utah Code 15A-2-103 (version effective 7/1/2026; the 1/1/2027 version keeps the same editions) (seeded 2026-10-04)",
+     "sourceUrl": "https://le.utah.gov/xcode/Title15A/Chapter2/15A-2-S103.html"
+    },
+    {
+     "label": "UT State Fire Code: Utah Code 15A-5-103 (seeded 2026-10-04)",
+     "sourceUrl": "https://le.utah.gov/xcode/Title15A/Chapter5/15A-5-S103.html"
+    },
+    {
+     "label": "H.B. 65 Construction Code Amendments, 2026 General Session (enrolled; takes effect July 1, 2026)",
+     "sourceUrl": "https://le.utah.gov/Session/2026/bills/enrolled/HB0065.pdf"
+    }
+   ]
+  },
+  {
    "state": "VA",
    "asOf": "2026-09-24",
    "adoptionModel": {

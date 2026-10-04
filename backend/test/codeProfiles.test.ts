@@ -135,6 +135,59 @@ await run("research NEVER downgrades a verified row; verify upgrades a seeded on
   assert.equal(rows[0].designCriteria.groundSnowLoadPsf, 35);
 });
 
+// ---------------------------------------------------------------------------
+// UTAH (issue #109). Utah was the next test jurisdiction with ZERO seed data: a Utah project
+// resolved to MODEL_CODE_DEFAULTS and the basis check stayed silent. The shipped state layer
+// (reference-code-profiles.json "stateAdoptions" UT) is seeded, never verified (hard rule 3), and
+// Utah's State Construction Code is uniform (Utah Code 15A-1-204(8)): a city reads the state's
+// editions — until a person verifies the city's own row, which then wins its family.
+// ---------------------------------------------------------------------------
+const editionOf = (codes: Array<{ family?: string; code: string; edition: string }>, family: string) =>
+  codes.find((c) => c.family === family)?.edition;
+
+await run("UT: a project with no AHJ row reads the seeded Utah state editions, never the model defaults", () => {
+  const state = getCodeProfile(db, { state: "UT" })!;
+  assert.ok(state, "UT state row seeded from the reference");
+  assert.equal(state.confidence, "seeded", "reference state layer is seeded, never verified");
+  assert.equal(state.adoptionModel?.model, "statewide_uniform");
+  assert.equal(state.researchProvenance?.method, "reference_truth");
+  assert.deepEqual(state.designCriteria, {}, "snow/wind/SDC/frost stay per-AHJ, never at the state layer");
+  for (const c of state.adoptedCodes) assert.ok(/^https:\/\/le\.utah\.gov\//.test(String(c.sourceUrl)) && c.quote, `${c.code} cited to Utah Code with a quote`);
+
+  const lehi = getCodeProfile(db, { state: "UT", ahj: "Lehi" })!;
+  assert.equal(editionOf(lehi.adoptedCodes, "residential"), "2021");
+  assert.equal(editionOf(lehi.adoptedCodes, "building"), "2024");
+  assert.equal(editionOf(lehi.adoptedCodes, "electrical"), "2023");
+  assert.equal(editionOf(lehi.adoptedCodes, "fire"), "2024");
+  assert.ok(lehi.adoptedCodes.every((c) => c.inheritedFrom === "state"), "every edition is the state's");
+
+  const ctx = resolveEffectiveCodeContext(db, "UT", "Lehi");
+  assert.equal(ctx.source, "seeded");
+  assert.equal(ctx.verified, false);
+  assert.notEqual(ctx.adoptedCodes, MODEL_CODE_DEFAULTS, "not the model-code defaults");
+  assert.ok(ctx.citationFor("NEC", "690.12", "Rapid shutdown").code.includes("2023"), "NEC cited at Utah's 2023 edition");
+  assert.ok(/verify locally/i.test(ctx.citationFor("NEC", "690.12", "Rapid shutdown").adoptionScope), "seeded → verify locally");
+});
+
+await run("UT: a seeded AHJ edition is ignored (uniform state); a VERIFIED AHJ row wins its family", () => {
+  const ahj = "Spanish Fork";
+  const base = { key: "", state: "UT", ahj, confidence: "seeded" as const, amendments: [], designCriteria: {}, prescriptive: {}, fireSetbacks: [], citations: [], updatedAt: "" };
+  // Synthetic edition (not a claim about Spanish Fork): a machine-researched city NEC is not read
+  // in a statewide-uniform state.
+  saveResearchedCodeProfile(db, { ...base, adoptedCodes: [{ family: "electrical", code: "NEC", edition: "2020", origin: "research" }] });
+  const seededRow = getCodeProfile(db, { state: "UT", ahj })!;
+  assert.equal(editionOf(seededRow.adoptedCodes, "electrical"), "2023", "uniform: the state's NEC, not a seeded city one");
+
+  saveVerifiedCodeProfile(db, { ...base, adoptedCodes: [{ family: "electrical", code: "NEC", edition: "2020" }] }, "test-operator");
+  const verified = getCodeProfile(db, { state: "UT", ahj })!;
+  const nec = verified.adoptedCodes.find((c) => c.family === "electrical")!;
+  assert.equal(nec.edition, "2020", "a person's verified statement wins its family (inheritAdoptedCodes)");
+  assert.equal(nec.inheritedFrom, undefined, "the city's own entry, not inherited");
+  assert.equal(editionOf(verified.adoptedCodes, "residential"), "2021", "other families still inherit the state's");
+  const stateAfter = getCodeProfile(db, { state: "UT" })!;
+  assert.equal(stateAfter.confidence, "seeded", "verifying a city never promotes the seeded state layer");
+});
+
 await run("buildCodeContext is pure and honors a null profile", () => {
   const ctx = buildCodeContext("TX", "Austin", null);
   assert.equal(ctx.source, "defaults");
