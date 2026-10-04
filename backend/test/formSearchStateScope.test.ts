@@ -13,6 +13,16 @@
 //     its application slot answered with whose form it is — with NO search; the pre-Stage gate does
 //     not promise one either;
 //   · a city that runs its own program still searches (must-pass).
+// ISSUE #171 — the Oregon process lookup is ASKED who issues (buildingProgram), so the fallback fires
+// for the owner's case. With the lookup's model stubbed:
+//   · the Oregon prompt asks buildingProgram, naming the county / BCD; a cited "state" answer naming a
+//     county lands, and City of Monroe then gets ZERO form searches and the BCD 5952 attached; its
+//     application slot names the county (no statewide ePermitting blank is in the catalog);
+//   · a cited "own" answer keeps the search (must-pass); a county's own building division is "own",
+//     never "served by a county";
+//   · rule 3: a lookup answer never overwrites a person's verified row; a seeded served list answers
+//     before a lookup lands and never blocks a cited answer;
+//   · a New Mexico served village's solar checklist is still searched (it is the village's own).
 // Run: tsx backend/test/formSearchStateScope.test.ts
 import "./_isolate"; // FIRST: temp cwd + offline (the 5952 is served from its fixture)
 import assert from "node:assert/strict";
@@ -38,6 +48,7 @@ const repo = await import("../src/repository");
 const auto = await import("../src/ahjFormAuto");
 const pp = await import("../src/permitProcess");
 const plan = await import("../src/formAcquisitionPlan");
+const ppl = await import("../src/permitProcessLookup");
 
 const db = await openDatabase();
 let failures = 0;
@@ -237,6 +248,176 @@ try {
   await check("a city nothing is known about keeps its search (unknown stays unknown)", async () => {
     const project = mkProject("City of Example Unknown");
     assert.equal(plan.servedJurisdictionForms(project, "building_application"), null);
+  });
+  // ═══ ISSUE #171 — THE OREGON LOOKUP IS ASKED WHO ISSUES ═══════════════════════════════════════
+  const COUNTY_PAGE = "https://www.co.example-benton.or.us/cd/building/cities-served";
+  const CITY_PAGE = "https://www.example-city.or.us/building";
+  const asked: Array<{ label: string; system: string }> = [];
+  const processAnswer = (over: Record<string, unknown>) => JSON.stringify({
+    issuingAgency: { value: null, notFound: "not stated" }, permitStructure: { value: null, notFound: "not stated" }, permits: [], prerequisites: [], ...over,
+  });
+  // The lookup's model, stubbed: part one answers `p1`, every other part finds nothing.
+  const runLookup = (ahj: string, p1: string, state = "OR") => ppl.runPermitProcessLookup(db, {
+    webLookup: async (i: { label: string; system: string }) => {
+      asked.push(i);
+      return { text: /process$/.test(i.label) ? p1 : "{}", groundedSearches: 3, stopReason: "end_turn", resultUrls: [COUNTY_PAGE, CITY_PAGE], pagesRead: 0 };
+    },
+  } as never, { state, ahj, reader: null, force: true });
+  const COUNTY_SERVES = { value: "state", sourceUrl: COUNTY_PAGE, quote: "Benton County Building Division issues building and electrical permits for the City of Monroe" };
+
+  await check("#171: the Oregon process prompt asks buildingProgram, naming the county / BCD (and not NM's CID)", () => {
+    const sys = ppl.processLookupSystemFor("OR");
+    assert.match(sys, /buildingProgram/);
+    assert.match(sys, /county building department/);
+    assert.match(sys, /Building Codes Division \(BCD\)/);
+    assert.doesNotMatch(sys, /Construction Industries|unincorporatedZoning/);
+    assert.doesNotMatch(ppl.processLookupSystemFor("MA"), /buildingProgram/, "a state with no rule is not asked");
+  });
+
+  // (A generic Oregon city is portal-entry-only and never searched either way — Monroe is not, which
+  // is how the owner's run spent its searches; the 'own' answer runs first, then the lookup re-runs.)
+  await check("#171: Monroe OR — a stubbed lookup answers 'own' → its own form is still searched (MUST-PASS)", async () => {
+    const ahj = "City of Monroe";
+    await runLookup(ahj, processAnswer({ buildingProgram: { value: "own", sourceUrl: CITY_PAGE, quote: "The City of Monroe Building Division issues building permits for work in the city" } }));
+    const project = mkProject(ahj);
+    assert.equal(pp.permitProcessFor(project)?.buildingProgram?.value, "own");
+    assert.equal(pp.servedByStateIssuer(project), null);
+    const { llm, calls } = countingLlm();
+    const pass = await auto.ensureAhjFormsForProject(db, llm, project, { formsPage: { reader: null, minGapMs: 0 } });
+    assert.ok(calls.length >= 1, `its own form is searched for (${pass.results.map((r) => `${r.formType}: ${r.status}`).join(" / ")})`);
+  });
+
+  await check("#171: Monroe OR — a stubbed lookup answers 'state' (Benton County) → zero form searches, BCD 5952 attached", async () => {
+    const ahj = "City of Monroe";
+    const before = mkProject(ahj);
+    assert.equal(pp.servedByStateIssuer(before), null, "precondition: the earlier 'own' answer (and no seeded served list)");
+    asked.length = 0;
+    const res = await runLookup(ahj, processAnswer({
+      issuingAgency: { value: "Benton County", sourceUrl: COUNTY_PAGE, quote: "Benton County Building Division issues building and electrical permits for the City of Monroe" },
+      buildingProgram: COUNTY_SERVES,
+    }));
+    assert.ok(res.saved, res.reason);
+    assert.match(asked.find((a) => /process$/.test(a.label))!.system, /buildingProgram/, "the lookup that ran asked the question");
+    assert.equal(res.lookup?.buildingProgram?.value, "state", JSON.stringify(res.lookup?.buildingProgram));
+    const project = mkProject(ahj);
+    const served = pp.servedByStateIssuer(project);
+    assert.ok(served, "the cited answer makes Monroe served");
+    assert.equal(served!.agency, "Benton County", "the lookup's cited issuer names the agency");
+    const { llm, calls } = countingLlm();
+    const pass = await auto.ensureAhjFormsForProject(db, llm, project, { formsPage: { reader: null, minGapMs: 0 } });
+    assert.deepEqual(calls, [], "findAhjFormUrl was never called");
+    // (Stored by the 'own' pass above: the BCD 5952 is the state's, whoever issues.)
+    const checklist = pass.results.find((r) => r.formType === "solar_checklist");
+    assert.ok(checklist && ["acquired", "exists"].includes(checklist.status), checklist?.message);
+    const apps = pass.results.filter((x) => x.formType !== "solar_checklist");
+    assert.ok(apps.length >= 1);
+    for (const r of apps) {
+      assert.equal(r.status, "not_found", `${r.formType}: ${r.message}`);
+      assert.match(r.message, /Benton County issues/, "the slot names who issues");
+      assert.ok(r.message.includes(COUNTY_PAGE), "and cites why");
+    }
+  });
+
+  await check("#171: a served Oregon city with no issuer named: its application slot names the default issuer, no catalog blank, no search", async () => {
+    const ahj = "City of Example Countyserved";
+    await runLookup(ahj, processAnswer({ buildingProgram: { value: "state", sourceUrl: COUNTY_PAGE, quote: "Example County Building Division issues building permits for the City of Example Countyserved" } }));
+    const project = mkProject(ahj);
+    assert.equal(plan.statewideApplicationSource(project, "building_application", "prescriptive"), null, "no statewide ePermitting blank is in the catalog");
+    const { llm, calls } = countingLlm();
+    const r = await auto.ensureAhjFormTemplate(db, llm, project, "building_application", { applicationKind: "prescriptive", formsPage: { reader: null, minGapMs: 0 } });
+    assert.deepEqual(calls, []);
+    assert.equal(r.status, "not_found", r.message);
+    assert.match(r.message, /the county building department or the Oregon Building Codes Division \(BCD\) issues its permits/);
+    assert.match(r.message, /No statewide Oregon ePermitting building application is in the form catalog/);
+    assert.ok(r.message.includes(COUNTY_PAGE));
+  });
+
+  await check("#171: a county's OWN building division is not read as 'served by a county'", async () => {
+    await runLookup("Example County", processAnswer({ buildingProgram: { value: "state", sourceUrl: COUNTY_PAGE, quote: "Example County Building Division issues building permits in the unincorporated county" } }));
+    assert.equal(pp.permitProcessFor({ state: "OR", ahj: "Example County" })?.buildingProgram?.value ?? null, null, "the 'state' answer is not kept");
+    await runLookup("Example County", processAnswer({ buildingProgram: { value: "own", sourceUrl: COUNTY_PAGE, quote: "Example County Building Division issues building permits in the unincorporated county" } }));
+    assert.equal(pp.permitProcessFor({ state: "OR", ahj: "Example County" })?.buildingProgram?.value, "own");
+  });
+
+  // #174 review: a city that shares its county's name — the county is still named.
+  await check("#171: Baker City / Tillamook / Union — a quote naming the same-named county is kept as 'state'", async () => {
+    const cases: Array<[string, string]> = [
+      ["Baker City", "Baker County Building Department issues building and electrical permits for Baker City"],
+      ["City of Tillamook", "Tillamook County Community Development issues building permits for the City of Tillamook"],
+      ["City of Union", "Union County issues building permits for the City of Union"],
+    ];
+    for (const [ahj, quote] of cases) {
+      const names = pp.servingIssuerNamed("OR", ahj)!;
+      assert.ok(names(quote), `${ahj}: the county is named`);
+      await runLookup(ahj, processAnswer({ buildingProgram: { value: "state", sourceUrl: COUNTY_PAGE, quote } }));
+      assert.equal(pp.permitProcessFor({ state: "OR", ahj })?.buildingProgram?.value, "state", ahj);
+      assert.ok(pp.servedByStateIssuer(mkProject(ahj)), `${ahj} is served`);
+    }
+    // ...while the city's own name alone, and a county AHJ's own name, still never read as a county.
+    assert.equal(pp.servingIssuerNamed("OR", "Baker City")!("The Baker City Building Department issues building permits"), false);
+    assert.equal(pp.servingIssuerNamed("OR", "Baker County")!("Baker County Building Department issues building permits"), false);
+  });
+
+  await check("#171: a cited issuing agency that is not the serving office does not name the agency", async () => {
+    const ahj = "City of Example Otheragency";
+    await runLookup(ahj, processAnswer({
+      issuingAgency: { value: "Example Fire District", sourceUrl: COUNTY_PAGE, quote: "Example Fire District issues fire permits for the City of Example Otheragency" },
+      buildingProgram: { value: "state", sourceUrl: COUNTY_PAGE, quote: "Example County Building Division issues building permits for the City of Example Otheragency" },
+    }));
+    const served = pp.servedByStateIssuer(mkProject(ahj));
+    assert.ok(served);
+    assert.match(served!.agency, /county building department or the Oregon Building Codes Division/, served!.agency);
+  });
+
+  await check("#171: a statewide ePermitting blank in the catalog is attached for a served city (and only a served one)", async () => {
+    const { CURATED_AHJ_FORMS } = await import("../src/curatedAhjForms");
+    const row = { ahj: "oregon epermitting", state: "OR", formType: "building_application", formName: "Example Statewide Building Application", url: "https://www.example.test/statewide-building.pdf", hash: "0".repeat(64), documentDate: "test" };
+    (CURATED_AHJ_FORMS as unknown as Array<typeof row>).push(row);
+    try {
+      const served = mkProject("City of Example Countyserved");
+      const src = plan.ownFreeFormSource(served, "building_application", "prescriptive");
+      assert.equal(src?.url, row.url, "the served city's building slot gets the statewide blank");
+      assert.equal(src?.curated?.formName, row.formName);
+      assert.equal(plan.ownFreeFormSource(mkProject("City of Example Ownprogram"), "building_application", "prescriptive"), null, "a city not served does not");
+    } finally {
+      const i = (CURATED_AHJ_FORMS as unknown as Array<typeof row>).indexOf(row);
+      if (i >= 0) (CURATED_AHJ_FORMS as unknown as Array<typeof row>).splice(i, 1);
+    }
+  });
+
+  await check("#171 rule 3: a lookup's 'state' answer never overwrites a person's verified 'own' row", async () => {
+    const ahj = "City of Example Verified";
+    lookup(ahj, "own", "The City of Example Verified Building Division issues building permits for the city");
+    const res = await runLookup(ahj, processAnswer({ buildingProgram: { value: "state", sourceUrl: COUNTY_PAGE, quote: "Benton County Building Division issues permits for the City of Example Verified" } }));
+    assert.equal(res.saved, false, res.reason);
+    const project = mkProject(ahj);
+    assert.equal(pp.permitProcessFor(project)?.buildingProgram?.value, "own");
+    assert.equal(pp.servedByStateIssuer(project), null);
+  });
+
+  await check("#171: a seeded served list answers before a lookup lands, and never blocks a cited 'own'", async () => {
+    const di = pp.STATE_PERMIT_RULES.OR.defaultIssuer!;
+    const prior = [...di.served];
+    di.served.push("example seeded", "example seeded own");
+    try {
+      const seeded = pp.servedByStateIssuer(mkProject("City of Example Seeded"));
+      assert.ok(seeded, "the seeded list answers with no lookup on file");
+      assert.equal(seeded!.origin, "state_rule");
+      assert.match(seeded!.agency, /county building department or the Oregon Building Codes Division/);
+      await runLookup("City of Example Seeded Own", processAnswer({ buildingProgram: { value: "own", sourceUrl: CITY_PAGE, quote: "The City of Example Seeded Own Building Department issues building permits" } }));
+      assert.equal(pp.servedByStateIssuer(mkProject("City of Example Seeded Own")), null, "the cited answer outranks the seed");
+    } finally { di.served.splice(0, di.served.length, ...prior); }
+  });
+
+  await check("#171: a New Mexico served village's solar checklist is still searched (Los Lunas)", async () => {
+    const project = mkProject("Village of Los Lunas", "NM");
+    assert.ok(pp.servedByStateIssuer(project), "precondition: Los Lunas is CID-served");
+    assert.equal(plan.servedJurisdictionForms(project, "solar_checklist"), null);
+    const { llm, calls } = countingLlm();
+    await auto.ensureAhjFormTemplate(db, llm, project, "solar_checklist", { formsPage: { reader: null, minGapMs: 0 } });
+    assert.ok(calls.some((c) => /solar_checklist/.test(c)), `the village's checklist is searched for (${calls.join(", ")})`);
+    // The building application is still not searched under the village's name.
+    assert.ok(plan.servedJurisdictionForms(project, "building_application"));
   });
 } finally {
   db.close();

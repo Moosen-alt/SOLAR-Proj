@@ -67,7 +67,8 @@ await check("the NM process prompt asks the CID question with a citation, and fo
   assert.match(sys, /own building program/i);
   assert.match(sys, /zoning[^]*prerequisites/i);
   assert.match(sys, /unincorporatedZoning/);
-  assert.doesNotMatch(ppl.processLookupSystemFor("OR"), /buildingProgram|Construction Industries/);
+  // Oregon is asked buildingProgram about its county / BCD (#171) — never about CID.
+  assert.doesNotMatch(ppl.processLookupSystemFor("OR"), /Construction Industries|unincorporatedZoning/);
 });
 await check("a CITED 'served by CID' answer puts an AHJ no seed names on CID (origin lookup), both tracks", () => {
   const p = project("Village of Example Pueblo", "Example Pueblo");

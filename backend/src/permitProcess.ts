@@ -222,6 +222,14 @@ export interface StatePermitRules {
      *  office is not on file — never guessed). Seeded, never verified. */
     countyOf?: Record<string, { county: string; office: string; sourceUrl: string; quote: string }>;
   };
+  /** WHO ISSUES WHERE A CITY RUNS NO BUILDING PROGRAM OF ITS OWN, in a state with no single state
+   *  issuer (Oregon: the county's building department, or BCD — issue #171). It is what the per-job
+   *  lookup is asked about (permitProcessLookup.processLookupSystemFor: buildingProgram "own" /
+   *  "state"), and what a served city's form slot names. `words` = how a quote names that issuer
+   *  (supportsBuildingProgram reads it: a "state" answer must name it). `served` = names
+   *  (localAhjName) a source says are served — seeded, so a cited lookup or a person's verified row
+   *  outranks it both ways; empty until a source naming them is on file (never guessed). */
+  defaultIssuer?: CitedFact<string> & { words: RegExp; served: string[] };
 }
 
 const IOWA_CITY_ENERGOV = "https://energovapp.civic.iowa-city.org/energovprod/";
@@ -274,6 +282,20 @@ export const STATE_PERMIT_RULES: Record<string, StatePermitRules> = {
       sourceUrl: BCD_EPERMITTING_SOLAR,
       quote: "Category of Construction (CoC) would be the structure type the system is being installed to … if the structure already exists, Type of Work = Alteration … Solar is not considered 'Other' under CoC or under ToW.",
       origin: "state_rule",
+    },
+    // A city that does not administer a building inspection program of its own is served by its
+    // county's, or by BCD's where the county runs none; either way it is filed through statewide
+    // ePermitting (City of Monroe, Benton County — owner's live run 2026-10-04, #162 / #171). No
+    // served list yet: the ePermitting jurisdiction list is not on file, so a city is put on it only
+    // by the lookup's cited answer or a person's verified row.
+    defaultIssuer: {
+      value: "the county building department or the Oregon Building Codes Division (BCD)",
+      sourceUrl: "https://www.oregonlegislature.gov/bills_laws/ors/ors455.html",
+      quote: "ORS 455.148 (5) If a city does not notify the director, or notifies the director that the city will not administer the building inspection program, the county or counties within which the city is located shall administer and enforce the county program within the city … (6) If a county does not notify the director, or notifies the director that the county will not administer and enforce a building inspection program, the director shall contract with a municipality or other person or use such state employees or state agencies as are necessary to administer and enforce a building inspection program",
+      origin: "state_rule",
+      // A NAMED county ("Benton County"), never "the unincorporated county" — case-sensitive on purpose.
+      words: /\bBCD\b|\b[Bb]uilding [Cc]odes [Dd]ivision\b|\b(?!(?:The|Unincorporated|This|That|Each|Any|Our|Your)\b)[A-Z][a-z]+ County\b/,
+      served: [],
     },
   },
 };
@@ -383,6 +405,23 @@ function localAhjName(ahj: string): string {
   return normalizeAhjName(ahj).replace(/^(?:the )?(?:city|town|village) of /, "").replace(/ (?:city|town|village)$/, "").trim();
 }
 
+/** DOES THIS QUOTE NAME THE OFFICE THAT ISSUES WHERE A JURISDICTION RUNS NO PROGRAM OF ITS OWN
+ *  (issue #171)? New Mexico: CID; Oregon: a county or BCD (defaultIssuer.words). The AHJ's own name
+ *  is taken out first, so a county AHJ's own building division never reads as "served by a county" —
+ *  but a CITY's name is taken out only where it is not the start of its county's ("Baker City" /
+ *  "Baker County Building Department", Tillamook, Union: the county is still named, #174 review).
+ *  null = the state asks no buildingProgram question. */
+export function servingIssuerNamed(state: string, ahj: string): ((quote: string) => boolean) | null {
+  const rules = stateRulesFor(state);
+  const words = rules.stateTradeIssuer ? /\bcid\b|construction industries/i : rules.defaultIssuer?.words;
+  if (!words) return null;
+  const own = localAhjName(ahj);
+  const name = own.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/ +/g, "\\s+");
+  const ownName = own ? new RegExp(/\bcounty$/.test(own) ? `\\b${name}\\b` : `\\b${name}\\b(?!\\s+county\\b)`, "gi") : null;
+  const strip = (q: string) => (ownName ? q.replace(ownName, " ") : q);
+  return (quote: string) => words.test(strip(String(quote ?? "")));
+}
+
 /** THE STATE AGENCY that issues this project's building + electrical permits, when its state says
  *  one does (New Mexico: CID, or MHD for a manufactured home — codeReviewRules.structureType, the one
  *  manufactured-home predicate) and the AHJ is one a source names as state-served. `localReviewer`
@@ -425,9 +464,22 @@ function citedBuildingProgram(project: IssuerProject): CitedFact<"own" | "state"
 export function servedByStateIssuer(project: IssuerProject): { agency: string; sourceUrl: string; quote: string; origin: string } | null {
   const st = stateTradeIssuerFor(project);
   if (st) return { agency: st.value, sourceUrl: st.sourceUrl, quote: st.quote, origin: String(st.origin) };
-  const cited = citedBuildingProgram(baseOfView(project));
-  if (cited?.value !== "state") return null;
-  return { agency: String(stateRulesFor(baseOfView(project).state).stateTradeIssuer?.value ?? ""), sourceUrl: cited.sourceUrl, quote: cited.quote, origin: String(cited.origin) };
+  const base = baseOfView(project);
+  const cited = citedBuildingProgram(base);
+  const rules = stateRulesFor(base.state);
+  if (cited) {
+    if (cited.value !== "state") return null;
+    // The lookup's own cited issuer (Oregon: "Benton County") names the agency better than the rule.
+    // Only when it names the serving office itself (servingIssuerNamed), never some other agency.
+    const issuer = permitProcessFor(base)?.issuingAgency;
+    const names = servingIssuerNamed(String(base.state ?? ""), String(base.ahj ?? ""));
+    const named = issuer && answered(issuer) && /^https?:\/\//i.test(String(issuer.sourceUrl ?? "")) && (!names || names(String(issuer.value))) ? String(issuer.value) : "";
+    return { agency: named || String(rules.stateTradeIssuer?.value ?? rules.defaultIssuer?.value ?? ""), sourceUrl: cited.sourceUrl, quote: cited.quote, origin: String(cited.origin) };
+  }
+  // A SEEDED served list (defaultIssuer.served) answers before any lookup lands; unknown stays unknown.
+  const di = rules.defaultIssuer;
+  if (!di || !di.served.includes(localAhjName(String(base.ahj ?? "")))) return null;
+  return { agency: String(di.value), sourceUrl: di.sourceUrl, quote: di.quote, origin: String(di.origin) };
 }
 
 /** WHERE THE ZONING STEP GOES when the operator answers that the address is in the UNINCORPORATED
