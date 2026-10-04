@@ -40,6 +40,7 @@ const MEASURED = [
   "city.elec.sizing-string-voc",
   "city.elec.sizing-voltage-drop",
   "city.elec.sizing-inputs-missing",
+  "city.fire.pathway-below-required",
 ];
 
 const PLAN = "GROUND SNOW LOAD = 20 PSF WIND SPEED = 110 MPH EXPOSURE CATEGORY = C GOVERNING CODES: 2023 ORSC 2023 OESC (NEC 2020) NEW PV ATTACHMENTS AT 4'-0\" O.C.";
@@ -66,6 +67,8 @@ const produced: ReviewerFinding[] = [
   ...buildReviewerReport({ ...project, parserSnapshot: { ...project.parserSnapshot, invMake: "Synthetic", invModel: "SI-1", invOutputW: "48", busRating: "200", mainBreaker: "200", moduleVoc: "49.5", siteLowTempC: "-10", modulesPerString: "14" } } as unknown as ProjectRecord).findings,
   // … and 20 x 1.21 A micros on a 25 A breaker over #14 CU with a 150 ft run (under 1.25 x, over ampacity, drop).
   ...buildReviewerReport({ ...project, parserSnapshot: { ...project.parserSnapshot, pvMicroMake: "Enphase", pvMicroModel: "IQ8M", pvMicroQty: "20", pvMicroOutputW: "1.21", pvBreaker: "25", acConductor: "#14 AWG THWN-2 CU", acRunLengthFt: "150" } } as unknown as ProjectRecord).findings,
+  // An 18" pathway against the jurisdiction's 36" (issue #142).
+  ...buildReviewerReport(project, { codeContext: buildCodeContext("OR", "City of Testport", profile({ fireSetbacks: [{ id: "fire-1", description: "Minimum 36-inch fire access pathways." }] })), documentTexts: [{ label: "Plan set", text: '18" FIRE ACCESS PATHWAY' }] }).findings,
 ];
 
 for (const id of MEASURED) {

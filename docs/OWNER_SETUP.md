@@ -140,8 +140,10 @@ minimized window titled "SOLAR-Proj server"; read the server's output there from
 - the checkout is not on `main`, has changes to tracked files, or has commits `main` doesn't have;
 - anything is in progress: a background job running or due, a portal run queued, running, staged
   or paused for you (review window, MFA/CAPTCHA), a filing `awaiting_human_submit`, or a lookup in
-  flight. It tries again 15 minutes later. A staged filing therefore holds updates until you submit
-  or discard it: that is on purpose, since a restart would close the window you submit from;
+  flight. It tries again 15 minutes later. A filing staged in the server that is running now holds
+  updates until you submit or discard it: that is on purpose, since a restart would close the window
+  you submit from. One staged before the server last started, or on an archived project, does not
+  hold them: its window cannot still be open. The log says how many such filings it set aside;
 - the supervised server (`run-prod-supervised.ps1`) is running: that loop owns restarts;
 - the pause file exists (below), or the database snapshot fails;
 - a previous cycle already failed on the same `main` commit (pull, `npm ci` or server stop). It
