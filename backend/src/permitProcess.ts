@@ -414,6 +414,22 @@ function citedBuildingProgram(project: IssuerProject): CitedFact<"own" | "state"
   return cited || lk?.confidence === "verified" ? bp : null;
 }
 
+/** A JURISDICTION THAT DOES NOT RUN ITS OWN BUILDING PROGRAM (issue #162): a state issuer serves it
+ *  (stateTradeIssuerFor — New Mexico CID, seeded or by the lookup's cited answer), or its per-job
+ *  lookup / a person's verified row says, cited, that the STATE issues its permits (buildingProgram
+ *  "state") in a state with no state-issuer rule (most small Oregon cities: BCD or the county). Its
+ *  own building-permit form is not searched for under its name — there is none to find, and on a
+ *  common name the search spends itself on same-named places elsewhere (City of Monroe, Oregon,
+ *  2026-10-04). `agency` "" = the source says the state issues, and no rule names the agency.
+ *  null = no source says so (a city with its own program, or nothing known: it keeps its search). */
+export function servedByStateIssuer(project: IssuerProject): { agency: string; sourceUrl: string; quote: string; origin: string } | null {
+  const st = stateTradeIssuerFor(project);
+  if (st) return { agency: st.value, sourceUrl: st.sourceUrl, quote: st.quote, origin: String(st.origin) };
+  const cited = citedBuildingProgram(baseOfView(project));
+  if (cited?.value !== "state") return null;
+  return { agency: String(stateRulesFor(baseOfView(project).state).stateTradeIssuer?.value ?? ""), sourceUrl: cited.sourceUrl, quote: cited.quote, origin: String(cited.origin) };
+}
+
 /** WHERE THE ZONING STEP GOES when the operator answers that the address is in the UNINCORPORATED
  *  county around a state-served city/village (incorporatedStatus, issue #44): the lookup's cited
  *  county office, else the seeded city→county table. `office` "" = the county is known but no source

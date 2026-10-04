@@ -39,7 +39,7 @@ import type { LabelItem } from "./formTextLayer";
 import { agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, formAuthorityFor, rowBelongsToAuthority, TRACK_FORM_TYPES, type FormAuthority } from "./applicationDocsAgency";
 import {
   acceptedFormTypes, acceptedFormTypesFor, acquisitionScopeKey, applicationKindForProject, clearFormFetchFailure, formResearchInFlight, hasStoredTemplateOfType, issuingAgencyFormPlan, noteFormFetchFailure,
-  ownFreeFormSource, recentFormFetchFailure, trackFormResearch, type EnsureFormResult,
+  ownFreeFormSource, recentFormFetchFailure, servedJurisdictionForms, trackFormResearch, type EnsureFormResult,
 } from "./formAcquisitionPlan";
 // The acquisition's pre-fetch predicates live in formAcquisitionPlan.ts — the ONE answer the pre-Stage
 // gate reads too (gates-proper C1). Re-exported so every existing caller of this module keeps working.
@@ -1056,6 +1056,11 @@ async function runAhjFormsPass(
     const proc = findAhjProcessProfile(project);
     if (proc?.requiresSolarChecklist && resolvePermitPath(project).path !== "engineered") want("solar_checklist");
   } catch { /* profile data optional */ }
+  // A served jurisdiction files the STATE's checklist (Oregon BCD 5952 on the prescriptive path) — a
+  // free download, attached in place of the search its own name would have cost (issue #162).
+  try {
+    if (servedJurisdictionForms(project, "solar_checklist")?.checklist) want("solar_checklist");
+  } catch { /* process data optional */ }
   try {
     const kb = findKnowledgeForLearn(db, { state: project.state, ahj: project.ahj, utility: project.utility });
     if (resolvePermitPath(project).path !== "engineered" && (kb.ahj?.requiredDocuments || []).some((d) => /checklist|worksheet/i.test(d))) want("solar_checklist");
@@ -1156,6 +1161,11 @@ export async function ensureAhjFormTemplate(
     }
     if (opts.allowResearch === false) return { status: "not_found", sourceUrl: url, message: "The official form could not be downloaded. Retry or upload the blank; it has not been counted as present." };
   }
+  // A SERVED JURISDICTION (issue #162): no form of its own to search for — the state's forms are
+  // attached on their own rows (runAhjFormsPass wants the statewide checklist) and this slot says whose
+  // form it is. Nothing is searched, so nothing is spent on a same-named city in another state.
+  const served = servedJurisdictionForms(project, formType);
+  if (served?.message) return { status: "not_found", message: served.message };
   if (opts.allowResearch === false) return { status: "not_found", message: `No downloadable mapped ${formType.replace(/_/g, " ")} is held for this AHJ. Research is disabled; use Find official form or upload the official blank.` };
 
   // Check if the AHJ is known to be online-only (e-permitting portal). These

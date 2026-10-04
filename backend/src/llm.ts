@@ -5,6 +5,7 @@ import { performance } from "node:perf_hooks";
 import type { AcroFieldForMapping, AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, JurisdictionCodeResearchInput, DesignCriteriaResearchResult, ParserExtractedField, ParserFieldEvidence, ParserExtractionConflict, ParserExtractionUncertainty, ParserExtractionResolution, PlanPageIndex, CodeEdition, CodeFamily, CodeFamilyAdoptionModel, JurisdictionAdoptionModel, UpcomingCodeEdition, WebLookupResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { RESEARCH_PORTAL_UNCONFIRMED_NOTE } from "./researchedPortalUrl";
+import { scopeResultsToState, stateScopeOf, stateScopedFormQueries } from "./formSearchScope";
 import { logger } from "./logger";
 import { persistLlmCall } from "./llmAccounting";
 import { routeFor, taskForLabel, takeAdvisorSlot, describeRoutes, BASELINE_MODEL, type LlmEffort, type LlmTask, type ResolvedRoute, type AdvisorConfig } from "./modelRouting";
@@ -844,6 +845,12 @@ export function shouldWrapperRetry(err: unknown): boolean {
 // ---------------------------------------------------------------------------
 // Web-grounded research: one budget, one "no web" prompt, one URL scrub.
 // ---------------------------------------------------------------------------
+
+/** findAhjFormUrl reads every result its searches return, discards a same-named place in another
+ *  state (formSearchScope, issue #162), and keeps the first KEPT of the rest — askWithWebSearch's own
+ *  default cap, applied after the filter instead of before it. */
+const FORM_SEARCH_RESULTS_SEEN = 400;
+const FORM_SEARCH_RESULTS_KEPT = 20;
 
 /** A GROUNDED SEARCH NEEDS A GROUNDED BUDGET — for every research call, not just the one that
  *  was caught. researchAhjRequirements / researchUtilityRequirements / researchJurisdictionCodes
@@ -3258,6 +3265,8 @@ HOW TO SEARCH (do this thoroughly — these forms are usually easy to find):
 2. From the search results, pull the DIRECT links to the blank building permit application AND the electrical permit application documents (residential solar usually needs BOTH a BLD and an ELE permit). Always report the forms/applications page itself in formsPageUrl — that page is read separately and the document links on it are checked.
 3. Return every blank-form document link you find, best/most-relevant first.
 
+STATE SCOPE — many towns share a name across states (Monroe is in Oregon, Michigan, Connecticut, Ohio…; Salem in Oregon and Massachusetts). EVERY web_search query MUST name the AHJ's state by its full name AND its two-letter abbreviation (start from the queries the request lists). A result for a same-named place in ANOTHER state is not this AHJ: do not spend a search following it and never report its URLs. If a search returns only other-state results, make the next query narrower (add the county, or the AHJ's own .gov / .us site) — never broader.
+
 Return ONLY JSON:
 {
   "formName": "<the official form's title (or 'Building + Electrical permit applications')>",
@@ -3280,7 +3289,13 @@ Rules:
 - ONLY return URLs you actually located via search — never fabricate a URL.
 - If the AHJ truly submits exclusively through an online portal with NO downloadable PDF, return an empty candidateUrls array and say so in notes (but still fill submittalPortalUrl/portalPlatform).
 - Prefer the most current year's form. Return valid JSON only.`;
-    const userMsg = `AHJ: ${input.ahj}\nState: ${input.state}\nForm needed: residential solar ${formType.replace(/_/g, " ")} (building + electrical permit applications).${input.knownContext ? `\n\n${input.knownContext}\nStart from the known portal/URLs above when searching.` : ""}\nFind the AHJ's forms/applications page and the direct blank PDF links.`;
+    // THE STATE, BY NAME AND ABBREVIATION, IN EVERY QUERY (issue #162): "State: OR" alone let three
+    // searches for the City of Monroe, Oregon return only Monroe MI / CT / OH.
+    const scope = stateScopeOf(input.state);
+    const queries = stateScopedFormQueries(input.ahj, input.state, formType);
+    const stateLine = scope ? `${scope.name} (${scope.abbr}) — only ${input.ahj}, ${scope.abbr}; a same-named place in any other state is not this AHJ` : input.state;
+    const queryLines = queries.length ? `\nSearch with queries like these (each names the state):\n${queries.map((q) => `- ${q}`).join("\n")}` : "";
+    const userMsg = `AHJ: ${input.ahj}\nState: ${stateLine}\nForm needed: residential solar ${formType.replace(/_/g, " ")} (building + electrical permit applications).${input.knownContext ? `\n\n${input.knownContext}\nStart from the known portal/URLs above when searching.` : ""}\nFind the AHJ's forms/applications page and the direct blank PDF links.${queryLines}`;
     let parsed: Partial<AhjFormUrlResult> = {};
     let lookupError = "";
     // THE SEARCH RESULTS THEMSELVES (Waltham, 2026-09-28): the call already receives every result's
@@ -3301,7 +3316,9 @@ Rules:
       // truncating the JSON so it parsed to {} — which the harvest then read as "this AHJ has no
       // forms page". The sibling research calls all use 3000; this one returns several URLs plus
       // notes after three searches, so it gets more.
-      const web = await this.askWithWebSearch("findAhjFormUrl", system, userMsg, 4000, 3, budgetMs);
+      // Every result the searches returned (not the first 20): the out-of-state ones are discarded
+      // below BEFORE the cap, so a page of Monroe MI hits cannot crowd Monroe OR's out of it.
+      const web = await this.askWithWebSearch("findAhjFormUrl", system, userMsg, 4000, 3, budgetMs, [], FORM_SEARCH_RESULTS_SEEN);
       const raw = web.text;
       searchResults = (web.resultUrls || []).map((url) => ({ url, title: String(web.resultTitles?.[url] || "") }));
       parsed = this.parseJson(raw, {});
@@ -3317,18 +3334,37 @@ Rules:
       lookupError = errMsg(err);
       logger.warn("llm", "findAhjFormUrl web search failed", { ahj: input.ahj, state: input.state, err: lookupError });
     }
+    // A SAME-NAMED PLACE IN ANOTHER STATE IS DISCARDED HERE (issue #162), before the harvest reads a
+    // forms page, downloads a candidate or learns a portal off it: the search results, the model's
+    // candidate links, its forms page and its portal alike. Titles come from the results the search
+    // returned (a model-listed URL the search never returned is judged by its host alone).
+    const titleOf = new Map(searchResults.map((r) => [r.url, r.title]));
+    const scoped = scopeResultsToState(searchResults, input.ahj, input.state);
+    searchResults = scoped.kept.slice(0, FORM_SEARCH_RESULTS_KEPT);
+    const discarded: Array<{ url: string; title: string; state: string }> = [...scoped.discarded];
+    const inState = (url: string): boolean => {
+      const other = scopeResultsToState([{ url, title: titleOf.get(url) ?? "" }], input.ahj, input.state).discarded[0];
+      if (other && !discarded.some((d) => d.url === url)) discarded.push(other);
+      return !other;
+    };
     const urls = Array.isArray(parsed.candidateUrls)
-      ? parsed.candidateUrls.map((u) => String(u)).filter((u) => /^https?:\/\//i.test(u))
+      ? parsed.candidateUrls.map((u) => String(u)).filter((u) => /^https?:\/\//i.test(u) && inState(u))
       : [];
-    const portalUrl = /^https?:\/\//i.test(String(parsed.submittalPortalUrl || "")) ? String(parsed.submittalPortalUrl) : "";
-    const formsPageUrl = /^https?:\/\//i.test(String(parsed.formsPageUrl || "")) ? String(parsed.formsPageUrl) : "";
+    const portalUrl = /^https?:\/\//i.test(String(parsed.submittalPortalUrl || "")) && inState(String(parsed.submittalPortalUrl)) ? String(parsed.submittalPortalUrl) : "";
+    const formsPageUrl = /^https?:\/\//i.test(String(parsed.formsPageUrl || "")) && inState(String(parsed.formsPageUrl)) ? String(parsed.formsPageUrl) : "";
+    if (discarded.length) {
+      logger.info("llm", "findAhjFormUrl discarded same-named out-of-state results", { ahj: input.ahj, state: input.state, discarded: discarded.length, states: [...new Set(discarded.map((d) => d.state))] });
+    }
+    const discardNote = discarded.length
+      ? `Discarded ${discarded.length} result(s) for a same-named place in another state (${[...new Set(discarded.map((d) => d.state))].join(", ")}) — not ${input.ahj}, ${scope?.abbr ?? input.state}.`
+      : "";
     return {
       provider: "claude",
       formName: String(parsed.formName || ""),
       candidateUrls: urls,
       formType,
       confidence: (["low", "medium", "high"].includes(String(parsed.confidence)) ? parsed.confidence : "low") as "low" | "medium" | "high",
-      notes: String(parsed.notes || ""),
+      notes: [String(parsed.notes || ""), discardNote].filter(Boolean).join(" "),
       formsPageUrl,
       submissionMethod: String(parsed.submissionMethod || ""),
       submittalPortalUrl: portalUrl,
@@ -3339,6 +3375,7 @@ Rules:
       lookupFailed: Boolean(lookupError),
       lookupError,
       searchResults,
+      ...(discarded.length ? { discardedOutOfState: discarded } : {}),
     };
   }
 

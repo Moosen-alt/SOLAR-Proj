@@ -3317,6 +3317,9 @@ export interface AhjFormUrlResult {
    *  acquisition can take a document link the model saw but did not list (a CivicPlus
    *  /DocumentCenter/View/<id>/<name> link has no ".pdf"). Data, never an instruction. */
   searchResults?: Array<{ url: string; title: string }>;
+  /** Results (and model-listed links) dropped because they name a same-named place in ANOTHER state
+   *  (formSearchScope, issue #162): "City of Monroe, MI" for the City of Monroe, Oregon. */
+  discardedOutOfState?: Array<{ url: string; title: string; state: string }>;
 }
 
 export interface AhjFieldMapResult {
