@@ -3738,6 +3738,13 @@ export interface PermitProcessLookup {
   /** Steps at ANOTHER office before or beside filing ("submit to City Hall first", a zoning
    *  sign-off), each cited. Never the issuing agency. */
   prerequisites?: CitedFact<string>[];
+  /** Asked only where a state rule names a state issuer (New Mexico CID, issue #44): does this AHJ
+   *  run its OWN building program, or does the state agency issue its building + electrical
+   *  permits? Cited, it outranks the seeded served list (permitProcess.stateTradeIssuerFor). */
+  buildingProgram?: CitedFact<"own" | "state">;
+  /** The COUNTY office that reviews zoning for an address in the unincorporated county around this
+   *  city/village (read when the incorporatedStatus answer is "Unincorporated county"). */
+  unincorporatedZoning?: CitedFact<string>;
   /** Adopted codes the lookup found (display only; the gate reads jurisdiction_code_profiles). */
   codes?: CitedFact<string[]>;
   /** Pages the lookup READ ITSELF (agency pages, the portal's public catalog, fee schedules), each

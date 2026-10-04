@@ -170,7 +170,9 @@ export type StateIssuerFormSeed = CitedFact<string> & {
   /** The blank's SHA-256 and size when it was opened (pins WHICH revision was seeded; never fetched to check). */
   sha256: string;
   bytes: number;
-  /** "docx": a Word document — the form filler is PDF-only, so it is filled BY HAND, never auto-filled. */
+  /** "docx": a Word document — the form filler is PDF-only, so it is filled BY HAND, never auto-filled.
+   *  The `"pdf"` / `fill: "auto"` arms have NO consumer yet: every seeded form is a docx filled by hand,
+   *  and nothing reads `format`/`fill` to auto-fill one (issue #44 addendum). */
   format: "pdf" | "docx";
   fill: "auto" | "by_hand";
   /** What the operator does with it (the form finder's words). */
@@ -214,6 +216,11 @@ export interface StatePermitRules {
      *  that page (#60), never guessed; a `by_hand` form is never fetched or auto-filled — `note` says
      *  what the operator does. Seeded (a state rule), never verified. */
     issuerForms?: StateIssuerFormSeed[];
+    /** THE COUNTY around each served city/village (localAhjName → county), for an address the
+     *  operator answers is in the unincorporated county (incorporatedStatus, issue #44): its zoning
+     *  review is the county's. `office` only where a source names it ("" = the county is known, its
+     *  office is not on file — never guessed). Seeded, never verified. */
+    countyOf?: Record<string, { county: string; office: string; sourceUrl: string; quote: string }>;
   };
 }
 
@@ -329,7 +336,7 @@ STATE_PERMIT_RULES.NM = {
         formName: "Multi-Purpose State Building Application",
         sourceUrl: CID_FORMS_PAGE,
         searchUrl: CID_FORMS_PAGE,
-        quote: "Construction Industries: Forms and Applications — Multi-Purpose State Building Application (Word document); Solar is among its residential scopes (issue #60 evidence)",
+        quote: "Construction Industries: Forms and Applications — Multi-Purpose State Building Application (Word document) (issue #60 evidence)",
         origin: "state_rule",
         url: "https://api.realfile.rtsclients.com/PublicFiles/1ee897135beb4b1c82715d36398de4c5/9b7ef935-4881-420d-9b33-b808a69039a0/General%20Building%20Permit%20Application.docx",
         sha256: "9578c63347cf1700901c7285e445088dc43b2d41ccae8f91162ab52e2cafc219",
@@ -354,9 +361,22 @@ STATE_PERMIT_RULES.NM = {
         note: CID_WORD_NOTE,
       },
     ],
+    // Los Lunas, Rio Communities and Bosque Farms sit in Valencia County, whose Community
+    // Development office the local-step source names; Tyrone sits in Grant County, whose zoning office
+    // no source on file names.
+    countyOf: {
+      "los lunas": { county: "Valencia County", office: "Valencia County Community Development", sourceUrl: "https://loslunasnm.gov/995/Building-Permits", quote: "Village of Los Lunas Planning Division / Valencia County Community Development: zoning compliance and site-development review on a site plan" },
+      "rio communities": { county: "Valencia County", office: "Valencia County Community Development", sourceUrl: "https://loslunasnm.gov/995/Building-Permits", quote: "Village of Los Lunas Planning Division / Valencia County Community Development: zoning compliance and site-development review on a site plan" },
+      "bosque farms": { county: "Valencia County", office: "Valencia County Community Development", sourceUrl: "https://loslunasnm.gov/995/Building-Permits", quote: "Village of Los Lunas Planning Division / Valencia County Community Development: zoning compliance and site-development review on a site plan" },
+      "tyrone": { county: "Grant County", office: "", sourceUrl: "", quote: "" },
+    },
   },
 };
 export const BCD_5952_URL = BCD_5952;
+/** A zoning / land-use sign-off step ("zoning compliance review" is New Mexico's wording for the
+ *  local step before a CID permit, #44). The lookup's prerequisite parser and permitStructureAnswer's
+ *  dedupe of the state-issuer zoning step read this one predicate. */
+export const ZONING_SIGNOFF = /\b(?:zoning|land[- ]use|planning)\s+(?:compliance\s+)?(?:approval|sign[- ]?off|clearance|review|verification)\b/i;
 
 /** "City of Albuquerque" / "Albuquerque, NM" → "albuquerque"; a county keeps its "county". */
 function localAhjName(ahj: string): string {
@@ -375,10 +395,41 @@ export function stateTradeIssuerFor(project: IssuerProject): (CitedFact<string> 
   const local = localAhjName(ahj);
   // The project names the state office itself ("NM CID") — there is no local step to add.
   if (!local || /\bcid\b|\bmhd\b|construction industries|manufactured housing/.test(local)) return null;
-  if (!rule.served.includes(local)) return null;
+  // THE PER-JOB LOOKUP'S CITED ANSWER (issue #44) outranks the seeded list both ways: "state" puts
+  // an AHJ no seed names on the state issuer, "own" takes a seeded one off it. A person's verified
+  // row is the same field, and a lookup never overwrites it (savePermitProcessLookup, rule 3).
+  const cited = citedBuildingProgram(base);
+  if (cited ? cited.value !== "state" : !rule.served.includes(local)) return null;
   const manufactured = structureType({ parserSnapshot: base.parserSnapshot ?? {} } as unknown as ProjectRecord).kind === "manufactured_home";
-  const fact = manufactured ? rule.manufactured : rule;
-  return { value: String(fact.value), sourceUrl: fact.sourceUrl, quote: fact.quote, origin: fact.origin, localReviewer: ahj, manufactured };
+  const fact = manufactured ? rule.manufactured : cited ?? rule;
+  return { value: String(manufactured ? rule.manufactured.value : rule.value), sourceUrl: fact.sourceUrl, quote: fact.quote, origin: fact.origin, localReviewer: ahj, manufactured };
+}
+
+/** The lookup's buildingProgram when it is answered and cited (or on a person's verified row). */
+function citedBuildingProgram(project: IssuerProject): CitedFact<"own" | "state"> | null {
+  const lk = permitProcessFor(project);
+  const bp = lk?.buildingProgram;
+  if (!bp || (bp.value !== "own" && bp.value !== "state")) return null;
+  const cited = /^https?:\/\//i.test(String(bp.sourceUrl ?? "")) && String(bp.quote ?? "").trim().length >= 8;
+  return cited || lk?.confidence === "verified" ? bp : null;
+}
+
+/** WHERE THE ZONING STEP GOES when the operator answers that the address is in the UNINCORPORATED
+ *  county around a state-served city/village (incorporatedStatus, issue #44): the lookup's cited
+ *  county office, else the seeded city→county table. `office` "" = the county is known but no source
+ *  names its office; null = nothing on file (the caller says so — never guessed). A county AHJ is
+ *  already the county: null. */
+export function unincorporatedZoningFor(project: IssuerProject): { county: string; office: string; sourceUrl: string; quote: string } | null {
+  const base = baseOfView(project);
+  const local = localAhjName(String(base.ahj ?? ""));
+  if (!local || /\bcounty\b/.test(local)) return null;
+  const lk = permitProcessFor(base)?.unincorporatedZoning;
+  if (lk && answered(lk) && /^https?:\/\//i.test(lk.sourceUrl) && lk.quote.trim().length >= 8) {
+    // "Example County Planning and Zoning" → county "Example County", office the whole cited name.
+    const office = String(lk.value);
+    return { county: /^(.*?\bcounty)\b/i.exec(office)?.[1] ?? office, office, sourceUrl: lk.sourceUrl, quote: lk.quote };
+  }
+  return stateRulesFor(base.state).stateTradeIssuer?.countyOf?.[local] ?? null;
 }
 
 /** THE STATE ISSUER'S APPLICATIONS for this project (issue #53): the state rule's issuerForms, ONE
@@ -670,6 +721,10 @@ export function trackIssuer(project: IssuerProject, track: string | null | undef
     };
   }
   const st = ahj ? stateTradeIssuerFor(base) : null;
+  // Source "state_rule" whether the seed or the lookup's cited buildingProgram put this AHJ on the
+  // state issuer: the ISSUER is the state rule's agency either way, and the fee path
+  // (feeIssuer.permitFeeProject) and the issuer's own lookup (stateIssuersToLookUp) key on it (#103
+  // review). The citation travels in sourceUrl/quote — the lookup's page when the lookup decided.
   if (st) return { name: st.value, source: "state_rule", sourceUrl: st.sourceUrl, quote: st.quote, override, ...(refused ? { refused } : {}) };
   return { name: ahj, source: "project", override, ...(refused ? { refused } : {}) };
 }
