@@ -91,6 +91,7 @@ export const codeProfileVerifySchema = z.object({
     windExposure: z.string().max(8).optional(),
     seismicDesignCategory: z.string().max(8).optional(),
     frostDepthIn: z.number().finite().optional(),
+    riskCategory: z.string().max(8).optional(),
     sourceUrl: z.string().max(500).optional(),
   }).default({}),
   prescriptive: z.object({

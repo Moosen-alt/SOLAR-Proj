@@ -107,6 +107,9 @@ export const MEASURED_FINDING_IDS: ReadonlySet<string> = new Set([
   // The stated Pg against the state minimum for the permit path (Oregon: 36 / 25 psf) is arithmetic.
   "city.struct.ground-snow-below-state-minimum",
   "city.struct.anchor-spacing-exceeds-ahj", // 48" o.c. > the jurisdiction's 24" is arithmetic
+  // The stated Vult against the prescriptive path's cap for the stated exposure is arithmetic too
+  // (issue #111); a sheet showing a wind note cannot say the speed is within the cap.
+  "city.struct.wind-exceeds-prescriptive-cap",
   // The listings check reads the whole package text (cut sheets included). An image showing a
   // UL mark on one sheet is not the module AND racking listing it asks for.
   "city.plan.ul-listings-missing",
