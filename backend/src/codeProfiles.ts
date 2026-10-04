@@ -2251,6 +2251,7 @@ export function mergeResearchedDesignCriteria(
     let value: number | string | null = null;
     if (v.criterion === "windExposure") value = /^[BCD]$/i.test(String(v.value).trim()) ? String(v.value).trim().toUpperCase() : null;
     else if (v.criterion === "seismicDesignCategory") value = /^(?:A|B|C|D[012]?|E|F)$/i.test(String(v.value).trim()) ? String(v.value).trim().toUpperCase() : null;
+    else if (v.criterion === "riskCategory") value = /^(?:I|II|III|IV)$/i.test(String(v.value).trim()) ? String(v.value).trim().toUpperCase() : null;
     else value = typeof v.value === "number" && Number.isFinite(v.value) && v.value > 0 && v.value < 400 ? v.value : null;
     if (value == null) { skipped.push(`${v.criterion} (unusable value)`); continue; }
     // pg(asd) is ANOTHER quantity (allowable-stress, ~0.7 x Pg): stored in its own field, never in
@@ -2337,7 +2338,7 @@ export function saveResearchedPlacementRules(
 
 /** WHAT THE DESIGN-CRITERIA JOB MUST ANSWER for every AHJ, in display order. */
 export const DESIGN_CRITERIA_CHECKLIST: readonly DesignCriteriaChecklistItem[] = [
-  "groundSnowLoad", "windSpeed", "windExposure", "seismicDesignCategory", "frostDepth", "fireSetbacks", "localPvAmendments",
+  "groundSnowLoad", "windSpeed", "windExposure", "seismicDesignCategory", "frostDepth", "riskCategory", "fireSetbacks", "localPvAmendments",
 ];
 const CHECKLIST_FIELDS: Partial<Record<DesignCriteriaChecklistItem, Array<keyof JurisdictionDesignCriteria>>> = {
   groundSnowLoad: ["groundSnowLoadPsf", "groundSnowLoadAsdPsf"],
@@ -2345,6 +2346,7 @@ const CHECKLIST_FIELDS: Partial<Record<DesignCriteriaChecklistItem, Array<keyof 
   windExposure: ["windExposure"],
   seismicDesignCategory: ["seismicDesignCategory"],
   frostDepth: ["frostDepthIn"],
+  riskCategory: ["riskCategory"],
 };
 
 const SITE_SPECIFIC_ITEM: Record<NonNullable<DesignCriteriaResearchResult["siteSpecific"]>[number]["criterion"], DesignCriteriaChecklistItem> = {

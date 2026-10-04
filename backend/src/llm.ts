@@ -885,7 +885,7 @@ export const FLAT_FORM_OVERLAY_MAX_TOKENS = 16000;
 // (DESIGN_LOOKUP_MAX_FETCHES) and per page (DESIGN_LOOKUP_MAX_PAGE_TOKENS), and its tokens are
 // recorded in llm_calls like every call (instrument()). What it stores is unchanged: seeded,
 // blank-fill only, each value with its page and quote (codeProfiles.mergeResearchedDesignCriteria).
-export const DESIGN_CRITERIA_LOOKUP_SYSTEM = `You look up ONE building jurisdiction's structural design criteria for residential roofs: ground snow load, ultimate design wind speed (Vult), wind exposure category, seismic design category (SDC), frost line depth. Answer EVERY one: a value you found, or omit it and say in notes that you looked and did not find it.
+export const DESIGN_CRITERIA_LOOKUP_SYSTEM = `You look up ONE building jurisdiction's structural design criteria for residential roofs: ground snow load, ultimate design wind speed (Vult), wind exposure category, seismic design category (SDC), frost line depth, risk category. Answer EVERY one: a value you found, or omit it and say in notes that you looked and did not find it.
 
 WHERE A VALUE MAY COME FROM (a page you actually found):
 1. The jurisdiction's building-department pages and PDFs (design criteria, "currently adopted codes").
@@ -903,7 +903,7 @@ WHEN TO OMIT (and say why in notes):
 - windSpeedMph must be the ULTIMATE (strength) speed Vult; omit a speed labelled ASD, nominal, Vasd, or a legacy "basic wind speed" from a pre-2012 map.
 - groundSnowLoadPsf is the strength-level ground snow load Pg. A value labelled allowable-stress pg(asd) (2024-edition Table R301.2 prints pg(asd)) goes under groundSnowLoadAsdPsf instead — never under groundSnowLoadPsf.
 - Use the CURRENT edition: a table from a superseded code cycle, or a staging/preview copy of a page, is not the value.
-- The quote must put the number right next to its own label (e.g. "Vult = 120 mph", "Ground snow load pg = 25 psf", "Seismic Design Category: B", "Frost line depth 18 inches").
+- The quote must put the number right next to its own label (e.g. "Vult = 120 mph", "Ground snow load pg = 25 psf", "Seismic Design Category: B", "Frost line depth 18 inches", "Risk Category II").
 
 Return ONLY JSON:
 {"groundSnowLoadPsf": {"value": <number>, "sourceUrl": "<page>", "quote": "<the exact words stating it, with the number>"} or omit,
@@ -912,6 +912,7 @@ Return ONLY JSON:
  "windExposure": {"value": "<B|C|D>", "sourceUrl": "<page>", "quote": "<exact words naming the exposure category>"} or omit,
  "seismicDesignCategory": {"value": "<A|B|C|D0|D1|D2|E>", "sourceUrl": "<page>", "quote": "<exact words naming the seismic design category>"} or omit,
  "frostDepthIn": {"value": <inches>, "sourceUrl": "<page>", "quote": "<exact words, with frost and the number>"} or omit,
+ "riskCategory": {"value": "<I|II|III|IV>", "sourceUrl": "<page>", "quote": "<exact words naming the risk category the jurisdiction requires for dwellings>"} or omit,
  "siteSpecific": [{"criterion": "groundSnowLoadPsf|windSpeedMph|windExposure|seismicDesignCategory|frostDepthIn", "sourceUrl": "<the official table/tool page>", "note": "<≤20 words: how it varies, e.g. by elevation band>"}] or omit,
  "notes": "<what you could not confirm, and any site-specific tool>"}
 Every value object may also carry "sourceKind": "design_criteria_table|adoption_ordinance|building_safety_policy|code_text|project_handout".
@@ -1118,14 +1119,17 @@ export function parseDesignCriteriaLookup(
   const values: DesignCriteriaResearchResult["values"] = [];
   const dropped: string[] = [];
   if (grounded) {
-    for (const key of ["groundSnowLoadPsf", "groundSnowLoadAsdPsf", "windSpeedMph", "windExposure", "seismicDesignCategory", "frostDepthIn"] as const) {
+    for (const key of ["groundSnowLoadPsf", "groundSnowLoadAsdPsf", "windSpeedMph", "windExposure", "seismicDesignCategory", "frostDepthIn", "riskCategory"] as const) {
       const v = parsed[key] as { value?: unknown; sourceUrl?: unknown; quote?: unknown; sourceKind?: unknown } | undefined;
       if (!v || typeof v !== "object") continue;
       const criterion: LookupValue["criterion"] = key === "groundSnowLoadAsdPsf" ? "groundSnowLoadPsf" : key;
       const sourceUrl = typeof v.sourceUrl === "string" ? v.sourceUrl.trim() : "";
       const quote = typeof v.quote === "string" ? v.quote.trim() : "";
-      const isText = criterion === "windExposure" || criterion === "seismicDesignCategory";
-      const value = isText ? String(v.value ?? "").trim().toUpperCase() : typeof v.value === "number" ? v.value : Number.NaN;
+      const isText = criterion === "windExposure" || criterion === "seismicDesignCategory" || criterion === "riskCategory";
+      // A risk category answered as "2" is Risk Category II.
+      const romanRisk: Record<string, string> = { "1": "I", "2": "II", "3": "III", "4": "IV" };
+      const rawText = String(v.value ?? "").trim().toUpperCase();
+      const value = isText ? (criterion === "riskCategory" ? romanRisk[rawText] ?? rawText : rawText) : typeof v.value === "number" ? v.value : Number.NaN;
       if (!sourceUrl || (typeof value === "number" && !Number.isFinite(value)) || value === "") continue;
       let why = "";
       let qualifier: LookupValue["qualifier"];
@@ -1139,6 +1143,17 @@ export function parseDesignCriteriaLookup(
         const tail = label ? quote.slice((label.index ?? 0) + label[0].length).split(/[.;]/)[0].slice(0, 40) : "";
         if (!/^(?:A|B|C|D[012]?|E|F)$/.test(String(value)) || !new RegExp(`\\b${value}\\b`).test(tail)) why = "quote does not name the seismic design category";
         else if (/\b(?:A|B|C|D[012]?|E|F)\s*(?:,|\/|&|-|–|\bor\b|\band\b|\bto\b|\bthrough\b)\s*(?:A|B|C|D[012]?|E|F)\b/.test(tail)) why = "quote lists several seismic design categories";
+      } else if (criterion === "riskCategory") {
+        // Bound to its own label ("Risk Category II", "Occupancy Category: II"), the numeral in
+        // roman or arabic form, and never a list ("Risk Category I or II").
+        const label = quote.match(/\b(?:risk|occupancy)\s+cat(?:egory|\.)?/i);
+        const tail = label ? quote.slice((label.index ?? 0) + label[0].length).split(/[.;]/)[0].slice(0, 30) : "";
+        const arabic = Object.entries(romanRisk).find(([, r]) => r === value)?.[0] ?? "";
+        // The value is checked BEFORE it goes into a pattern: it is the model's text.
+        const named = /^(?:I|II|III|IV)$/.test(String(value))
+          && new RegExp(`^\\s*[:=-]?\\s*(?:${value}${arabic ? `|${arabic}` : ""})(?![A-Za-z0-9])`).test(tail);
+        if (!named) why = "quote does not name the risk category";
+        else if (/^\s*[:=-]?\s*(?:IV|I{1,3}|[1-4])\s*(?:,|\/|&|-|–|\bor\b|\band\b|\bto\b|\bthrough\b)\s*(?:IV|I{1,3}|[1-4])(?![A-Za-z0-9])/.test(tail)) why = "quote lists several risk categories";
       } else {
         const nums = numbersIn(quote);
         const hits = nums.map((x, i) => ({ ...x, i })).filter((x) => x.n === value);

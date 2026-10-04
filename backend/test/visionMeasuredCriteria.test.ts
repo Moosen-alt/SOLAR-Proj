@@ -32,6 +32,7 @@ const MEASURED = [
   "city.struct.ground-snow-below-state-minimum",
   "city.struct.anchor-spacing-exceeds-ahj",
   "city.plan.ul-listings-missing",
+  "city.struct.wind-exceeds-prescriptive-cap",
 ];
 
 const PLAN = "GROUND SNOW LOAD = 20 PSF WIND SPEED = 110 MPH EXPOSURE CATEGORY = C GOVERNING CODES: 2023 ORSC 2023 OESC (NEC 2020) NEW PV ATTACHMENTS AT 4'-0\" O.C.";
@@ -51,6 +52,8 @@ const docs = [{ label: "Plan set", text: PLAN }, { label: "Structural letter", t
 const produced: ReviewerFinding[] = [
   ...buildReviewerReport(project, { codeContext: buildCodeContext("OR", "City of Testport", profile({ designCriteria: { windSpeedMph: 120, groundSnowLoadPsf: 36 }, prescriptive: { maxAttachmentSpacingIn: 24, minGroundSnowPsfPrescriptive: 36, minGroundSnowPsfEngineered: 25 } })), documentTexts: docs }).findings,
   ...buildReviewerReport(project, { codeContext: buildCodeContext("OR", "City of Testport", profile({})), documentTexts: docs }).findings,
+  // On the prescriptive path, the plan's 110 mph in Exposure C is above a 100 mph Exposure C cap.
+  ...buildReviewerReport({ ...project, parserSnapshot: { ...project.parserSnapshot, permitPath: "Prescriptive" } } as unknown as ProjectRecord, { codeContext: buildCodeContext("OR", "City of Testport", profile({ prescriptive: { maxWindSpeedMphExpC: 100 } })), documentTexts: docs }).findings,
 ];
 
 for (const id of MEASURED) {

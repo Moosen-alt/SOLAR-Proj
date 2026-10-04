@@ -10,6 +10,7 @@
 //   C4 a cut-off / ungrounded lookup records the gaps as "not researched", never "not found".
 //   C5 a human-verified row is never written (hard rule 3).
 //   C6 the KB card shows the weak source and every gap as "not found / not researched — verify".
+//   C7 the lookup asks for the RISK CATEGORY too (issue #111), bound to its own label, never a list.
 // Stub LLM throughout — no network.
 //
 //   npx tsx backend/test/designCriteriaChecklist.test.ts
@@ -92,7 +93,7 @@ await check("C3 a partial answer stores the one value and records every other it
   assert.match(String(cite?.weakSource), /handout/i, "the handout citation is not flagged on the profile");
   const expected = {
     groundSnowLoad: "weak_source", windSpeed: "not_found", windExposure: "not_found", seismicDesignCategory: "not_found",
-    frostDepth: "not_found", fireSetbacks: "not_found", localPvAmendments: "not_found",
+    frostDepth: "not_found", riskCategory: "not_found", fireSetbacks: "not_found", localPvAmendments: "not_found",
   };
   assert.deepEqual(statusOf(profile.designCriteriaLookup?.items), expected, JSON.stringify(profile.designCriteriaLookup));
   assert.deepEqual(statusOf(r.checklist as Array<{ item: string; status: string }>), expected, "the job result does not carry the checklist");
@@ -103,10 +104,10 @@ await check("C4 a cut-off or ungrounded lookup is 'not researched', never 'not f
   const rec = CP.buildDesignCriteriaChecklist({ designCriteria: { groundSnowLoadPsf: 20 }, fireSetbacks: [], amendments: [], citations: [] }, truncated, false);
   const s = statusOf(rec.items);
   assert.equal(s.groundSnowLoad, "found");
-  for (const k of ["windSpeed", "windExposure", "seismicDesignCategory", "frostDepth", "fireSetbacks", "localPvAmendments"]) assert.equal(s[k], "not_researched", `${k}: ${s[k]}`);
+  for (const k of ["windSpeed", "windExposure", "seismicDesignCategory", "frostDepth", "riskCategory", "fireSetbacks", "localPvAmendments"]) assert.equal(s[k], "not_researched", `${k}: ${s[k]}`);
   const none = statusOf(CP.buildDesignCriteriaChecklist(null, null, false).items);
   assert.ok(Object.values(none).every((v) => v === "not_researched"), JSON.stringify(none));
-  assert.equal(CP.DESIGN_CRITERIA_CHECKLIST.length, 7);
+  assert.equal(CP.DESIGN_CRITERIA_CHECKLIST.length, 8);
 });
 
 await check("C5 a human-verified row is never written by the lookup or its checklist (hard rule 3)", async () => {
@@ -141,12 +142,37 @@ await check("C6 the KB card shows the weak source and every gap as 'verify'", ()
   const text = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/g, " ").replace(/\s+/g, " ");
   const t = text(render(row && row.kind !== "create" ? row.profile : null));
   assert.match(t, /Ground snow load: 20 psf .*Weak source — verify/, t);
-  for (const label of ["Design wind speed", "Wind exposure", "Seismic design category", "Frost depth", "Fire setbacks / roof pathways", "Local PV amendments"]) {
+  for (const label of ["Design wind speed", "Wind exposure", "Seismic design category", "Frost depth", "Risk category", "Fire setbacks / roof pathways", "Local PV amendments"]) {
     assert.ok(new RegExp(`${label}[^:]*: not found \\(lookup \\d{4}-\\d{2}-\\d{2}\\) — verify`).test(t), `${label} gap not shown: ${t}`);
   }
   // No lookup on record: the gap still shows, as not researched.
   const bare = text(render({ state: "NM", ahj: "Elsewhere", confidence: "seeded", designCriteria: {}, prescriptive: {}, fireSetbacks: [], amendments: [], citations: [] }));
   assert.match(bare, /Seismic design category: not researched — verify/, bare);
+});
+
+await check("C7 the lookup's prompt asks for the risk category; the answer is parsed bound to its label", async () => {
+  const { DESIGN_CRITERIA_LOOKUP_SYSTEM } = await import("../src/llm");
+  assert.match(DESIGN_CRITERIA_LOOKUP_SYSTEM, /risk category/i);
+  assert.match(DESIGN_CRITERIA_LOOKUP_SYSTEM, /"riskCategory"/);
+  const ok = parseDesignCriteriaLookup({ riskCategory: { value: "2", sourceUrl: TABLE, quote: "Risk Category: II" } }, true, false, JUR);
+  assert.deepEqual(ok.values.map((v) => [v.criterion, v.value]), [["riskCategory", "II"]], JSON.stringify(ok));
+  const bad = parseDesignCriteriaLookup({ riskCategory: { value: "II", sourceUrl: TABLE, quote: "Risk Category I or II structures" } }, true, false, JUR);
+  assert.equal(bad.values.length, 0, JSON.stringify(bad));
+  const unbound = parseDesignCriteriaLookup({ riskCategory: { value: "II", sourceUrl: TABLE, quote: "Exposure II applies" } }, true, false, JUR);
+  assert.equal(unbound.values.length, 0, JSON.stringify(unbound));
+  // A model answer that is not a category never reaches a pattern (no throw, dropped).
+  const junk = parseDesignCriteriaLookup({ riskCategory: { value: "II)(", sourceUrl: TABLE, quote: "Risk Category II)(" } }, true, false, JUR);
+  assert.equal(junk.values.length, 0, JSON.stringify(junk));
+  // Stored on the row (seeded) and found on the checklist.
+  const R = { ahj: "City of Riskton", state: "NM" };
+  const research = parseDesignCriteriaLookup({ riskCategory: { value: "II", sourceUrl: "https://www.riskton.gov/building/design-criteria", quote: "Risk Category II" } }, true, false, R);
+  const r = await CP.runDesignCriteriaResearch(db, R, provider(research));
+  assert.equal(r.saved, true, JSON.stringify(r));
+  const row = CP.resolveCriteriaWriteRow(db, R.state, R.ahj);
+  assert.ok(row && row.kind !== "create" && row.kind !== "blocked_verified");
+  assert.equal(row.profile!.designCriteria.riskCategory, "II");
+  assert.equal(row.profile!.confidence, "seeded");
+  assert.equal(statusOf(row.profile!.designCriteriaLookup?.items).riskCategory, "found");
 });
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

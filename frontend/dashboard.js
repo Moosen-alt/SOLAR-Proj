@@ -1918,6 +1918,7 @@ const KB_CRITERIA_LABELS = {
   "designCriteria.specialWindRegion": ["Special wind region", ""],
   "designCriteria.seismicDesignCategory": ["Seismic design category", ""],
   "designCriteria.frostDepthIn": ["Frost depth", " in"],
+  "designCriteria.riskCategory": ["Risk category", ""],
   "prescriptive.maxAttachmentSpacingIn": ["Max attachment spacing", " in o.c."],
   "prescriptive.listingEvidenceRequired": ["Module / racking UL listing evidence required", ""],
 };
@@ -1959,6 +1960,7 @@ function kbDesignCriteriaHtml(codeProfile) {
     windExposure: ["Wind exposure", ["windExposure"]],
     seismicDesignCategory: ["Seismic design category", ["seismicDesignCategory"]],
     frostDepth: ["Frost depth", ["frostDepthIn"]],
+    riskCategory: ["Risk category", ["riskCategory"]],
     fireSetbacks: ["Fire setbacks / roof pathways", null],
     localPvAmendments: ["Local PV amendments", null],
   };
