@@ -74,6 +74,8 @@ ${letter}` });
     const codeContext = buildCodeContext("OR", "City of Coos Bay", { ...base, ...over });
     for (const f of buildReviewerReport(p, { codeContext, documentTexts: [{ label: "Plan set", text: plan }, { label: "Structural letter", text: letter }] }).findings) allProducibleIds.add(f.id);
   }
+  // No editions on file (model-code defaults): the plan's code basis gets the unverified callout.
+  for (const f of buildReviewerReport(p, { codeContext: buildCodeContext("OR", "City of Coos Bay", null), documentTexts: [{ label: "Plan set", text: plan }] }).findings) allProducibleIds.add(f.id);
 }
 for (const id of [...MEASURED_FINDING_IDS]) {
   check(`MUST PASS: ${id} is still a real finding this engine emits`, () => {
