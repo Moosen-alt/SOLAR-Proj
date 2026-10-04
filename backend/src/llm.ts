@@ -1843,6 +1843,11 @@ SYSTEM / EQUIPMENT
 - pvMicroMaxDcInputV (number, volts): the microinverter's maximum DC input voltage from its datasheet. Omit if not stated.
 - modulesPerString (number): modules in series in the longest string (string inverters only; from the SLD string table). Omit for microinverters.
 - siteLowTempC (number, °C): the site's extreme minimum / ASHRAE design low temperature printed in the design criteria (convert °F to °C). Omit if the set does not state one — never estimate it.
+- invMaxDcInputV (number, volts): the STRING inverter's maximum DC input voltage from its datasheet. Omit for microinverters or if not stated.
+- siteHighTempC (number, °C): the site's high design ambient temperature (ASHRAE 2% / 0.4%) printed in the design criteria or conductor calc (convert °F to °C). Omit if not stated — never estimate it.
+- acConductor: the inverter OUTPUT circuit conductor (the circuit the PV breaker protects) exactly as the SLD/wire schedule prints it, e.g. "#10 AWG THWN-2 CU". Omit if not stated.
+- acConductorCount (number): current-carrying conductors in that circuit's raceway, from the wire schedule. Omit if not stated.
+- acRunLengthFt (number, feet): the ONE-WAY length of that circuit when the SLD or voltage-drop calc states it. Omit if not stated — never estimate it from a drawing.
 - inverterSettings: note grid-support listing / settings, e.g. "UL 1741 SB" or "UL 1741 SA, PCS profile" (needed for utility interconnection)
 - batteryMake, batteryModel, batteryQty (number)
 - roofMaterial (e.g. "Composition Shingle"), mounting (e.g. "Roof Mount"). A TILE roof is tile — never "shingle": write e.g. "Concrete Tile", "Clay S-Tile", "Flat Concrete Tile" exactly as the sheets say (a "concrete shake tile" is tile, not wood shake)

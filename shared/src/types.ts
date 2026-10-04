@@ -1056,6 +1056,9 @@ export interface SubmissionRecord {
   projectId: string;
   portalProfileId: string | null;
   submissionType: "permit" | "interconnection" | "correction" | "revision";
+  /** The filing's discipline (`permit_type`: building, electrical, combo, mpu, nem, …) — names the
+   *  filing in the dashboard's corrections picker (#58). */
+  permitType?: string;
   status: "staged" | "awaiting_human_submit" | "paused_for_human" | "submitted" | "failed" | "approved";
   applicationNumber: string;
   permitNumber: string;
@@ -1727,6 +1730,32 @@ export interface FireSetbackRule {
   codeReference?: CodeReference;
 }
 
+/** A roof-plan fire access dimension (IRC R324.6 / IFC 1205): a pathway's width or the array's
+ *  clear setback from a ridge. Hip/valley clearances are not read yet. */
+export type RoofPlanDimensionKind = "pathwayWidth" | "ridgeSetback";
+
+/** One fire access dimension a text STATES (label-anchored), in inches. */
+export interface StatedRoofPlanDimension {
+  kind: RoofPlanDimensionKind;
+  inches: number;
+  source: string;
+  excerpt: string;
+  /** A reading of the documents (parser summary, merged blob), not a document: never blocks alone. */
+  derived: boolean;
+}
+
+/** What a roof plan must show for one dimension, and whose number that is. */
+export interface RoofPlanRequiredDimension {
+  kind: RoofPlanDimensionKind;
+  inches: number;
+  /** "ahj": parsed from the jurisdiction's fireSetbacks; "model_code": the adopted IRC edition's default. */
+  basis: "ahj" | "model_code";
+  /** The fireSetbacks row is human-verified (always false for a model-code default). */
+  verified: boolean;
+  /** Where the number came from, said for the operator. */
+  source: string;
+}
+
 /** A design criterion a submittal package STATES (label-anchored), per source. */
 export type StatedDesignCriterionKind =
   | "windSpeedMph"
@@ -1789,6 +1818,49 @@ export interface StatedDesignCriteria {
   documentTextRead: boolean;
   criteria: StatedDesignCriterion[];
   codeBasis: StatedCodeBasisEntry[];
+}
+
+/**
+ * The parser-snapshot keys the electrical sizing checks (backend/src/electricalSizing.ts) read.
+ * ParserPayload stays an open record; this names the subset so the parser prompt (llm.ts), the
+ * parser page's LLM_SNAPSHOT_KEYS and the checker agree on spelling. All are SCALARS — the
+ * planner's design digest never carries them as text (CLAUDE.md, LLM cost).
+ */
+export interface ElectricalSizingParserFields {
+  busRating?: string | number;
+  mainBreaker?: string | number;
+  /** The PV backfeed breaker / inverter output circuit OCPD, amps. */
+  pvBreaker?: string | number;
+  /** Per-unit rated output CURRENT in amps despite the name (llm.ts). */
+  invOutputW?: string | number;
+  invQty?: string | number;
+  pvMicroOutputW?: string | number;
+  pvMicroQty?: string | number;
+  moduleVoc?: string | number;
+  moduleVocTempCoeff?: string | number;
+  modulesPerString?: string | number;
+  siteLowTempC?: string | number;
+  pvMicroMaxDcInputV?: string | number;
+  /** String inverter's maximum DC input voltage, volts. */
+  invMaxDcInputV?: string | number;
+  /** Site high design ambient temperature (ASHRAE 2 % / 0.4 %), °C — the 310.15(B) correction. */
+  siteHighTempC?: string | number;
+  /** Inverter output circuit conductor as printed, e.g. "#10 AWG THWN-2 CU". */
+  acConductor?: string;
+  /** Current-carrying conductors in that raceway — the 310.15(C)(1) adjustment. */
+  acConductorCount?: string | number;
+  /** One-way length of the inverter output circuit, feet, when the SLD states it. */
+  acRunLengthFt?: string | number;
+  serviceVoltage?: string | number;
+}
+export type ElectricalSizingInputKey = keyof ElectricalSizingParserFields;
+
+/** One input of a sizing check and where it came from: `documentStated` when the package's own
+ *  sheet text states this value under its label, false when only the parser read it. */
+export interface ElectricalSizingInput {
+  key: ElectricalSizingInputKey;
+  value: number;
+  documentStated: boolean;
 }
 
 export interface JurisdictionCodeAmendment {
@@ -1951,6 +2023,9 @@ export interface ReviewerVisionVerdict {
   page: number; // 1-based plan-set page the model inspected
   observed: string; // what the model reports seeing on the sheet
   note: string;
+  /** A MEASUREMENT verdict (city.fire.pathway-unmeasured): the dimensions the sheet states, in
+   *  inches, null where it states none. Absent on an ordinary "is it on the sheet?" verdict. */
+  measured?: { pathwayWidthIn: number | null; ridgeSetbackIn: number | null };
 }
 
 export interface ReviewerFinding {
@@ -1968,6 +2043,9 @@ export interface ReviewerFinding {
   evidenceFound?: ReviewerFindingEvidence[];
   /** Optional Claude-vision confirmation of this finding against the rendered sheet. */
   visionVerification?: ReviewerVisionVerdict;
+  /** On city.fire.pathway-unmeasured only: what the roof plan must show, so the vision pass can
+   *  compare a measured sheet against the same requirement the text rule used. */
+  roofPlanRequired?: RoofPlanRequiredDimension[];
 }
 
 export interface FinalSubmitGate {
@@ -1983,6 +2061,51 @@ export interface ReviewerReport {
   findings: ReviewerFinding[];
   installerCallouts: ReviewerFinding[];
   finalSubmitGate: FinalSubmitGate;
+}
+
+/** The pre-submittal correction notice (#148): the reviewer report re-read as the AHJ's own
+ *  correction letter. A VIEW — built from ReviewerReport findings, never a second judgement:
+ *  each item's weight is the gate's severity (blocker → hold, warning → comment,
+ *  callout → info), so rule 3's "verified + document-stated ⇒ blocker" shape carries over as is. */
+export type CorrectionNoticeGroup = "Structural" | "Electrical" | "Fire" | "Plan completeness" | "Local requirements";
+export type CorrectionNoticeWeight = "hold" | "comment" | "info";
+
+export interface CorrectionNoticeItem {
+  /** 1-based, numbered through the whole letter in print order. */
+  number: number;
+  group: CorrectionNoticeGroup;
+  weight: CorrectionNoticeWeight;
+  findingId: string;
+  title: string;
+  /** The comment as the plan checker would word it (the finding's cityFeedback). */
+  comment: string;
+  /** "2021 IRC R324.6 — Roof access and pathways", from the finding's code references (adopted edition). */
+  citations: string[];
+  /** What the submitted documents say, from the finding's evidence; "" when the gate found nothing stated. */
+  planStates: string;
+  required: string;
+  /** The sheet / page the evidence was read from; "" when unknown. */
+  sheet: string;
+}
+
+export interface CorrectionNoticePriorCorrection {
+  title: string;
+  /** How many of this org's past corrections matched this project. */
+  count: number;
+  requiredAction: string;
+}
+
+export interface CorrectionNotice {
+  projectId: string;
+  generatedAt: string;
+  ahj: string;
+  state: string;
+  /** Which layer the code basis came from, and the line that says so. */
+  provenance: "verified" | "seeded" | "defaults";
+  provenanceLine: string;
+  counts: { hold: number; comment: number; info: number };
+  items: CorrectionNoticeItem[];
+  priorCorrections: CorrectionNoticePriorCorrection[];
 }
 
 export interface KnowledgeSource {

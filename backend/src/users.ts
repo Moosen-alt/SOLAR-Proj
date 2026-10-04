@@ -2,6 +2,7 @@ import type { AppDb, SqlParam } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
 import { ADMIN_ROLES, ALL_ROLES, ROLE_OPERATOR, ROLE_SUPERADMIN } from "./auth";
 import { HttpError } from "./httpError";
+import { correctionOverdueSql } from "./kpi";
 import { nowIso } from "./time";
 
 export interface UserRecord {
@@ -149,7 +150,7 @@ export function getUserWorkload(db: AppDb, orgId: string | null = DEFAULT_ORG_ID
       db.get<Row>(
         `SELECT COUNT(*) as cnt FROM corrections c JOIN projects p ON c.project_id = p.id
          WHERE p.assigned_user_id = ?${orgId ? " AND p.org_id = ?" : ""} AND c.closed_at IS NULL
-           AND (c.due_at < ? OR (c.due_at IS NULL AND date(c.created_at, '+' || c.sla_days || ' days') < ?))`,
+           AND ${correctionOverdueSql("c")}`, // the one overdue clock (#58)
         orgId ? [user.id, orgId, today, today] : [user.id, today, today],
       )?.cnt ?? 0,
     );

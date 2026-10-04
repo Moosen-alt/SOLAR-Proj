@@ -12,7 +12,7 @@ import { knowledgeProfileKey, knowledgeNameMatchScore, isJunkEntityName, isVerif
 import { ahjLooksLikeHostname } from "./codeProfiles";
 import {
   hostFitsTrackAndEntity, portalHostOf, recipeDisciplineForTrack, recipeDisciplineFromSteps, recipeRecordTypeFromSteps,
-  samePortal, scopeForTrack, trackSafeUrl, isInformationalPageUrl, isPermitPlatformUrl,
+  samePortal, scopeForTrack, trackSafeUrl, isInformationalPageUrl, isPermitPortalUrl, portalUrlsInText,
   type HostFit, type PortalEntity, type PortalUrlSource,
 } from "./portalChannel";
 import { isHarnessAbort, looksBotBlocked } from "./runAbort";
@@ -376,6 +376,25 @@ export function portalEntityEvidence(
   // it is not a claim on the portal for anyone else, and only hostFitsTrackAndEntity's one
   // carve-out reads it.
   const verifiedPermitPlatform: Claim[] = [];
+  // UTILITY scope: every portal an AHJ row names as a city's PERMIT portal — seeded or verified KB
+  // rows (the link in portal_url, or in portal_name's text: "… (CityView,
+  // cvportal.provo.gov/CityViewPortal) …") and AHJ recipes (issue #128). A city's self-hosted .gov
+  // permit portal is on no vendor list; this is how the NEM track knows it is one. Only hosts that
+  // fit the permit track count (a Tigard row mis-keyed to PGE's PowerClerk names no permit portal),
+  // and never an information page.
+  const permitPortals: string[] = [];
+  if (scope === "utility") {
+    const named = (u: string) => {
+      if (portalHostOf(u) && !isInformationalPageUrl(u) && trackSafeUrl("permit", u) && !permitPortals.includes(u)) permitPortals.push(u);
+    };
+    for (const row of db.query<Row>(
+      "SELECT portal_url FROM portal_recipes WHERE scope_type = 'ahj' AND portal_url IS NOT NULL AND portal_url != ''",
+    )) named(s(row.portal_url).trim());
+    for (const row of db.query<Row>(
+      `SELECT portal_url, portal_name FROM permit_utility_knowledge WHERE ahj IS NOT NULL AND ahj != ''
+         AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE '%.%')`,
+    )) for (const u of [...portalUrlsInText(s(row.portal_url)), ...portalUrlsInText(s(row.portal_name))]) named(u);
+  }
   const add = (url: unknown, rowState: unknown, rowName: unknown, verified: boolean, fromKbRow = false) => {
     const u = s(url).trim();
     const n = s(rowName).trim();
@@ -384,8 +403,8 @@ export function portalEntityEvidence(
     // An information page (a help/guide page, a PDF) is nobody's portal — a junk recipe saved on
     // BCD's help page must not make oregon.gov "City of Jefferson's own portal".
     if (isInformationalPageUrl(u)) return;
-    if (!trackSafeUrl(trackForScope, u)) {
-      if (scope === "utility" && verified && fromKbRow && isPermitPlatformUrl(u)) verifiedPermitPlatform.push({ url: u, state: st, name: n, verified });
+    if (!trackSafeUrl(trackForScope, u) || (scope === "utility" && isPermitPortalUrl(u, permitPortals))) {
+      if (scope === "utility" && verified && fromKbRow && isPermitPortalUrl(u, permitPortals)) verifiedPermitPlatform.push({ url: u, state: st, name: n, verified });
       return;
     }
     claims.push({ url: u, state: st, name: n, verified });
@@ -439,6 +458,7 @@ export function portalEntityEvidence(
     otherClaims,
     sharedPortals,
     verifiedPermitPlatformPortals: [...new Set(verifiedPermitPlatform.filter((c) => sameEntity(state, name, c.state, c.name)).map((c) => c.url))],
+    permitPortals,
   };
 }
 

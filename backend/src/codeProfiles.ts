@@ -559,6 +559,10 @@ export function getCodeProfile(db: AppDb, input: { state?: string; ahj?: string 
       }
     }
   }
+  // fireSetbacks are taken whole from one layer (below), so that layer answers whether they are
+  // verified: a seeded city row's rules must not read as verified under a verified state row.
+  const setbackLayer = exact.fireSetbacks.length ? exact : base.fireSetbacks.length ? base : null;
+  if (setbackLayer) fieldSources.fireSetbacks = sourceOf(setbackLayer);
   return {
     ...exact,
     fieldSources,

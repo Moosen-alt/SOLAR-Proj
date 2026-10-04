@@ -6,7 +6,8 @@
 // city.elec.load-side-over-120 to "sld" (its title contains "load-side"), so a high-confidence
 // "the SLD is on the sheet" verdict downgraded a MEASURED NEC 705.12 violation — 200A main +
 // 50A PV on a 200A bus, 250A against a 240A allowance — from blocker to a non-blocking callout
-// reading "Vision-verified on the plan set".
+// reading "Vision-verified on the plan set". (That rule is retired; the busbar arithmetic is
+// city.elec.sizing-busbar-120 since #153, and the same protection holds for it.)
 //
 // Vision confirmed the calculation is PRESENT. It never said the calculation PASSES. Those are
 // different claims, and only the first is something a picture can answer.
@@ -33,7 +34,7 @@ const mk = (over: Record<string, string> = {}): ProjectRecord => ({
     state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power",
     mounting: "Roof mount", interco: "Load-side breaker",
     busRating: "200A", mainBreaker: "200A", pvBreaker: "50",
-    planSetExtractedText: '36" FIRE ACCESS PATHWAY. 705.12 BUSBAR CALC ON PV-4. ATTACHMENT DETAIL: LAG SCREW.',
+    planSetExtractedText: '36" FIRE ACCESS PATHWAY. 705.12 BUSBAR CALC ON PV-4: BUS RATING 200A, MAIN BREAKER 200A, PV BREAKER 50A. ATTACHMENT DETAIL: LAG SCREW.',
     ...over,
   },
 } as unknown as ProjectRecord);
@@ -55,6 +56,11 @@ for (const variant of [
   { moduleQty: "40", moduleWattage: "400" },                            // DC cross-check mismatch
   { interco: "Load-side breaker or supply-side tap" },                  // ambiguous
   { interco: "Net Metering" },                                          // unclassified
+  // Electrical sizing (#144): busbar on the 48 A inverter current (no breaker), 690.7 string Voc,
+  // inputs missing (no conductor) …
+  { pvBreaker: "", invMake: "Synthetic", invModel: "SI-1", invOutputW: "48", moduleVoc: "49.5", siteLowTempC: "-10", modulesPerString: "14" },
+  // … OCPD under 1.25 x 24.2 A, over #14's ampacity, and a 150 ft run's voltage drop.
+  { pvBreaker: "25", pvMicroMake: "Enphase", pvMicroModel: "IQ8M", pvMicroQty: "20", pvMicroOutputW: "1.21", acConductor: "#14 AWG THWN-2 CU", acRunLengthFt: "150" },
 ]) {
   const p = mk(variant as Record<string, string>);
   if ("interco" in variant) (p as unknown as { interconnectionMethod: string }).interconnectionMethod = String((variant as Record<string, string>).interco);
@@ -78,6 +84,8 @@ ${letter}` });
   for (const f of buildReviewerReport(p, { codeContext: buildCodeContext("OR", "City of Coos Bay", null), documentTexts: [{ label: "Plan set", text: plan }] }).findings) allProducibleIds.add(f.id);
   // On the prescriptive path, a stated 110 mph Exposure C over a 100 mph Exposure C cap (issue #111).
   const capped = mk({ permitPath: "Prescriptive", planSetExtractedText: "WIND SPEED = 110 MPH EXPOSURE CATEGORY = C" });
+  // An 18" pathway against the jurisdiction's 36" fire access rule (issue #142).
+  for (const f of buildReviewerReport(mk({ planSetExtractedText: '18" FIRE ACCESS PATHWAY' }), { codeContext: buildCodeContext("OR", "City of Coos Bay", { ...base, designCriteria: {}, prescriptive: {}, fireSetbacks: [{ id: "fire-1", description: "Minimum 36-inch fire access pathways." }] }), documentTexts: [{ label: "Plan set", text: '18" FIRE ACCESS PATHWAY' }] }).findings) allProducibleIds.add(f.id);
   for (const f of buildReviewerReport(capped, { codeContext: buildCodeContext("OR", "City of Coos Bay", { ...base, designCriteria: {}, prescriptive: { maxWindSpeedMphExpC: 100 } }), documentTexts: [{ label: "Plan set", text: "WIND SPEED = 110 MPH EXPOSURE CATEGORY = C" }] }).findings) allProducibleIds.add(f.id);
 }
 for (const id of [...MEASURED_FINDING_IDS]) {
@@ -103,10 +111,10 @@ for (const id of [
 
 console.log("\n4. THE VIOLATION THIS PROTECTS IS REAL");
 check("the fixture genuinely breaches the 120% screen", () => {
-  const f = buildReviewerReport(mk()).findings.find((x) => x.id === "city.elec.load-side-over-120");
+  const f = buildReviewerReport(mk()).findings.find((x) => x.id === "city.elec.sizing-busbar-120");
   assert.ok(f, "the control fixture does not raise the violation — the test proves nothing");
   assert.equal(f!.severity, "blocker");
-  assert.ok(/250A|200A main/.test(f!.message), `unexpected message: ${f!.message}`);
+  assert.ok(/= 250 A, above 120 % of the 200 A busbar/.test(f!.message), `unexpected message: ${f!.message}`);
 });
 
 console.log(failures === 0

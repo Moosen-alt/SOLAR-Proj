@@ -1,10 +1,12 @@
 import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, ReviewerFindingEvidence, StructureTypeFact } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
 import { FIRE_PATHWAY_PATTERNS, packageShowsSld } from "./projectEvidence";
+import { evaluateElectricalSizingFindings } from "./electricalSizing";
 import { pathWordingScope, resolvePermitPath, usStateCode } from "./permitPath";
 import { classifyRoofCovering, statedRoofDeadLoads, tileAttachmentFromText, tileAttachmentMethodOf, TILE_MIN_ROOF_DEAD_LOAD_PSF } from "./roofCovering";
 import {
   evaluateDesignCriteriaFindings,
+  evaluateFirePathwayFindings,
   extractAttachmentSpacings,
   packageTextSources,
   PARSED_FIELDS_SOURCE,
@@ -162,29 +164,6 @@ function num(project: ProjectRecord, keys: string[]): number | null {
     if (value != null) return value;
   }
   return null;
-}
-
-/**
- * The inverter output circuit's continuous current for the 705.12 busbar screen (#153): per-unit
- * rated output current x quantity, read the way electricalSizing's recompute (#144) reads it so
- * the two never disagree. A micro make/model means a micro system (pvMicroOutputW x pvMicroQty);
- * otherwise a string inverter (invOutputW x invQty, one unit when no quantity is stated). Null
- * when unknown or implausible: a per-unit value above 100 A is a watt rating in the amps field
- * (baselineRules' xcheck-pv-breaker-125 guard), and then the breaker rating is the safer reading.
- */
-function inverterOutputCurrent(project: ProjectRecord): { amps: number; calc: string } | null {
-  const micro = Boolean(str(project, "pvMicroMake") || str(project, "pvMicroModel"));
-  const unit = num(project, [micro ? "pvMicroOutputW" : "invOutputW"]);
-  if (unit == null || !(unit > 0) || unit > 100) return null;
-  const qty = num(project, [micro ? "pvMicroQty" : "invQty"]) ?? (micro ? null : 1);
-  if (qty == null || !(qty > 0)) return null;
-  const amps = unit * qty;
-  if (amps > 400) return null;
-  return { amps, calc: qty === 1 ? `${fmtAmps(unit)} A` : `${qty} x ${fmtAmps(unit)} A = ${fmtAmps(amps)} A` };
-}
-
-function fmtAmps(n: number): string {
-  return String(Math.round(n * 100) / 100);
 }
 
 export function designText(project: ProjectRecord): string {
@@ -701,7 +680,13 @@ export function evaluateDesignCodeFindings(
   // The old list here accepted a bare "setback" or "ridge" — ordinary zoning and roof-geometry
   // words — so this rule cleared on any plan set too, in step with the evidence topic. Letting
   // the two drift apart is how the gate ends up contradicting itself about the same project.
-  if (roofMounted && !hasAny(all, FIRE_PATHWAY_PATTERNS)) {
+  //
+  // MEASURED FIRST (issue #142): the plan's stated pathway widths and ridge setback against the
+  // jurisdiction's fireSetbacks, else the adopted edition's model-code default. The word list
+  // below is now only the fallback, for a plan with no pathway text AND no readable dimension.
+  const fire = ctx ? evaluateFirePathwayFindings(project, ctx, { roofMounted, extraTexts: documentTexts }) : { findings: [], measured: false };
+  out.push(...fire.findings);
+  if (roofMounted && !fire.measured && !hasAny(all, FIRE_PATHWAY_PATTERNS)) {
     out.push(finding({
       id: "city.fire.pathways-missing",
       severity: "blocker",
@@ -1213,6 +1198,21 @@ export function evaluateDesignCodeFindings(
   // measured against 120%.
   const saysSupplySide = /supply.?side|supply breaker|line.?side|705\.11|ahead of (?:the )?main|feed.?thr(?:u|ough) lug|service.entrance tap/i.test(intercoText);
   const saysLoadSide = /load.?side|back.?fed|back.?feed|705\.12/i.test(intercoText);
+  // The chain's third branch: reached only when nothing says supply side. Named once so the
+  // electrical sizing recompute below asks the same question rather than a copy that can drift.
+  const loadSideBranch = !saysSupplySide && /load.side|breaker|back.?feed|bus/i.test(intercoText);
+
+  // RECOMPUTE THE SIZING (#144): the busbar screen with the inverter's real output current, the
+  // output circuit's OCPD and conductor, the cold-weather string voltage, and voltage drop. The
+  // busbar part runs only on a LOAD-side classification (the chain below). It is the ONE 120 %
+  // rule (#153): the adopted NEC edition decides whether it reads the inverter current (2017+)
+  // or the PV breaker (older editions).
+  const sizingFindings = evaluateElectricalSizingFindings(project, {
+    documentTexts,
+    loadSide: loadSideBranch,
+    adoptedNecEdition: ctx ? adoptedNecEdition(ctx.adoptedCodes) : null,
+    cite,
+  });
 
   if (saysSupplySide && !saysLoadSide) {
     out.push(finding({
@@ -1242,42 +1242,20 @@ export function evaluateDesignCodeFindings(
       // governs, so both are cited — matching the message's own "705.11 versus 705.12".
       codeReferences: [supplySideRef, loadSideRef],
     }));
-  } else if (/load.side|breaker|back.?feed|bus/i.test(intercoText)) {
-    // THE SOURCE TERM IS 125 % OF THE INVERTER OUTPUT CURRENT, NOT THE BREAKER (#153). Since the
-    // 2017 NEC, 705.12(B)(3)(2) reads "125 percent of the power source output circuit current";
-    // the PV breaker rating is the pre-2017 wording. The breaker is always >= 1.25 x I (rounded
-    // up to a standard size), so testing it blocked compliant designs: 200 A bus, 200 A main,
-    // 50 A breaker, 32 A inverter is 250 A > 240 A on the breaker but 1.25 x 32 + 200 = 240 A
-    // on the current, which passes. Same arithmetic as electricalSizing's busbar recompute
-    // (#144), so the product has one busbar answer. The breaker reading stays only where the
-    // jurisdiction's adopted NEC is older than 2017, or where the current is unknown — and the
-    // message says which.
-    const nec = ctx ? adoptedNecEdition(ctx.adoptedCodes) : null;
-    const preNec2017 = nec != null && nec < 2017;
-    const invAmps = preNec2017 ? null : inverterOutputCurrent(project);
-    const sourceAmps = invAmps != null ? invAmps.amps * 1.25 : pvBreaker;
-    if (bus != null && mainBreaker != null && sourceAmps != null && mainBreaker + sourceAmps > bus * 1.2 + 1e-9) {
-      const allowance = bus * 1.2;
-      const message = invAmps != null
-        ? `705.12(B)(3)(2): inverter output current ${invAmps.calc}; 1.25 x ${fmtAmps(invAmps.amps)} A = ${fmtAmps(sourceAmps)} A + ${mainBreaker}A main = ${fmtAmps(mainBreaker + sourceAmps)} A, above 120 percent of the ${bus}A bus (${fmtAmps(allowance)} A).`
-        : `Captured ratings produce ${mainBreaker}A main + ${pvBreaker}A PV on a ${bus}A bus, which exceeds 120 percent of bus rating. ${preNec2017
-          ? `Measured on the PV breaker rating because the adopted NEC is the ${nec} edition (the 2017+ wording uses 125 percent of the inverter output current).`
-          : "Measured on the PV breaker rating because the inverter output current is not captured; 125 percent of that current is the 2017+ NEC test and may pass."}`;
-      out.push(finding({
-        id: "city.elec.load-side-over-120",
-        severity: "blocker",
-        category: "electrical",
-        title: "Load-side interconnection exceeds 120 percent bus screen",
-        message,
-        cityFeedback: "Revise the interconnection design. The load-side calculation shown by the captured data does not satisfy the common 120 percent busbar screen. Provide a compliant alternate calculation, breaker relocation, de-rated main, supply-side connection, service upgrade, or engineered basis as applicable.",
-        designTeamAction: "Correct the interconnection method and update the one-line/load calculation.",
-        evidenceNeeded: ["MSP bus rating", "Main breaker rating", "PV breaker/OCPD rating", "705.12 calculation or alternate basis"],
-        codeReferences: [loadSideRef],
-      }));
-    } else if (!hasAny(all, LOAD_SIDE_CALC_PATTERNS) || bus == null || mainBreaker == null || pvBreaker == null) {
+  } else if (loadSideBranch) {
+    // THE 120 % ARITHMETIC LIVES IN ONE RULE (#153): city.elec.sizing-busbar-120, evaluated above
+    // in electricalSizing.ts. This branch used to carry its own breaker-rating copy
+    // (city.elec.load-side-over-120); two copies disagreed — the 2017+ NEC measures 125 % of the
+    // inverter output current, not the breaker, and only the recompute follows where each value
+    // came from. Here only the "calculation not shown / ratings not readable" door remains. The
+    // warning for an unshown calc is dropped when the busbar rule already reports the violation
+    // with every rating readable — the old over-120 blocker suppressed it the same way.
+    const ratingMissing = bus == null || mainBreaker == null || pvBreaker == null;
+    const busbarReported = sizingFindings.some((f) => f.id === "city.elec.sizing-busbar-120");
+    if (ratingMissing || (!hasAny(all, LOAD_SIDE_CALC_PATTERNS) && !busbarReported)) {
       out.push(finding({
         id: "city.elec.load-side-calc-missing",
-        severity: bus == null || mainBreaker == null || pvBreaker == null ? "blocker" : "warning",
+        severity: ratingMissing ? "blocker" : "warning",
         category: "electrical",
         title: "Load-side interconnection calculation incomplete",
         message: "The package does not clearly show the load-side interconnection ratings/calculation.",
@@ -1290,8 +1268,8 @@ export function evaluateDesignCodeFindings(
   } else {
     // THE MISSING DOOR. This chain had no final else, so an interconnection matching none of
     // the three vocabularies above fell off the end and produced NOTHING — not a blocker, not
-    // a warning, not a callout. The 120% busbar arithmetic exists in exactly one place (the
-    // branch above) and nothing downstream repeats it: QC checks that the rating FIELDS ARE
+    // a warning, not a callout. The 120% busbar arithmetic runs only for the load-side
+    // branch above and nothing downstream repeats it: QC checks that the rating FIELDS ARE
     // PRESENT, never that the math passes. So an unrecognised wording did not merely skip a
     // label, it skipped the only NEC 705.12 calculation in the product.
     //
@@ -1337,6 +1315,10 @@ export function evaluateDesignCodeFindings(
       codeReferences: [supplySideRef, electricalRef],
     }));
   }
+
+  // RECOMPUTE THE SIZING (#144), evaluated above so the load-side branch can see the busbar
+  // result; pushed here so the report's finding order is unchanged.
+  out.push(...sizingFindings);
 
   const moduleFields = [str(project, "moduleMake"), str(project, "moduleModel"), str(project, "moduleWattage"), str(project, "moduleQty")].filter(Boolean);
   const inverterFields = [str(project, "invModel"), str(project, "pvMicroModel"), str(project, "inverterModel"), str(project, "invQty"), str(project, "pvMicroQty")].filter(Boolean);
