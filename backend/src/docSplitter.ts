@@ -79,11 +79,15 @@ const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegEx
 const CALCS_SHEET = /\b(?:WIR(?:E|ING)|ELECTRICAL)\s+CALC(?:ULATION)?S?\b/i;
 const SPEC_DOC_TYPES = new Set(["module_spec", "inverter_spec"]);
 
-// A page that NAMES a spec sheet. One that no category claimed is reported in
+// A page that NAMES a spec sheet. One that did not land in a spec part is reported in
 // `undecidedSpecPages`, so a spec-named page is never dropped silently: a title-only
 // "EQUIPMENT SPECIFICATION" cut-sheet (module datasheet? combiner? racking brochure?) is the
-// expected case, and the split says it could not decide rather than guessing (#66). A
-// calculations sheet is not undecided — it is known not to be a spec sheet.
+// expected case, and the split says it could not decide rather than guessing (#66). That holds
+// whatever else the page scored (#91): a racking brochure whose vendor title block says STRUCTURAL
+// wins the structural category on that one stray hit, and before, only a page NO category claimed
+// was reported — so it went into the structural part with nothing said. It still goes there (the
+// winner-take-all scoring is unchanged); `undecidedSpecFiledAs` names the category that took it.
+// A calculations sheet is not undecided — it is known not to be a spec sheet.
 const SPEC_SHEET_NAME = /(?:MICRO-?)?(?:INVERTERS?|MODULES?|EQUIPMENT)\s+SPEC(?:IFICATION)?S?\b/i;
 
 // The general-notes / sheet-index cover page lists every sheet name and would otherwise
@@ -169,6 +173,15 @@ export interface UtilityPackageResult {
    *  "EQUIPMENT SPECIFICATION" cut-sheet, whose text cannot tell module / inverter / combiner /
    *  racking apart (#66). Never filed into a spec part; a person (or a vision read) decides. */
   undecidedSpecPages: number[];
+  /** For an undecided spec page a NON-spec category took on a stray hit (#91): 1-based page →
+   *  the doc type it was filed into. Absent for a page no category claimed. */
+  undecidedSpecFiledAs: Record<string, string>;
+}
+
+/** The undecided spec pages for a log line: "4,5,6(structural)" — each page, and the category that
+ *  took it when one did (#91). No spaces, so it stays one `key=value` field. */
+export function undecidedSpecSummary(pages: number[], filedAs: Record<string, string>): string {
+  return pages.map((n) => (filedAs[String(n)] ? `${n}(${filedAs[String(n)]})` : String(n))).join(",");
 }
 
 // Find the project's stored plan set (doc_type plan_set, else the largest PDF upload).
@@ -194,7 +207,7 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
 
   const source = await PDFDocument.load(fs.readFileSync(planSet.path));
   const total = source.getPageCount();
-  const { byCategory, unclassified, undecidedSpec } = await classifyPlanSetPages(planSet.path, total);
+  const { byCategory, unclassified, undecidedSpec, undecidedSpecFiledAs } = await classifyPlanSetPages(planSet.path, total);
 
   const baseName = planSet.name.replace(/\.pdf$/i, "");
   const parts: UtilityPackageResult["parts"] = [];
@@ -265,31 +278,34 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
   const missingSheetTypes = CATEGORY_PATTERNS
     .map((c) => c.docType)
     .filter((t) => wanted.includes(t) && !parts.some((p) => p.docType === t));
-  return { target, planSetDocId: planSet.id, pages: total, parts, packagedDocTypes: packaged, missingDocTypes: missing, zipDocumentId: zipDoc.id, unclassifiedPages: unclassified, missingSheetTypes, undecidedSpecPages: undecidedSpec };
+  return { target, planSetDocId: planSet.id, pages: total, parts, packagedDocTypes: packaged, missingDocTypes: missing, zipDocumentId: zipDoc.id, unclassifiedPages: unclassified, missingSheetTypes, undecidedSpecPages: undecidedSpec, undecidedSpecFiledAs };
 }
 
 // Assign each page of the plan set to its categories (classifyPage). 1-based unclassified pages;
-// the unclassified pages that name a spec sheet are also listed as undecided spec pages.
-async function classifyPlanSetPages(planSetPath: string, total: number): Promise<{ byCategory: Map<string, number[]>; unclassified: number[]; undecidedSpec: number[]; pageTexts: string[] }> {
+// the pages that name a spec sheet but landed in no spec part are listed as undecided spec pages,
+// with the category that took each one, if any (#91).
+async function classifyPlanSetPages(planSetPath: string, total: number): Promise<{ byCategory: Map<string, number[]>; unclassified: number[]; undecidedSpec: number[]; undecidedSpecFiledAs: Record<string, string>; pageTexts: string[] }> {
   const pageTexts = await extractPdfPages(planSetPath, 80);
   const byCategory = new Map<string, number[]>();
   const unclassified: number[] = [];
   const undecidedSpec: number[] = [];
+  const undecidedSpecFiledAs: Record<string, string> = {};
   for (let i = 0; i < total; i++) {
     const text = pageTexts[i] ?? "";
     const docTypes = classifyPage(text);
-    if (docTypes.length) {
-      for (const docType of docTypes) {
-        const arr = byCategory.get(docType) ?? [];
-        arr.push(i);
-        byCategory.set(docType, arr);
-      }
-    } else {
-      unclassified.push(i + 1);
-      if (SPEC_SHEET_NAME.test(text) && !CALCS_SHEET.test(text) && !isIndexOrNotesPage(text)) undecidedSpec.push(i + 1);
+    for (const docType of docTypes) {
+      const arr = byCategory.get(docType) ?? [];
+      arr.push(i);
+      byCategory.set(docType, arr);
+    }
+    if (!docTypes.length) unclassified.push(i + 1);
+    if (SPEC_SHEET_NAME.test(text) && !CALCS_SHEET.test(text) && !isIndexOrNotesPage(text)
+      && !docTypes.some((t) => SPEC_DOC_TYPES.has(t))) {
+      undecidedSpec.push(i + 1);
+      if (docTypes.length) undecidedSpecFiledAs[String(i + 1)] = docTypes[0];
     }
   }
-  return { byCategory, unclassified, undecidedSpec, pageTexts };
+  return { byCategory, unclassified, undecidedSpec, undecidedSpecFiledAs, pageTexts };
 }
 
 // A page's identity for comparing a split part against the plan set: its text with whitespace
@@ -316,25 +332,31 @@ const pageKey = (text: string): string => text.replace(/\s+/g, " ").trim();
  * verdict QC owes them (qcRejudgedOnDocs 2c). Empty when nothing has been split from this plan set
  * yet (the ordinary split path owns that case).
  *
+ * UNDECIDED SPEC PAGES (#91). The same classification names the spec-named pages no spec part holds
+ * (classifyPlanSetPages); they are returned so a pass that withdraws without re-splitting can still
+ * say which pages need a person's decision — before, they were computed here and dropped.
+ *
  * No plan set on disk → nothing to compare against, no writes. A part that cannot be read is left
  * standing; a plan set with no text at all withdraws nothing (no classifier answer to judge by).
  */
-export async function reconcileSplitParts(db: AppDb, projectId: string): Promise<{ withdrawn: string[]; gaps: string[] }> {
+export async function reconcileSplitParts(db: AppDb, projectId: string): Promise<ReconcileResult> {
   const latest = db.get<{ stored_path: string; uploaded_at: string }>(
     "SELECT stored_path, uploaded_at FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set' ORDER BY uploaded_at DESC LIMIT 1",
     [projectId],
   );
-  if (!latest?.stored_path || !fs.existsSync(latest.stored_path)) return { withdrawn: [], gaps: [] };
+  const none: ReconcileResult = { withdrawn: [], gaps: [], undecidedSpecPages: [], undecidedSpecFiledAs: {} };
+  if (!latest?.stored_path || !fs.existsSync(latest.stored_path)) return none;
   const sheetTypes = CATEGORY_PATTERNS.map((c) => c.docType);
   const splitParts = db.query<{ id: string; doc_type: string; stored_path: string; uploaded_at: string }>(
     `SELECT id, doc_type, stored_path, uploaded_at FROM project_documents
       WHERE project_id = ? AND source = 'split' AND doc_type IN (${sheetTypes.map(() => "?").join(", ")})`,
     [projectId, ...sheetTypes],
   );
-  if (splitParts.length === 0) return { withdrawn: [], gaps: [] };
+  if (splitParts.length === 0) return none;
   const deletedByPerson = documentTypesDeletedSince(db, projectId, latest.uploaded_at);
   const total = (await PDFDocument.load(fs.readFileSync(latest.stored_path))).getPageCount();
-  const { byCategory, pageTexts } = await classifyPlanSetPages(latest.stored_path, total);
+  const { byCategory, pageTexts, undecidedSpec, undecidedSpecFiledAs } = await classifyPlanSetPages(latest.stored_path, total);
+  const undecided = { undecidedSpecPages: undecidedSpec, undecidedSpecFiledAs };
 
   const withdrawn = new Set<string>();
   if (pageTexts.some((t) => pageKey(t))) {
@@ -358,10 +380,18 @@ export async function reconcileSplitParts(db: AppDb, projectId: string): Promise
     "SELECT DISTINCT doc_type FROM project_documents WHERE project_id = ? AND source = 'split' AND uploaded_at >= ?",
     [projectId, latest.uploaded_at],
   ).map((r) => r.doc_type));
-  if (splitTypes.size === 0) return { withdrawn: [...withdrawn], gaps: [] };
+  if (splitTypes.size === 0) return { withdrawn: [...withdrawn], gaps: [], ...undecided };
   for (const t of deletedByPerson) splitTypes.add(t);
   const gaps = sheetTypes.filter((t) => PACKAGE_SETS.all.includes(t) && (byCategory.get(t)?.length ?? 0) > 0 && !splitTypes.has(t));
-  return { withdrawn: [...withdrawn], gaps };
+  return { withdrawn: [...withdrawn], gaps, ...undecided };
+}
+
+export interface ReconcileResult {
+  withdrawn: string[];
+  gaps: string[];
+  /** As UtilityPackageResult's: the newest plan set's spec-named pages no spec part holds (#91). */
+  undecidedSpecPages: number[];
+  undecidedSpecFiledAs: Record<string, string>;
 }
 
 /**

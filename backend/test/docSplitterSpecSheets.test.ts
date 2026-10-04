@@ -150,6 +150,29 @@ for (const numberFirst of [false, true]) {
   run("nothing spec-shaped is missing here", !result.missingSheetTypes.includes("module_spec") && !result.missingSheetTypes.includes("inverter_spec"), JSON.stringify(result.missingSheetTypes));
 }
 
+// ---------------------------------------------------------------------------
+console.log("\n4. A SPEC-NAMED PAGE A STRAY HIT FILED ELSEWHERE IS STILL REPORTED UNDECIDED (#91)");
+{
+  // A racking brochure's vendor title block says STRUCTURAL: one `words` hit, so before #91 the
+  // page was filed into the structural part and the split never said it was a spec-named page.
+  const pid = await projectWith([
+    { lines: [...titleBlock("PV-6", "ELECTRICAL LINE DIAGRAM"), "MICROINVERTER BRANCH CIRCUIT"] },
+    { lines: [...titleBlock("PV-7", "WIRING CALCULATIONS"), "INVERTER SPECIFICATIONS  MAX AC OUTPUT 315 VA"] },
+    { lines: [...titleBlock("PV-13", "EQUIPMENT SPECIFICATION"), "SYNTHRAIL STRUCTURAL MOUNTING SYSTEMS"], image: true },
+    { lines: titleBlock("PV-14", "EQUIPMENT SPECIFICATION"), image: true },
+    { lines: titleBlock("PV-9", "PV MODULE SPECIFICATION SHEET"), image: true },
+  ]);
+  const result = await buildUtilityPackage(db, pid, "all");
+  const undecided = JSON.stringify({ pages: result.undecidedSpecPages, filedAs: result.undecidedSpecFiledAs });
+  run("THE POINT: the EQUIPMENT SPECIFICATION page with a stray STRUCTURAL hit is reported undecided",
+    (result.undecidedSpecPages ?? []).includes(3), undecided);
+  run("…and the report says which category took it (structural)", result.undecidedSpecFiledAs?.["3"] === "structural", undecided);
+  run("the title-only page is undecided with no category", (result.undecidedSpecPages ?? []).includes(4) && !result.undecidedSpecFiledAs?.["4"], undecided);
+  run("MUST-EXCLUDE: the WIRING CALCULATIONS sheet is still not undecided", !(result.undecidedSpecPages ?? []).includes(2), undecided);
+  run("MUST-EXCLUDE: the named spec sheet filed into module_spec is not undecided", !(result.undecidedSpecPages ?? []).includes(5), undecided);
+  run("the page list is exactly [3, 4]", JSON.stringify(result.undecidedSpecPages) === "[3,4]", undecided);
+}
+
 // Close before deleting the scratch DB - Windows holds the open handle as a file lock (EBUSY).
 db.close();
 fs.rmSync(tmpDir, { recursive: true, force: true });
