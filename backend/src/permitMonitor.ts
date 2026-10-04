@@ -258,6 +258,39 @@ export function extractStatedStatus(rawStatusText: string): string {
   return m ? m[1].trim().replace(/\s+/g, " ") : "";
 }
 
+// THE PORTAL'S OWN DATE FOR THE STATUS IT SHOWS (#58). A correction raised off a polled page used
+// to start its cure clock at ingestion — whenever the sweep happened to look — because only the
+// email tracker supplied a notice date. Where the page prints the status's date in a LABELLED
+// field ("Status Date: 09/28/2026", "Status Updated 2026-09-28", "Last Updated: Sep 28, 2026"),
+// that date is the notice's. Deliberately narrow: only those labels, never an unlabelled date
+// (a page carries filing, expiration and inspection dates too), and never a date after `now` or
+// one that does not exist on the calendar. Nothing found: null, and the clock falls back to
+// ingestion as before.
+const STATUS_DATE_LINE = /\b(?:status\s+(?:date|updated|changed|as\s+of)|last\s+(?:updated|status\s+change)|date\s+of\s+status)\s*:?\s*([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4})/i;
+const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+
+export function extractStatusDate(rawStatusText: string, now: Date = new Date()): string | null {
+  const m = clean(String(rawStatusText || "")).match(STATUS_DATE_LINE);
+  if (!m) return null;
+  const value = m[1];
+  let y: number, mo: number, d: number;
+  let parts: RegExpMatchArray | null;
+  if ((parts = value.match(/^(\d{4})-(\d{2})-(\d{2})$/))) [y, mo, d] = [Number(parts[1]), Number(parts[2]), Number(parts[3])];
+  else if ((parts = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/))) [y, mo, d] = [Number(parts[3]), Number(parts[1]), Number(parts[2])];
+  else if ((parts = value.match(/^([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})$/))) {
+    // A month NAME or its abbreviation ("Sep", "Sept", "September"), not any word.
+    const name = parts[1].toLowerCase();
+    const index = MONTHS.findIndex((month) => month.startsWith(name));
+    if (index < 0) return null;
+    [y, mo, d] = [Number(parts[3]), index + 1, Number(parts[2])];
+  } else return null;
+  const at = new Date(Date.UTC(y, mo - 1, d));
+  // 02/30 rolls over to March in Date.UTC: a date the calendar does not have is no date.
+  if (at.getUTCFullYear() !== y || at.getUTCMonth() !== mo - 1 || at.getUTCDate() !== d) return null;
+  if (at.getTime() > now.getTime()) return null;
+  return at.toISOString().slice(0, 10);
+}
+
 // ACCELA'S RECORD-PAGE CHROME IS NOT THE RECORD (live 2026-09-28, a City of Corvallis building
 // record reading "Record Status: Received"). On a record not yet issued, Accela prints the "Add to
 // Existing Collection … Create a New Collection" widget where an issued record prints "Expiration

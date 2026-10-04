@@ -30,7 +30,9 @@ delete process.env.ANTHROPIC_API_KEY;
 const { openDatabase } = await import("../src/db");
 const R = await import("../src/repository");
 const kb = await import("../src/knowledgeBase");
-const { touchProjectMetrics } = await import("../src/kpi");
+const { touchProjectMetrics, getKpiReport, requestNoticedAt, utilityDeficiencyCureDays } = await import("../src/kpi");
+const { extractStatusDate } = await import("../src/permitMonitor");
+const U = await import("../src/users");
 let db = await openDatabase();
 
 let failures = 0;
@@ -146,6 +148,85 @@ let threw = false;
 try { R.addManualCorrection(db, q, "Wrong filing.", "manual", { submissionId: building }); } catch { threw = true; }
 check("naming another project's filing is refused", threw);
 
+// ── #58 (1): a portal reading with no notice date passed is dated by the status date it prints ──
+const now = new Date("2026-10-04T12:00:00Z");
+check("a labelled ISO status date is read", extractStatusDate("Record Status: Additional Info Required Status Date: 2026-09-28", now) === "2026-09-28");
+check("a labelled US status date is read", extractStatusDate("Application Status: Deficient. Status Updated: 9/28/2026", now) === "2026-09-28");
+check("a labelled month-name status date is read", extractStatusDate("Last Updated: Sept 28, 2026 — Revise and resubmit", now) === "2026-09-28");
+check("an UNLABELLED date is not the notice's (filing / expiration dates ride the same page)",
+  extractStatusDate("Record Status: Issued Expiration Date: 2026-09-28 Filed 2026-09-01", now) === null);
+check("a date the calendar does not have is no date", extractStatusDate("Status Date: 02/30/2026", now) === null);
+check("a status date after now is no date", extractStatusDate("Status Date: 2026-12-01", now) === null);
+check("a word that is not a month is no date", extractStatusDate("Status Updated: Today 12, 2026", now) === null);
+const r = makeProject("Filing Track Three", "Pacific Gas and Electric");
+seedSubmission(r, "interconnection", "nem", iso(12));
+const rTarget = R.createPermitCheckTarget(db, r, { jurisdiction: "Pacific Gas and Electric", applicationNumber: "NEM-TEST-3", targetType: "nem" })
+  .permitCheckTargets.find((t) => t.targetType === "nem")!;
+const printedDate = iso(6).slice(0, 10);
+await R.recordPermitStatusCheck(db, r, {
+  targetId: rTarget.id, source: "portal",
+  rawStatusText: `Application Status: Deficient. Status Date: ${printedDate}. Correction required: revise and resubmit the single-line diagram.`,
+});
+const rRow = corrections(r)[0];
+check("the portal reading's correction carries the page's status date as noticed_at",
+  String(rRow?.noticed_at ?? "").slice(0, 10) === printedDate, String(rRow?.noticed_at));
+check("…and its cure clock starts there, not at ingestion",
+  rRow?.due_at === new Date(Date.parse(printedDate) + Number(rRow?.sla_days) * DAY).toISOString().slice(0, 10), `${rRow?.due_at} sla ${rRow?.sla_days}`);
+const s3 = makeProject("Filing Track Four", "Testville Municipal Utility");
+await R.recordPermitStatusCheck(db, s3, {
+  targetId: R.createPermitCheckTarget(db, s3, { jurisdiction: "Testville Municipal Utility", applicationNumber: "NEM-TEST-4", targetType: "nem" })
+    .permitCheckTargets.find((t) => t.targetType === "nem")!.id,
+  source: "portal", rawStatusText: "Application deficient: correction required. Revise and resubmit the single-line diagram.",
+});
+check("no printed status date: noticed_at stays null (the clock falls back to created_at)", corrections(s3)[0]?.noticed_at == null, String(corrections(s3)[0]?.noticed_at));
+
+// ── #58 (2): ONE overdue clock — the readers count from the notice's date like breachedSla does ──
+const o = makeProject("Filing Track Overdue", "Testville Municipal Utility");
+const unstamped = (cid: string, noticedAt: string | null, createdAt: string) => db.run(
+  `INSERT INTO corrections (id, project_id, source, correction_text, source_text, correction_bucket, root_cause, required_action,
+     assigned_to, draft_response, human_approved, resubmitted, new_rule_recommended, created_at, closed_at,
+     track, submission_id, notice_id, noticed_at, sla_days, due_at)
+   VALUES (?, ?, 'manual', 'Synthetic item.', '', 'other', '', '', '', '', 0, 0, 0, ?, NULL, '', NULL, ?, ?, 5, NULL)`,
+  [cid, o, createdAt, cid, noticedAt, ],
+);
+unstamped("corr-old-notice", iso(10), iso(0)); // noticed 10 days ago, typed today: overdue
+unstamped("corr-new-notice", iso(1), iso(10)); // typed 10 days ago, noticed yesterday: not yet
+unstamped("corr-old-notice-2", iso(9), iso(0)); // a second late-typed old notice: the two clocks now count 2 vs 1
+const overdueIds = R.listOverdueCorrections(db).map((c) => c.id);
+check("listOverdueCorrections starts an unstamped row's clock at noticed_at (overdue)", overdueIds.includes("corr-old-notice"), overdueIds.join(","));
+check("…and not at created_at (a fresh notice typed late is not overdue)", !overdueIds.includes("corr-new-notice"), overdueIds.join(","));
+const mapped = (cid: string) => R.mapCorrection(db.get<Row>("SELECT * FROM corrections WHERE id = ?", [cid])!).isOverdue;
+check("mapCorrection agrees on both rows", mapped("corr-old-notice") === true && mapped("corr-new-notice") === false);
+// The team-workload badge (users.getUserWorkload) is the third reader: same clock, same rows.
+const owner = U.createUser(db, { name: "Synthetic Operator", email: "synthetic.operator@example.test" });
+U.assignProjectToUser(db, o, owner.id);
+const workload = U.getUserWorkload(db).find((w) => w.user.id === owner.id);
+const overdueOnO = R.listOverdueCorrections(db).filter((c) => c.projectId === o).length;
+check("getUserWorkload's overdue count agrees with listOverdueCorrections for the same rows",
+  workload?.overdueCorrections === overdueOnO && overdueOnO === 2, `${workload?.overdueCorrections} vs ${overdueOnO}`);
+const report = getKpiReport(db);
+check("the KPI report's overdue count is the same clock as listOverdueCorrections",
+  report.overdueCorrections === overdueIds.length, `${report.overdueCorrections} vs ${overdueIds.length}`);
+
+// ── #58 (5): the route's notice date — absent is null, an unparseable one is a 400 ──
+check("requestNoticedAt: absent / blank is null", requestNoticedAt(undefined) === null && requestNoticedAt(null) === null && requestNoticedAt("  ") === null);
+check("requestNoticedAt: a date passes", requestNoticedAt("2026-09-28") === "2026-09-28");
+for (const bad of ["not a date", "2026-13-45", 20260928, { at: "2026-09-28" }]) {
+  let status = 0;
+  try { requestNoticedAt(bad); } catch (err) { status = Number((err as { status?: number }).status); }
+  check(`requestNoticedAt: ${JSON.stringify(bad)} is a 400`, status === 400, String(status));
+}
+
+// ── #58 (4): the boot seed never lands in a human-verified row, and an explicit 0 is never re-seeded ──
+check("precondition: the PG&E spellings below are PG&E to the seed",
+  kb.seededDeficiencyCureDays("CA", "PG&E") === 10 && kb.seededDeficiencyCureDays("CA", "Pacific Gas & Electric Co") === 10);
+utilityRow("PG&E", 0); // a person cleared the window
+utilityRow("Pacific Gas & Electric Co", null);
+db.run("UPDATE permit_utility_knowledge SET verified_at = ?, verified_by = 'synthetic reviewer' WHERE profile_key = ?",
+  [iso(1), kb.knowledgeProfileKey({ state: "CA", ahj: "", utility: "Pacific Gas & Electric Co" })]);
+check("a cleared (0) window on the utility's record takes the default, not the seed",
+  utilityDeficiencyCureDays(db, { state: "CA", utility: "PG&E" }) === 5, String(utilityDeficiencyCureDays(db, { state: "CA", utility: "PG&E" })));
+
 // ── replaying migration v43 is idempotent and keeps what it stamped ──
 utilityRow("Pacific Gas and Electric", null); // a PG&E utility row with no window yet
 db.run("DELETE FROM schema_meta WHERE version >= 43");
@@ -158,6 +239,10 @@ check("permit_utility_knowledge carries deficiency_cure_days", cols.includes("de
 const pgeDays = db.get<Row>("SELECT deficiency_cure_days AS d FROM permit_utility_knowledge WHERE profile_key = ?",
   [kb.knowledgeProfileKey({ state: "CA", ahj: "", utility: "Pacific Gas and Electric" })])?.d;
 check("the boot seed stamped PG&E's utility record with its 10-day window", Number(pgeDays) === 10, String(pgeDays));
+const daysOf = (utility: string) => db.get<Row>("SELECT deficiency_cure_days AS d FROM permit_utility_knowledge WHERE profile_key = ?",
+  [kb.knowledgeProfileKey({ state: "CA", ahj: "", utility })])?.d;
+check("rule 3: the boot seed left the human-verified PG&E row's window empty", daysOf("Pacific Gas & Electric Co") == null, String(daysOf("Pacific Gas & Electric Co")));
+check("the boot seed did not re-seed the cleared (0) window", Number(daysOf("PG&E")) === 0 && daysOf("PG&E") != null, String(daysOf("PG&E")));
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
 console.log("\nall kpi filing-track checks passed");

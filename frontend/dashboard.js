@@ -7322,6 +7322,7 @@ function correctionCardHtml(correction, triage, projectStatus) {
 function renderCorrections() {
   const corrections = state.detail.corrections || [];
   const projectStatus = (state.detail.project || {}).status || "";
+  renderCorrectionNoticeFields();
   $("corrections").innerHTML = corrections.length
     ? corrections.map((correction) => correctionCardHtml(correction, correctionTriage(correction.id), projectStatus)).join("")
     : `<p class="muted">No corrections recorded.</p>`;
@@ -7992,15 +7993,43 @@ async function prepareSubmission() {
   }
 }
 
+// The form's filing picker and notice date (#58). The picker offers this project's SENT filings
+// (corrections-filing.js, escaped there); a choice survives a re-render of the same project, and
+// both fields clear when another project opens so a notice is never filed against the wrong one.
+function renderCorrectionNoticeFields() {
+  const select = $("correctionSubmissionId");
+  const date = $("correctionNoticedAt");
+  if (!select || !date || !window.CorrectionsFiling) return;
+  const projectId = state.selectedProjectId;
+  const sameProject = state.correctionFormProjectId === projectId;
+  const keep = sameProject ? select.value : "";
+  if (!sameProject) date.value = "";
+  state.correctionFormProjectId = projectId;
+  select.innerHTML = window.CorrectionsFiling.filingOptionsHtml(state.detail.submissions || [], keep);
+  date.max = new Date().toISOString().slice(0, 10);
+}
+
 async function addCorrection() {
-  const correctionText = $("correctionText").value.trim();
-  if (!correctionText) {
-    showMessage("Paste correction text before adding.", "warning");
+  const projectId = state.selectedProjectId;
+  // Items added with the same filing and notice date share one noticeId: one notice, one cycle.
+  // Both fields stay set after an add so the next item of the same notice is one click away.
+  const payload = window.CorrectionsFiling
+    ? window.CorrectionsFiling.correctionPayload({
+      projectId,
+      correctionText: $("correctionText").value,
+      submissionId: $("correctionSubmissionId")?.value,
+      noticedAt: $("correctionNoticedAt")?.value,
+      submissions: state.detail?.submissions || [],
+      today: new Date().toISOString().slice(0, 10),
+    })
+    : { ok: Boolean($("correctionText").value.trim()), error: "Paste correction text before adding.", body: { correctionText: $("correctionText").value.trim(), source: "manual" } };
+  if (!payload.ok) {
+    showMessage(payload.error, "warning");
     return;
   }
-  state.detail = await api(`/api/projects/${state.selectedProjectId}/corrections`, {
+  state.detail = await api(`/api/projects/${projectId}/corrections`, {
     method: "POST",
-    body: JSON.stringify({ correctionText, source: "manual" }),
+    body: JSON.stringify(payload.body),
   });
   $("correctionText").value = "";
   state.workflow = null;

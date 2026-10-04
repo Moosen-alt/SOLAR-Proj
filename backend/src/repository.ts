@@ -63,7 +63,7 @@ import type {
   SubmittalTrack,
   SubmittalTrackType,
 } from "../../shared/src/types";
-import { correctionFilingStamp, touchProjectMetrics, type CorrectionFilingInput } from "./kpi";
+import { correctionFilingStamp, correctionOverdueSql, touchProjectMetrics, type CorrectionFilingInput } from "./kpi";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -136,7 +136,7 @@ import {
 } from "./knowledgeBase";
 import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens, TRACK_ISSUER_SNAPSHOT_KEYS, withTrackIssuers } from "./normalize";
 import {
-  classificationDrift, classifyPermitStatusText, effectiveCheckDays, isAuthWallText, isNemApprovalOutcome, nextCheckIso, outcomeTrack, portalStatedStatus,
+  classificationDrift, classifyPermitStatusText, effectiveCheckDays, extractStatusDate, isAuthWallText, isNemApprovalOutcome, nextCheckIso, outcomeTrack, portalStatedStatus,
   readingMayFinishTrack, shouldRecordStatusCheck, trackKind, UNCONFIRMED_READING_LABEL,
   type PermitStatusClassification, type ReadingProvenance, type TrackKind,
 } from "./permitMonitor";
@@ -580,6 +580,7 @@ function mapSubmission(row: Row): SubmissionRecord {
     projectId: text(row.project_id),
     portalProfileId: row.portal_profile_id == null ? null : text(row.portal_profile_id),
     submissionType: text(row.submission_type) as SubmissionRecord["submissionType"],
+    permitType: text(row.permit_type),
     status: text(row.status) as SubmissionRecord["status"],
     applicationNumber: text(row.application_number),
     permitNumber: text(row.permit_number),
@@ -5735,10 +5736,7 @@ export function listOverdueCorrections(db: AppDb, orgId: string | null = DEFAULT
     `SELECT c.* FROM corrections c
      JOIN projects p ON p.id = c.project_id${orgId ? " AND p.org_id = ?" : ""}
      WHERE c.closed_at IS NULL
-       AND (
-         c.due_at < ?
-         OR (c.due_at IS NULL AND date(c.created_at, '+' || c.sla_days || ' days') < ?)
-       )
+       AND ${correctionOverdueSql("c")}
      ORDER BY c.created_at ASC`,
     orgId ? [orgId, today, today] : [today, today],
   );
@@ -6271,8 +6269,9 @@ export async function recordPermitStatusCheck(
     rawStatusText?: string;
     applicationNumber?: string;
     permitNumber?: string;
-    /** The notice's own date (an email's Date header, a portal's status date) — the cure clock of
-     *  any correction this reading raises starts there, not at ingestion. */
+    /** The notice's own date (an email's Date header) — the cure clock of any correction this
+     *  reading raises starts there, not at ingestion. Omitted: the status date the page prints
+     *  (permitMonitor.extractStatusDate), if any. */
     noticedAt?: string | null;
   },
 ): Promise<ProjectDetail> {
@@ -6284,6 +6283,10 @@ export async function recordPermitStatusCheck(
 
   const source = input.source || "manual";
   const rawStatusText = await resolveStatusText(target, input.rawStatusText || "", source);
+  // The notice's own date: the caller's (an email's Date header), else the date the page itself
+  // prints for its status (#58: the portal monitor passes none). Neither: null, and the cure clock
+  // of a correction this reading raises starts at ingestion.
+  const noticedAt = input.noticedAt || extractStatusDate(rawStatusText);
   // THE TARGET'S TRACK decides what its words mean: a utility's "Approved" is the interconnection
   // approval (nem_approved), a jurisdiction's is plan review done (reviewed_by_ahj). ONE ANSWER,
   // trackKind (a legacy target with a blank or 'permit' target_type and permit_type 'nem' is the
@@ -6395,7 +6398,7 @@ export async function recordPermitStatusCheck(
         jurisdiction: text(target?.jurisdiction),
         recordNumber: input.permitNumber || text(target?.permit_number) || input.applicationNumber || text(target?.application_number),
         readingSource: source,
-      }, input.noticedAt ?? null);
+      }, noticedAt);
     } else if (recordCheck && refused) {
       // THE REFUSED READING'S OWN ROW — issue_type names it, parser_value carries what the text
       // said (outcome + label), notes carry why it was not trusted. This is the item an operator
