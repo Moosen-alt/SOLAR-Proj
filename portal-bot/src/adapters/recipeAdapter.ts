@@ -106,7 +106,8 @@ import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describe
 // the replay is on the wrong page. PowerClerk's Ameren form reports zero inputs for several
 // seconds after its URL loads; judging it on the first DOM read failed whole runs.
 const DRIFT_SETTLE_MS = Math.max(2000, Number(process.env.RECIPE_DRIFT_SETTLE_MS ?? 15000));
-import { redactCaptureText, readbackMatches, detectChallengeFrame, frameSelectorFor, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
+import { redactCaptureText, readbackMatches, detectChallengeFrame, frameSelectorFor, hasNumericValidationError, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
+import { findFilingStatus } from "../statusFinder";
 import { performLogin, portalErrorPage } from "./loginFlow";
 import { chooseCorrectionForm, correctionFormSelector, isRefusal, scanProjectForms, type ProjectFormRow } from "./correctionForm";
 import { type ExtractedField, EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays, equipmentMakeCandidates, pageFingerprintOf, collectValidationErrorsFrom, acaApplyEntryFrom, advanceSignatureOf } from "./autoLearnAdapter";
@@ -963,13 +964,33 @@ export class RecipeAdapter extends BasePortalAdapter {
   // any of the known application/permit numbers, and return a REDACTED status snippet.
   // NEVER clicks submit, modifies, or pays anything. PII (long digit runs such as
   // account/meter numbers) is masked and the text is capped to a short snippet.
+  /** Why the last checkStatus() read nothing usable (issue #161); the status checker reports it. */
+  lastStatusReason = "";
+
+  // READ THE STATUS WHERE THE SIGN-IN LEFT US (issue #161). This used to reload recipe.portalUrl
+  // first. For a recipe recorded from the portal's LOGIN page (every PowerClerk recipe ends in
+  // /MvcAccount/Login) that reload sent a signed-in session back to the login screen, so the scan
+  // read a login wall and the filing's status was never read. Now: only a page with nothing loaded
+  // goes to portalUrl. Then findFilingStatus looks on the signed-in page, the portal's own
+  // projects/applications list, and that list's pages, by read-only navigation only.
   async checkStatus(applicationNumbers: string[]): Promise<string | null> {
-    if (!this.page || !this.recipe.portalUrl || !applicationNumbers.length) return null;
+    this.lastStatusReason = "";
+    if (!this.page) { this.lastStatusReason = "the portal never opened"; return null; }
+    if (!applicationNumbers.length) { this.lastStatusReason = "no application number to look for"; return null; }
     try {
-      await this.guardedGoto(this.recipe.portalUrl, "read-only status check");
+      const here = String(this.page.url?.() ?? "");
+      if ((!here || here === "about:blank") && this.recipe.portalUrl) {
+        await this.guardedGoto(this.recipe.portalUrl, "read-only status check");
+      }
       await this.settle(15000);
-      return scanStatusFromBody(this.page, applicationNumbers);
-    } catch {
+      const t0 = Date.now();
+      const found = await findFilingStatus(this.page, applicationNumbers, {
+        onProgress: (m) => this.progress("wait", `Status read: ${m}`, Date.now() - t0),
+      });
+      this.lastStatusReason = found.reason;
+      return found.text;
+    } catch (err) {
+      this.lastStatusReason = `the status read failed: ${err instanceof Error ? err.message.slice(0, 160) : String(err)}`;
       return null;
     }
   }

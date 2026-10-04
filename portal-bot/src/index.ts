@@ -914,13 +914,16 @@ export async function learnPortal(input: {
 // Read-only portal status scrape. Opens a browser session for the given adapter type,
 // calls checkStatus(), and returns the raw status text (or null on failure/not supported).
 // SAFETY: only calls login() + checkStatus() — never fill, click-submit, or pay.
+// A null result is never silent (issue #161): `onReason` hears why (no reader for the portal,
+// the sign-in failed or asked for MFA, the status read failed, or where it looked and how far).
 export async function checkStatusWithAdapter(
   adapterType: "accela" | "powerclerk" | "recipe",
   applicationNumbers: string[],
-  options: StageOptions & { recipe?: PortalRecipe; fieldValues?: Record<string, string>; docsByType?: Record<string, string> },
+  options: StageOptions & { recipe?: PortalRecipe; fieldValues?: Record<string, string>; docsByType?: Record<string, string>; onReason?: (reason: string) => void },
 ): Promise<string | null> {
   let tmpStatePath: string | undefined;
   let adapter: import("./adapter").PortalAdapter | null = null;
+  const report = (reason: string) => { try { options.onReason?.(reason.slice(0, 300)); } catch { /* reporting never breaks a check */ } };
   // Release a left-open guided-manual browser on this profile before opening a status check.
   await closePriorStagingBrowser(options.userDataDir);
   try {
@@ -930,16 +933,24 @@ export async function checkStatusWithAdapter(
     adapter =
       adapterType === "accela" ? new OregonEPermittingAdapter() :
       adapterType === "powerclerk" ? new PowerClerkAdapter() :
-      options.recipe ? new RecipeAdapter(options.recipe, options.fieldValues ?? {}, options.docsByType ?? {}, { beforeUpload: options.beforeUpload }) :
+      options.recipe ? new RecipeAdapter(options.recipe, options.fieldValues ?? {}, options.docsByType ?? {}, { beforeUpload: options.beforeUpload, onProgress: options.onProgress }) :
       null;
 
-    if (!adapter || !adapter.checkStatus) return null;
+    if (!adapter || !adapter.checkStatus) { report("no status reader for this portal"); return null; }
 
     const loginResult = await adapter.login(ctx);
-    if (!loginResult.ok) return null;
+    if (!loginResult.ok) {
+      report(loginResult.pauseReason === "mfa_captcha"
+        ? "the portal asked for MFA or a CAPTCHA; a person has to sign in (a status check never answers one)"
+        : `the sign-in failed: ${String(loginResult.message ?? "").slice(0, 200)}`);
+      return null;
+    }
 
-    return await adapter.checkStatus(applicationNumbers);
-  } catch {
+    const text = await adapter.checkStatus(applicationNumbers);
+    if (!text) report(String((adapter as { lastStatusReason?: string }).lastStatusReason || "the portal page held no status for this application"));
+    return text;
+  } catch (err) {
+    report(`the status read failed: ${err instanceof Error ? err.message.slice(0, 200) : String(err)}`);
     return null;
   } finally {
     // P0-1: always close the browser (release the userDataDir lock) and shred the
