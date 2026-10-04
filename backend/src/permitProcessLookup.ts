@@ -32,7 +32,7 @@
 import type { CitedFact, LLMProvider, PermitFeeAnswer, PermitProcessDiscipline, PermitProcessLookup, PermitProcessPermitAnswer, WebLookupResult } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import { hostFitsTrackAndEntity, isInformationalPageUrl, isPathTenantedHost, isPermitPlatformUrl, isVendorDomain, isVendorRootOrMarketing, portalHostOf, portalTenantKey, portalTenantOf, salesforceTenantKind, trackSafeUrl, type PortalEntity } from "./portalChannel";
-import { ahjNameCore, getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stateRulesFor, trackIssuer, ZONING_SIGNOFF } from "./permitProcess";
+import { ahjNameCore, getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, servingIssuerNamed, stateRulesFor, trackIssuer, ZONING_SIGNOFF } from "./permitProcess";
 import { CONNECTOR_WORDS, DEPARTMENT_WORDS, GENERIC_ORG_WORDS, agencyNameKey, sameAgencyName, stripDepartmentPhrase } from "./agencyName";
 // Re-exported: the agency-name identity helpers moved to agencyName.ts (pure, no lookup stack) so
 // permitProcess can ask the same question without importing this module back (a cycle).
@@ -76,7 +76,20 @@ Return ONLY JSON (no prose):
  *  an unincorporated address's zoning goes. This is how a state-served AHJ the seeded list does not
  *  name gets found (permitProcess.stateTradeIssuerFor reads the cited answer). */
 export function processLookupSystemFor(state: string): string {
-  const st = stateRulesFor(state).stateTradeIssuer;
+  const rules = stateRulesFor(state);
+  const st = rules.stateTradeIssuer;
+  // A STATE WITH NO SINGLE STATE ISSUER, whose rule names who issues for a city without its own program
+  // (Oregon: the county or BCD, issue #171) — the same cited question, so a served city's form is not
+  // searched for under its name (permitProcess.servedByStateIssuer). No zoning / unincorporated-county
+  // questions: those are the state-issuer flow's (New Mexico).
+  if (!st && rules.defaultIssuer) {
+    return `${PROCESS_LOOKUP_SYSTEM}
+
+IN THIS STATE A CITY MAY NOT RUN A BUILDING PROGRAM OF ITS OWN: where it does not, ${rules.defaultIssuer.value} issues its permits. Also answer, cited the same way (sourceUrl + quote), in the same JSON object:
+5. buildingProgram — "own" when this jurisdiction runs its OWN building program (its own building official / building department issues building permits); "state" when it does not and ${rules.defaultIssuer.value} issues its building and electrical permits. The quote must say which and, for "state", name that issuing office (the county's or the state agency's list of the jurisdictions it serves, or the jurisdiction's own permit page).
+Add to the JSON:
+ "buildingProgram": {"value": "own"|"state"|null, "sourceUrl": "", "quote": "", "notFound": ""}`;
+  }
   if (!st) return PROCESS_LOOKUP_SYSTEM;
   return `${PROCESS_LOOKUP_SYSTEM}
 
@@ -467,11 +480,14 @@ const asDiscipline = (v: unknown): PermitProcessDiscipline | null => {
 const STATE_AGENCY = /\bcid\b|construction industries/i;
 const OWN_BUILDING_OFFICE = /\bown\b[^.;]{0,30}\bbuilding\b|\bbuilding (?:official|department|division|program)\b/i;
 const NEGATED = /\b(?:no|not|never|without|lacks?|none)\b|n't\b/i;
-const claimsOwnBuildingOffice = (q: string) => q.split(/[.;]/).some((c) => OWN_BUILDING_OFFICE.test(c) && !NEGATED.test(c) && !STATE_AGENCY.test(c));
-const supportsBuildingProgram = (value: "own" | "state", quote: string): boolean =>
-  value === "state" ? STATE_AGENCY.test(quote) && !claimsOwnBuildingOffice(quote) : claimsOwnBuildingOffice(quote) && !STATE_AGENCY.test(quote);
+/** The serving office's words (permitProcess.servingIssuerNamed): CID in New Mexico, a county or BCD
+ *  in Oregon (#171) — with the AHJ's own name taken out, so a county's own division is its own. */
+type NamesIssuer = (quote: string) => boolean;
+const claimsOwnBuildingOffice = (q: string, names: NamesIssuer) => q.split(/[.;]/).some((c) => OWN_BUILDING_OFFICE.test(c) && !NEGATED.test(c) && !names(c));
+const supportsBuildingProgram = (value: "own" | "state", quote: string, names: NamesIssuer = (q) => STATE_AGENCY.test(q)): boolean =>
+  value === "state" ? names(quote) && !claimsOwnBuildingOffice(quote, names) : claimsOwnBuildingOffice(quote, names) && !names(quote);
 
-export function parseProcessPart(text: string, seenUrls: string[], stopReason: string | null, platformPages: string[] = [], entity: PortalEntity | null = null): {
+export function parseProcessPart(text: string, seenUrls: string[], stopReason: string | null, platformPages: string[] = [], entity: PortalEntity | null = null, where: { state: string; ahj: string } | null = null): {
   issuingAgency: CitedFact<string>; permitStructure: CitedFact<"separate" | "combo">; permits: PermitProcessPermitAnswer[]; prerequisites: CitedFact<string>[]; problem: string;
   buildingProgram?: CitedFact<"own" | "state">; unincorporatedZoning?: CitedFact<string>;
 } {
@@ -502,9 +518,10 @@ export function parseProcessPart(text: string, seenUrls: string[], stopReason: s
   }
   // The state-issuer questions (processLookupSystemFor): kept only cited, and only when the quote says
   // WHICH (supportsBuildingProgram) — the value flips the issuer both ways.
+  const names = (where ? servingIssuerNamed(where.state, where.ahj) : null) ?? ((q: string) => STATE_AGENCY.test(q));
   const buildingProgram = acceptCited<"own" | "state">(json.buildingProgram as RawFact, {
     seenUrls, what: "building program", coerce: (v) => (/^state\b/i.test(str(v)) ? "state" : /^own\b/i.test(str(v)) ? "own" : null),
-    supports: supportsBuildingProgram,
+    supports: (v, q) => supportsBuildingProgram(v, q, names),
   });
   const unincorporatedZoning = acceptCited<string>(json.unincorporatedZoning as RawFact, {
     seenUrls, what: "unincorporated zoning office", coerce: (v) => (/\bcounty\b/i.test(str(v)) ? str(v) : null), supports: supportsName,
@@ -947,7 +964,7 @@ export async function runPermitProcessLookup(
   }
   const ungrounded = (why: string) => ({ value: null, sourceUrl: "", quote: "", origin: "lookup" as const, notFound: why });
   const grounded1 = p1.groundedSearches > 0;
-  const first = grounded1 ? parseProcessPart(p1.text, seenOf(p1), p1.stopReason, [], entity) : null;
+  const first = grounded1 ? parseProcessPart(p1.text, seenOf(p1), p1.stopReason, [], entity, input) : null;
 
   // WHO ISSUES EACH PERMIT, decided ONCE from a parsed part one and read by every door below.
   //   publisherName — the agency whose pages our read reads: the top-level (or lifted) agency, else
@@ -1012,7 +1029,7 @@ export async function runPermitProcessLookup(
   };
   const platformPages = ev?.platformPages ?? [];
   const part1 = first
-    ? (ev ? parseProcessPart(p1.text, [...seenOf(p1), ...ev.seen], p1.stopReason, platformPages, entity) : first)
+    ? (ev ? parseProcessPart(p1.text, [...seenOf(p1), ...ev.seen], p1.stopReason, platformPages, entity, input) : first)
     : { issuingAgency: ungrounded(p1.error ? `lookup failed: ${p1.error.slice(0, 120)}` : "no web search returned results — nothing kept from memory"), permitStructure: ungrounded("no grounded search"), permits: [] as PermitProcessPermitAnswer[], prerequisites: [] as CitedFact<string>[], problem: p1.error ?? "ungrounded", buildingProgram: undefined, unincorporatedZoning: undefined };
 
   // ASK THE AGENCY THAT ISSUES EACH PERMIT. Lift an agency every permit agrees on; then group.
@@ -1357,6 +1374,9 @@ export async function runPermitProcessLookup(
     ...(stateRulesFor(input.state).stateTradeIssuer ? {
       buildingProgram: part1.buildingProgram?.value ? part1.buildingProgram : existing?.buildingProgram ?? part1.buildingProgram,
       unincorporatedZoning: part1.unincorporatedZoning?.value ? part1.unincorporatedZoning : existing?.unincorporatedZoning ?? part1.unincorporatedZoning,
+    } : stateRulesFor(input.state).defaultIssuer ? {
+      // Oregon (#171): only the buildingProgram question is asked there.
+      buildingProgram: part1.buildingProgram?.value ? part1.buildingProgram : existing?.buildingProgram ?? part1.buildingProgram,
     } : {}),
     ...(ev?.codes ? { codes: ev.codes } : existing?.codes ? { codes: existing.codes } : {}),
     ...(reader ? { pagesRead: reader.log.map((l) => ({ url: l.url, ok: l.ok, reason: l.reason.slice(0, 160) })) } : {}),

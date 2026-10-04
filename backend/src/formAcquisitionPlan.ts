@@ -31,7 +31,7 @@ import { curatedFormSource, curatedFormSourcesFor } from "./curatedAhjForms";
 
 type CuratedSource = ReturnType<typeof curatedFormSourcesFor>[number];
 import { resolvePermitPath } from "./permitPath";
-import { servedByStateIssuer, stateIssuerFormsFor } from "./permitProcess";
+import { servedByStateIssuer, stateIssuerFormsFor, stateRulesFor, stateTradeIssuerFor } from "./permitProcess";
 import { sameAgencyName } from "./agencyName";
 
 export interface EnsureFormResult {
@@ -172,7 +172,21 @@ export function applicationKindForProject(project: ProjectRecord): "prescriptive
 export function ownFreeFormSource(project: ProjectRecord, formType: string, applicationKind: "prescriptive" | "structural" | null): { url: string; formName: string; curated: CuratedSource | null } | null {
   const curated = curatedFormSource(project, formType, applicationKind);
   if (curated) return { url: curated.url, formName: curated.formName, curated };
-  return formType === "solar_checklist" ? statewideChecklistSource(project) : null;
+  if (formType === "solar_checklist") return statewideChecklistSource(project);
+  const statewide = statewideApplicationSource(project, formType, applicationKind);
+  return statewide ? { url: statewide.url, formName: statewide.formName, curated: statewide } : null;
+}
+
+/** A SERVED CITY'S BUILDING APPLICATION is the statewide portal's (Oregon ePermitting, issue #171):
+ *  the catalog's blank filed under the portal's name, when the catalog holds one. null = none held
+ *  (servedJurisdictionForms then answers the slot with the issuer named — never a search). */
+export function statewideApplicationSource(project: ProjectRecord, formType: string, applicationKind: "prescriptive" | "structural" | null): CuratedSource | null {
+  if (formType !== "building_application" && formType !== "permit_application") return null;
+  const portal = stateRulesFor(project.state).statewidePortalName;
+  if (!portal) return null;
+  let served: ReturnType<typeof servedByStateIssuer> = null;
+  try { served = servedByStateIssuer(project); } catch { served = null; }
+  return served ? curatedFormSource({ ahj: portal, state: project.state }, formType, applicationKind) ?? null : null;
 }
 
 /** The STATE's own checklist for this project's path, filed wherever the job is in the state: the Oregon
@@ -196,6 +210,13 @@ export function statewideChecklistSource(project: ProjectRecord): { url: string;
  */
 export function servedJurisdictionForms(project: ProjectRecord, formType: string): { agency: string; sourceUrl: string; checklist: { url: string; formName: string } | null; message: string } | null {
   if (formType === "permit_application" && stateIssuerKeepsGenericSlot(project)) return null;
+  // A state issuer's served village publishes its OWN solar checklist as it does its zoning form (the
+  // local step is the village's): still searched, unless a statewide checklist covers it (#171).
+  if (formType === "solar_checklist" && !statewideChecklistSource(project)) {
+    let local = null;
+    try { local = stateTradeIssuerFor(project); } catch { local = null; }
+    if (local) return null;
+  }
   let served: ReturnType<typeof servedByStateIssuer> = null;
   try { served = servedByStateIssuer(project); } catch { served = null; }
   if (!served) return null;
@@ -204,10 +225,12 @@ export function servedJurisdictionForms(project: ProjectRecord, formType: string
   const agency = served.agency || "the state building agency";
   const label = formType.replace(/_/g, " ");
   const cite = served.sourceUrl ? ` (cited: ${served.sourceUrl})` : "";
+  const portal = formType === "building_application" || formType === "permit_application" ? stateRulesFor(project.state).statewidePortalName : "";
   const message = formType === "solar_checklist" && checklist
     ? ""
     : `${project.ahj} does not run its own building program — ${agency} issues its permits${cite}. No ${label} was searched for under ${project.ahj}'s name.`
       + `${checklist ? ` The statewide ${checklist.formName} is attached on its own row.` : ""}`
+      + `${portal ? ` No statewide ${portal} ${label} is in the form catalog.` : ""}`
       + ` Upload ${served.agency || "the issuing agency"}'s ${label} blank (Find official form → upload); it has not been counted as present.`;
   return { agency, sourceUrl: served.sourceUrl, checklist, message };
 }
