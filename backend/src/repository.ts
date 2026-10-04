@@ -76,7 +76,7 @@ import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier
 import { publicPermitStatusCheck } from "./publicPermitStatus";
 import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES } from "./projectDocuments";
 import type { DesignTextSource } from "./designCriteria";
-import { describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor, isStatewidePortalUrl, projectForTrack, refuseTrackIssuerValue, trackIssuer } from "./permitProcess";
+import { describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor, isStatewidePortalUrl, permitProcessKey, projectForTrack, refuseTrackIssuerValue, trackIssuer } from "./permitProcess";
 import { statewideDecisionFor, statewideUrlRefusal } from "./statewideEvidence";
 import { RESEARCH_UNCONFIRMED_REASON, researchNamedPlatform, researchSaysPortalUnconfirmed, researchWithFittedUrl } from "./researchedPortalUrl";
 import { bindRecipeForReplay, describeReplayBinding, openPerJobQuestions } from "./recipeReplayBinding";
@@ -5121,6 +5121,48 @@ export async function rejudgeReviewerGatesAfterLookup(
     for (const projectId of rejudged) {
       const what = stateScope ? `${st.toUpperCase()} state code lookup` : `${name} design-criteria lookup`;
       sseBroadcast({ type: "reviewer_gate_rejudged", projectId, message: `Reviewer gate re-judged: ${what} landed.` });
+    }
+  }
+  return rejudged;
+}
+
+/**
+ * RE-JUDGE QC'S DOCUMENT ROWS WHEN AN AHJ'S PERMIT-PROCESS LOOKUP LANDS (#112). The lookup is where
+ * the AHJ's cited required-documents list comes from (requiredDocuments.lookupRequiredList), and QC
+ * judges `docs.*` / `docs.complete` from it — but QC ran before the lookup landed, and nothing ran
+ * it again, so `docs.complete` kept saying "not yet confirmed" over a list now on file and the plan
+ * set that triggered the lookup was never checked against it. Called by the worker after a
+ * permit_process_lookup job lands 'done', after savePermitProcessLookup wrote the row — never after
+ * one that failed for good (no row was written, and this QC run's lookup trigger would re-queue it).
+ * Same population as rejudgeReviewerGatesAfterLookup: PRE-STAGE projects (qc_passed /
+ * ready_to_stage) whose QC has already run, in the looked-up state+AHJ (permitProcessKey — the key
+ * the list is read by). The re-run is the document-triggered re-judge (autoStageSteps STEP 1,
+ * qcRejudgedOnDocs.test.ts): every row refreshed, no demotion on bill-only new fails. The judgement
+ * reads the database only — no model call, no parser re-run — but QC's trigger block still asks for
+ * the lookup and fee research (the lookup is a no-op there: the row now exists). Synchronous per
+ * project, so a second landing in the same tick re-runs the same cheap judgement rather than
+ * needing the gate's landing mark.
+ */
+export function rejudgeQcDocumentsAfterLookup(db: AppDb, target: { state: string; ahj: string }, trigger: string): string[] {
+  const st = String(target.state || "").trim();
+  if (!st || !String(target.ahj || "").trim()) return [];
+  const key = permitProcessKey(st, target.ahj);
+  const candidates = db.query<Row>(
+    `SELECT p.id, p.state, p.ahj FROM projects p
+      WHERE UPPER(TRIM(p.state)) = ? AND p.status IN ('qc_passed', 'ready_to_stage')
+        AND EXISTS (SELECT 1 FROM qc_results q WHERE q.project_id = p.id)`,
+    [st.toUpperCase()],
+  );
+  const rejudged: string[] = [];
+  for (const row of candidates) {
+    const projectId = text(row.id);
+    if (permitProcessKey(text(row.state), text(row.ahj)) !== key) continue;
+    try {
+      const result = runQcForProject(db, projectId, { holdStatusOnNewBillOnlyFails: true });
+      addAuditLog(db, projectId, "system", "qc gate", "project.qc_rerun", { ...result, trigger });
+      rejudged.push(projectId);
+    } catch (err) {
+      logger.warn("qc", `re-judge after ${trigger} failed`, { project: projectId, err: err instanceof Error ? err.message : String(err) });
     }
   }
   return rejudged;
