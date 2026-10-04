@@ -1605,6 +1605,9 @@ const ROOF_DIM_LABEL = /\b(?:(?<path>(?:fire\s+)?(?:access\s+)?path(?:way)?s?|wa
  *  comma or a joining "and"/"&": "36\" FROM RIDGE AND 18\" CLEAR OF HIPS" is two clauses, and the
  *  18" is the hips' (read across the "and", the ridge label won and a compliant plan blocked). */
 const CLAUSE_BREAK = /(?<!\b(?:min|max|typ|approx|in|ft|no|o\.c|e\.g|i\.e))\.(?!\d)|[;,&•▪●■◦]|\band\b/i;
+/** The gap from a value to the label after it is only a preposition ("36\" FROM RIDGE", "18\" CLEAR
+ *  OF HIPS"): the value is attached to that label, even with no break after a ridge label before it. */
+const ATTACHED_AFTER = /^\s*(?:(?:clear|setback|set\s+back|offset|min(?:imum)?\.?|max(?:imum)?\.?)\s+)?(?:from|of|to|at)\s+(?:the\s+)?$/i;
 /** "RIDGE VENT 12\"", "RIDGE HEIGHT": a ridge, but not a setback from it. */
 const RIDGE_NOT_SETBACK = /\b(?:vent|cap|height|board|beam|elev(?:ation)?)\b/i;
 const ROOF_DIM_WINDOW = 60;
@@ -1652,9 +1655,9 @@ export function readRoofPlanDimensions(text: string): ReadRoofPlanDimension[] {
       if (values.some((o) => o !== v && o.at >= Math.min(end, v.end) && o.end <= Math.max(start, v.at))) continue;
       const kind = l.groups?.path ? "path" : l.groups?.ridge ? "ridge" : "other";
       if (kind === "ridge" && RIDGE_NOT_SETBACK.test(gap)) continue;
-      // "RIDGE SETBACK: 18\"" assigns; otherwise a label AFTER the value wins a tie (callouts
-      // print "36\" FIRE ACCESS PATHWAY").
-      const dist = end <= v.at ? (/^\s*[:=]/.test(gap) ? -1 : gap.length + 0.5) : gap.length;
+      // "RIDGE SETBACK: 18\"" assigns; "18\" CLEAR OF HIPS" attaches to the label after it;
+      // otherwise a label AFTER the value wins a tie (callouts print "36\" FIRE ACCESS PATHWAY").
+      const dist = end <= v.at ? (/^\s*[:=]/.test(gap) ? -1 : gap.length + 0.5) : ATTACHED_AFTER.test(gap) ? -0.5 : gap.length;
       if (!best || dist < best.dist) best = { kind, dist, start, end };
     }
     if (!best || best.kind === "other") continue;

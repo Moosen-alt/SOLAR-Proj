@@ -95,6 +95,11 @@ await check("MUST EXCLUDE: a clearance joined to a ridge setback by AND is not a
   assert.deepEqual(read('ARRAY 36" FROM RIDGE AND 18" FROM EAVE'), ["ridgeSetback=36"]);
   assert.deepEqual(read('ARRAY 36" FROM RIDGE, 18" FROM EAVE'), ["ridgeSetback=36"]);
 });
+await check("MUST EXCLUDE: with no break at all, a value takes the label its preposition attaches it to", () => {
+  // No AND, comma or stop: "18\" CLEAR OF HIPS" is the hips' even though RIDGE is nearer.
+  assert.deepEqual(read('36" FROM RIDGE 18" CLEAR OF HIPS'), ["ridgeSetback=36"]);
+  assert.deepEqual(read('ARRAY 36" FROM RIDGE 18" FROM EAVE'), ["ridgeSetback=36"]);
+});
 await check("MUST PASS: units with no space (36in, 3ft)", () => {
   assert.deepEqual(read("36in FIRE ACCESS PATHWAY"), ["pathwayWidth=36"]);
   assert.deepEqual(read("RIDGE SETBACK 3ft"), ["ridgeSetback=36"]);
