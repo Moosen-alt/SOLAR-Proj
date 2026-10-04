@@ -69,6 +69,11 @@ RUN mkdir -p backend/data backend/data/backups \
 USER node
 
 EXPOSE 4173
+# Inside a container the app must listen on every interface or nothing outside it (Fly's proxy,
+# a published Docker port) can reach it; the server's own default is 127.0.0.1 (#82). This is
+# the "on purpose" SERVER_HOST. With AUTH_ENABLED off the server then REFUSES to start unless
+# ALLOW_UNAUTHENTICATED_NETWORK=1 is also set: turn login on for anything reachable.
+ENV SERVER_HOST=0.0.0.0
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD node -e "fetch('http://localhost:'+(process.env.PORT||4173)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 

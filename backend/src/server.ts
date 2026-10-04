@@ -161,6 +161,7 @@ import { ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processP
 import { enqueueStageSteps } from "./autoStageSteps";
 import type { ClientResolution, ParserExtractionResponse, SubmittalTrackType } from "../../shared/src/types";
 import { FINAL_SUBMIT_GATE_SENTENCE } from "../../shared/src/portalSafety";
+import { resolveListenHost } from "./listenHost";
 
 const app = express();
 
@@ -3316,16 +3317,19 @@ process.on("uncaughtException", (err) => {
   setTimeout(() => process.exit(1), 250).unref();
 });
 
-const server = app.listen(port, process.env.SERVER_HOST || "0.0.0.0", () => {
+// Where to listen: loopback unless SERVER_HOST asks for more, and never the network without a
+// login unless ALLOW_UNAUTHENTICATED_NETWORK=1 asks again (hard rule 6, #82 — the 0.0.0.0
+// default served every customer's data to a Public-profile LAN). See listenHost.ts.
+const listen = resolveListenHost(process.env);
+if (!listen.ok) {
+  logger.error("security", listen.refusal);
+  process.exit(1);
+}
+const server = app.listen(port, listen.host, () => {
   const diag = collectDiagnostics(db, { build: BUILD, port, dbPath });
   startupBanner(diag, { base: `http://localhost:${port}` });
-  // Exposure warning: app.listen(port) binds all interfaces. With auth OFF that serves all
-  // customer PII + the credential/approve endpoints to anyone who can reach the port. Loud
-  // warning so an operator doesn't unknowingly expose it; the fix is AUTH_ENABLED=true (and a
-  // reverse proxy / firewall), or binding to loopback only.
-  if (!AUTH_ENABLED && !["127.0.0.1", "::1", "localhost"].includes(process.env.SERVER_HOST || "")) {
-    logger.warn("security", "AUTH_ENABLED is off and the server listens on all interfaces — anyone who can reach this port has full access to customer data and the approve/credential endpoints. Set AUTH_ENABLED=true (with ADMIN_EMAIL/ADMIN_PASSWORD) before exposing it beyond localhost.");
-  }
+  // Auth off on a non-loopback host, opted in twice: still say it loudly at every boot.
+  if (listen.warning) logger.warn("security", listen.warning);
   // Do the concurrency numbers agree? Raising JOB_CONCURRENCY without raising the profile
   // wait arms a permanent-failure mode that no test catches and no portal reports (see
   // concurrencyConfig.ts). Stated at boot, while an operator is still looking.

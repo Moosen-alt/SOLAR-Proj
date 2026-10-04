@@ -15,6 +15,10 @@ primary_region = "sjc"
 
 [env]
   PORT = "4173"
+  # Listen on every interface so Fly's proxy reaches the app (the server defaults to 127.0.0.1).
+  # Requires AUTH_ENABLED=true (fly secrets set AUTH_ENABLED=true ADMIN_EMAIL=... ADMIN_PASSWORD=...):
+  # with login off the server refuses to start on a non-loopback host.
+  SERVER_HOST = "0.0.0.0"
   NODE_ENV = "production"
   # Playwright Chromium runs headless in production (no display in cloud).
   # To temporarily see the browser via SSH: fly secrets set PORTAL_HEADLESS=false

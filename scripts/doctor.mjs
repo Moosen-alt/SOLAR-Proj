@@ -101,6 +101,29 @@ if (!fs.existsSync(path.join(ROOT, "node_modules"))) {
 fs.existsSync(path.join(ROOT, ".env")) ? ok(".env", "present (only needed to run the server)")
   : warn(".env", "missing; only needed to run the server, not for tests", WIN ? "copy .env.example .env   (then fill in the values)" : "cp .env.example .env");
 
+// Where the server will listen (#82). Mirrors backend/src/listenHost.ts (this file can't import
+// TypeScript, see the header): unset SERVER_HOST binds 127.0.0.1; a non-loopback host with
+// AUTH_ENABLED off refuses to start unless ALLOW_UNAUTHENTICATED_NETWORK=1. A hosted install
+// sets SERVER_HOST on purpose. The shell environment wins over .env, as it does for the server.
+{
+  const fileEnv = {};
+  try {
+    for (const raw of fs.readFileSync(path.join(ROOT, ".env"), "utf8").split(/\r?\n/)) {
+      const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(raw);
+      if (m && !raw.trim().startsWith("#")) fileEnv[m[1]] = m[2].replace(/^(["'])(.*)\1$/, "$2");
+    }
+  } catch { /* no .env: defaults apply */ }
+  const envVal = (k) => process.env[k] ?? fileEnv[k] ?? "";
+  const host = String(envVal("SERVER_HOST")).trim() || "127.0.0.1";
+  const authOn = String(envVal("AUTH_ENABLED")).toLowerCase() === "true";
+  const loopback = ["127.0.0.1", "::1", "localhost"].includes(host.toLowerCase());
+  const optIn = String(envVal("ALLOW_UNAUTHENTICATED_NETWORK")).trim() === "1";
+  if (loopback) ok("SERVER_HOST", `${host}: only this machine can reach the server (set SERVER_HOST=0.0.0.0 with AUTH_ENABLED=true for a hosted install)`);
+  else if (authOn) ok("SERVER_HOST", `${host}: reachable from the network, login required (AUTH_ENABLED=true)`);
+  else if (optIn) warn("SERVER_HOST", `${host} with AUTH_ENABLED off and ALLOW_UNAUTHENTICATED_NETWORK=1: anyone who can reach the port reads every customer's data without a login`, "Set AUTH_ENABLED=true (with ADMIN_EMAIL/ADMIN_PASSWORD) and remove ALLOW_UNAUTHENTICATED_NETWORK");
+  else bad("SERVER_HOST", `${host} with AUTH_ENABLED off: the server will refuse to start (it would serve customer data without a login)`, "Set AUTH_ENABLED=true (with ADMIN_EMAIL/ADMIN_PASSWORD), or remove SERVER_HOST to listen on this machine only");
+}
+
 const ghV = has("gh");
 if (!ghV) warn("GitHub CLI (gh)", "not installed; used for the owner commands in docs/OWNER_SETUP.md", WIN ? "winget install --id GitHub.cli -e   then: gh auth login" : "Install https://cli.github.com, then: gh auth login");
 else run("gh", ["auth", "status"]).code === 0 ? ok("GitHub CLI (gh)", `${ghV}, signed in`) : warn("GitHub CLI (gh)", "installed but not signed in", "gh auth login");

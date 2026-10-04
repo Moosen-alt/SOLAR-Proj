@@ -14,7 +14,8 @@
    SESSION_ENCRYPTION_KEY=<any long random string — keep it; it locks stored portal logins>
    ```
    (Local dev can skip AUTH_ENABLED; NEVER skip it on anything reachable
-   from outside the machine.)
+   from outside the machine.) Leave SERVER_HOST unset here: the server then
+   listens on 127.0.0.1, so only this machine can reach it.
 4. `npm run dev` → dashboard at http://localhost:4000. `npm run smoke` to
    verify the install.
 5. Updating: `git pull && npm install && npm run smoke` — DB migrations
@@ -36,6 +37,7 @@ npx playwright install --with-deps chromium
 Create `/etc/solar-autopilot.env` (chmod 600):
 ```
 AUTH_ENABLED=true
+SERVER_HOST=0.0.0.0                     # listen beyond loopback ON PURPOSE (the default is 127.0.0.1)
 ADMIN_EMAIL=you@company.com
 ADMIN_PASSWORD=<strong password>        # first login; change after
 ANTHROPIC_API_KEY=sk-ant-...
@@ -66,8 +68,15 @@ Rules: ONE instance only (SQLite). Updates: `git pull && npm install
 Confirm the restart took: the banner / `curl localhost:4000/health` → `build.label`
 reads the new commit (`2026.09.24 · 0c466bb`; date version from the running code's
 own git commit — see DEPLOY.md §4). A git checkout needs no `BUILD_*` env vars.
-NEVER run with AUTH_ENABLED unset on a public interface (the server logs a
-warning for a reason).
+NEVER run with AUTH_ENABLED unset on a public interface.
+
+Where the server listens (#82): with no `SERVER_HOST` it binds `127.0.0.1`, so
+only this machine reaches it. Caddy on the same box proxies to `localhost:4000`
+and works with that default; set `SERVER_HOST=0.0.0.0` only when something on
+another machine (a load balancer, Fly's proxy, a published Docker port) must
+connect directly. With `AUTH_ENABLED` off and a non-loopback `SERVER_HOST`, the
+server refuses to start and says why; `ALLOW_UNAUTHENTICATED_NETWORK=1` overrides
+that, and then every customer's data is open to the network without a login.
 
 ### Backups — two halves, and you need both
 
