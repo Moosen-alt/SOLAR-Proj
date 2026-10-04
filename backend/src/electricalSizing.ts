@@ -260,11 +260,15 @@ export function conductorStatedAsOutputCircuit(conductor: ParsedConductor, sheet
 export interface ElectricalSizingOptions {
   /** Per-document texts (one per uploaded document); the snapshot's sheet text is read too. */
   documentTexts?: DesignTextSource[];
-  /** The interconnection classifies as LOAD side — only then is 705.12(B)(3)(2) the test. */
+  /** The interconnection classifies as LOAD side — only then is the 705.12 busbar screen the test. */
   loadSide?: boolean;
-  /** The jurisdiction's adopted NEC edition (codeFamilies.adoptedNecEdition), or null when unknown.
-   *  Before 2017 the busbar screen reads the PV breaker rating, not the inverter output current. */
+  /** The jurisdiction's adopted NEC edition (necEditions.adoptedNecEdition, read by the caller only
+   *  from a profile that records editions), or null when unknown. Before 2017 the busbar screen
+   *  reads the PV breaker rating, not the inverter output current. */
   adoptedNecEdition?: number | null;
+  /** The adopted edition's own busbar-screen section (necEditions' interconnection.busbar120, e.g.
+   *  2014: 705.12(D)(2)(3)(b)). Omitted: 705.12(B)(3)(2), the 2020 numbering. */
+  busbarSection?: string;
   /** The jurisdiction's adopted-edition citation resolver (codeReviewRules' `cite`). */
   cite?: (code: string, fallback: CodeReference) => CodeReference;
 }
@@ -325,6 +329,10 @@ export function evaluateElectricalSizingFindings(project: ProjectRecord, opts: E
   const nec = opts.adoptedNecEdition ?? null;
   const preNec2017 = nec != null && nec < 2017;
   if (opts.loadSide) {
+    // The section every busbar message and citation prints, and its parent (the calculation as a
+    // whole): 705.12(B)(3)(2) -> 705.12(B)(3); 2014's 705.12(D)(2)(3)(b) -> 705.12(D)(2)(3).
+    const sec = opts.busbarSection || busbarRef.section;
+    const parentSec = sec.replace(/\([^()]*\)$/, "");
     const bus = input("busRating");
     const main = input("mainBreaker");
     const source = !preNec2017 && current
@@ -345,18 +353,21 @@ export function evaluateElectricalSizingFindings(project: ProjectRecord, opts: E
         out.push(finding({
           id: "city.elec.sizing-busbar-120",
           severity: severityOf(used),
-          title: source.onBreaker ? "Busbar over 120 percent on the PV breaker rating" : "Busbar over 120 percent with the inverter's actual output current",
-          message: `705.12(B)(3)(2): ${source.text} + ${fmt(main.value)} A main${tag(main)} = ${fmt(lhs)} A, above 120 % of the ${fmt(bus.value)} A${tag(bus)} busbar (1.2 x ${fmt(bus.value)} = ${fmt(allowance)} A) by ${fmt(lhs - allowance)} A.${basis}${provenance(used)}`,
+          // "Load-side" in the title maps the finding to the SLD topic (reviewerEngine.topicForFinding),
+          // so the report keeps the one-line's crop slot the retired load-side-over-120 carried. The
+          // id is in MEASURED_FINDING_IDS, so vision still never relaxes it.
+          title: source.onBreaker ? "Load-side busbar over 120 percent on the PV breaker rating" : "Load-side busbar over 120 percent with the inverter's actual output current",
+          message: `${sec}: ${source.text} + ${fmt(main.value)} A main${tag(main)} = ${fmt(lhs)} A, above 120 % of the ${fmt(bus.value)} A${tag(bus)} busbar (1.2 x ${fmt(bus.value)} = ${fmt(allowance)} A) by ${fmt(lhs - allowance)} A.${basis}${provenance(used)}`,
           cityFeedback: source.onBreaker
-            ? "The load-side connection exceeds the 120 percent busbar allowance on the PV breaker rating. Revise: de-rate the main, connect supply side, upgrade the service panel, or provide another 705.12(B)(3) compliant method."
-            : "The load-side connection exceeds the 120 percent busbar allowance using the inverter's own output current. Revise: de-rate the main, connect supply side, upgrade the service panel, or provide another 705.12(B)(3) compliant method.",
+            ? `The load-side connection exceeds the 120 percent busbar allowance on the PV breaker rating. Revise: de-rate the main, connect supply side, upgrade the service panel, or provide another ${parentSec} compliant method.`
+            : `The load-side connection exceeds the 120 percent busbar allowance using the inverter's own output current. Revise: de-rate the main, connect supply side, upgrade the service panel, or provide another ${parentSec} compliant method.`,
           designTeamAction: source.onBreaker && !preNec2017
-            ? "State the inverter's maximum continuous output current and quantity on the SLD (the 2017+ test may then pass), or correct the interconnection and show the 705.12(B)(3)(2) calculation."
-            : "Correct the interconnection and show the 705.12(B)(3)(2) calculation on the SLD.",
+            ? `State the inverter's maximum continuous output current and quantity on the SLD (the 2017+ test may then pass), or correct the interconnection and show the ${sec} calculation.`
+            : `Correct the interconnection and show the ${sec} calculation on the SLD.`,
           evidenceNeeded: source.onBreaker
-            ? ["Busbar rating", "Main breaker rating", "PV breaker / OCPD rating", ...(preNec2017 ? [] : ["Inverter maximum continuous output current and quantity"]), "705.12(B)(3) calculation"]
-            : ["Busbar rating", "Main breaker rating", "Inverter maximum continuous output current and quantity", "705.12(B)(3) calculation"],
-          codeReferences: [cite("NEC", busbarRef)],
+            ? ["Busbar rating", "Main breaker rating", "PV breaker / OCPD rating", ...(preNec2017 ? [] : ["Inverter maximum continuous output current and quantity"]), `${parentSec} calculation`]
+            : ["Busbar rating", "Main breaker rating", "Inverter maximum continuous output current and quantity", `${parentSec} calculation`],
+          codeReferences: [cite("NEC", { ...busbarRef, section: sec })],
         }));
       }
     }

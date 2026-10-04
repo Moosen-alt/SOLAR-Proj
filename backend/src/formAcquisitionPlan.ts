@@ -25,13 +25,13 @@ import { loadStoredTemplates, storedApplicationKind } from "./ahjForms";
 import { findApplicationProfile, permitStructureForProject } from "./applicationDocs";
 import {
   agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, applicationKindForPath, formAuthorityFor, localReviewSlotTypes,
-  rowBelongsToAuthority, TRACK_FORM_TYPES, type AgencyApplicationForm, type FormAuthority,
+  rowBelongsToAuthority, stateIssuerKeepsGenericSlot, TRACK_FORM_TYPES, type AgencyApplicationForm, type FormAuthority,
 } from "./applicationDocsAgency";
 import { curatedFormSource, curatedFormSourcesFor } from "./curatedAhjForms";
 
 type CuratedSource = ReturnType<typeof curatedFormSourcesFor>[number];
 import { resolvePermitPath } from "./permitPath";
-import { stateIssuerFormsFor } from "./permitProcess";
+import { servedByStateIssuer, stateIssuerFormsFor } from "./permitProcess";
 import { sameAgencyName } from "./agencyName";
 
 export interface EnsureFormResult {
@@ -47,6 +47,33 @@ export interface EnsureFormResult {
    *  has no form". Stage shortens its 24h cooldown claim to a short back-off on it
    *  (prepareOfficialDocuments.LOOKUP_FAILED_RETRY_MS — never to zero). */
   lookupFailed?: boolean;
+  /** Set when the search ran out of its budget (issue #163): the budget, how many pages it had seen,
+   *  and the leads it had gathered (their URLs) — the not-found detail, never a bare abort. */
+  searchTimeout?: FormSearchTimeout;
+}
+
+// ── Timed-out form searches (bounded, never re-run blind) ─────────────────────────────────
+// A form search that ran out of its 240 s budget (issue #163: an Oregon county, 240,012 ms, then a
+// 385 s request that returned nothing actionable) is NOT re-run with the same query in the same pass
+// — the next form type of that pass would spend another four minutes on the same broad search. The
+// attempt is recorded per AHJ so the NEXT trigger's search is told it timed out and to take the
+// state-scoped / served-city path instead (issue #162). In-process (a restart forgets it — at most
+// one more broad search); a search that completes clears it.
+export interface FormSearchTimeout { at: number; budgetMs: number; pagesSeen: number; leads: string[] }
+export const FORM_SEARCH_TIMEOUT_MEMORY_MS = 24 * 60 * 60 * 1000;
+const formSearchTimeouts = new Map<string, FormSearchTimeout>();
+const formSearchKey = (ahj: string, state: string): string => `${String(state || "").trim().toUpperCase()}|${String(ahj || "").trim().toLowerCase()}`;
+export function noteFormSearchTimeout(ahj: string, state: string, t: FormSearchTimeout): void {
+  formSearchTimeouts.set(formSearchKey(ahj, state), t);
+}
+export function clearFormSearchTimeout(ahj: string, state: string): void {
+  formSearchTimeouts.delete(formSearchKey(ahj, state));
+}
+/** The last timed-out search for this AHJ within FORM_SEARCH_TIMEOUT_MEMORY_MS, else null. */
+export function recentFormSearchTimeout(ahj: string, state: string): FormSearchTimeout | null {
+  const t = formSearchTimeouts.get(formSearchKey(ahj, state));
+  if (!t || Date.now() - t.at >= FORM_SEARCH_TIMEOUT_MEMORY_MS) return null;
+  return t;
 }
 
 // ── Recently failed downloads (go gently) ─────────────────────────────────────────────────
@@ -172,9 +199,44 @@ export function applicationKindForProject(project: ProjectRecord): "prescriptive
 export function ownFreeFormSource(project: ProjectRecord, formType: string, applicationKind: "prescriptive" | "structural" | null): { url: string; formName: string; curated: CuratedSource | null } | null {
   const curated = curatedFormSource(project, formType, applicationKind);
   if (curated) return { url: curated.url, formName: curated.formName, curated };
-  const checklist = String(project.state ?? "").toUpperCase() === "OR" && formType === "solar_checklist"
-    && resolvePermitPath(project).path === "prescriptive";
+  return formType === "solar_checklist" ? statewideChecklistSource(project) : null;
+}
+
+/** The STATE's own checklist for this project's path, filed wherever the job is in the state: the Oregon
+ *  BCD 5952 on the prescriptive path. null = none. */
+export function statewideChecklistSource(project: ProjectRecord): { url: string; formName: string; curated: null } | null {
+  const checklist = String(project.state ?? "").toUpperCase() === "OR" && resolvePermitPath(project).path === "prescriptive";
   return checklist ? { url: BCD_5952_URL, formName: "Oregon BCD 5952", curated: null } : null;
+}
+
+/**
+ * A SERVED JURISDICTION'S FORM IS NOT SEARCHED FOR UNDER ITS NAME (issue #162). Where a source says
+ * the AHJ does not run its own building program (permitProcess.servedByStateIssuer — a state issuer
+ * rule, or the lookup's / a person's cited buildingProgram "state"), a paid search for "<AHJ> building
+ * permit application" finds nothing of the AHJ's and, on a common name, spends itself on same-named
+ * places in other states (City of Monroe, Oregon: three searches, all Monroe MI / CT / OH). The state's
+ * own forms are attached instead (statewideChecklistSource; a state issuer's per-track applications
+ * travel through formAuthorityFor / issuingAgencyFormPlan as before), and the slot says whose form it
+ * is. Not for a state issuer's GENERIC slot: that is the AHJ's own local-review application
+ * (stateIssuerKeepsGenericSlot), which is the AHJ's to publish and is still searched for.
+ * null = searched as before.
+ */
+export function servedJurisdictionForms(project: ProjectRecord, formType: string): { agency: string; sourceUrl: string; checklist: { url: string; formName: string } | null; message: string } | null {
+  if (formType === "permit_application" && stateIssuerKeepsGenericSlot(project)) return null;
+  let served: ReturnType<typeof servedByStateIssuer> = null;
+  try { served = servedByStateIssuer(project); } catch { served = null; }
+  if (!served) return null;
+  let checklist: { url: string; formName: string } | null = null;
+  try { checklist = statewideChecklistSource(project); } catch { checklist = null; }
+  const agency = served.agency || "the state building agency";
+  const label = formType.replace(/_/g, " ");
+  const cite = served.sourceUrl ? ` (cited: ${served.sourceUrl})` : "";
+  const message = formType === "solar_checklist" && checklist
+    ? ""
+    : `${project.ahj} does not run its own building program — ${agency} issues its permits${cite}. No ${label} was searched for under ${project.ahj}'s name.`
+      + `${checklist ? ` The statewide ${checklist.formName} is attached on its own row.` : ""}`
+      + ` Upload ${served.agency || "the issuing agency"}'s ${label} blank (Find official form → upload); it has not been counted as present.`;
+  return { agency, sourceUrl: served.sourceUrl, checklist, message };
 }
 
 // WHICH STORED FORM TYPES SATISFY A SLOT — the one answer the pre-Stage gate and Stage's acquisition
@@ -390,6 +452,8 @@ export function stageAcquiresForm(
   if (acceptedFormTypesFor(project, formType).some((t) => hasStoredTemplateOfType(db, project.ahj, project.state, t, applicationKind))) return null;
   const free = ownFreeFormSource(project, formType, applicationKind);
   if (free) return recentFormFetchFailure(free.url) ? null : { via: "curated", sourceUrl: free.url, authority: project.ahj };
+  // A served jurisdiction's form is never searched for under its name (servedJurisdictionForms).
+  if (servedJurisdictionForms(project, formType)) return null;
   // THE SEARCH IS RUNNING NOW. Read before the cooldown switch: the pass claimed the cooldown before
   // it awaited, so `researchOpen` is false for the whole pass — this is the one reading that tells
   // "claimed, in flight" from "claimed, finished".

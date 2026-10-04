@@ -132,6 +132,17 @@ check("2014 NEC adopted: the 32 A inverter does not rescue the 50 A breaker, blo
 check("2014 NEC adopted and a compliant breaker (40 A): passes on the breaker reading", () => {
   assert.equal(busbar({ invOutputW: "32", pvBreaker: "40" }, NEC2014), undefined);
 });
+check("2014 NEC adopted: message and citation use that edition's section, 705.12(D)(2)(3)(b)", () => {
+  const f = busbar({ invOutputW: "32" }, NEC2014)!;
+  assert.match(f.message, /^705\.12\(D\)\(2\)\(3\)\(b\): /);
+  assert.ok(!/705\.12\(B\)/.test(JSON.stringify(f)), JSON.stringify(f));
+  assert.deepEqual(f.codeReferences.map((r) => r.section), ["705.12(D)(2)(3)(b)"]);
+});
+check("no context: the citation stays 705.12(B)(3)(2)", () => {
+  const f = busbar({ invOutputW: "48", pvBreaker: "60" })!;
+  assert.match(f.message, /^705\.12\(B\)\(3\)\(2\): /);
+  assert.deepEqual(f.codeReferences.map((r) => r.section), ["705.12(B)(3)(2)"]);
+});
 
 console.log("\n5. PROVENANCE: A PARSER-ONLY VIOLATION WARNS, IT NEVER BLOCKS (#152)");
 check("the 48 A violation with nothing stated on the sheets is a WARNING", () => {
@@ -158,6 +169,14 @@ check("through the engine: exactly one busbar finding for a violation", () => {
   const ids = buildReviewerReport(mk({ invOutputW: "48", pvBreaker: "60" })).findings.map((f) => f.id)
     .filter((id) => id === ID || id === LEGACY);
   assert.deepEqual(ids, [ID]);
+});
+check("through the engine: the busbar finding keeps the SLD crop slot the legacy finding carried", () => {
+  const p = mk({ invOutputW: "48", pvBreaker: "60" });
+  p.parserSnapshot!.planSetExtractedText += " SHEET PV-3 ONE-LINE DIAGRAM.";
+  const f = buildReviewerReport(p).findings.find((x) => x.id === ID)!;
+  const slot = f.evidenceFound?.find((e) => e.kind === "screenshot_placeholder");
+  assert.ok(slot, JSON.stringify(f.evidenceFound));
+  assert.match(slot!.screenshotPath, /evidence-image\?topic=sld/);
 });
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

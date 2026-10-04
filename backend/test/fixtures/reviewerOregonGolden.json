@@ -279,7 +279,7 @@
     {
       "id": "city.elec.sizing-busbar-120",
       "severity": "warning",
-      "title": "Busbar over 120 percent on the PV breaker rating",
+      "title": "Load-side busbar over 120 percent on the PV breaker rating",
       "message": "705.12(B)(3)(2): PV breaker 70 A (parser) + 200 A main (parser) = 270 A, above 120 % of the 200 A (parser) busbar (1.2 x 200 = 240 A) by 30 A. Measured on the PV breaker rating because the inverter output current is not stated; 125 percent of that current is the 2017+ NEC test and may pass. Values marked (parser) were read by the parser but not found stated on the sheets (pvBreaker, busRating, mainBreaker); confirm them before treating this as a rejection.",
       "cityFeedback": "The load-side connection exceeds the 120 percent busbar allowance on the PV breaker rating. Revise: de-rate the main, connect supply side, upgrade the service panel, or provide another 705.12(B)(3) compliant method.",
       "designTeamAction": "State the inverter's maximum continuous output current and quantity on the SLD (the 2017+ test may then pass), or correct the interconnection and show the 705.12(B)(3)(2) calculation.",
@@ -304,15 +304,26 @@
       "installerCallout": true,
       "evidenceFound": [
         {
-          "kind": "absence_check",
-          "label": "General source check",
-          "source": "Parsed project package",
-          "excerpt": "705.12(B)(3)(2): PV breaker 70 A (parser) + 200 A main (parser) = 270 A, above 120 % of the 200 A (parser) busbar (1.2 x 200 = 240 A) by 30 A. Measured on the PV breaker rating because the inverter output current is not stated; 125 percent of that current is the 2017+ NEC test and may pass. Values marked (parser) were read by the parser but not found stated on the sheets (pvBreaker, busRating, mainBreaker); confirm them before treating this as a rejection.",
-          "confidence": "low",
-          "pageHint": "",
+          "kind": "source_excerpt",
+          "label": "SLD found — busbar rating not verified",
+          "source": "Split page mapping",
+          "excerpt": "one-line diagram rapid shutdown site plan roof plan",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
           "screenshotPath": "",
-          "verifier": "rule_engine",
-          "note": "Rule-generated callout. Human should verify the source package before forwarding."
+          "verifier": "parser",
+          "note": "This shows the SLD is on the set. It does not show busbar rating; check the source sheet for that."
+        },
+        {
+          "kind": "screenshot_placeholder",
+          "label": "Screenshot crop slot",
+          "source": "Split page mapping",
+          "excerpt": "",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=sld&hint=Split%20page%20mapping&excerpt=one-line%20diagram%20rapid%20shutdown%20site%20plan%20roof%20plan",
+          "verifier": "parser",
+          "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
         }
       ],
       "evidenceStatus": "weak"
@@ -848,7 +859,7 @@
     {
       "id": "city.elec.sizing-busbar-120",
       "severity": "warning",
-      "title": "Busbar over 120 percent on the PV breaker rating",
+      "title": "Load-side busbar over 120 percent on the PV breaker rating",
       "message": "705.12(B)(3)(2): PV breaker 70 A (parser) + 200 A main (parser) = 270 A, above 120 % of the 200 A (parser) busbar (1.2 x 200 = 240 A) by 30 A. Measured on the PV breaker rating because the inverter output current is not stated; 125 percent of that current is the 2017+ NEC test and may pass. Values marked (parser) were read by the parser but not found stated on the sheets (pvBreaker, busRating, mainBreaker); confirm them before treating this as a rejection.",
       "cityFeedback": "The load-side connection exceeds the 120 percent busbar allowance on the PV breaker rating. Revise: de-rate the main, connect supply side, upgrade the service panel, or provide another 705.12(B)(3) compliant method.",
       "designTeamAction": "State the inverter's maximum continuous output current and quantity on the SLD (the 2017+ test may then pass), or correct the interconnection and show the 705.12(B)(3)(2) calculation.",
@@ -873,15 +884,26 @@
       "installerCallout": true,
       "evidenceFound": [
         {
-          "kind": "absence_check",
-          "label": "General source check",
-          "source": "Parsed project package",
-          "excerpt": "705.12(B)(3)(2): PV breaker 70 A (parser) + 200 A main (parser) = 270 A, above 120 % of the 200 A (parser) busbar (1.2 x 200 = 240 A) by 30 A. Measured on the PV breaker rating because the inverter output current is not stated; 125 percent of that current is the 2017+ NEC test and may pass. Values marked (parser) were read by the parser but not found stated on the sheets (pvBreaker, busRating, mainBreaker); confirm them before treating this as a rejection.",
-          "confidence": "low",
-          "pageHint": "",
+          "kind": "source_excerpt",
+          "label": "SLD found — busbar rating not verified",
+          "source": "Split page mapping",
+          "excerpt": "one-line diagram rapid shutdown site plan roof plan",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
           "screenshotPath": "",
-          "verifier": "rule_engine",
-          "note": "Rule-generated callout. Human should verify the source package before forwarding."
+          "verifier": "parser",
+          "note": "This shows the SLD is on the set. It does not show busbar rating; check the source sheet for that."
+        },
+        {
+          "kind": "screenshot_placeholder",
+          "label": "Screenshot crop slot",
+          "source": "Split page mapping",
+          "excerpt": "",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=sld&hint=Split%20page%20mapping&excerpt=one-line%20diagram%20rapid%20shutdown%20site%20plan%20roof%20plan",
+          "verifier": "parser",
+          "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
         }
       ],
       "evidenceStatus": "weak"

@@ -58,7 +58,7 @@ import {
   designText, INVERTER_LISTING_PATTERNS, LOAD_SIDE_CALC_PATTERNS, MODULE_LISTING_PATTERNS, POWER_SOURCE_DIRECTORY_PATTERNS, RAPID_SHUTDOWN_PATTERNS, SUPPLY_SIDE_DETAIL_PATTERNS,
 } from "./codeReviewRules";
 import { FIRE_PATHWAY_PATTERNS } from "./projectEvidence";
-import { adoptedNecEdition } from "./codeFamilies";
+import { adoptedNecEdition } from "./necEditions";
 
 export interface RequiredDocItem {
   /** project_documents.doc_type this maps to (or a synthetic key for path docs). */
@@ -288,8 +288,8 @@ function necLabel(nec: number | null): string {
   return nec == null ? "NEC" : `NEC ${nec}`;
 }
 
-// adoptedNecEdition lives in codeFamilies so codeReviewRules' 705.12 busbar screen can read the
-// edition without importing this module; re-exported here for existing callers.
+// adoptedNecEdition lives in necEditions.ts beside the edition table the reviewer rules read; it is
+// re-exported here for the callers that imported it from this module.
 export { adoptedNecEdition };
 
 export interface SheetContentGap {
