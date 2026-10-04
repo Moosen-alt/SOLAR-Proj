@@ -55,6 +55,8 @@ const SHEETS: Record<string, Sheet> = {
     "INVERTER SPECIFICATIONS  MAX AC OUTPUT 315 VA", "CONDUCTOR AMPACITY: 10 AWG THWN-2"] },
   equip1: { lines: tb("PV-11", "EQUIPMENT SPECIFICATION"), image: true },
   equip2: { lines: tb("PV-12", "EQUIPMENT SPECIFICATION"), image: true },
+  // A racking brochure whose vendor title block carries a stray STRUCTURAL (#91).
+  equipStray: { lines: [...tb("PV-13", "EQUIPMENT SPECIFICATION"), "SYNTHRAIL STRUCTURAL MOUNTING SYSTEMS"], image: true },
   moduleSpec: { lines: tb("PV-9", "PV MODULE SPECIFICATION SHEET"), image: true },
   inverterSpec: { lines: tb("PV-10", "MICROINVERTER SPECIFICATION SHEET"), image: true },
 };
@@ -220,6 +222,32 @@ console.log("\n6. A STALE PART WHOSE TYPE THE CLASSIFIER DOES FIND IS RE-CUT WIT
   const text = mods.length === 1 ? (await extractPdfPages(mods[0].stored_path, 10)).join("\n") : "";
   check("6b. one module_spec row, and it is the named PV MODULE SPECIFICATION SHEET",
     /PV MODULE SPECIFICATION SHEET/.test(text) && !/EQUIPMENT SPECIFICATION/.test(text), `${mods.length} row(s): ${text.slice(0, 120)}`);
+}
+
+// ---------------------------------------------------------------------------
+console.log("\n7. A WITHDRAW-ONLY PASS NAMES THE UNDECIDED SPEC PAGES (#91)");
+{
+  // Withdrawal without a re-split: before #91 reconcileSplitParts computed the undecided pages and
+  // dropped them, so the log said which types went but not which pages now need a person.
+  const p = mk();
+  const plan = await mkPdf([...STALE_SET, "equipStray"]);
+  saveProjectDocument(db, p.id, { filename: "stray-plan.pdf", docType: "plan_set", contentType: "application/pdf", buffer: plan, source: "upload" });
+  await tick();
+  // The stray page was cut as structural (the classifier still puts it there, so it is no gap).
+  for (const [docType, pages] of [["site_plan", [0]], ["sld", [1]], ["inverter_spec", [2]], ["module_spec", [3, 4]], ["structural", [5]]] as Array<[string, number[]]>) {
+    saveProjectDocument(db, p.id, { filename: `old - ${docType}.pdf`, docType, contentType: "application/pdf", buffer: await cut(plan, pages), source: "split" });
+  }
+  db.run("UPDATE projects SET status = 'qc_passed' WHERE id = ?", [p.id]);
+  const { reconcileSplitParts } = await import("../src/docSplitter");
+  logged.length = 0;
+  const o = await quiet(() => processStageStep(db, p.id));
+  const line = logged.find((l) => /stale split parts withdrawn/.test(l)) ?? "";
+  check("7a. precondition: the pass withdrew and did not re-split", !!line && !o.ran.some((r) => r.startsWith("split(")), `${JSON.stringify(o.ran)} ${line}`);
+  check("7b. THE POINT: the withdraw log line names the undecided pages, and the category that took the stray one",
+    /undecidedSpecPages=4,5,6\(structural\)/.test(line), line);
+  const r = await reconcileSplitParts(db, p.id);
+  check("7c. reconcileSplitParts returns the undecided pages", JSON.stringify(r.undecidedSpecPages) === "[4,5,6]" && r.undecidedSpecFiledAs["6"] === "structural",
+    JSON.stringify(r));
 }
 
 db.close();
