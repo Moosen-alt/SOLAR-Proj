@@ -19,6 +19,27 @@ async function selectAny(page: any, locator: any, value: string): Promise<void> 
   if (!selected) throw new Error(`no dropdown option matched "${value}"`);
 }
 
+/**
+ * THE APPLICANT EMAIL (#71, #92). An email box takes an email address or nothing (looksLikeEmail):
+ * a name stored in the email slot is never typed into the utility's Email box. When a value IS on
+ * file but is not an email, the blank is SAID — a human item on the review banner
+ * (gapFillReport.reportedMissing) that describes the problem and never pastes the value.
+ */
+export async function fillApplicantEmail(
+  s: Record<string, unknown>,
+  report: { reportedMissing: string[] },
+  fill: (email: string) => Promise<void>,
+): Promise<void> {
+  const onFile = [str(s["homeownerEmail"]), str(s["owner_email"])];
+  const email = firstEmail(...onFile);
+  if (email) return fill(email);
+  if (onFile.some((v) => v.trim())) {
+    report.reportedMissing.push(
+      "Applicant email (customer step): left blank — the homeowner email on file is not an email address. Enter the homeowner's email address by hand, or correct it on the project.",
+    );
+  }
+}
+
 // PowerClerk (PGE Net Metering) adapter
 // Built from an operator codegen recording captured up to the final submit page.
 // SECURITY: This adapter NEVER clicks final submit, pays fees, solves CAPTCHA, or
@@ -702,11 +723,8 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       await fillText("applicantZip", "Zip Code", "Zip Code", project.zip ?? "", applicantScope);
 
       const ownerPhone = str(s["homeownerPhone"] ?? s["owner_phone"]);
-      // An email box takes an email address or nothing (looksLikeEmail, #71): a name stored in the
-      // email slot is left blank for the human, never typed into the utility's Email box.
-      const ownerEmail = firstEmail(str(s["homeownerEmail"]), str(s["owner_email"]));
       await fillText("applicantPhone", "(###) ###-####", "Phone", ownerPhone, applicantScope);
-      await fillText("applicantEmail", "Email", "Email", ownerEmail, applicantScope);
+      await fillApplicantEmail(s, this.gapFillReport, (email) => fillText("applicantEmail", "Email", "Email", email, applicantScope));
       await settleAndNext("applicant");
 
       // --- Installer company selection (same authoritative client value) -----

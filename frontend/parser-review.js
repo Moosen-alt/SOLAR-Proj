@@ -1172,7 +1172,35 @@
     return out;
   }
 
+  // -------------------------------------------------------------------------
+  // EMAIL — the mirror of shared/src/emailAddress.ts (#92). Every entry page checks the homeowner
+  // email box with it at save and says "not an email address" inline instead of saving a name.
+  // backend/test/emailAddressMirror.test.ts pins the two copies to the same answers.
+  // -------------------------------------------------------------------------
+  const EMAIL_SHAPE = /^[^\s@<>:]+@[^\s@<>:]+\.[^\s@<>:.]+$/;
+  const unwrapEmail = (v) => v.trim().replace(/^mailto:/i, '').replace(/^<([^<>]*)>$/, '$1').trim();
+  function looksLikeEmail(value) {
+    return typeof value === 'string' && EMAIL_SHAPE.test(value.trim());
+  }
+  function firstEmail(...values) {
+    for (const v of values) if (typeof v === 'string' && looksLikeEmail(unwrapEmail(v))) return unwrapEmail(v);
+    return '';
+  }
+  /** The email box's value to save ("" when blank), or null — after flagging the box inline — when
+   *  what is typed is not an email address. Never echoes the typed value. */
+  function emailToSave(input) {
+    const typed = String((input && input.value) || '').trim();
+    const email = firstEmail(typed);
+    const bad = Boolean(typed && !email);
+    if (input && input.setCustomValidity) {
+      input.setCustomValidity(bad ? 'not an email address' : '');
+      if (bad && input.reportValidity) input.reportValidity();
+    }
+    return bad ? null : email;
+  }
+
   return {
+    looksLikeEmail, firstEmail, emailToSave,
     compareMeters, meterTargets, meterInText,
     mergeNotes, assertsMissingAttached,
     resolveReviewItems, rsdConflict, singleFamilyBasis, namesMatch, billHolderBlock, isBillHolderName,

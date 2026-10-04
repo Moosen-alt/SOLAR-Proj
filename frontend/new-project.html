@@ -203,6 +203,7 @@
     </form>
   </div>
 
+  <script src="/parser-review.js?v=9"></script>
   <script>
     const form = document.getElementById("npForm");
     const msg = document.getElementById("npMsg");
@@ -249,6 +250,13 @@
         setMsg("Homeowner name and install address are required.", "error");
         return;
       }
+      // The email box saves an address or nothing (parser-review.js emailToSave, #92).
+      const email = window.ParserReview.emailToSave(form.elements.homeownerEmail);
+      if (email === null) {
+        setMsg("Homeowner email: not an email address.", "error");
+        return;
+      }
+      if (email) payload.homeownerEmail = email;
       if (!payload.clientId) {
         setMsg("Choose the client / contractor this project is filed for — the permit application carries their CCB licence and the portal logs in as them.", "error");
         return;

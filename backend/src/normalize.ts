@@ -1,5 +1,6 @@
 import type { ExistingSystemInfo, IssuerTrackKey, ParserPayload, ProjectRecord, ProjectStatus, TrackIssuerOverrides } from "../../shared/src/types";
 import { nowIso } from "./time";
+import { firstEmail } from "../../shared/src/emailAddress";
 import { isBillHolderName } from "./accountHolders";
 
 /** THE OPERATOR'S PER-TRACK ISSUER, as it is stored: flat parser-snapshot keys, written by
@@ -84,7 +85,12 @@ export function canonicalizeSnapshot(payload: ParserPayload): ParserPayload {
     canonical[key] = value;
   };
 
-  set("homeownerEmail", pick(["homeownerEmail", "ownerEmail"]));
+  // THE EMAIL SLOT IS SAVED AS AN EMAIL ADDRESS OR NOTHING (looksLikeEmail, #71/#92). Every entry
+  // page and the parser save through here, so a name typed or autofilled into the email box is
+  // dropped at save instead of stored and re-checked at every reader. The one key this rewrites even
+  // when present: a non-email in it is not a value worth keeping.
+  const email = firstEmail(payload["homeownerEmail"], payload["ownerEmail"]);
+  if (email || has("homeownerEmail")) canonical["homeownerEmail"] = email;
   set("homeownerPhone", pick(["homeownerPhone", "ownerPhone"]));
   set("moduleManufacturer", pick(["moduleManufacturer", "moduleMake"]));
   set("moduleModel", pick(["moduleModel"]));

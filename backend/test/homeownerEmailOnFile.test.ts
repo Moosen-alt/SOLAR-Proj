@@ -28,6 +28,10 @@ const { buildReviewerReport } = await import("../src/reviewerEngine");
 const { resolveRecipeFieldValues } = await import("../src/portalRecipes");
 const intake = await import("../src/intakeRequests");
 const { looksLikeEmail, firstEmail } = await import("../../shared/src/emailAddress");
+const { canonicalizeSnapshot } = await import("../src/normalize");
+const { fillLoadedForm } = await import("../src/ahjForms");
+const { PDFDocument } = await import("pdf-lib");
+const { extractLabels } = await import("../src/formTextLayer");
 
 const db = await openDatabase();
 intake.setPortalQuestionSource(() => []);
@@ -88,7 +92,7 @@ console.log("\n[2] the intake link asks, prefills nothing, and refuses a non-ema
   const bad = throws(() => intake.submitIntakeRequest(db, req.token, { ...others, homeownerEmail: "owner phone 555-0100" }));
   run("a non-email answer is a 400", bad?.status === 400, JSON.stringify(bad?.status));
   run("…which never echoes the answer", Boolean(bad) && !bad!.message.includes("555-0100"));
-  run("…and writes nothing", project(id).parserSnapshot?.homeownerEmail === "Jordan Sample");
+  run("…and writes nothing", project(id).parserSnapshot?.homeownerEmail !== "owner phone 555-0100");
   const ok = throws(() => intake.submitIntakeRequest(db, req.token, { ...others, homeownerEmail: "jordan@example.com" }));
   run("a real address is accepted", ok === null, JSON.stringify(ok));
   run("…and lands on the project", project(id).parserSnapshot?.homeownerEmail === "jordan@example.com");
@@ -113,6 +117,54 @@ console.log("\n[4] the bill's own account-holder email wins only when it is an e
   run("a non-email bill value falls through to the homeowner's address", values(id).ubAccountHolderEmail === "jordan@example.com");
   const id2 = make({ homeownerEmail: "jordan@example.com", ubAccountHolderEmail: "holder@example.com" });
   run("a real bill address is kept", values(id2).ubAccountHolderEmail === "holder@example.com");
+}
+
+console.log("\n[5] the predicate refuses a mailto: link, angle brackets and a trailing dot; firstEmail unwraps them");
+for (const v of ["mailto:jordan@example.com", "<jordan@example.com>", "jordan@example.com.", "Jordan <jordan@example.com>", "jordan:x@example.com"]) {
+  run(`not an email as typed (${JSON.stringify(v)})`, !looksLikeEmail(v));
+}
+run("firstEmail unwraps mailto: and <…>", firstEmail("mailto:jordan@example.com") === "jordan@example.com" && firstEmail(" <jordan@example.com> ") === "jordan@example.com");
+run("…and still refuses a trailing dot", firstEmail("jordan@example.com.") === "");
+
+console.log("\n[6] normalize: the email slot is saved as an email or nothing (#92)");
+{
+  const snap = (p: Record<string, unknown>) => canonicalizeSnapshot(p as never) as Record<string, unknown>;
+  run("a name in homeownerEmail is stored blank", snap({ homeownerEmail: "Jordan Sample" }).homeownerEmail === "");
+  run("…a real ownerEmail alias wins over it", snap({ homeownerEmail: "Jordan Sample", ownerEmail: "jordan@example.com" }).homeownerEmail === "jordan@example.com");
+  run("a non-email alias alone is never promoted", !snap({ ownerEmail: "Jordan Sample" }).homeownerEmail);
+  run("a real address is stored trimmed", snap({ homeownerEmail: " jordan@example.com " }).homeownerEmail === "jordan@example.com");
+  run("a project created with a name in the slot stores it blank", project(make({ homeownerEmail: "Jordan Sample" })).parserSnapshot?.homeownerEmail === "");
+}
+
+console.log("\n[7] a curated-form Email cell takes an email or nothing, and is named when blanked (#92)");
+{
+  // A row stored before the save-time check can still carry a name: the fill is its own door.
+  const ctx = (email: string) => ({ project: { homeownerName: "Jordan Sample" }, client: {}, snapshot: { homeownerEmail: email } }) as never;
+  const fillBoth = async (email: string) => {
+    const acroDoc = await PDFDocument.create();
+    acroDoc.addPage([612, 792]);
+    acroDoc.getForm().createTextField("Email").addToPage(acroDoc.getPage(0), { x: 60, y: 700, width: 200, height: 16 });
+    const acroOut = path.join(tmpDir, `acro-${email.length}.pdf`);
+    const acro = await fillLoadedForm({ id: "t-acro", formName: "T", matchJurisdictions: [], sourceUrl: "", version: "t", status: "verified", fillMode: "acroform", preserveInteractive: true, textFields: { Email: "snapshot.homeownerEmail" } } as never, await acroDoc.save(), ctx(email), acroOut);
+    const flatDoc = await PDFDocument.create();
+    flatDoc.addPage([612, 792]);
+    const flatOut = path.join(tmpDir, `flat-${email.length}.pdf`);
+    const flat = await fillLoadedForm({ id: "t-flat", formName: "T", matchJurisdictions: [], sourceUrl: "", version: "t", status: "verified", fillMode: "overlay", textFields: {}, overlayFields: [{ source: "snapshot.homeownerEmail", page: 0, x: 245, y: 455, label: "Email" }] } as never, await flatDoc.save(), ctx(email), flatOut);
+    const filledAcro = (await PDFDocument.load(fs.readFileSync(acroOut))).getForm();
+    const acroText = filledAcro.getTextField("Email").getText() ?? "";
+    const flatText = (await extractLabels(new Uint8Array(fs.readFileSync(flatOut)))).map((i) => i.str).join(" ");
+    return { acro, flat, acroText, flatText };
+  };
+  const bad = await fillBoth("Jordan Sample");
+  run("AcroForm: the Email cell is left blank", bad.acroText === "", JSON.stringify(bad.acroText === "Jordan Sample" ? "<the stored value>" : bad.acroText));
+  run("…and named in unmappedRequested", (bad.acro.unmappedRequested ?? []).some((l) => /^Email\b.*not an email address/.test(l)), JSON.stringify(bad.acro.unmappedRequested));
+  run("…which never echoes the stored value", !JSON.stringify(bad.acro).includes("Jordan Sample"));
+  run("…and no second 'no data on file' item for the same cell", !(bad.acro.operatorItems ?? []).some((l) => /^Email\b/.test(l)), JSON.stringify(bad.acro.operatorItems));
+  run("overlay: nothing is drawn", !bad.flatText.includes("Jordan Sample"));
+  run("…and the cell is named in unmappedRequested", (bad.flat.unmappedRequested ?? []).some((l) => /^Email\b.*not an email address/.test(l)), JSON.stringify(bad.flat.unmappedRequested));
+  const good = await fillBoth("jordan@example.com");
+  run("a real address prints", good.acroText === "jordan@example.com" && good.flatText.includes("jordan@example.com"), JSON.stringify(good.acroText));
+  run("…and nothing is named", ![...(good.acro.unmappedRequested ?? []), ...(good.flat.unmappedRequested ?? [])].some((l) => /email/i.test(l)));
 }
 
 fs.rmSync(tmpDir, { recursive: true, force: true });
