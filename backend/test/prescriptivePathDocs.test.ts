@@ -14,8 +14,8 @@
 // of Coos Bay's included. So a prescriptive filing went out with no checklist and nothing said
 // a word, on any screen, at any stage.
 //
-// Two live Coos Bay structural records — 187-26-000309-STR (Ann Marineau) and 187-26-000305-STR
-// (Christopher Ivy) — have sat at Accela "Record Status: Intake Requirements Needed" since
+// Two live Coos Bay structural records — 187-26-000309-STR (Emery Placeholder) and 187-26-000305-STR
+// (Drew Example) — have sat at Accela "Record Status: Intake Requirements Needed" since
 // Sep 3. The operator's own account of why: "Ann and Ivy both need corrections because of docs
 // you missed to get them. Prescriptive checklist and didnt call out stamps that were needed."
 //

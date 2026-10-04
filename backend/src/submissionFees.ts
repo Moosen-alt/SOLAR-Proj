@@ -577,8 +577,8 @@ function estimatedFee(db: AppDb, project: ProjectRecord, track: "permit" | "nem"
 // "we have no schedule" — an amount we know perfectly well, re-rendered as an unknown.
 //
 // What was actually wrong is that nobody was told. On the live database the superseded
-// Daly pass (cf1c56aa, archived "Superseded pass at 990 17th St NE; 8f4ca8dd is the
-// certified Daly/PGE run") quotes $274.43 and reads exactly like the job that is real.
+// Fixture pass (cf1c56aa, archived "Superseded pass at 520 Example St NE; 8f4ca8dd is the
+// certified Fixture/PGE run") quotes $274.43 and reads exactly like the job that is real.
 // So: quote it, and say what it is, in the one sentence that is already drawn beside
 // every amount — the payment panel prints `permitFeeBasis`, and so does each fee-sheet
 // line, so one chokepoint covers both with no new field for a renderer to forget.

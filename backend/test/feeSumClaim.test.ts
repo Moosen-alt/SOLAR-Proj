@@ -167,7 +167,7 @@ async function main(): Promise<void> {
 
   // TWO PERMITS AND NOTHING ELSE — the shape that exercises the "N separate permits
   // — the fee above is their total" sentence, which carries the same claim and needs
-  // the same gate. Christopher Ivy's live Coos pair, verbatim.
+  // the same gate. Drew Example's live Coos pair, verbatim.
   saveFeeSchedule(db, { state: "OR", ahj: "City of Coos Bay", track: "permit", discipline: "structural" }, finding({
     basis: "other",
     brackets: [{ feeUsd: 200, label: "Solar Permit (when required) – Prescriptive Path System, fee includes plan review" }],

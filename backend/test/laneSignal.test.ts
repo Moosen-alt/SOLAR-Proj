@@ -4,7 +4,7 @@
 // But hasNemSignal/hasPermitSignal classified a check by the WORDS on the scraped page — a
 // heuristic that predates typed targets — and it misfiled live data:
 //
-//   Marineau's ISSUED ELECTRICAL permit page mentions "utility"  ->  read as a NEM check
+//   Placeholder's ISSUED ELECTRICAL permit page mentions "utility"  ->  read as a NEM check
 //   -> the NEM lane showed "Permit issued" -> "issued" is in the NEM-approved outcome list
 //   -> the dashboard badged TWO live interconnection applications "NEM approved"
 //
@@ -35,7 +35,7 @@ const hasPermitSignal = (c: Partial<PermitStatusCheck>): boolean => {
     .test(`${c.statusLabel} ${c.rawStatusText} ${c.message}`);
 };
 
-// The real page text from Marineau's issued electrical permit — note "utility".
+// The real page text from Placeholder's issued electrical permit — note "utility".
 const ELECTRICAL_PERMIT: Partial<PermitStatusCheck> = {
   targetType: "permit",
   statusLabel: "Permit issued",

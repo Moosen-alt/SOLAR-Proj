@@ -40,7 +40,7 @@ const ELECTRICAL_SHEET = /\bE\s*-?\s*\d+\.\d+\b/i;
 // also how other sheets CITE a sheet ("SEE E 1.1 FOR WIRING"), so only a `patterns` hit counts as
 // the page's own title-block name for the undecided-spec report (#119).
 const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegExp[]; sheetNumbers?: RegExp[]; words?: RegExp[]; vocabulary?: RegExp[] }> = [
-  // "ELECTRICAL LINE DIAGRAM" is how the Basson-style sets title their SLD (sheet PV-6) —
+  // "ELECTRICAL LINE DIAGRAM" is how the Synthetic-style sets title their SLD (sheet PV-6) —
   // neither "one-line" nor "3-line" appears anywhere on the sheet, so the whole electrical
   // diagram went unsplit and the submit gate reported the SLD missing from a plan set that
   // plainly contains one. Anchored on LINE DIAGRAM with an electrical qualifier; a bare
@@ -63,7 +63,7 @@ const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegEx
   // the text layer joins the title block's lines, so "… SPECIFICATION SHEET" vs "… SPECIFICATIONS"
   // only tests what label happens to follow the name ("SHEET NUMBER" or not).
   //
-  // "EQUIPMENT SPECIFICATION(S)" is deliberately NOT a pattern here (#66). Those pages (Basson
+  // "EQUIPMENT SPECIFICATION(S)" is deliberately NOT a pattern here (#66). Those pages (Synthetic
   // PV-11+) are image cut-sheets whose only text is the title block, and the section holds the
   // module, the combiner, the racking brochure… all with the same text. Filing them as
   // module_spec (and "counting as both") put a combiner and a racking brochure in the spec parts

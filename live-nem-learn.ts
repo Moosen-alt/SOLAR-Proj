@@ -15,14 +15,14 @@ const { autoLearnPortal } = await import("./backend/src/autoLearn");
 
 const which = (process.argv[2] || "pge").toLowerCase();
 const TARGETS: Record<string, { projectId: string; portalUrl: string; who: string }> = {
-  // Daniel Daly, Salem — utility stored as the LEGAL name "Portland General Electric",
+  // Blake Fixture, Salem — utility stored as the LEGAL name "Portland General Electric",
   // which is the spelling every real project uses.
   pge: {
     projectId: "cf1c56aa-aeb0-44d5-b797-f663436463a7",
     portalUrl: "https://pgenm.powerclerk.com/MvcAccount/Login",
     who: "Portland General Electric",
   },
-  // Wynema Wright, Coos Bay — the same project the Accela permit runs used.
+  // Avery Sample, Coos Bay — the same project the Accela permit runs used.
   pacificorp: {
     projectId: "bb47ba38-e30d-405e-85f6-84e2e2f7004a",
     portalUrl: "https://pacificorpnetmetering.powerclerk.com/MvcAccount/Login",

@@ -144,7 +144,7 @@ const reviewItemsFor = (projectId: string, field: string): number => Number(
 
 const client = createClient(db, { companyName: "Transition Solar", ccbLicenseNumber: "717171" });
 const { project } = createProject(db, {
-  clientId: client.id, owner: "Two Permit Owner", street: "1780 Ocean Blvd SE", city: "Coos Bay",
+  clientId: client.id, owner: "Two Permit Owner", street: "5050 Placeholder Blvd SE", city: "Coos Bay",
   state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power", dcKw: "8", acKw: "6.4",
 });
 
@@ -619,7 +619,7 @@ await check("...and on the per-CLIENT tracker's badges too (portal.html), not on
 // of passing while proving nothing.
 // ─────────────────────────────────────────────────────────────────────────────────────────
 const { project: staleProject } = createProject(db, {
-  clientId: client.id, owner: "Stalled At Intake", street: "1780 Ocean Blvd SE", city: "Coos Bay",
+  clientId: client.id, owner: "Stalled At Intake", street: "5050 Placeholder Blvd SE", city: "Coos Bay",
   state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power", dcKw: "8.36", acKw: "7.68",
 });
 const staleDetail = createPermitCheckTarget(db, staleProject.id, {

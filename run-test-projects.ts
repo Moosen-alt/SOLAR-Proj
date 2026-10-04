@@ -34,7 +34,7 @@ const { saveProjectDocument } = await import("./backend/src/projectDocuments");
 const db = await openDatabase();
 const llm = createLLMProvider();
 
-// The plan set is the PDF named like the folder ("Abby Johnson - Happy Valley, OR.pdf").
+// The plan set is the PDF named like the folder ("Casey Testcase - Happy Valley, OR.pdf").
 // Fall back to the largest PDF, which is the plan set in every sampled folder.
 function pickPlanSet(dir: string): string | null {
   const pdfs = fs.readdirSync(dir).filter((f) => f.toLowerCase().endsWith(".pdf"))
@@ -189,7 +189,7 @@ for (const folder of folders) {
     if (truth) {
       const num = (v: string) => Number(String(v).replace(/[^0-9.]/g, "")) || 0;
       // The CRM writes addresses long-form ("15622 Southeast Vivian Way") while plan sets
-      // use postal abbreviations ("15622 SE Vivian Way"). Both are correct, so canonicalise
+      // use postal abbreviations ("50030 SE Testing Way"). Both are correct, so canonicalise
       // directionals and street types before comparing — otherwise the harness reports a
       // miss on a perfect extraction and sends us hunting a bug that does not exist.
       const ABBREV: Record<string, string> = {

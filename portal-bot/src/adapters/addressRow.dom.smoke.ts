@@ -12,7 +12,7 @@
 //
 // Matching the ADDRESS instead has to survive the way portals and plan sets disagree: a
 // portal writes "SE" where a plan set writes "Southeast", "St" for "Street". That exact
-// mismatch already showed up in the accuracy harness ("15622 SE Vivian Way" vs the CRM's
+// mismatch already showed up in the accuracy harness ("50030 SE Testing Way" vs the CRM's
 // "15622 Southeast Vivian Way").
 //
 // Run: npx tsx portal-bot/src/adapters/addressRow.dom.smoke.ts

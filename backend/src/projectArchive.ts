@@ -2,8 +2,8 @@
 // HIDE IT FROM THE CLIENT. DO NOT DESTROY IT.
 //
 // The per-client portal's first render against the live database showed TML fifteen cards for
-// about eight real jobs — four passes at 1075 Flanagan Ave, three at 990 17th St NE, two at
-// 15622 SE Vivian Way, plus a fixture whose homeowner is "Test Testerson".
+// about eight real jobs — four passes at 5010 Fixture Ave, three at 520 Example St NE, two at
+// 50030 SE Testing Way, plus a fixture whose homeowner is "Test Testerson".
 //
 // Deleting them was the obvious move and the wrong one:
 //

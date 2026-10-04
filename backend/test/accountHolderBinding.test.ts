@@ -6,8 +6,8 @@
 // distinction rots quietly — the PacifiCorp recipe was learned on a project where they
 // matched, so its Customer block was bound to homeownerFirstName/LastName.
 //
-// APP-111681 is the case that separated them: the house is David Simmons', the account is
-// Stephanie Simmons'. The application filed as David, and PacifiCorp suspended it the next
+// APP-111681 is the case that separated them: the house is Finley Mockdata', the account is
+// Stephanie Mockdata'. The application filed as Finley, and PacifiCorp suspended it the next
 // morning with a ten-business-day withdrawal clock.
 //
 // The recipe now binds the customer block to ubAccountHolder*, which is only safe because
@@ -50,7 +50,7 @@ const base = {
   state: "OR",
   ahj: "City of Coos Bay",
   utility: "Pacific Power",
-  projectAddress: "1095 Michigan Ave",
+  projectAddress: "5060 Synthetic Ave",
   city: "Coos Bay",
   zip: "97420",
   dcKw: 7.2,
@@ -67,21 +67,21 @@ const valuesFor = (payload: Record<string, unknown>): Record<string, string> => 
 // ---------------------------------------------------------------------------
 const split = valuesFor({
   ...base,
-  homeownerName: "David Simmons",
-  homeownerEmail: "dwsimmons82@gmail.com",
-  ubAccountHolder: "STEPHANIE SIMMONS",
+  homeownerName: "Finley Mockdata",
+  homeownerEmail: "finley.mockdata@example.com",
+  ubAccountHolder: "STEPHANIE MOCKDATA",
 });
 
 run("THE REGRESSION: the customer keys carry the ACCOUNT HOLDER", () => {
-  assert.equal(split.ubAccountHolder, "STEPHANIE SIMMONS");
+  assert.equal(split.ubAccountHolder, "STEPHANIE MOCKDATA");
   assert.equal(split.ubAccountHolderFirstName, "STEPHANIE");
-  assert.equal(split.ubAccountHolderLastName, "SIMMONS");
+  assert.equal(split.ubAccountHolderLastName, "MOCKDATA");
 });
 
 run("...while the homeowner keys still carry the PROPERTY OWNER", () => {
-  assert.equal(split.homeownerName, "David Simmons");
-  assert.equal(split.homeownerFirstName, "David");
-  assert.equal(split.homeownerLastName, "Simmons");
+  assert.equal(split.homeownerName, "Finley Mockdata");
+  assert.equal(split.homeownerFirstName, "Finley");
+  assert.equal(split.homeownerLastName, "Mockdata");
 });
 
 run("the two roles never collapse into one another", () => {
@@ -96,15 +96,15 @@ run("the two roles never collapse into one another", () => {
 // ---------------------------------------------------------------------------
 const noBill = valuesFor({
   ...base,
-  homeownerName: "Wynema Wright",
+  homeownerName: "Avery Sample",
   homeownerEmail: "ww@example.com",
   homeownerPhone: "(541) 555-0100",
 });
 
 run("THE FALLBACK: with no bill parsed the customer keys fall back to the homeowner", () => {
-  assert.equal(noBill.ubAccountHolder, "Wynema Wright");
-  assert.equal(noBill.ubAccountHolderFirstName, "Wynema");
-  assert.equal(noBill.ubAccountHolderLastName, "Wright");
+  assert.equal(noBill.ubAccountHolder, "Avery Sample");
+  assert.equal(noBill.ubAccountHolderFirstName, "Avery");
+  assert.equal(noBill.ubAccountHolderLastName, "Sample");
 });
 
 run("...so a REQUIRED customer-name field is never filled blank", () => {

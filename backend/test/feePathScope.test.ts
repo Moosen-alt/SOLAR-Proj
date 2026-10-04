@@ -1,6 +1,6 @@
 // THE FEE-SIDE TWIN OF THE INVERTED PRESCRIPTIVE GATE.
 //
-// Measured on Ann Marineau's live project (1fb3dc39, City of Coos Bay, 8.36 kW DC /
+// Measured on Emery Placeholder's live project (1fb3dc39, City of Coos Bay, 8.36 kW DC /
 // 7.68 kW AC, structural stuck on Accela "Intake Requirements Needed" since Sep 3).
 // ONE page said two opposite things:
 //
@@ -215,7 +215,7 @@ async function main(): Promise<void> {
   };
 
   // Ann: the parser's verbatim finding. "No PE stamp/seal shown …" routes engineered.
-  const ANN = mkProject("proj-ann", "City of Coos Bay", 7.68, 8.36, {
+  const ANN = mkProject("proj-emery", "City of Coos Bay", 7.68, 8.36, {
     // OPERATOR GROUND TRUTH (2026-09-21): Salem's ISSUED permit 26-108868-DW approved the
     // very roof whose parse said "AHJ *may require* stamped structural" as PRESCRIPTIVE with
     // no stamp — a hedge is a question, not a routing fact, and it no longer forces
@@ -234,7 +234,7 @@ async function main(): Promise<void> {
   // -------------------------------------------------------------------------
   // 0. FIXTURE PREMISES. If these drift the rest of the file means nothing.
   // -------------------------------------------------------------------------
-  check("premise: Ann resolves ENGINEERED from an AFFIRMATIVE stamp sentence (a hedge no longer routes — see the hedged premise below)",
+  check("premise: Emery resolves ENGINEERED from an AFFIRMATIVE stamp sentence (a hedge no longer routes — see the hedged premise below)",
     resolvePermitPath(ANN).path === "engineered", resolvePermitPath(ANN).path);
   check("premise: Ivy resolves PRESCRIPTIVE (microinverter roof mount clearing the screen)",
     resolvePermitPath(IVY).path === "prescriptive", resolvePermitPath(IVY).path);
@@ -255,7 +255,7 @@ async function main(): Promise<void> {
   });
   check("premise: the SAME hedge with a passing prescriptive screen resolves PRESCRIPTIVE — Salem 26-108868-DW made real",
     resolvePermitPath(HEDGED_CLEAN).path === "prescriptive", JSON.stringify(resolvePermitPath(HEDGED_CLEAN)));
-  // THE MEMBRANE ROOF, pinned from the real Simmons/Coos Bay case: TPO with every numeric
+  // THE MEMBRANE ROOF, pinned from the real Mockdata/Coos Bay case: TPO with every numeric
   // inside the limits still routes ENGINEERED — "In Oregon, a PV solar installation on a
   // TPO roof is automatically a non-prescriptive project... we had to get stamps for them"
   // (operator, 2026-09-21). His real filing: 187-26-000328-STR, a structural permit.
@@ -263,7 +263,7 @@ async function main(): Promise<void> {
     mounting: "Roof mount", roofMaterial: "TPO",
     framingType: "rafter", roofRafterSpacing: "24", roofRafterSpan: "10", snow: "16", wind: "C", windSpeed: "110", deadLoad: "2.64",
   });
-  check("premise: MUST PASS — a TPO roof with clean numerics is ENGINEERED (Simmons 187-26-000328-STR made real)",
+  check("premise: MUST PASS — a TPO roof with clean numerics is ENGINEERED (Mockdata 187-26-000328-STR made real)",
     resolvePermitPath(TPO_CLEAN).path === "engineered", JSON.stringify(resolvePermitPath(TPO_CLEAN)));
   const SHINGLE_CLEAN = mkProject("proj-shingle-clean", "City of Coos Bay", 7.04, 6.08, {
     mounting: "Roof mount", roofMaterial: "Composition Shingle",
@@ -346,7 +346,7 @@ async function main(): Promise<void> {
     JSON.stringify(resolvePermitPath(FL(), { limits: { allowedWindExposures: ["B", "C", "D"] } }).path));
   check("MUST EXCLUDE: the Oregon membrane-roof rule does not fire outside Oregon",
     resolvePermitPath(FL({ roofMaterial: "TPO" }), { limits: flLimits }).path === "prescriptive");
-  check("...while a TPO roof in OREGON still routes engineered (the Simmons ruling holds)",
+  check("...while a TPO roof in OREGON still routes engineered (the Mockdata ruling holds)",
     resolvePermitPath(otherState("OR", { roofMaterial: "TPO" })).path === "engineered");
 
   // -------------------------------------------------------------------------
@@ -413,7 +413,7 @@ async function main(): Promise<void> {
   const annByDiscipline = Object.fromEntries(ann.lines.map((l) => [l.discipline, l]));
   const annStructural = annByDiscipline.structural;
 
-  check("3a. Ann's STRUCTURAL line quotes nothing",
+  check("3a. Emery's STRUCTURAL line quotes nothing",
     annStructural?.feeUsd === null, String(annStructural?.feeUsd));
   check("  and it is explicitly NOT the $200 prescriptive number",
     annStructural?.feeUsd !== 200, String(annStructural?.feeUsd));
@@ -428,7 +428,7 @@ async function main(): Promise<void> {
   check("  the quoted notes are bounded — a 1,500-char research paragraph must not bury the headline",
     (annStructural?.reason ?? "").length < 900, String((annStructural?.reason ?? "").length));
 
-  check("3c. Ann's ELECTRICAL line is untouched at $160 — the path decides the STRUCTURAL permit only",
+  check("3c. Emery's ELECTRICAL line is untouched at $160 — the path decides the STRUCTURAL permit only",
     annByDiscipline.electrical?.feeUsd === 160, String(annByDiscipline.electrical?.feeUsd));
   check("  and the TOTAL is unreadable, not smaller (an under-quote that looks confident is the bug)",
     ann.feeUsd === null, String(ann.feeUsd));
@@ -440,7 +440,7 @@ async function main(): Promise<void> {
   //    comes from; a fix that only moved feeForProject would be invisible here.
   // -------------------------------------------------------------------------
   const annQuote = buildPaymentQuote(db, ANN, "permit");
-  check("4. Ann's QUOTE is no longer sourced to the published schedule",
+  check("4. Emery's QUOTE is no longer sourced to the published schedule",
     annQuote.permitFeeSource !== "published_schedule", annQuote.permitFeeSource);
   check("  and it is neither $360 nor $200",
     annQuote.permitFeeUsd !== 360 && annQuote.permitFeeUsd !== 200, String(annQuote.permitFeeUsd));
@@ -604,7 +604,7 @@ async function main(): Promise<void> {
     sourceQuote: "Tier 1 Net Metering Interconnection Review — no fee | $0.00",
   }));
   const annNem = feeForProject(db, ANN, "nem")!;
-  check("8. Ann's NEM fee is still $0.00 — the permit path says nothing about interconnection",
+  check("8. Emery's NEM fee is still $0.00 — the permit path says nothing about interconnection",
     annNem.feeUsd === 0, `${annNem.feeUsd} / ${annNem.reason}`);
   // The sharp one: a PRESCRIPTIVE-path project landing on a NEM line whose own
   // label says "engineered". On the permit track that pairing is a contradiction
@@ -713,7 +713,7 @@ async function main(): Promise<void> {
     track: "building", bracketKw: IVY.systemSizeAcKw,
     systemSizeAcKw: IVY.systemSizeAcKw, systemSizeDcKw: IVY.systemSizeDcKw,
   }))!;
-  check("11b. the same seam call with IVY's numbers also refuses — it cannot tell him from Ann",
+  check("11b. the same seam call with IVY's numbers also refuses — it cannot tell him from Emery",
     seamIvyNumbers.feeUsd === null && /PERMIT PATH NOT CHECKED/.test(seamIvyNumbers.basis),
     `${seamIvyNumbers.feeUsd} / ${seamIvyNumbers.basis.slice(0, 120)}`);
 
