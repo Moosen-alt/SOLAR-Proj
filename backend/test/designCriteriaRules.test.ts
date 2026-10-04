@@ -22,6 +22,7 @@ import { evaluateDesignCodeFindings } from "../src/codeReviewRules";
 import { extractStatedDesignCriteria, type DesignTextSource } from "../src/designCriteria";
 import { buildReviewerReport } from "../src/reviewerEngine";
 import { visionMayRelax } from "../src/reviewerVision";
+import { amendmentSourceKey } from "../src/amendmentChecks";
 
 let failures = 0;
 const check = (label: string, fn: () => void): void => {
@@ -916,11 +917,30 @@ check("#145 max_value: PV dead load 3.5 psf vs a verified 3 psf maximum, and 72 
   assert.ok(!get(run(project({ planSetExtractedText: ok }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: ok }]), NOT_MET));
 });
 
-check("#145 required_text: a verified placard wording absent from the sheets -> BLOCKER; present (any punctuation/case) -> nothing", () => {
+const WORDING = "city.code.amendment-wording-missing";
+check("#145 required_text: verified wording absent from the sheets' text is an ABSENCE -> WARNING under its own id, which vision MAY relax (a placard can be drawn); present (any punctuation/case) -> nothing", () => {
   const ams = [amend({ kind: "required_text", field: "planText", value: "SOLAR PV SYSTEM EQUIPPED WITH RAPID SHUTDOWN" })];
-  assert.equal(get(run(amPlan, ctxFor({ ...VERIFIED, amendments: ams }), amDocs), NOT_MET)?.severity, "blocker");
+  const fs = run(amPlan, ctxFor({ ...VERIFIED, amendments: ams }), amDocs);
+  assert.ok(!get(fs, NOT_MET), "an absence must not ride the measured blocker id");
+  const w = get(fs, WORDING);
+  assert.equal(w?.severity, "warning");
+  assert.equal(visionMayRelax(w!), true);
   const ok = `${AM_PLAN} PLACARD: "Solar PV system — equipped with rapid shutdown"`;
-  assert.ok(!get(run(project({ planSetExtractedText: ok }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: ok }]), NOT_MET));
+  assert.ok(!get(run(project({ planSetExtractedText: ok }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: ok }]), WORDING));
+});
+
+check("#145 required_text: a NEGATED mention ('NO RAPID SHUTDOWN REQUIRED') does not satisfy required 'rapid shutdown'", () => {
+  const ams = [amend({ kind: "required_text", field: "planText", value: "rapid shutdown" })];
+  const neg = "ELECTRICAL NOTES: NO RAPID SHUTDOWN REQUIRED.";
+  assert.equal(get(run(project({ planSetExtractedText: neg }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: neg }]), WORDING)?.severity, "warning");
+  const aff = "ELECTRICAL NOTES: RAPID SHUTDOWN PER NEC 690.12.";
+  assert.ok(!get(run(project({ planSetExtractedText: aff }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: aff }]), WORDING));
+});
+
+check("#145 a ground snow stated only as roof snow is 'not comparable', not 'does not state'", () => {
+  const roofOnly = "ROOF SNOW LOAD = 25 PSF";
+  const c = get(run(project({ planSetExtractedText: roofOnly }), ctxFor({ ...VERIFIED, amendments: [amend({ kind: "min_value", field: "groundSnowPsf", value: 30, unit: "psf" })] }), [{ label: "Plan set", text: roofOnly }]), BY_HAND);
+  assert.match(c!.message, /not comparable/);
 });
 
 check("#145 prohibited: a verified 'no roof-mounted disconnect' amendment vs a plan showing one -> BLOCKER; a plan saying NO roof-mounted disconnect -> nothing", () => {
@@ -947,13 +967,13 @@ check("#145 informational amendments (no check) and a check the plan cannot answ
 });
 
 check("#145 a LAYERED read: a verified state amendment blocks, a seeded city amendment under it only warns", () => {
-  const stateAm = amend({ kind: "min_value", field: "groundSnowPsf", value: 30, unit: "psf" });
-  const cityAm = amend({ kind: "max_value", field: "pvDeadLoadPsf", value: 3, unit: "psf" });
+  const stateAm = amend({ kind: "min_value", field: "groundSnowPsf", value: 30, unit: "psf" }, "State ground snow minimum");
+  const cityAm = amend({ kind: "max_value", field: "pvDeadLoadPsf", value: 3, unit: "psf" }, "City PV dead load maximum");
   const layered = (verifiedIndex: number) => profile({
     amendments: [stateAm, cityAm],
     fieldSources: {
-      "amendments.0": { ahj: "", state: "OR", confidence: verifiedIndex === 0 ? "verified" : "seeded" },
-      "amendments.1": { ahj: "City of Testport", state: "OR", confidence: verifiedIndex === 1 ? "verified" : "seeded" },
+      [amendmentSourceKey(stateAm)]: { ahj: "", state: "OR", confidence: verifiedIndex === 0 ? "verified" : "seeded" },
+      [amendmentSourceKey(cityAm)]: { ahj: "City of Testport", state: "OR", confidence: verifiedIndex === 1 ? "verified" : "seeded" },
     },
   });
   const onlyCity = buildCodeContext("OR", "City of Testport", { ...layered(1), amendments: [stateAm, { ...cityAm, check: { ...cityAm.check!, value: 5 } }] });

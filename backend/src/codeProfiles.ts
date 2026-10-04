@@ -45,6 +45,7 @@ import { knowledgeProfileKey, knowledgeNameMatchScore, isLearningExcluded } from
 import { extractPermitPrecedents, listAhjCorrectionPatterns } from "./permitPrecedents";
 import { addAuditLog } from "./audit";
 import { extractStatedDesignCriteria, normCodeToken } from "./designCriteria";
+import { amendmentSourceKey } from "./amendmentChecks";
 import {
   CODE_FAMILIES, codeFamilyOf, editionLabel, editionsInEffect, familyAdoptionModel, isAdoptionModel,
   isCodeFamily, isFamilyAdoptionModel, locallyAdoptedFamilies, modelBaseOf, upcomingDue,
@@ -572,7 +573,8 @@ export function getCodeProfile(db: AppDb, input: { state?: string; ahj?: string 
   if (setbackLayer) fieldSources.fireSetbacks = sourceOf(setbackLayer);
   // Amendments are concatenated state-then-AHJ: each records its own row, so the amendment check
   // (amendmentChecks.ts, #145) blocks only on an amendment a person verified.
-  [...base.amendments.map(() => base), ...exact.amendments.map(() => exact)].forEach((layer, i) => { fieldSources[`amendments.${i}`] = sourceOf(layer); });
+  // Keyed by the amendment itself (amendmentSourceKey), not its position: the AHJ's row wins a tie.
+  for (const layer of [base, exact]) for (const a of layer.amendments) fieldSources[amendmentSourceKey(a)] = sourceOf(layer);
   return {
     ...exact,
     fieldSources,

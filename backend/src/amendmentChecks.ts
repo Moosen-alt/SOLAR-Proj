@@ -39,6 +39,15 @@ import {
 
 export const AMENDMENT_NOT_MET_ID = "city.code.amendment-not-met";
 export const AMENDMENTS_BY_HAND_ID = "city.code.amendments-check-by-hand";
+/** Required wording no sheet's TEXT LAYER carries. An absence, not a measured value: a placard is
+ *  often a drawing, and a look at the sheet is exactly what settles it — so it is its own id, never
+ *  in MEASURED_FINDING_IDS, and never more than a warning (only a document-STATED value blocks). */
+export const AMENDMENT_WORDING_MISSING_ID = "city.code.amendment-wording-missing";
+
+/** Which row an amendment came from, keyed by the amendment itself (not its position, which a
+ *  later dedupe or sort would shift): fieldSources["amendments.<key>"] on a layered read. */
+export const amendmentSourceKey = (a: Pick<JurisdictionCodeAmendment, "code" | "section" | "summary">): string =>
+  `amendments.${`${a.code}|${a.section ?? ""}|${a.summary}`.toLowerCase()}`;
 
 // --- classification (research time) -------------------------------------------------------------
 
@@ -198,9 +207,9 @@ const fmt = (n: number): string => String(Math.round(n * 100) / 100);
 const amendmentLabel = (a: JurisdictionCodeAmendment): string => `${a.code}${a.section ? ` ${a.section}` : ""}`;
 
 /** Was the row this amendment came from human-verified? A layered read records each merged
- *  amendment's row under fieldSources["amendments.<i>"]; a single row answers for itself. */
-function amendmentVerified(ctx: EffectiveCodeContext, index: number): boolean {
-  const src = ctx.profile?.fieldSources?.[`amendments.${index}`];
+ *  amendment's row under fieldSources[amendmentSourceKey(a)]; a single row answers for itself. */
+function amendmentVerified(ctx: EffectiveCodeContext, a: JurisdictionCodeAmendment): boolean {
+  const src = ctx.profile?.fieldSources?.[amendmentSourceKey(a)];
   return src ? src.confidence === "verified" : ctx.verified;
 }
 
@@ -239,10 +248,11 @@ export function evaluateAmendmentFindings(project: ProjectRecord, ctx: Effective
   const extraTexts = opts.extraTexts ?? [];
   const failed: FailedLine[] = [];
   const byHand: Array<{ amendment: JurisdictionCodeAmendment; why: string; verified: boolean }> = [];
+  const wordingMissing: Array<{ amendment: JurisdictionCodeAmendment; phrase: string; verified: boolean }> = [];
   let sources: ReturnType<typeof packageReadSources> | null = null;
 
-  amendments.forEach((a, i) => {
-    const verified = amendmentVerified(ctx, i);
+  amendments.forEach((a) => {
+    const verified = amendmentVerified(ctx, a);
     const check = a.check;
     if (!check) { byHand.push({ amendment: a, why: "", verified }); return; }
     const label = amendmentLabel(a);
@@ -250,7 +260,16 @@ export function evaluateAmendmentFindings(project: ProjectRecord, ctx: Effective
       const required = Number(check.value);
       const unit = FIELD_UNIT[check.field];
       const values = planValues(project, check.field, extraTexts);
-      if (!values.length) { byHand.push({ amendment: a, why: `the plan does not state its ${FIELD_LABEL[check.field].toLowerCase()}`, verified }); return; }
+      if (!values.length) {
+        // A ground snow stated only as roof / ASD snow, or a wind speed only as nominal, is STATED —
+        // just not the quantity the amendment sets.
+        const what = FIELD_LABEL[check.field].toLowerCase();
+        const otherForm = (check.field === "groundSnowPsf" || check.field === "windSpeedMph")
+          && extractStatedDesignCriteria(project, extraTexts).criteria.some((c) => c.criterion === check.field
+            || (check.field === "groundSnowPsf" && c.criterion === "roofSnowPsf"));
+        byHand.push({ amendment: a, why: otherForm ? `the plan states its ${what} only in a form not comparable with the amendment (roof or ASD snow, nominal wind)` : `the plan does not state its ${what}`, verified });
+        return;
+      }
       const bad = values.filter((v) => (check.kind === "min_value" ? v.value < required : v.value > required));
       if (!bad.length) return;
       const documentStated = bad.some((v) => v.documentStated);
@@ -268,18 +287,11 @@ export function evaluateAmendmentFindings(project: ProjectRecord, ctx: Effective
     sources ??= packageReadSources(project, extraTexts);
     if (!sources.length) { byHand.push({ amendment: a, why: "no plan text was read to compare its wording with", verified }); return; }
     const phrase = String(check.value);
-    const docs = sources.filter((s) => s.sheet && !s.derived);
     if (check.kind === "required_text") {
-      // Found anywhere (a parser summary quoting it included) passes: absence is the finding, and
-      // it is document-stated only when a document of the package was read.
-      if (sources.some((s) => wordingAt(s.text, phrase) !== "absent")) return;
-      failed.push({
-        amendment: a,
-        verified,
-        blocker: verified && docs.length > 0,
-        evidence: [],
-        line: `Required wording missing: ${label} requires "${phrase}" on the plans and no sheet read carries it ("${a.summary}")`,
-      });
+      // Found AFFIRMED anywhere (a parser summary quoting it included) passes. A negated mention
+      // ("NO RAPID SHUTDOWN REQUIRED") does not carry the required wording.
+      if (sources.some((s) => wordingAt(s.text, phrase) === "affirmed")) return;
+      wordingMissing.push({ amendment: a, phrase, verified });
       return;
     }
     const hits = sources.filter((s) => wordingAt(s.text, phrase) === "affirmed");
@@ -313,6 +325,20 @@ export function evaluateAmendmentFindings(project: ProjectRecord, ctx: Effective
       codeReferences: failed.map((f) => amendmentRef(f.amendment, f.verified)),
       installerCallout: true,
       evidenceFound: failed.flatMap((f) => f.evidence),
+    });
+  }
+  if (wordingMissing.length) {
+    out.push({
+      id: AMENDMENT_WORDING_MISSING_ID,
+      severity: "warning",
+      category: "ahj_profile",
+      title: "Required local-amendment wording not found on the plans",
+      message: `${wordingMissing.map((w) => `${amendmentLabel(w.amendment)} requires "${w.phrase}" on the plans ("${w.amendment.summary}")`).join(". ")}. No sheet's text layer carries ${wordingMissing.length > 1 ? "these" : "this"} — it may be drawn (a placard detail) rather than typed; confirm on the sheets.`,
+      cityFeedback: `Show the wording ${who}'s local amendment${wordingMissing.length > 1 ? "s" : ""} cited below require${wordingMissing.length > 1 ? "" : "s"} on the plans.`,
+      designTeamAction: "Add the required wording (placard / note) to the plan set, or point to the sheet where it is drawn.",
+      evidenceNeeded: wordingMissing.map((w) => `"${w.phrase}"`),
+      codeReferences: wordingMissing.map((w) => amendmentRef(w.amendment, w.verified)),
+      installerCallout: true,
     });
   }
   if (byHand.length) {

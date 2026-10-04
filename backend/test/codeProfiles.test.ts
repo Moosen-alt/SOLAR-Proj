@@ -275,15 +275,17 @@ await run("code_research job in stub mode saves NOTHING (never blocks future res
     assert.deepEqual(p.amendments.map((a) => [a.summary, a.check]), [[snowAm.summary, undefined]]);
   });
 
-  await run("#145 a layered read records which row each merged amendment came from", () => {
+  await run("#145 a layered read records which row each merged amendment came from", async () => {
     saveVerifiedCodeProfile(db, { ...research("ZA", "", [{ code: "IRC", summary: "State amendment", sourceUrl: SRC, check: pg30 }]), researchProvenance: undefined }, "tester");
     const p = getCodeProfile(db, { state: "ZA", ahj: "Amendville" })!;
-    const i = p.amendments.findIndex((a) => a.summary === "State amendment");
-    const j = p.amendments.findIndex((a) => a.summary === snowAm.summary);
-    assert.ok(i >= 0 && j >= 0);
-    assert.equal(p.fieldSources?.[`amendments.${i}`]?.confidence, "verified");
-    assert.equal(p.fieldSources?.[`amendments.${j}`]?.confidence, "seeded");
-    assert.equal(p.fieldSources?.[`amendments.${j}`]?.ahj, "Amendville");
+    const { amendmentSourceKey } = await import("../src/amendmentChecks");
+    const stateAm = p.amendments.find((a) => a.summary === "State amendment");
+    const cityAm = p.amendments.find((a) => a.summary === snowAm.summary);
+    assert.ok(stateAm && cityAm);
+    // Keyed by the amendment, not its position, so a reorder cannot hand one row's verification to another.
+    assert.equal(p.fieldSources?.[amendmentSourceKey(stateAm)]?.confidence, "verified");
+    assert.equal(p.fieldSources?.[amendmentSourceKey(cityAm)]?.confidence, "seeded");
+    assert.equal(p.fieldSources?.[amendmentSourceKey(cityAm)]?.ahj, "Amendville");
   });
 }
 
