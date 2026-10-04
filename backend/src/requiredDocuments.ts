@@ -1154,7 +1154,7 @@ export function agencyListStatusResolver(db: AppDb, project: ProjectRecord): Age
 }
 
 /** The per-job lookup's cited document list (every permit's, deduped), or []. */
-function lookupRequiredList(project: ProjectRecord): { items: string[]; sourceUrl: string } {
+export function lookupRequiredList(project: Pick<ProjectRecord, "state" | "ahj">): { items: string[]; sourceUrl: string } {
   const lookup = String(project.ahj || "").trim() ? permitProcessFor({ state: project.state, ahj: project.ahj }) : null;
   const items: string[] = [];
   let sourceUrl = "";

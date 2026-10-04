@@ -1360,8 +1360,23 @@ export interface AhjProcessProfile {
   requiresFloodplainCheck: boolean;
   requiresJurisdictionCheck: boolean;
   otherRequirements: string;
+  /** The AHJ's own cited application checklist (issue #123). At boot the reference seed lands it in
+   *  permit_process_lookups as one 'seeded' permit's documents (knowledgeBase.seedSanitizedAhjProfiles),
+   *  so lookupRequiredList and the verified-list gate have a cited list to read. */
+  documents?: AhjProcessDocuments;
   reviewerNotes: string;
   sourceSheet: string;
+}
+
+export interface AhjProcessDocuments {
+  /** The list as the page words it; [] with `notFound` when the page lists nothing. */
+  items: string[];
+  sourceUrl: string;
+  /** The exact words on the page. */
+  quote: string;
+  notFound?: string;
+  /** ISO date the page was read. A runtime lookup saved on or after it wins (the reference loses). */
+  observedAt: string;
 }
 
 export interface CodeReference {
