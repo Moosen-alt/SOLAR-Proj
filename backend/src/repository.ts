@@ -7067,6 +7067,11 @@ export async function runDuePermitChecks(
       });
     }
     let source: "portal" | "public_url" | "mock" = safeTargetPortalUrl ? "public_url" : "mock";
+    // WHY A READ CAME BACK EMPTY (issue #161): the scrapers report it, and the skip below logs and
+    // audits it. "no portal URL/recipe" is said only when there truly was neither.
+    let unreadableReason = "";
+    let portalRead = false; // a recipe or platform scrape was attempted
+    const noteReason = (r: string) => { if (r && !unreadableReason) unreadableReason = r; };
     const applicationNumbers = [text(target.application_number), text(target.permit_number)].filter(Boolean);
     const projectDetail = getProjectDetail(db, projectId);
     const clientId = projectDetail.project.clientId ?? "";
@@ -7084,6 +7089,7 @@ export async function runDuePermitChecks(
           addAuditLog(db, projectId, "system", "permit monitor", fit.code === "track_conflict" ? "portal.track_host_conflict" : "portal.entity_host_conflict", {
             targetId: text(target.id), track, recipeId: recipe.id, url: fit.url, code: fit.code, reason: fit.reason,
           });
+          noteReason(`the recorded portal was not used for this filing: ${fit.reason}`);
           recipe = null;
         }
       }
@@ -7098,6 +7104,7 @@ export async function runDuePermitChecks(
               ?? getDecryptedCredentialAny(db, clientId, recipe.portalUrl))
             ?? undefined
           : undefined;
+        portalRead = true;
         const scraped = await statusScrape("recipe", applicationNumbers, {
           recipe,
           fieldValues: {},
@@ -7105,12 +7112,17 @@ export async function runDuePermitChecks(
           headless: true,
           credential,
           userDataDir,
-        }).catch(() => null);
+          onReason: noteReason,
+        }).catch((err) => { noteReason(`the status read failed: ${err instanceof Error ? err.message.slice(0, 160) : String(err)}`); return null; });
         if (scraped && !isAuthWallText(scraped)) {
           rawStatusText = scraped;
           source = "portal";
+        } else if (scraped) {
+          noteReason("the portal page read was a sign-in wall");
         }
       }
+    } else {
+      noteReason("the filing has no application or permit number to look up");
     }
 
     const portalType = targetType === "nem" ? "powerclerk_pge" : "accela_oregon";
@@ -7128,6 +7140,7 @@ export async function runDuePermitChecks(
           ?? undefined
         : undefined;
       const adapterType = portalType === "powerclerk_pge" ? "powerclerk" : "accela";
+      portalRead = true;
       const scraped = await statusScrape(adapterType, applicationNumbers, {
         encryptedStorageStatePath: portalProfile.encrypted_storage_state,
         headless: true,
@@ -7136,10 +7149,13 @@ export async function runDuePermitChecks(
         // Track-scoped portal URL (already resolved for the credential lookup above) so a
         // multi-tenant platform adapter checks status on the RIGHT subdomain.
         loginUrl: safeTargetPortalUrl || undefined,
-      }).catch(() => null);
+        onReason: noteReason,
+      }).catch((err) => { noteReason(`the status read failed: ${err instanceof Error ? err.message.slice(0, 160) : String(err)}`); return null; });
       if (scraped && !isAuthWallText(scraped)) {
         rawStatusText = scraped;
         source = "portal";
+      } else if (scraped) {
+        noteReason("the portal page read was a sign-in wall");
       }
     }
     // No authenticated scrape — try the public tracking URL (exact CapDetail / record-detail
@@ -7178,13 +7194,18 @@ export async function runDuePermitChecks(
         now,
         text(target.id),
       ]);
+      // Say WHY (issue #161). "No portal URL/recipe" only when nothing could be read at all; otherwise
+      // the scraper's own reason (sign-in failed, MFA asked, where it looked and how far).
+      const why = unreadableReason
+        || (portalRead ? "the portal read returned nothing" : (safeTrackingUrl || safeTargetPortalUrl) ? "the public page held no readable status" : "no portal URL or recipe to read");
       logger.info(
         "monitor",
         alreadyKnown
-          ? `status unreadable this sweep — keeping the known status for target ${text(target.id)}`
-          : `skipping status check — no portal URL/recipe to check for target ${text(target.id)}`,
+          ? `status unreadable this sweep — keeping the known status for target ${text(target.id)}: ${why}`
+          : `skipping status check for target ${text(target.id)}: ${why}`,
         { projectId },
       );
+      addAuditLog(db, projectId, "system", "permit monitor", "permit_status.unreadable", { targetId: text(target.id), track, reason: why });
       continue;
     }
     const detail = await recordPermitStatusCheck(db, projectId, {
