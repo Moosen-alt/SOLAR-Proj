@@ -254,13 +254,27 @@ export interface CorrectionFilingInput {
 
 /** A request's notice date: absent or blank is null (the clock starts at ingestion); anything
  *  given must parse as a date — one that silently became null would start the cure clock at
- *  ingestion with nobody told (#58), so it is a 400. */
+ *  ingestion with nobody told (#58), so it is a 400. ONE SHAPE ON THE WAY IN (#137): a calendar
+ *  date (YYYY-MM-DD, or the US M/D/YYYY that V8 would otherwise read as LOCAL midnight, a day
+ *  off on a server west of UTC) comes back as YYYY-MM-DD — the shape extractStatusDate returns —
+ *  and a date-time as its ISO instant. A calendar date the calendar does not have (02/30, which
+ *  V8 rolls into March) is no date. */
 export function requestNoticedAt(value: unknown): string | null {
   if (value == null || (typeof value === "string" && !value.trim())) return null;
-  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) {
-    throw new HttpError(400, "noticedAt must be a date (YYYY-MM-DD or ISO 8601).");
+  const bad = () => new HttpError(400, "noticedAt must be a date (YYYY-MM-DD or ISO 8601).");
+  if (typeof value !== "string") throw bad();
+  const raw = value.trim();
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(raw);
+  if (ymd || us) {
+    const [y, mo, d] = ymd ? [Number(ymd[1]), Number(ymd[2]), Number(ymd[3])] : [Number(us![3]), Number(us![1]), Number(us![2])];
+    const at = new Date(Date.UTC(y, mo - 1, d));
+    if (at.getUTCFullYear() !== y || at.getUTCMonth() !== mo - 1 || at.getUTCDate() !== d) throw bad();
+    return at.toISOString().slice(0, 10);
   }
-  return value.trim();
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) throw bad();
+  return new Date(parsed).toISOString();
 }
 
 export function resolveCorrectionFiling(

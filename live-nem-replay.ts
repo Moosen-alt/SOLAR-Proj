@@ -23,8 +23,8 @@ const { stageWithRecipe } = await import("./portal-bot/src/index");
 
 const which = (process.argv[2] || "pge").toLowerCase();
 const DEFAULT_PROJECT: Record<string, string> = {
-  pge: "cf1c56aa-aeb0-44d5-b797-f663436463a7",         // Daniel Daly, Salem
-  pacificorp: "9c63ae75-45b5-473f-a4ea-794fb973586d",  // Wynema Wright, Coos Bay
+  pge: "cf1c56aa-aeb0-44d5-b797-f663436463a7",         // Blake Fixture, Salem
+  pacificorp: "9c63ae75-45b5-473f-a4ea-794fb973586d",  // Avery Sample, Coos Bay
 };
 // Positional args only — a flag like --no-gapfill must not be mistaken for a project id.
 const positional = process.argv.slice(3).filter((a) => !a.startsWith("--"));

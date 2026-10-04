@@ -1,4 +1,4 @@
-// THE MARION E-01 FEE TOTAL FROM THE FORM'S OWN PRINTED LADDER (live 2026-09-27, Michael Sheridan —
+// THE MARION E-01 FEE TOTAL FROM THE FORM'S OWN PRINTED LADDER (live 2026-09-27, Jules Testperson —
 // City of Jefferson, Marion County issues the electrical permit). His filled E-01 ticked Qty 1 on
 // "5.01 to 15 kva" but left the Total, Subtotal, State surcharge and TOTAL PERMIT FEE blank: no Marion
 // County electrical fee schedule is on file, and the computed electrical* sources read only a saved
@@ -118,7 +118,7 @@ try {
 
   // ═══ MUST-PASS — Michael: AC 12.913 kVA ═════════════════════════════════════════════════════
   const michael = await fill(12.913);
-  check("MUST-PASS Michael 12.913 kVA: Qty 1 on 5.01-15, its Total $94.00", michael.fees.q15 === "1" && michael.fees.t15 === "94.00", show(michael.fees));
+  check("MUST-PASS Jules 12.913 kVA: Qty 1 on 5.01-15, its Total $94.00", michael.fees.q15 === "1" && michael.fees.t15 === "94.00", show(michael.fees));
   check("MUST-PASS Subtotal $94.00, State surcharge (12%) $11.28, TOTAL PERMIT FEE $105.28", michael.fees.subtotal === "94.00" && michael.fees.surcharge === "11.28" && michael.fees.total === "105.28", show(michael.fees));
   check("MUST-PASS the other rows stay empty", !michael.fees.q5 && !michael.fees.t5 && !michael.fees.q25 && !michael.fees.t25, show(michael.fees));
   check("MUST-PASS the 'electrical permit fee' line leaves the blank-fields list", !(michael.e.unmappedRequested ?? []).includes(FEE_LABEL), JSON.stringify(michael.e.unmappedRequested));
@@ -191,7 +191,7 @@ try {
     show(declined.fees));
 
   assert.equal(failed.length, 0, `${failed.length} check(s) failed: ${failed.join(" | ")}`);
-  console.log(`marionE01PrintedFees: ${passed} checks passed — with no saved fee line the Marion E-01 fills its own printed ladder (<= 25 kVA: row, Subtotal, 12% surcharge, TOTAL; Michael $105.28, 4 kVA $88.48), over 25 kVA stays blank, a saved line wins, the B-01S and every other curated form are untouched, nothing is written to the DB`);
+  console.log(`marionE01PrintedFees: ${passed} checks passed — with no saved fee line the Marion E-01 fills its own printed ladder (<= 25 kVA: row, Subtotal, 12% surcharge, TOTAL; Jules $105.28, 4 kVA $88.48), over 25 kVA stays blank, a saved line wins, the B-01S and every other curated form are untouched, nothing is written to the DB`);
 } finally {
   globalThis.fetch = realFetch;
   db.close();

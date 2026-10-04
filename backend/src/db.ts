@@ -1993,8 +1993,8 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       // THE CLIENT'S VIEW IS NOT THE WORKSHOP FLOOR.
       //
       // The per-client portal's first render showed one company fifteen cards for about eight
-      // real jobs: four passes at 1075 Flanagan Ave, three at 990 17th St NE, two at 15622 SE
-      // Vivian Way, and a fixture whose homeowner is "Test Testerson". Repeated staging passes
+      // real jobs: four passes at 5010 Fixture Ave, three at 520 Example St NE, two at 50030 SE
+      // Testing Way, and a fixture whose homeowner is "Test Testerson". Repeated staging passes
       // at one address are normal and useful internally; on a client's tracker they read as
       // four separate jobs.
       //

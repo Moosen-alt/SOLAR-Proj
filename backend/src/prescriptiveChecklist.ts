@@ -151,8 +151,8 @@ export function recoverBcd5952Checklist(
   if (textFields["Installation address"] === "project.projectAddress") textFieldOverrides["Installation address"] = "computed.streetAddress";
   // A mapper's guessed listing agency is not project evidence.
   textFieldOverrides["Listing agency"] = "snapshot.moduleListingAgency";
-  // The owner's phone as a phone ("(458) 329-4881"), not the parser's bare digits beside a
-  // contractor phone the client record already formats (Michael Sheridan's checklist, 2026-09-27).
+  // The owner's phone as a phone ("(555) 010-0100"), not the parser's bare digits beside a
+  // contractor phone the client record already formats (Jules Testperson's checklist, 2026-09-27).
   if (textFields["Phone number"] === "snapshot.homeownerPhone") textFieldOverrides["Phone number"] = "computed.homeownerPhone";
   // "Building department:" names the department that reviews the permit: the structural permit's
   // cited issuing agency when it is not the AHJ (computed.buildingDepartment). Stored maps put the

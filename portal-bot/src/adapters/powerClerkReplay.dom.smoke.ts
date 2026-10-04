@@ -101,7 +101,7 @@ const commissioningDate = (() => {
 const fieldValues = {
   estimatedCommissioningDate: commissioningDate,
   accountNumber: "8000123456",
-  homeownerPhone: "541-808-5853",
+  homeownerPhone: "555-010-0010",
   inverterMake: "Enphase",
   inverterModel: "IQ8PLUS-72-2-US",
 };
@@ -135,7 +135,7 @@ check("a sensitive field resolves from the store (never a recorded literal)", ()
   assert.equal(acct, fieldValues.accountNumber, "and must still arrive on the page at replay");
 });
 check("placeholder selector replays THIS project's phone", () => {
-  assert.equal(phone, "541-808-5853", `phone: got ${JSON.stringify(phone)}`);
+  assert.equal(phone, "555-010-0010", `phone: got ${JSON.stringify(phone)}`);
 });
 check("per-field autosave was committed by a blur after the fill", () => {
   assert.ok(saved.startsWith("saved:"), `autosave never fired — the value would be lost: ${JSON.stringify(saved)}`);

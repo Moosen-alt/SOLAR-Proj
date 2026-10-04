@@ -90,7 +90,7 @@ const recipe = {
 
 // THIS project's values — deliberately different from every recorded literal.
 const fieldValues = {
-  homeownerFirstName: "Wynema", street: "1075 Flanagan Ave", zip: "97420", state: "OR",
+  homeownerFirstName: "Wynema", street: "5010 Fixture Ave", zip: "97420", state: "OR",
   // Defined, and empty for this project — the discriminator for the invented-key rule.
   homeownerMiddleName: "",
 };
@@ -126,7 +126,7 @@ await check("the page-drift precheck ran on a production-shaped page and found t
 });
 await check("bound fields replay THIS project's data, never the learn-time literal", () => {
   assert.equal(firstName, "Wynema", `first name: got ${JSON.stringify(firstName)}`);
-  assert.equal(street, "1075 Flanagan Ave", `street: got ${JSON.stringify(street)}`);
+  assert.equal(street, "5010 Fixture Ave", `street: got ${JSON.stringify(street)}`);
   assert.equal(zip, "97420", `zip: got ${JSON.stringify(zip)}`);
   assert.equal(state, "OR", `state select: got ${JSON.stringify(state)}`);
 });

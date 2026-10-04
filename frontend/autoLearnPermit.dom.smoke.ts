@@ -5,7 +5,7 @@
 // {scope, portalUrl} only. The route already accepts permitType ('structural' | 'electrical') and
 // autoLearnPortal keys the recipe's discipline off it — so an AHJ learn from the dashboard saved a
 // recipe with NO discipline, and the building track (recipeDisciplineForTrack('building') =
-// 'structural') never found it. The operator's live learn for City of Jefferson (Michael Sheridan)
+// 'structural') never found it. The operator's live learn for City of Jefferson (Jules Testperson)
 // would have been learned and then ignored. The learner is also handed THAT permit's issuing
 // agency (item 2), which it cannot choose without knowing the permit.
 //

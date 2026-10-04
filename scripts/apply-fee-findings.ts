@@ -39,7 +39,7 @@
 // the undifferentiated row, which feeSchedules.applicableSchedules returns ALONE, ignoring
 // every split row beside it. The findings file never carried a discipline, so a replay for
 // a city that files structural and electrical separately quietly demoted both to
-// unreachable: measured on a copy of the live database, Christopher Ivy's Coos Bay permit
+// unreachable: measured on a copy of the live database, Drew Example's Coos Bay permit
 // total went $335.00 -> $200.00 and the county's $135.00 electrical permit left the quote
 // with nothing printed anywhere. A findings ROW may now carry "discipline"; one that does
 // not, aimed at a key that already holds split rows, writes nothing and prints the repair.
@@ -209,7 +209,7 @@ async function main(): Promise<void> {
     // landed on discipline "", and MEASURED on a copy of the live database that
     // is not a cosmetic duplicate:
     //
-    //   before   Christopher Ivy, Coos Bay — permit total $335.00
+    //   before   Drew Example, Coos Bay — permit total $335.00
     //            = Coos County ELECTRICAL $135.00 + City of Coos Bay STRUCTURAL $200.00
     //   after    an ordinary two-row findings file applied
     //   after    permit total $200.00 — ONE line, the electrical permit gone from

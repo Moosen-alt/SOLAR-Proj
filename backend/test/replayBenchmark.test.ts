@@ -67,7 +67,7 @@ check("...and a clean run that CONTRADICTS the project is not verified either", 
   // The live incident's shape: every step ran, nothing blank, wrong name on the screen.
   const s = scoreReplayOutcome({
     ok: true, executed: 98, recorded: 98, reviewFieldsSeen: 22,
-    reviewMismatches: [{ field: "homeownerName", expected: "Wynema Wright", found: "Charles Bitton" }],
+    reviewMismatches: [{ field: "homeownerName", expected: "Avery Sample", found: "Charles Bitton" }],
   });
   assert.equal(s.index, 4);
   assert.equal(s.owner, "recipe");

@@ -1528,7 +1528,7 @@ app.patch("/api/corrections/:id/sla", (req, res) => {
 app.post("/api/projects/:id/corrections", asyncHandler(async (req, res) => {
   const correctionText = String(req.body?.correctionText || "").trim();
   if (!correctionText) throw new HttpError(400, "correctionText is required.");
-  const noticedAt = requestNoticedAt(req.body?.noticedAt); // an unparseable date is a 400, not null (#58)
+  const noticedAt = requestNoticedAt(req.body?.noticedAt); // an unparseable date is a 400, not null (#58, #137)
   // The filing it answers and the notice it belongs to (#47); a submissionId off this project is a 404.
   addManualCorrection(db, String(req.params.id), correctionText, req.body?.source || "manual", {
     submissionId: typeof req.body?.submissionId === "string" ? req.body.submissionId : null,
@@ -2038,7 +2038,11 @@ app.post("/api/projects/:id/research-ahj", asyncHandler(async (req, res) => {
 // item, never a status. (A re-check offered by the stale panel below is exactly the trusted shape:
 // targetId + source public_url / manual.)
 app.post("/api/projects/:id/permit-checks", asyncHandler(async (req, res) => {
-  res.status(201).json(await recordPermitStatusCheck(db, String(req.params.id), req.body || {}));
+  // The notice date through the same gate as the corrections route (#137): an unparseable one is a
+  // 400 — passed through, a garbage value would silently become no date at all — and an accepted
+  // one reaches the stamp in one shape (ISO), whatever form the caller wrote it in.
+  const body = req.body || {};
+  res.status(201).json(await recordPermitStatusCheck(db, String(req.params.id), { ...body, noticedAt: requestNoticedAt(body.noticedAt) }));
 }));
 
 // WHICH OF THIS PROJECT'S STORED READINGS TODAY'S RULES WOULD CHANGE — and how to get a real one.

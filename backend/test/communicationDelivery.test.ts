@@ -5,7 +5,7 @@
 //
 //   [draft — SMTP not configured or send failed] Permit issued — 773 Kentuck…
 //   [draft — SMTP not configured or send failed] Correction requested — 773 …
-//   [draft — SMTP not configured or send failed] Permit issued — 1780 Ocean …
+//   [draft — SMTP not configured or send failed] Permit issued — 5050 Placeholder …
 //
 // Twelve days, one of them a CORRECTION REQUEST, nobody told. The detection worked, the wording
 // worked, the status link worked. Delivery was off and there was no number anywhere that said so.
@@ -127,7 +127,7 @@ await check("MUST EXCLUDE: an operator's own note is not an undelivered email", 
 // Shaped exactly as they sit in the live database: the prefix in the subject, nothing else.
 const legacy = [
   ["legacy-draft", "[draft — SMTP not configured or send failed] Permit issued — 773 Kentuck Way"],
-  ["legacy-sent", "[sent] Permit issued — 1780 Ocean Blvd"],
+  ["legacy-sent", "[sent] Permit issued — 5050 Placeholder Blvd"],
   ["legacy-bare", "Permit issued — a row from before either prefix existed"],
 ];
 // The body shape as it really sits on the live database — note the status link, frozen as
@@ -165,7 +165,7 @@ await check("BACKFILL: the stranded draft becomes queryable, and keeps its wordi
 await check("BACKFILL: a delivered row is marked sent, not lumped in with the failures", () => {
   const r = db2.get<Record<string, unknown>>("SELECT * FROM communications WHERE id = 'legacy-sent'")!;
   assert.equal(r.delivery_status, "sent");
-  assert.equal(r.subject, "Permit issued — 1780 Ocean Blvd");
+  assert.equal(r.subject, "Permit issued — 5050 Placeholder Blvd");
 });
 
 await check("MUST NOT INVENT: a row that never carried a prefix is left UNKNOWN, not guessed 'sent'", () => {

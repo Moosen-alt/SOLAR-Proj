@@ -98,7 +98,7 @@ export function stageForStatus(status: ProjectStatus): ProjectStage {
  *
  * `blocked` is the explicit form. A correction is the other form of the same fact: an AHJ
  * or utility has stopped the filing and only a person can restart it. That case was
- * invisible — PacifiCorp suspended David Simmons' interconnection (APP-111681) with a
+ * invisible — PacifiCorp suspended Finley Mockdata' interconnection (APP-111681) with a
  * ten-business-day withdrawal clock, and because the status was correction_triaged rather
  * than "blocked" the board card showed no chip at all. The most urgent state in the system
  * looked identical to a project ticking along.

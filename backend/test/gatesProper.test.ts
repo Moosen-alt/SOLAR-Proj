@@ -259,7 +259,7 @@ await check("C2", "KILL (real path): a missing account number holds only the uti
 });
 
 // ── C1 ─────────────────────────────────────────────────────────────────────────────────
-// Michael Sheridan's shape (City of Jefferson; the per-job lookup cites Marion County as the issuer of
+// Jules Testperson's shape (City of Jefferson; the per-job lookup cites Marion County as the issuer of
 // both permits; Marion's B-01S / E-01 are curated, hash-locked seeds). Before Stage fetched them, the
 // gate held both permit filings with "Attach or split out ... (B-01S), filled; ... (E-01), filled".
 const { savePermitProcessLookup } = await import("../src/permitProcess");

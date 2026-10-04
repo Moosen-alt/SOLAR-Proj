@@ -1,6 +1,6 @@
 // "INTAKE REQUIREMENTS NEEDED" IS THE CITY WAITING ON US, AND WE CALLED IT "IN REVIEW".
 //
-// Read off the real Coos Bay Accela record for 187-26-000309-STR (1780 Ocean Blvd) on 2026-09-15:
+// Read off the real Coos Bay Accela record for 187-26-000309-STR (5050 Placeholder Blvd) on 2026-09-15:
 //
 //   Record 187-26-000309-STR: Residential Structural
 //   Record Status: Intake Requirements Needed

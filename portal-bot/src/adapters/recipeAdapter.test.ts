@@ -865,7 +865,7 @@ async function testDriftNoEvalSilent() {
 // positional fallback cbListServices_1. Coos Bay's CITY record offers no Electrical at all —
 // that discipline files with the COUNTY — so the label matched nothing, the fallback fired,
 // and index 1 on the city list is "Residential - Mechanical". A mechanical permit was filed
-// and ISSUED on a solar job at 1780 Ocean Blvd, with its fees paid.
+// and ISSUED on a solar job at 5050 Placeholder Blvd, with its fees paid.
 //
 // A page that offers a given list of record types, as Accela renders them: checkboxes whose
 // accessible name is the type. `exact` is honoured so the ambiguity case is real.
@@ -1010,7 +1010,7 @@ async function testRecordTypeIsNeverSelfHealed() {
 
 // A DISABLED NAMESAKE IS NEVER THE ONE THE USER CLICKED.
 //
-// Live on Marineau's electrical replay: Oregon ePermitting's landing page carries a DISABLED
+// Live on Placeholder's electrical replay: Oregon ePermitting's landing page carries a DISABLED
 // decorative "Apply" nav pill, headless layout put it first in DOM order, the recorded step
 // resolved onto it, and the click waited its full 30s on a button that can never be clicked —
 // while the real Apply link sat enabled right below. Among namesakes, the first VISIBLE and
@@ -1054,7 +1054,7 @@ async function testDisabledNamesakeSkipped() {
 
 // A SELECTOR LEVEL WHOSE EVERY MATCH IS INVISIBLE HAS NOT FOUND THE CONTROL.
 //
-// Live on Marineau's NEM replay: the inverter Model step's recorded primary #pcInputBase55
+// Live on Placeholder's NEM replay: the inverter Model step's recorded primary #pcInputBase55
 // uniquely matched PowerClerk's HIDDEN combobox whose label also reads "Model" but whose
 // option list is the ENERGY SOURCE values. resolveLocator settled for it (count > 0), the
 // label fallback pointing at the real visible Model box was never consulted, the model rules

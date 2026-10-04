@@ -3647,7 +3647,7 @@ function bracketEvidence(schedule: FeeScheduleRecord, b: FeeBracket): string {
 // The prescriptive and the engineered applications are mutually exclusive, and so
 // are their FEES. The document half of that pair has been path-scoped for a while
 // (ahjForms.formAllowedForPath / formContradictsPath); the fee half was blind, and
-// on Ann Marineau's live Coos Bay project the two halves contradicted each other
+// on Emery Placeholder's live Coos Bay project the two halves contradicted each other
 // on one screen: the blocker panel demanded a PE stamp and a sealed engineering
 // letter, while the fee card quoted $360 — $160 county electrical plus $200 off a
 // row labelled "Solar Permit (when required) – PRESCRIPTIVE PATH System" whose own

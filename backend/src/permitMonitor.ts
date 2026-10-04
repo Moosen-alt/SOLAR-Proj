@@ -173,7 +173,7 @@ const actionNeededPattern =
   /\b(intake\s+requirements?\s+needed|requirements?\s+needed|additional\s+(?:information|documents?)\s+(?:required|needed)|pending\s+applicant|awaiting\s+applicant|resubmittal\s+required|application\s+incomplete|incomplete\b[^.;\n]{0,32}\brequired|on\s+hold)\b/i;
 
 // A RECORD- OR PARCEL-LEVEL CONDITION stops a permit dead and has nothing to do with our
-// documents. 1780 Ocean carries one from 2019 — "Outstanding permit 187-M16-213 expired prior to
+// documents. 5050 Placeholder carries one from 2019 — "Outstanding permit 187-M16-213 expired prior to
 // final" — which sat in text we captured and stored, and which nothing ever read.
 const conditionPattern =
   /\b(condition:\s*[a-z]|total\s+conditions:\s*[1-9]|parcel\s+notifications?|permit\s+outstanding|outstanding\s+permit|stop\s+work|lien\b)/i;
@@ -904,7 +904,7 @@ export interface StaleReadingScan {
  *     return new Set(scan.readings.map((s) => s.targetId));   // clientPortal.staleTargetIds
  *
  * That Set answers `has()` with `false` for a reading we confirmed is current AND for a pass that
- * exploded before it read anything, and the pages published the flattering one. Christopher Ivy's
+ * exploded before it read anything, and the pages published the flattering one. Drew Example's
  * building permit went from "needs confirming" to an unqualified "In review by the jurisdiction",
  * on a permit that has been stalled at the counter since Sep 3, in a payload byte-identical to a
  * confirmed-fresh one. The guard was there. The SHAPE it returned is what lost the third answer.

@@ -2,7 +2,7 @@
 //
 // The 120% busbar screen is NEC 705.12(B)(3)(2) — a LOAD-side rule. A supply-side (line-side)
 // tap is 705.11, and the busbar calculation is not the applicable test there at all. The
-// reviewer gate's old guard matched the bare word "breaker", so Edgar Miner's parsed
+// reviewer gate's old guard matched the bare word "breaker", so Harper Fakename's parsed
 // interconnection "Supply Breaker" — corroborated by his own plan set, "POINT OF
 // INTERCONNECT, SUPPLY BREAKER FEED THRU LUG" — was measured against the load-side rule and
 // produced a BLOCKER the cited code does not support.
@@ -157,7 +157,7 @@ console.log("\n6. THE MISSING DOOR — an unrecognised method must not skip the 
 // in exactly one place and nothing downstream repeats it — QC checks the rating FIELDS ARE
 // PRESENT, never that the math passes — so an unrecognised wording skipped the only NEC 705.12
 // calculation in the product. The trigger is the parser prompt's OWN first example value, and
-// a live project (Daniel Daly) carries it verbatim.
+// a live project (Blake Fixture) carries it verbatim.
 const UNCLASSIFIED = ["Net Metering", "Net metered PV", "MSP interconnection", "Utility interconnection", "Grid-tied"];
 for (const phrasing of UNCLASSIFIED) {
   check(`MUST PASS: "${phrasing}" is reported, not skipped`, () => {
