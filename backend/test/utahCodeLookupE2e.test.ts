@@ -25,8 +25,8 @@
 //       AHJ row under Utah's seeded state layer never blocked. It now reads the field's own row.)
 //   AC4 rule 5: the project's NEM track never resolves to a permit-platform portal for a UT AHJ
 //       when the utility has no human-verified record; only that record opens one.
-//       KNOWN GAP (#128, P0): Provo's own SELF-HOSTED CityView host (cvportal.provo.gov) is not
-//       recognized as a permit portal and passes the NEM track today. Not pinned here; #128 owns it.
+//       That includes Provo's own SELF-HOSTED CityView host (cvportal.provo.gov, #128); the full
+//       self-hosted case is pinned in selfHostedPermitPortalNem.test.ts.
 //
 //   npx tsx backend/test/utahCodeLookupE2e.test.ts
 import { REPO } from "./_isolate"; // FIRST: temp cwd, nothing lands in the repo's backend/data
@@ -243,8 +243,10 @@ await check("AC3: a person verifies Provo's row (the verify route's schema + sav
 });
 
 // ─── AC4: rule 5 — the NEM track never resolves to the UT AHJ's permit portal ────────────────────
-// Synthetic tenants on the platforms Utah's seeded rows name (Accela, iWorQ, CitizenServe).
+// Synthetic tenants on the platforms Utah's seeded rows name (Accela, iWorQ, CitizenServe), and the
+// self-hosted portal Provo's seeded row names (#128).
 const UT_PERMIT_PORTALS = [
+  "https://cvportal.provo.gov/CityViewPortal",
   "https://aca-prod.accela.com/EXAMPLEUT/Default.aspx",
   "https://portal.iworq.net/EXAMPLEUT/permits/600",
   "https://www.citizenserve.com/Portal/PortalController?Action=showHomePage&ctzPagePrefix=Portal_&installationID=99999",
@@ -266,7 +268,7 @@ await check("AC4 (rule 5): with no verified utility record, the NEM track refuse
 });
 
 await check("AC4 (rule 5): the AHJ's seeded KB row never opens its portal on the NEM track; only the utility's own VERIFIED record does", () => {
-  const url = UT_PERMIT_PORTALS[0];
+  const url = UT_PERMIT_PORTALS[1];
   const now = new Date().toISOString();
   // A SEEDED utility row naming the city's permit portal: still refused.
   db.run(
