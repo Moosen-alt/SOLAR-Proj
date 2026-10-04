@@ -3782,7 +3782,12 @@ async function saveManualEntry() {
   const jobValue = ($("manualJobValue")?.value || "").trim();
   const projectType = ($("manualProjectType")?.value || "").trim();
   const permitPath = ($("manualPermitPath")?.value || "").trim();
-  const email = ($("manualHomeownerEmail")?.value || "").trim();
+  // The email box saves an address or nothing (parser-review.js emailToSave, #92).
+  const email = window.ParserReview ? window.ParserReview.emailToSave($("manualHomeownerEmail")) : ($("manualHomeownerEmail")?.value || "").trim();
+  if (email === null) {
+    if (status) { status.textContent = "Homeowner email: not an email address."; status.className = "muted"; }
+    return;
+  }
   const phone = ($("manualHomeownerPhone")?.value || "").trim();
   const desc = ($("manualDescription")?.value || "").trim();
   if (jobValue) payload.jobValue = jobValue;
