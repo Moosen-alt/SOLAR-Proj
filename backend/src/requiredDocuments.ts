@@ -42,7 +42,7 @@ import { filledFormsByDocType, applicationKindForPath, loadStoredTemplates, form
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
 import { codeLimitProvenance, resolveEffectiveCodeContext } from "./codeProfiles";
 import { findAhjProcessProfile, ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
-import { findKnowledgeForLearn } from "./knowledgeBase";
+import { findKnowledgeForLearn, isVerifiedKnowledge } from "./knowledgeBase";
 import { HttpError } from "./httpError";
 import { applicationProfiles, findApplicationProfile, namedApplicationForm, permitStructureForProject } from "./applicationDocs";
 import { normalizeAhjName, permitProcessFor, stateIssuerFormsFor, stateRulesFor } from "./permitProcess";
@@ -91,6 +91,12 @@ export interface RequiredDocItem {
    * ("upload only the application that pertains — DO NOT upload both").
    */
   applicationKind?: "prescriptive" | "structural";
+  /**
+   * Set when a PERSON-VERIFIED per-job lookup's required-documents list made this row blocking
+   * (verifiedRequiredListItems): the list line, and the page and words it rests on, so the gate,
+   * the QC row and the packet can show whose requirement it is.
+   */
+  verifiedList?: { text: string; sourceUrl: string; quote: string };
 }
 
 /** An application/checklist row, which always names its discipline. */
@@ -838,6 +844,14 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
     }
   } catch { /* KB optional */ }
   const required = [...baselineItems, ...kbItems];
+  // A PERSON-VERIFIED REQUIRED LIST BLOCKS; A SEEDED ONE ADVISES (hard rule 3's shape). Each line of
+  // the verified lookup's cited list that maps to a slot becomes a blocking row — an existing row for
+  // that slot is made blocking and cites the list; a slot nothing here tracks gets its own row. A
+  // seeded lookup changes nothing here: its list stays docs.complete's advisory warning. Lines no slot
+  // can hold stay advisory on either confidence (requiredListCheck), since absence cannot be proven.
+  try {
+    applyVerifiedRequiredList(project, required, permitPath);
+  } catch { /* the lookup is optional — the rows stay as they were */ }
   // NOTHING KNOWN IS NOT NOTHING OWED (leak sweep unknown-as-fact-unknown-ahj-green-all-clear). NO
   // SIGNAL, NO DEMAND keeps an unnamed application from BLOCKING — but an empty application set
   // because nobody knows this AHJ rendered the pass-green "Every required document is on file"
@@ -1064,6 +1078,64 @@ function lookupRequiredList(project: ProjectRecord): { items: string[]; sourceUr
 }
 
 /**
+ * The per-job lookup's cited list lines that BLOCK: only when a person verified the lookup row
+ * (isVerifiedKnowledge — verified_at, never a seeded row), only lines that map to a slot
+ * (requirementSlots), and never a line scoped to the other permit path. Each carries the page and
+ * the words it was cited on. [] for a seeded or absent lookup.
+ */
+export function verifiedRequiredListItems(project: ProjectRecord): Array<{ text: string; docTypes: string[]; sourceUrl: string; quote: string }> {
+  const lookup = String(project.ahj || "").trim() ? permitProcessFor({ state: project.state, ahj: project.ahj }) : null;
+  if (!lookup || !isVerifiedKnowledge(lookup)) return [];
+  const resolution = resolvePermitPath(project);
+  const out: Array<{ text: string; docTypes: string[]; sourceUrl: string; quote: string }> = [];
+  for (const permit of lookup.permits ?? []) {
+    const docs = permit.documents;
+    if (!docs || !/^https?:\/\//i.test(String(docs.sourceUrl || ""))) continue;
+    for (const raw of docs.value ?? []) {
+      const text = String(raw || "").trim();
+      if (!text || out.some((i) => i.text.toLowerCase() === text.toLowerCase())) continue;
+      const docTypes = requirementSlots(text);
+      if (!docTypes.length || requirementSkipReason(text, resolution.path, Boolean(resolution.standardReview))) continue;
+      out.push({ text, docTypes, sourceUrl: String(docs.sourceUrl), quote: String(docs.quote || "") });
+    }
+  }
+  return out;
+}
+
+/** Fold the verified list's blocking lines into the inventory's required rows (in place). */
+function applyVerifiedRequiredList(project: ProjectRecord, required: RequiredDocItem[], permitPath: "prescriptive" | "engineered" | "unknown"): void {
+  const where = String(project.ahj || "").trim() || "the AHJ";
+  for (const line of verifiedRequiredListItems(project)) {
+    // The prescriptive checklist is not owed on the engineered path (the same suppression the KB rows get).
+    const slots = permitPath === "engineered" ? line.docTypes.filter((t) => t !== "solar_checklist" && t !== "pv_worksheet") : line.docTypes;
+    if (!slots.length) continue;
+    // URL first: the gate's evidence lines are capped, and the page is what the operator checks.
+    const cite = `On ${where}'s person-verified required list (cited: ${line.sourceUrl})${line.quote ? ` — "${line.quote}"` : ""}.`;
+    const verifiedList = { text: line.text, sourceUrl: line.sourceUrl, quote: line.quote };
+    const held = required.filter((r) => [r.docType, ...(r.altDocTypes || [])].some((t) => slots.includes(t)));
+    if (held.length) {
+      // Already a row for this slot: a blocking row stays as it is; an advisory one now blocks.
+      for (const r of held) {
+        if (r.blocking || r.verifiedList) continue;
+        r.blocking = true;
+        r.why = `${r.why} ${cite}`.trim();
+        r.verifiedList = verifiedList;
+      }
+      continue;
+    }
+    required.push({
+      docType: slots[0],
+      ...(slots.length > 1 ? { altDocTypes: slots.slice(1) } : {}),
+      label: line.text,
+      why: cite,
+      lane: "permit",
+      blocking: true,
+      verifiedList,
+    });
+  }
+}
+
+/**
  * The job's REQUIRED list, item by item. `inventory` is the same documentInventory the caller
  * already built — the universal slots are read from its presence rows, and slots the inventory does
  * not track (a utility bill, labels) from the uploads directly.
@@ -1114,7 +1186,10 @@ export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: 
   };
   if (found.items.length) {
     source = "lookup";
-    sourceLabel = `the per-job process lookup (cited: ${found.sourceUrl})`;
+    // Whose list it is decides its force: a person-verified list's slot lines are blocking rows in the
+    // inventory (applyVerifiedRequiredList); a seeded one's are this row's advice only.
+    const verified = isVerifiedKnowledge(permitProcessFor({ state: project.state, ahj: project.ahj }));
+    sourceLabel = `the per-job process lookup${verified ? ", verified by a person" : ""} (cited: ${found.sourceUrl})`;
     // A raw entry that IS one of the agency list's PDFs gives way to the agency's line for it.
     texts = agencyList ? found.items.filter((t) => !agencyListNamesDocument(agencyList!, t)) : found.items;
     addAgencyItems(true);

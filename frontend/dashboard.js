@@ -6423,6 +6423,14 @@ function documentVerdictHtml(pkg, formMissingFields = [], agencyComputedFields =
   const agencyFields = [...new Set(agencyComputedFields)];
   const inventoryResolved = pkg.missingDocumentsStatus === "resolved";
   const missingDocs = inventoryResolved ? (pkg.missingDocuments || []) : [];
+  // A row a PERSON-VERIFIED required-documents list made blocking (#113): the list line, the page it
+  // was cited on (http(s) only) and the quoted words — so the operator sees whose requirement it is.
+  const verifiedListCitation = (v) => {
+    if (!v || typeof v !== "object") return "";
+    const url = /^https?:\/\//i.test(String(v.sourceUrl || "")) ? String(v.sourceUrl) : "";
+    const quote = String(v.quote || "").trim();
+    return `<span class="kx-docstate-reason">Blocking: on the AHJ's person-verified required-documents list ("${esc(v.text || "")}")${quote ? ` — “${esc(quote)}”` : ""}${url ? ` — <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>` : ""}</span>`;
+  };
   const filledAtStaging = inventoryResolved ? (pkg.filledAtStagingDocuments || []) : [];
   const acquiredAtStaging = inventoryResolved ? (pkg.acquiredAtStagingDocuments || []) : [];
   // WHICH APPLICATION(S) THIS AHJ REQUIRES IS NOT KNOWN (pkg.applicationSetUnknown, the inventory's
@@ -6509,7 +6517,7 @@ function documentVerdictHtml(pkg, formMissingFields = [], agencyComputedFields =
         <div class="kx-docstate-body">
           <span class="kx-docstate-title">${plural(missingDocs.length, "required document")} NOT in the packet</span>
           <span class="kx-docstate-text">These are files, not fields. The submittal is incomplete until each one is attached.</span>
-          <ul class="kx-docstate-list">${missingDocs.map((d) => `<li>${esc(d.label)}<span class="kx-docstate-why"> — ${esc(d.why)}</span></li>`).join("")}</ul>
+          <ul class="kx-docstate-list">${missingDocs.map((d) => `<li>${esc(d.label)}<span class="kx-docstate-why"> — ${esc(d.why)}</span>${verifiedListCitation(d.verifiedList)}</li>`).join("")}</ul>
         </div>
       </div>${unknownAppsRow}`;
   } else if (unknownAppsRow) {

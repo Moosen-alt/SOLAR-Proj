@@ -759,6 +759,21 @@ await check("…and everything interpolated into that card is esc()'d", () => {
   assert.ok(html.includes("&lt;script&gt;"), "the escaped form should be what renders");
 });
 
+await check("#113 a verified-list row shows its citation, escaped, and links only an http(s) page", () => {
+  const html = verdict({
+    missingDocumentsStatus: "resolved",
+    missingDocuments: [{ docType: "utility_bill", label: "Copy of the current utility bill", why: "On the list.",
+      verifiedList: { text: "<i>utility bill</i>", sourceUrl: "https://www.ledgerrun-or.example/permits/solar", quote: "<b>Submit a bill</b>" } }],
+  });
+  assert.ok(html.includes("person-verified required-documents list") && html.includes('href="https://www.ledgerrun-or.example/permits/solar"'), html);
+  assert.ok(!html.includes("<i>utility") && !html.includes("<b>Submit") && html.includes("&lt;b&gt;Submit a bill"), "the citation must be esc()'d");
+  const js = verdict({
+    missingDocumentsStatus: "resolved",
+    missingDocuments: [{ docType: "utility_bill", label: "Bill", why: "x", verifiedList: { text: "Bill", sourceUrl: "javascript:alert(1)", quote: "" } }],
+  });
+  assert.ok(!js.includes("href=\"javascript:"), "a non-http(s) source must never become a link");
+});
+
 // ON FILE IS NOT ATTACHED (docs-audit PLAN D1). The card's all-clear used to read "Every required
 // document is attached" and the filled-at-staging row "staging fills it and attaches it to the
 // filing". Both describe the portal; the inventory reads files on disk, and no run records what it
@@ -1159,6 +1174,73 @@ await check("active board excludes archived projects while explicit history incl
   assert.equal(getProjectList(db, { search: proj.homeownerName, includeArchived: false }).projects.length, 0);
   assert.equal(getProjectList(db, { search: proj.homeownerName, includeArchived: true }).projects.length, 1);
 });
+// ---------------------------------------------------------------------------
+// #113 — A PERSON-VERIFIED REQUIRED LIST BLOCKS; A SEEDED ONE ADVISES (hard rule 3's shape).
+// The inventory itself (the one list prepareSubmission, the gate and QC read): a verified list's slot
+// line makes that slot's row blocking (a new row, or an advisory row upgraded), citing the list; the
+// same row seeded changes nothing; a line scoped to the other permit path and the checklist on the
+// engineered path are never demanded.
+// ---------------------------------------------------------------------------
+{
+  const { savePermitProcessLookup } = await import("../src/permitProcess");
+  // Oregon: the prescriptive / engineered split exists, so path-scoped lines are read.
+  const STATE = "OR";
+  const AHJ = "City of Ledger Run";
+  const URL = "https://www.ledgerrun-or.example/permits/solar";
+  const none = () => ({ value: null, sourceUrl: "", quote: "", origin: "lookup" as const, notFound: "not searched" });
+  const LIST = ["Label and placard schedule", "Solar prescriptive checklist", "Stamped structural letter on the non-prescriptive path", "Copy of the current utility bill"];
+  const saveList = (verified: boolean) => savePermitProcessLookup(db, {
+    state: STATE, ahj: AHJ, lookedUpAt: new Date().toISOString(), issuingAgency: none(), permitStructure: none(),
+    permits: [{ discipline: "structural", label: "Building permit", issuingAgency: none(), portalUrl: none(), recordType: none(), fee: none(),
+      documents: { value: LIST, sourceUrl: URL, quote: "Every solar submittal includes:", origin: "lookup" } }],
+    ...(verified ? { confidence: "verified" as const } : {}),
+  } as never, verified ? { verifiedBy: "test reviewer" } : {});
+  const mkLedger = (permitPathOverride: string) => createProject(db, {
+    clientId: client.id, owner: `Ledger Owner ${++n}`, street: `${n} Ledger Rd`, city: "Ledger Run",
+    state: STATE, ahj: AHJ, utility: "Ledger Run Electric", dcKw: "8", acKw: "6.4", permitPathOverride,
+  }).project;
+  const blockingTypes = (proj: ReturnType<typeof mkLedger>) => documentInventory(db, proj).missingBlocking.map((d) => d.docType);
+
+  saveList(false);
+  await check("#113 seeded list: the labels row stays advisory and no listed slot becomes blocking", () => {
+    const proj = mkLedger("prescriptive");
+    const inv = documentInventory(db, proj);
+    assert.equal(inv.presence.find((d) => d.docType === "labels")?.blocking, false);
+    for (const t of ["utility_bill", "structural_letter"]) assert.ok(!blockingTypes(proj).includes(t), `${t} blocked on a SEEDED list: ${JSON.stringify(blockingTypes(proj))}`);
+    assert.ok(!inv.presence.some((d) => d.verifiedList), "a seeded list must never mark a row as verified-list");
+  });
+
+  saveList(true);
+  await check("#113 verified list: an advisory row for a listed slot (labels) is upgraded to blocking, citing the list", () => {
+    const proj = mkLedger("prescriptive");
+    const labels = documentInventory(db, proj).missingBlocking.find((d) => d.docType === "labels");
+    assert.ok(labels, JSON.stringify(blockingTypes(proj)));
+    assert.ok(labels!.why.includes(URL) && labels!.verifiedList?.text === "Label and placard schedule", labels!.why);
+  });
+  await check("#113 verified list: a slot nothing tracked (utility bill) becomes its own blocking permit-lane row", () => {
+    const proj = mkLedger("prescriptive");
+    const row = documentInventory(db, proj).missingBlocking.find((d) => d.docType === "utility_bill");
+    assert.ok(row && row.lane === "permit" && row.label === "Copy of the current utility bill", JSON.stringify(row));
+    assert.ok(stagingMissingDocuments(documentInventory(db, proj), "building").some((d) => d.docType === "utility_bill"),
+      "the staging filter for the building track must refuse over it");
+  });
+  await check("#113 verified list: a line scoped to the OTHER path is not demanded (prescriptive job, non-prescriptive stamp line)", () => {
+    const proj = mkLedger("prescriptive");
+    assert.ok(!documentInventory(db, proj).presence.some((d) => d.verifiedList?.text.startsWith("Stamped structural letter")), JSON.stringify(blockingTypes(proj)));
+  });
+  await check("#113 verified list: the prescriptive checklist is never demanded on the engineered path", () => {
+    const proj = mkLedger("engineered");
+    const types = blockingTypes(proj);
+    assert.ok(!types.includes("solar_checklist") && !types.includes("pv_worksheet"), JSON.stringify(types));
+  });
+  await check("#113 verified list: an attached listed document satisfies its blocking row", () => {
+    const proj = mkLedger("prescriptive");
+    attach(proj.id, "utility_bill");
+    const p = documentInventory(db, proj).presence.find((d) => d.docType === "utility_bill");
+    assert.ok(p?.present && p.blocking, JSON.stringify(p));
+  });
+}
+
 try { db.close(); } catch { /* best effort */ }
 for (const dir of filledDirs) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } }
 fs.rmSync(tmpDir, { recursive: true, force: true });
