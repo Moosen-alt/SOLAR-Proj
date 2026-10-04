@@ -7640,6 +7640,17 @@
       "requiresFloodplainCheck": false,
       "requiresJurisdictionCheck": false,
       "otherRequirements": "Solar Permit Application with a completed Solar PV Packet; site plan showing the location of major components; electrical diagram showing PV array configuration, wiring system, overcurrent protection, inverter, disconnects, required labels and AC connection to the building. Permit is void if work is not commenced within 180 days.",
+      "documents": {
+        "items": [
+          "Solar Permit Application",
+          "A completed Solar PV Packet",
+          "A site plan showing the location of major components on the property",
+          "An electrical diagram showing PV array configuration, wiring system, overcurrent protection, inverter, disconnects, required labels, and AC connection to the building"
+        ],
+        "sourceUrl": "https://www.slc.gov/buildingservices/2026/04/22/solar-pv-systems/",
+        "quote": "A Solar PV Permit Packet is required to be completed and submitted with a Solar Permit Application",
+        "observedAt": "2026-10-04"
+      },
       "reviewerNotes": "Seeded 2026-10-04 from the city's public information pages (worker-60 web research, issue #109); NOT verified - confirm before relying on it. Information pages are sources, not the portal. Sources: https://www.slc.gov/buildingservices/2026/04/22/solar-pv-systems/ ; https://www.slc.gov/buildingservices/building-permits/electronic-plan-review/",
       "sourceSheet": "UT seeded (web research 2026-10-04)"
     },
@@ -7660,6 +7671,21 @@
       "requiresFloodplainCheck": false,
       "requiresJurisdictionCheck": false,
       "otherRequirements": "Solar PV System Checklist items: site plan with the 3 ft fire-code clearance around panels, meter, production/net meter and backfed panels; mounting system and roof framing/covering details; one-line diagram; photos and label of the panel to be backfed; module and inverter spec sheets; total array power (not required with micro-inverters); system components. Net Metering Agreement submitted concurrently to Provo City Power (policy 12.03.080).",
+      "documents": {
+        "items": [
+          "Site Plan showing the home, a 3 foot clearance around all the solar panels, electrical meter panel, production meter/net meter, any backfed sub-panelboards, and all the PV System components",
+          "Mounting System information, including the weight of all the components on the roof and the roof rafters and roof covering",
+          "One-line Diagram",
+          "Electrical Panel to be Backfed: pictures of the service panel with a picture of its interior label",
+          "Module Spec Sheets",
+          "Inverter Spec Sheets",
+          "Total Array Power (not required for systems with micro inverters)",
+          "System Components"
+        ],
+        "sourceUrl": "https://www.provo.gov/DocumentCenter/View/824/Solar-PV-System-Checklist-PDF",
+        "quote": "This checklist is only a basic list of items needed to begin a Solar Photovoltaic (PV) System plan review and is not all inclusive.",
+        "observedAt": "2026-10-04"
+      },
       "reviewerNotes": "Seeded 2026-10-04 from the city's public information pages (worker-60 web research, issue #109); NOT verified - confirm before relying on it. Information pages are sources, not the portal. Sources: https://www.provo.gov/200/Building ; https://www.provo.gov/DocumentCenter/View/824/Solar-PV-System-Checklist-PDF ; https://provo.gov/DocumentCenter/View/4289/Solar-Net-Metering-Installation-Timeline",
       "sourceSheet": "UT seeded (web research 2026-10-04)"
     },
@@ -7680,6 +7706,20 @@
       "requiresFloodplainCheck": false,
       "requiresJurisdictionCheck": false,
       "otherRequirements": "Solar applications go to Lehi City Power Department first (its own solar portal, with the Net Metering License Agreement and Net Metering Standards Application); the building submittal then needs: one complete plan set with the Lehi Power Department approval stamp, one-line diagram, roof layout showing Fire Department access, warning labels and placement, engineer letter for the roof structure, spec sheets for all equipment, and a complete building permit application with contractor license number and signature.",
+      "documents": {
+        "items": [
+          "One complete set of plans [with Lehi Power Department approval stamp]",
+          "One-line diagram",
+          "Roof layout [showing Fire Department access]",
+          "Warning labels and placement",
+          "Engineer letter for roof structure",
+          "Spec sheets for all equipment",
+          "Complete Building Permit Application [with contractor License # and signature]"
+        ],
+        "sourceUrl": "https://www.lehi-ut.gov/media/u0ibfogr/solar-permit-check-list.pdf",
+        "quote": "Note: All solar applications will need to be submitted to Lehi City Power Department for their approval before submitting to the Building Department.",
+        "observedAt": "2026-10-04"
+      },
       "reviewerNotes": "Seeded 2026-10-04 from the city's public information pages (worker-60 web research, issue #109); NOT verified - confirm before relying on it. Information pages are sources, not the portal. Sources: https://www.lehi-ut.gov/departments/building-and-inspections/ ; https://www.lehi-ut.gov/departments/power/solar-power/ ; https://www.lehi-ut.gov/media/u0ibfogr/solar-permit-check-list.pdf",
       "sourceSheet": "UT seeded (web research 2026-10-04)"
     },
@@ -7700,6 +7740,23 @@
       "requiresFloodplainCheck": false,
       "requiresJurisdictionCheck": false,
       "otherRequirements": "Signed Net Metering Agreement; site plan showing the meter, panels and solar equipment; mounting and roof-load information; one-line electrical diagram; photos and specifications of the electrical panel; module and inverter spec sheets; total system output (unless micro-inverters); structural engineering letter; equipment, signage, junction box and flashing details; third meter socket on the diagram if using a cellular monitoring meter. Incomplete applications are returned.",
+      "documents": {
+        "items": [
+          "Signed Net Metering Agreement",
+          "Site plan showing the meter, panels and solar equipment",
+          "Mounting and roof-load information",
+          "One-line electrical diagram",
+          "Photos and specifications for the electrical panel",
+          "Solar panel and inverter specification sheets",
+          "Total system output information, unless using microinverters",
+          "Structural engineering letter",
+          "Equipment, signage, junction box and flashing details",
+          "Third meter socket on the diagram, if using a cellular monitoring meter"
+        ],
+        "sourceUrl": "https://www.spanishfork.gov/living-in-our-community/power-light/net-metering",
+        "quote": "Submit your application through CitizenServe using Apply for a Permit and select a Net Metering Permit.",
+        "observedAt": "2026-10-04"
+      },
       "reviewerNotes": "Seeded 2026-10-04 from the city's public information pages (worker-60 web research, issue #109); NOT verified - confirm before relying on it. Information pages are sources, not the portal. Sources: https://www.spanishfork.gov/living-in-our-community/building/building-permits-inspections ; https://www.spanishfork.gov/living-in-our-community/power-light/net-metering",
       "sourceSheet": "UT seeded (web research 2026-10-04)"
     }

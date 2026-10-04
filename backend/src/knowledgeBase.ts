@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import readline from "node:readline";
 import type {
+  AhjProcessProfile,
+  CitedFact,
   CommonCorrectionPattern,
   CorrectionBucket,
   KnowledgeSource,
@@ -11,6 +13,8 @@ import type {
   PermitStatusCheck,
   AhjResearchResult,
   UtilityResearchResult,
+  PermitProcessLookup,
+  PermitProcessPermitAnswer,
   PermitUtilityKnowledgeProfile,
   ProjectRecord,
   ProjectStatus,
@@ -21,7 +25,7 @@ import { DEFAULT_ORG_ID } from "./db";
 import { id } from "./ids";
 import { asJson, bool, parseJson, text } from "./json";
 import { FALLBACK_PROFILE_IDS, findApplicationProfile } from "./applicationDocs";
-import { classifyChannelWords, isStatewidePortalUrl } from "./permitProcess";
+import { classifyChannelWords, isStatewidePortalUrl, permitProcessKey, savePermitProcessLookup } from "./permitProcess";
 import { usStateCode } from "./permitPath";
 import { enrichMboxLearningWithLlm, stripUrlsFromModelMemory } from "./llm";
 import { allAhjProcessProfiles, findAhjProcessProfile } from "./processProfiles";
@@ -3002,7 +3006,66 @@ function seedSanitizedAhjProfiles(db: AppDb): void {
       confidence: "seeded",
       notes: [profile.otherRequirements, profile.reviewerNotes].filter(Boolean).join(" | "),
     });
+    seedReferenceDocumentChecklist(db, profile);
   }
+}
+
+// THE AHJ'S CITED CHECKLIST, SEEDED (issue #123). lookupRequiredList and the verified-list gate read
+// only permit_process_lookups, so a reference row's cited `documents` land there as ONE 'seeded'
+// permit (discipline "other": it names no track, so no portal or issuer is inferred from it). The
+// portal, record type and fee are marked NOT ASKED (permitProcessLookup.isUnaskedFact reads the
+// "not asked" prefix), so the per-job lookup still runs and answers them.
+//   - A row a person verified (verified_at) is never touched (hard rule 3).
+//   - A runtime lookup saved on or after the page was read wins: the reference loses the tie.
+//     An OLDER runtime row keeps its own answers; only this checklist permit is replaced or added.
+//   - Our own row is rewritten only when the reference changed, so a reboot writes nothing new.
+// Boot only: a read path never calls this (reads write nothing — nextStep.test).
+export const REFERENCE_CHECKLIST_MODEL = "reference-ahj-processes";
+export const REFERENCE_CHECKLIST_LABEL = "Residential solar PV permit (the AHJ's published checklist)";
+
+function seedReferenceDocumentChecklist(db: AppDb, profile: AhjProcessProfile): void {
+  const docs = profile.documents;
+  if (!docs || !/^https?:\/\//i.test(String(docs.sourceUrl || "")) || !text(profile.ahj)) return;
+  const items = (docs.items ?? []).map((i) => text(i)).filter(Boolean);
+  const notAsked = (what: string): CitedFact<never> => ({
+    value: null, sourceUrl: "", quote: "", origin: "kb",
+    notFound: `not asked — the reference seed carries only ${profile.ahj}'s cited documents list; the per-job lookup answers the ${what}`,
+  });
+  const permit: PermitProcessPermitAnswer = {
+    discipline: "other",
+    label: REFERENCE_CHECKLIST_LABEL,
+    issuingAgency: notAsked("issuing agency"),
+    portalUrl: notAsked("portal"),
+    recordType: notAsked("record type"),
+    documents: {
+      value: items.length ? items : null,
+      sourceUrl: docs.sourceUrl,
+      quote: text(docs.quote),
+      origin: "kb",
+      ...(items.length ? {} : { notFound: text(docs.notFound) || "the page lists no documents" }),
+    },
+    fee: notAsked("fee"),
+  };
+  const row = db.get<Row>("SELECT payload_json, updated_at, verified_at FROM permit_process_lookups WHERE profile_key = ?", [permitProcessKey(profile.state, profile.ahj)]);
+  if (row?.verified_at) return;
+  const earlier = row ? parseJson<PermitProcessLookup | null>(text(row.payload_json), null) : null;
+  const ours = earlier?.model === REFERENCE_CHECKLIST_MODEL;
+  if (row && !ours && text(row.updated_at) >= text(docs.observedAt)) return;
+  const kept = (earlier?.permits ?? []).filter((p) => p.label !== REFERENCE_CHECKLIST_LABEL);
+  if (ours && kept.length === 0 && JSON.stringify(earlier?.permits) === JSON.stringify([permit])) return;
+  const base: Omit<PermitProcessLookup, "profileKey" | "confidence"> = earlier && !ours
+    ? earlier
+    : {
+        state: profile.state,
+        ahj: profile.ahj,
+        issuingAgency: notAsked("issuing agency"),
+        permitStructure: notAsked("permit structure"),
+        permits: [],
+        lookedUpAt: text(docs.observedAt),
+        model: REFERENCE_CHECKLIST_MODEL,
+        notes: [`Seeded from ${profile.sourceSheet || "the AHJ process reference"}: the documents list cited to ${docs.sourceUrl}. Not verified.`],
+      };
+  savePermitProcessLookup(db, { ...base, permits: [...kept, permit] });
 }
 
 function eventExists(db: AppDb, projectId: string, eventType: string): boolean {
