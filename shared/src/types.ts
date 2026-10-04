@@ -1056,6 +1056,9 @@ export interface SubmissionRecord {
   projectId: string;
   portalProfileId: string | null;
   submissionType: "permit" | "interconnection" | "correction" | "revision";
+  /** The filing's discipline (`permit_type`: building, electrical, combo, mpu, nem, …) — names the
+   *  filing in the dashboard's corrections picker (#58). */
+  permitType?: string;
   status: "staged" | "awaiting_human_submit" | "paused_for_human" | "submitted" | "failed" | "approved";
   applicationNumber: string;
   permitNumber: string;

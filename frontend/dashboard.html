@@ -829,6 +829,13 @@
               </div>
               <div class="corrections-entry">
                 <textarea id="correctionText" placeholder="Paste correction, deficiency, rejection, or reviewer comment text here."></textarea>
+                <!-- WHICH FILING AND WHICH NOTICE (#58): items added with the same filing and
+                     notice date are one notice (one correction cycle); the cure clock starts on
+                     the notice date, not when it was typed. Options: corrections-filing.js. -->
+                <div class="corrections-notice">
+                  <label>Filing <select id="correctionSubmissionId"><option value="">Filing: not sure</option></select></label>
+                  <label>Notice date <input type="date" id="correctionNoticedAt"></label>
+                </div>
               </div>
               <div id="corrections" class="stack"></div>
             </section>
@@ -1474,6 +1481,7 @@
 
   <!-- Classic script before the module: the KPI panel's filing rows (window.KpiFilings, #74). -->
   <script src="/kpi-filings.js"></script>
+  <script src="/corrections-filing.js"></script>
   <script type="module" src="/dashboard.js"></script>
 </body>
 </html>

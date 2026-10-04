@@ -2739,9 +2739,11 @@ export function seedInitialKnowledgeBase(db: AppDb): void {
 
 // A UTILITY'S CURE WINDOW for an interconnection deficiency, in days, by the one state-gated
 // identity (utilityIdentityOf). Seed data: it lands on a utility row only where that row has no
-// window yet, so a window a person typed is never overwritten (rule 3), and the KPI resolver
-// (kpi.utilityDeficiencyCureDays) reads the row first and this table only for a row it has not
-// reached. Every other utility takes the 5-day default until its record says otherwise.
+// window yet (NULL) and no person has verified the row, so seed data never lands in a
+// human-verified record (rule 3), and the KPI resolver (kpi.utilityDeficiencyCureDays) reads the
+// row first and this table only for a row it has not reached. An explicit 0 is "none on record"
+// (a person cleared the window): it is a value, so it is never re-seeded. Every other utility
+// takes the 5-day default until its record says otherwise.
 export const SEEDED_DEFICIENCY_CURE_DAYS: Partial<Record<UtilityIdentity, number>> = {
   pacific_gas_electric: 10,
 };
@@ -2752,10 +2754,11 @@ export function seededDeficiencyCureDays(state: unknown, utility: unknown): numb
 }
 
 function seedDeficiencyCureWindows(db: AppDb): void {
-  const rows = db.query<{ id: string; state: string; utility: string }>(
-    "SELECT id, state, utility FROM permit_utility_knowledge WHERE ahj = '' AND utility <> '' AND deficiency_cure_days IS NULL",
+  const rows = db.query<{ id: string; state: string; utility: string; verified_at: string | null }>(
+    "SELECT id, state, utility, verified_at FROM permit_utility_knowledge WHERE ahj = '' AND utility <> '' AND deficiency_cure_days IS NULL",
   );
   for (const row of rows) {
+    if (isVerifiedKnowledge(row)) continue;
     const days = seededDeficiencyCureDays(row.state, row.utility);
     if (days) db.run("UPDATE permit_utility_knowledge SET deficiency_cure_days = ? WHERE id = ? AND deficiency_cure_days IS NULL", [days, row.id]);
   }

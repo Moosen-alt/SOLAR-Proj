@@ -2060,6 +2060,9 @@ kbd {
 #submittalTracks > .track-group > article { margin: 0 0 8px; }
 
 .corrections-entry textarea { width: 100%; min-height: 64px; }
+.corrections-notice { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 6px; font-size: 12px; }
+.corrections-notice label { display: flex; align-items: center; gap: 6px; }
+.corrections-notice select { max-width: 100%; }
 .runs-fold { margin-top: 8px; }
 .runs-fold > summary, .checklist-fold > summary {
   cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted-foreground); padding: 6px 0;

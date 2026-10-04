@@ -80,7 +80,7 @@ import {
 } from "./crm";
 import { clientPortalPayload, clientPortalUrl, ensureClientPortalToken, publicProjectStatusPayload, trackLabel } from "./clientPortal";
 import { scanStaleStatusClassifications } from "./permitMonitor";
-import { getKpiReport } from "./kpi";
+import { getKpiReport, requestNoticedAt } from "./kpi";
 import {
   ahjFormRegistry,
   buildFilledFormsForProject,
@@ -1528,11 +1528,12 @@ app.patch("/api/corrections/:id/sla", (req, res) => {
 app.post("/api/projects/:id/corrections", asyncHandler(async (req, res) => {
   const correctionText = String(req.body?.correctionText || "").trim();
   if (!correctionText) throw new HttpError(400, "correctionText is required.");
+  const noticedAt = requestNoticedAt(req.body?.noticedAt); // an unparseable date is a 400, not null (#58)
   // The filing it answers and the notice it belongs to (#47); a submissionId off this project is a 404.
   addManualCorrection(db, String(req.params.id), correctionText, req.body?.source || "manual", {
     submissionId: typeof req.body?.submissionId === "string" ? req.body.submissionId : null,
     noticeId: typeof req.body?.noticeId === "string" ? req.body.noticeId : null,
-    noticedAt: typeof req.body?.noticedAt === "string" ? req.body.noticedAt : null,
+    noticedAt,
   });
   // Generate the advisory AI draft reply (human reviews before sending). The
   // correction-handling agent (data-update proposals + richer bucket) runs
