@@ -34,6 +34,7 @@ import type {
   JurisdictionCriteriaProposal,
   JurisdictionDesignCriteria,
   JurisdictionEditionProposal,
+  JurisdictionReviewRule,
   LLMProvider,
   PermitPrecedentItem,
   PrescriptiveLimits,
@@ -46,6 +47,7 @@ import { extractPermitPrecedents, listAhjCorrectionPatterns } from "./permitPrec
 import { addAuditLog } from "./audit";
 import { extractStatedDesignCriteria, normCodeToken } from "./designCriteria";
 import { amendmentSourceKey } from "./amendmentChecks";
+import { reviewRuleFromRow } from "./ahjReviewRules";
 import {
   CODE_FAMILIES, codeFamilyOf, editionLabel, editionsInEffect, familyAdoptionModel, isAdoptionModel,
   isCodeFamily, isFamilyAdoptionModel, locallyAdoptedFamilies, modelBaseOf, upcomingDue,
@@ -160,6 +162,9 @@ export interface EffectiveCodeContext {
   /** Where this AHJ's design-criteria lookup stands (readDesignLookupProgress — a job_queue READ).
    *  Loaded by resolveEffectiveCodeContext; absent from the pure builder and when no lookup exists. */
   designLookup?: DesignCriteriaLookupProgress;
+  /** This AHJ's APPROVED review rules, taught by its earlier corrections (#146, ahjReviewRules.ts).
+   *  Loaded by resolveEffectiveCodeContext; absent from the pure builder. */
+  reviewRules?: JurisdictionReviewRule[];
   /** Resolve a citation for a code family ("NEC", "IRC", …) from the adopted
    *  editions; returns a CodeReference shell the rule fills with section/title. */
   citationFor(code: string, section: string, title: string, fallback?: CodeReference): CodeReference;
@@ -950,7 +955,27 @@ export function resolveEffectiveCodeContext(db: AppDb, state: string, ahj: strin
   // found nothing). A READ of job_queue — this runs on page-load read paths that write nothing.
   let designLookup: DesignCriteriaLookupProgress | undefined;
   try { designLookup = readDesignLookupProgress(db, state, ahj); } catch { designLookup = undefined; }
-  return designLookup ? { ...ctx, designLookup } : ctx;
+  const withLookup = designLookup ? { ...ctx, designLookup } : ctx;
+  let reviewRules: JurisdictionReviewRule[] = [];
+  try { reviewRules = listApprovedReviewRules(db, state, ahj); } catch { reviewRules = []; }
+  return reviewRules.length ? { ...withLookup, reviewRules } : withLookup;
+}
+
+/**
+ * The APPROVED review rules of ONE jurisdiction (#146). Never fuzzy: the exact profile key, or the
+ * SAME jurisdiction under another label (sameJurisdictionName: "City of Plano" / "Plano") — never a
+ * neighbour whose name merely resembles it. A proposed rule is never returned. Read-only.
+ */
+export function listApprovedReviewRules(db: AppDb, state: string, ahj: string): JurisdictionReviewRule[] {
+  const st = String(state || "").trim();
+  const name = String(ahj || "").trim();
+  if (!st || !name) return [];
+  const key = codeProfileKey({ state: st, ahj: name });
+  return db
+    .query<Record<string, unknown>>("SELECT * FROM jurisdiction_review_rules WHERE LOWER(state) = ? AND status = 'approved' ORDER BY created_at", [st.toLowerCase()])
+    .filter((row) => String(row.profile_key) === key || sameJurisdictionName(name, String(row.ahj ?? ""), st))
+    .map(reviewRuleFromRow)
+    .filter((r): r is JurisdictionReviewRule => r !== null && r.status === "approved");
 }
 
 /**

@@ -328,6 +328,20 @@ await check("intake attaches JURISDICTION proposals (blank -> value), separate f
   }
 });
 
+await check("#146: a correction stating a CHECKABLE requirement proposes a review rule beside the criteria — created, NOT applied", () => {
+  seeded("City of Ruletest");
+  const pid = mkProject("City of Ruletest");
+  const cid = R.addManualCorrection(db, pid, "Ground snow load 36 psf. Fire access pathways shall be a minimum of 36 inches wide.").corrections[0].id;
+  const p = itemPayload(pid, cid)!;
+  // The snow value stays a CRITERIA proposal (the profile); the pathway becomes a review-rule proposal.
+  assert.deepEqual(asMap(p.jurisdictionProposals), { groundSnowLoadPsf: 36 });
+  assert.deepEqual(p.reviewRuleProposals.map((x) => [x.check.kind, x.check.field, x.check.value, x.status]), [["min_value", "pathwayWidthIn", 36, "proposed"]]);
+  const row = db.get<{ status: string; approved_at: string | null }>("SELECT status, approved_at FROM jurisdiction_review_rules WHERE id = ?", [p.reviewRuleProposals[0].ruleId]);
+  assert.equal(row?.status, "proposed");
+  assert.equal(row?.approved_at, null);
+  assert.deepEqual(CP.listApprovedReviewRules(db, "OR", "City of Ruletest"), [], "a proposal must never run before a person approves it");
+});
+
 await check("the LLM triage's rewrite of the notes keeps the jurisdiction proposals", () => {
   persistTriage(db, { correctionId: corrA, projectId: pidA }, { actions: ["Revise sheets."], proposals: [] });
   assert.equal(itemPayload(pidA, corrA)!.jurisdictionProposals.length, 3);

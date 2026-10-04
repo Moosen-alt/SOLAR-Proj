@@ -1188,6 +1188,41 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       `);
     },
   },
+  {
+    // Kept beside v5 (the jurisdiction's code profile, the other per-AHJ review table) rather than
+    // at the end of the list: the list runs sorted by version, and parallel PRs appending there
+    // collide on the same lines.
+    version: 46,
+    name: "jurisdiction_review_rules",
+    up: (db) => {
+      // AN AHJ'S PAST CORRECTIONS AS REVIEW RULES (#146, ahjReviewRules.ts). SHARED ACROSS ORGS ON
+      // PURPOSE like jurisdiction_code_profiles: a city that bounced one tenant's pathway width
+      // checks every tenant's next plan. So a row holds ONLY the check's shape (#145's
+      // JurisdictionAmendmentCheck) and the correction's bucket / root cause / required action —
+      // never the AHJ's sentence, a correction id, a record number or homeowner data (those stay in
+      // the org's review item and the org-scoped historical_failure_examples). status 'proposed'
+      // runs nothing; only a person's approval (POST /api/corrections/:id/apply) makes it 'approved'.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS jurisdiction_review_rules (
+          id TEXT PRIMARY KEY,
+          profile_key TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT '',
+          ahj TEXT NOT NULL DEFAULT '',
+          check_json TEXT NOT NULL,
+          signature TEXT NOT NULL,
+          bucket TEXT NOT NULL DEFAULT '',
+          root_cause TEXT NOT NULL DEFAULT '',
+          required_action TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'proposed',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          approved_at TEXT,
+          UNIQUE (profile_key, signature)
+        );
+        CREATE INDEX IF NOT EXISTS idx_review_rules_state_status ON jurisdiction_review_rules(state, status);
+      `);
+    },
+  },
   // v6: standalone review-gate submissions. org_id ships now (default 'org-default')
   // so the multi-tenant phase scopes rows without another migration.
   {

@@ -6153,11 +6153,13 @@ function renderReview() {
     try { if (String(item.notes).startsWith("agent-triage:")) triage = JSON.parse(item.notes.slice(13)); } catch {}
     const proposals = Array.isArray(triage?.proposals) ? triage.proposals : [];
     const jurisdictionProposals = jurisdictionProposalList(triage);
+    const reviewRuleProposals = reviewRuleProposalList(triage);
     const correctionBody = item.fieldName === "correction" ? `
       ${proposals.length ? `<table><thead><tr><th>Field</th><th>Current</th><th>Proposed</th><th>Evidence</th></tr></thead><tbody>${proposals.map(p => `<tr><td>${esc(p.field)}</td><td>${esc(p.currentValue || "Missing")}</td><td>${esc(p.proposedValue)}</td><td>${esc(p.basis)}</td></tr>`).join("")}</tbody></table>` : ""}
       ${jurisdictionProposalsHtml(jurisdictionProposals)}
+      ${reviewRuleProposalsHtml(reviewRuleProposals)}
       ${Array.isArray(triage?.actions) && triage.actions.length ? `<ol>${triage.actions.map(a => `<li>${esc(a)}</li>`).join("")}</ol>` : ""}
-      ${item.status === "pending" && triage?.correctionId && (proposals.length || jurisdictionProposals.some((p) => p.status === "proposed")) ? `<button class="primary" data-apply-correction="${esc(triage.correctionId)}">Apply these data updates</button>` : `<p class="muted">Use Corrections in the Submit stage to review the response and record resolution.</p>`}` : "";
+      ${item.status === "pending" && triage?.correctionId && (proposals.length || jurisdictionProposals.some((p) => p.status === "proposed") || reviewRuleProposals.some((p) => p.status === "proposed")) ? `<button class="primary" data-apply-correction="${esc(triage.correctionId)}">Apply these data updates</button>` : `<p class="muted">Use Corrections in the Submit stage to review the response and record resolution.</p>`}` : "";
     const context = [];
     if (item.llmSuggestedValue) context.push(`<strong>AI suggestion:</strong> ${esc(item.llmSuggestedValue)}`);
     if (item.parserValue && item.parserValue !== item.llmSuggestedValue) context.push(`<strong>Parser read:</strong> ${esc(item.parserValue)}`);
@@ -7135,6 +7137,7 @@ function correctionTriage(correctionId) {
       itemStatus: item.status,
       proposals: Array.isArray(parsed.proposals) ? parsed.proposals.filter((p) => p && typeof p.field === "string") : [],
       jurisdictionProposals: jurisdictionProposalList(parsed),
+      reviewRuleProposals: reviewRuleProposalList(parsed),
       // The project half of this approval already ran (only jurisdiction proposals are left).
       projectApplied: Boolean(parsed.projectAppliedAt),
       actions: Array.isArray(parsed.actions) ? parsed.actions.filter((a) => typeof a === "string") : [],
@@ -7207,6 +7210,56 @@ function jurisdictionProposalsHtml(list) {
       </table>`;
 }
 
+// REVIEW-RULE PROPOSALS (#146) — a requirement the AHJ stated in this correction that the review
+// can CHECK on its next plan (a pathway width, a ridge setback, a PV dead load cap, a required
+// note), proposed as a rule shared with every project in that AHJ. Nothing runs until a person
+// approves it with the same Apply button (hard rule 4). Every value is esc()'d: the basis is the
+// AHJ's own sentence and the wording is quoted from it.
+function reviewRuleProposalList(parsed) {
+  return Array.isArray(parsed?.reviewRuleProposals)
+    ? parsed.reviewRuleProposals.filter((p) => p && p.kind === "jurisdiction_review_rule" && p.check && typeof p.check === "object")
+    : [];
+}
+
+const REVIEW_RULE_FIELD_LABELS = {
+  groundSnowPsf: "Ground snow load",
+  windSpeedMph: "Design wind speed",
+  pvDeadLoadPsf: "PV dead load",
+  pathwayWidthIn: "Fire access pathway width",
+  ridgeSetbackIn: "Ridge setback",
+  attachmentSpacingIn: "Attachment spacing",
+  planText: "Plan wording",
+};
+const REVIEW_RULE_STATUS_LABELS = {
+  proposed: "Will approve",
+  already_approved: "Already a rule",
+  applied: "Approved — running",
+  refused: "Not approved",
+};
+
+// Pure (lifted by ahjRuleProposals.test.ts).
+function reviewRuleProposalsHtml(list) {
+  if (!list.length) return "";
+  const rule = (c) => {
+    const label = REVIEW_RULE_FIELD_LABELS[c.field] || c.field;
+    if (c.kind === "min_value") return `${label} at least ${c.value} ${c.unit || ""}`;
+    if (c.kind === "max_value") return `${label} at most ${c.value} ${c.unit || ""}`;
+    if (c.kind === "prohibited") return `Plans must not show "${c.value}"`;
+    return `Plans must show "${c.value}"`;
+  };
+  const rows = list.map((p) => `<tr>
+      <td>${esc(rule(p.check))}</td>
+      <td>&ldquo;${esc(p.basis)}&rdquo;${p.source?.recordNumber ? ` <span class="muted">— ${esc(p.source.recordNumber)}</span>` : ""}</td>
+      <td>${esc(REVIEW_RULE_STATUS_LABELS[p.status] || p.status)}${p.statusNote ? `<br><span class="muted" style="font-size:11px">${esc(p.statusNote)}</span>` : ""}</td>
+    </tr>`).join("");
+  const first = list[0];
+  return `<p style="font-size:12px;margin:8px 0 2px"><strong>Review rules from this comment</strong> — once approved, every next plan in ${esc(first.ahj)} (${esc(first.state)}) is checked for these. Nothing is checked until you approve.</p>
+      <table style="font-size:12px;margin-top:2px">
+        <thead><tr><th>Rule</th><th>AHJ comment</th><th>Status</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+}
+
 // EVERY VALUE BELOW CAME OUT OF AN LLM and goes into innerHTML — field, currentValue,
 // proposedValue, basis and each checklist line are esc()'d individually.
 function correctionTriageHtml(correction, triage) {
@@ -7222,19 +7275,21 @@ function correctionTriageHtml(correction, triage) {
   // set. Applying it there is not a data edit: it records the triage and parks the project on
   // the designer, which is the one thing this card could never say before.
   const jurisdictionPending = (triage.jurisdictionProposals || []).some((p) => p.status === "proposed");
+  const rulesPending = (triage.reviewRuleProposals || []).some((p) => p.status === "proposed");
   const designOwed = isDesign && !triage.projectApplied;
-  const canApply = triage.itemStatus === "pending" && (triage.proposals.length > 0 || designOwed || jurisdictionPending);
-  const applyLabel = triage.proposals.length ? "Apply these data updates" : jurisdictionPending && !designOwed ? "Apply the jurisdiction requirements" : "Record triage and wait on the designer";
+  const canApply = triage.itemStatus === "pending" && (triage.proposals.length > 0 || designOwed || jurisdictionPending || rulesPending);
+  const applyLabel = triage.proposals.length ? "Apply these data updates" : (jurisdictionPending || rulesPending) && !designOwed ? "Apply the jurisdiction requirements" : "Record triage and wait on the designer";
   return `
       ${triage.proposals.length ? `<table style="font-size:12px;margin-top:6px">
         <thead><tr><th>Field</th><th>Current</th><th>Proposed</th><th>Evidence</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>` : ""}
       ${jurisdictionProposalsHtml(triage.jurisdictionProposals || [])}
+      ${reviewRuleProposalsHtml(triage.reviewRuleProposals || [])}
       ${triage.actions.length ? `<ol style="font-size:12px;margin:6px 0 0 18px">${triage.actions.map((a) => `<li>${esc(a)}</li>`).join("")}</ol>` : ""}
       ${canApply ? `<div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="primary" style="font-size:12px" data-apply-correction="${esc(correction.id)}">${esc(applyLabel)}</button>
-        <span class="muted" style="font-size:11px">Applies the proposed project data${jurisdictionPending ? ", and records the jurisdiction requirements above on that AHJ's code profile as seeded (citing this comment)" : " only"}. It does not submit anything and does not close this correction — the correction closes when the resubmission actually goes out.</span>
+        <span class="muted" style="font-size:11px">Applies the proposed project data${jurisdictionPending ? ", and records the jurisdiction requirements above on that AHJ's code profile as seeded (citing this comment)" : ""}${rulesPending ? ", and approves the review rules above for that AHJ's next plans" : ""}${jurisdictionPending || rulesPending ? "" : " only"}. It does not submit anything and does not close this correction — the correction closes when the resubmission actually goes out.</span>
       </div>` : ""}
       ${triage.itemStatus && triage.itemStatus !== "pending" ? `<p class="muted" style="font-size:11px;margin-top:6px">Triage already ${esc(triage.itemStatus)} — re-triage the correction to propose new changes.</p>` : ""}`;
 }

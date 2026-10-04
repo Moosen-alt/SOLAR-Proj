@@ -1609,6 +1609,48 @@ export interface JurisdictionCriteriaProposal {
   statusNote?: string;
 }
 
+/** A review rule an AHJ's past correction taught (#146): the AHJ bounced a plan for a value or a
+ *  wording, so the next plan in that AHJ is checked for it. One row of jurisdiction_review_rules —
+ *  SHARED across orgs like the other KB tables, so it holds ONLY the check's shape and the
+ *  correction's classification (bucket / root cause / required action): never the AHJ's sentence,
+ *  the correction id, the record number or anything about the homeowner (those stay in the org's
+ *  review item and historical_failure_examples). Runs only once a person approved it. */
+export interface JurisdictionReviewRule {
+  id: string;
+  /** codeProfileKey({state, ahj}) of the jurisdiction the correction spoke for. */
+  profileKey: string;
+  state: string;
+  ahj: string;
+  check: JurisdictionAmendmentCheck;
+  bucket: string;
+  rootCause: string;
+  requiredAction: string;
+  /** proposed: nothing runs. approved: a person approved it (POST /api/corrections/:id/apply). */
+  status: "proposed" | "approved";
+  createdAt: string;
+  approvedAt?: string;
+}
+
+/** A review rule proposed from one correction, on that correction's review item beside its
+ *  jurisdiction-criteria proposals. Approved only by a human (POST /api/corrections/:id/apply,
+ *  hard rule 4), selected by `id` ("review-rule:<ruleId>"). */
+export interface JurisdictionReviewRuleProposal {
+  kind: "jurisdiction_review_rule";
+  id: string;
+  ruleId: string;
+  ahj: string;
+  state: string;
+  profileKey: string;
+  check: JurisdictionAmendmentCheck;
+  /** The sentence the AHJ wrote (quoted, tight) — on the org's review item only, never the rule row. */
+  basis: string;
+  source: { correctionId: string; recordNumber: string; receivedAt: string };
+  /** proposed: a human may approve it. already_approved: the AHJ's rule is already running.
+   *  applied / refused: after an approval. */
+  status: "proposed" | "already_approved" | "applied" | "refused";
+  statusNote?: string;
+}
+
 /** Where a correction was READ: the permit/NEM target the monitor checked. A monitor correction
  *  carries it from the check itself (never reverse-engineered from the page text); it decides
  *  which jurisdiction — if any — the correction's requirements are proposed for (hard rule 5). */

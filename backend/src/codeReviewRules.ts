@@ -3,6 +3,7 @@ import type { EffectiveCodeContext } from "./codeProfiles";
 import { FIRE_PATHWAY_PATTERNS, packageShowsSld } from "./projectEvidence";
 import { evaluateElectricalSizingFindings } from "./electricalSizing";
 import { evaluateAmendmentFindings } from "./amendmentChecks";
+import { evaluatePriorCorrectionFindings } from "./ahjReviewRules";
 import { pathWordingScope, resolvePermitPath, usStateCode } from "./permitPath";
 import { classifyRoofCovering, statedRoofDeadLoads, tileAttachmentFromText, tileAttachmentMethodOf, TILE_MIN_ROOF_DEAD_LOAD_PSF } from "./roofCovering";
 import {
@@ -1050,6 +1051,9 @@ export function evaluateDesignCodeFindings(
   // The jurisdiction's LOCAL AMENDMENTS, compared with the plan where research classified them, and
   // listed for a person where it could not (amendmentChecks.ts, #145).
   if (ctx) out.push(...evaluateAmendmentFindings(project, ctx, { extraTexts: documentTexts }));
+  // What this AHJ corrected on EARLIER plans, once a person approved it as a review rule
+  // (ahjReviewRules.ts, #146). A proposed rule runs nothing.
+  if (ctx) out.push(...evaluatePriorCorrectionFindings(project, ctx, { extraTexts: documentTexts }));
 
   // What the package itself states (parser commentary excluded — see packageTextSources).
   const packageTexts = packageTextSources(project, documentTexts);

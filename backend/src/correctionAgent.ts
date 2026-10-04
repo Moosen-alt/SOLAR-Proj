@@ -11,14 +11,16 @@
 // ---------------------------------------------------------------------------
 
 import type { AppDb } from "./db";
-import type { AgentToolDef, CorrectionBucket, CorrectionReadingOrigin, JurisdictionCriteriaProposal, ProjectDetail, ProjectRecord } from "../../shared/src/types";
+import type { AgentToolDef, CorrectionBucket, CorrectionReadingOrigin, JurisdictionCriteriaProposal, JurisdictionReviewRuleProposal, ProjectDetail, ProjectRecord } from "../../shared/src/types";
 import { createLLMProvider } from "./llm";
 import { getProjectDetail, applyCorrectionProposals } from "./repository";
 import { designNotesDigest } from "./autoLearn";
 import { assigneeForBucket, humanizeBucket } from "./corrections";
-import { relearnCorrection, isLearningExcluded } from "./knowledgeBase";
+import { relearnCorrection, isLearningExcluded, isLearnableCorrectionBucket } from "./knowledgeBase";
 import { extractAhjRequiredCriteria } from "./designCriteria";
-import { ahjLooksLikeHostname, applyCorrectionCriterionToProfile, currentCriterionOnFile, nearestOtherCodeProfileRow, sameCriterionValue } from "./codeProfiles";
+import { ahjLooksLikeHostname, applyCorrectionCriterionToProfile, codeProfileKey, currentCriterionOnFile, nearestOtherCodeProfileRow, sameCriterionValue } from "./codeProfiles";
+import { extractAhjReviewChecks, reviewRuleFromRow, reviewRuleSignature, wordingNamesProject } from "./ahjReviewRules";
+import { id as newId } from "./ids";
 import { listProjectDocuments } from "./projectDocuments";
 import { addAuditLog } from "./audit";
 import { logger } from "./logger";
@@ -226,6 +228,9 @@ export function persistTriage(
   const jurisdictionProposals = parseCorrectionProposals(linked[0].notes)?.jurisdictionProposals?.length
     ? parseCorrectionProposals(linked[0].notes)!.jurisdictionProposals
     : buildJurisdictionProposals(db, input.correctionId);
+  const reviewRuleProposals = parseCorrectionProposals(linked[0].notes)?.reviewRuleProposals?.length
+    ? parseCorrectionProposals(linked[0].notes)!.reviewRuleProposals
+    : proposeReviewRules(db, input.correctionId);
   // An approval that already ran the PROJECT half (and kept the item open for its jurisdiction
   // proposals) stays recorded: a triage landing afterwards must not make the next click re-run the
   // project updates or the designer wait. Its fresh proposals are then moot — the half is done.
@@ -240,6 +245,7 @@ export function persistTriage(
     proposals: projectDone ? [] : t.proposals,
     actions: t.actions,
     ...(jurisdictionProposals.length ? { jurisdictionProposals } : {}),
+    ...(reviewRuleProposals.length ? { reviewRuleProposals } : {}),
     ...(projectDone ?? {}),
     generatedAt: ts,
   });
@@ -308,6 +314,7 @@ function projectSummary(project: ProjectRecord | null): Record<string, unknown> 
 export function parseCorrectionProposals(notes: string): {
   correctionId?: string; proposals: CorrectionDataProposal[]; actions: string[]; bucket?: string;
   jurisdictionProposals: JurisdictionCriteriaProposal[];
+  reviewRuleProposals: JurisdictionReviewRuleProposal[];
 } | null {
   const m = notes.match(/^agent-triage:(\{[\s\S]*\})$/);
   if (!m) return null;
@@ -323,6 +330,11 @@ export function parseCorrectionProposals(notes: string): {
       jurisdictionProposals: Array.isArray(parsed.jurisdictionProposals)
         ? parsed.jurisdictionProposals.filter((p: JurisdictionCriteriaProposal) => p && p.kind === "jurisdiction_design_criteria"
           && typeof p.id === "string" && typeof p.criterion === "string" && typeof p.state === "string" && typeof p.ahj === "string")
+        : [],
+      // The AHJ's earlier correction as a review rule (#146) — its own list for the same reason.
+      reviewRuleProposals: Array.isArray(parsed.reviewRuleProposals)
+        ? parsed.reviewRuleProposals.filter((p: JurisdictionReviewRuleProposal) => p && p.kind === "jurisdiction_review_rule"
+          && typeof p.id === "string" && typeof p.ruleId === "string" && p.check && typeof p.check === "object")
         : [] };
   } catch {
     return null;
@@ -428,6 +440,85 @@ export function buildJurisdictionProposals(db: AppDb, correctionId: string, orig
   });
 }
 
+// ---- review-rule proposals (AHJ comment -> a check on the AHJ's next plan, #146) -------------
+//
+// The same correction, the same jurisdiction (correctionOrigin: a NEM target, a utility, an email
+// reading propose nothing), but a CHECK rather than a profile value: a pathway / ridge setback the
+// AHJ required, a PV dead load cap, a note it wanted on the plans (ahjReviewRules.ts). The rule row
+// is written 'proposed' to the SHARED jurisdiction_review_rules table — shape and classification
+// only — and runs nothing until a person approves it on this correction (hard rule 4).
+
+/** Propose this correction's review rules: one 'proposed' row per (jurisdiction, check) — reused
+ *  when another correction proposed it first — and the proposals for its review item. */
+export function proposeReviewRules(db: AppDb, correctionId: string, origin?: CorrectionReadingOrigin | null): JurisdictionReviewRuleProposal[] {
+  const c = db.get<Row>("SELECT project_id, source, correction_text, correction_bucket, root_cause, required_action, created_at FROM corrections WHERE id = ?", [correctionId]);
+  if (!c) return [];
+  // A reviewer's question (C) changed nothing about the package: nothing the next plan can prevent.
+  if (!isLearnableCorrectionBucket(txt(c.correction_bucket))) return [];
+  const projectId = txt(c.project_id);
+  const project = db.get<Row>("SELECT state, ahj, utility, homeowner_name, project_address FROM projects WHERE id = ?", [projectId]);
+  const state = txt(project?.state).trim();
+  if (!state || /utility/i.test(txt(c.source)) || isLearningExcluded(db, projectId)) return [];
+  const checks = extractAhjReviewChecks(txt(c.correction_text))
+    // Wording becomes the SHARED row's value: never one naming this homeowner or address.
+    .filter((x) => x.check.field !== "planText" || !wordingNamesProject(String(x.check.value), {
+      homeownerName: txt(project?.homeowner_name), projectAddress: txt(project?.project_address),
+    }));
+  if (!checks.length) return [];
+  const from = correctionOrigin(db, correctionId, { ahj: txt(project?.ahj).trim(), utility: txt(project?.utility) }, origin);
+  if (!from || ahjLooksLikeHostname(from.ahj)) return [];
+  const profileKey = codeProfileKey({ state, ahj: from.ahj });
+  const ts = nowIso();
+  return checks.map(({ check, basis }) => {
+    const signature = reviewRuleSignature(check);
+    db.run(
+      `INSERT OR IGNORE INTO jurisdiction_review_rules
+         (id, profile_key, state, ahj, check_json, signature, bucket, root_cause, required_action, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?)`,
+      [newId(), profileKey, state, from.ahj, JSON.stringify(check), signature,
+        txt(c.correction_bucket), txt(c.root_cause), txt(c.required_action), ts, ts],
+    );
+    const row = reviewRuleFromRow(db.get<Row>("SELECT * FROM jurisdiction_review_rules WHERE profile_key = ? AND signature = ?", [profileKey, signature]) ?? {});
+    const approved = row?.status === "approved";
+    return {
+      kind: "jurisdiction_review_rule",
+      id: `review-rule:${row?.id ?? ""}`,
+      ruleId: row?.id ?? "",
+      ahj: from.ahj,
+      state,
+      profileKey,
+      check,
+      basis,
+      source: { correctionId, recordNumber: from.recordNumber, receivedAt: txt(c.created_at) },
+      status: approved ? "already_approved" : "proposed",
+      ...(approved ? { statusNote: "This jurisdiction's rule is already approved and running." } : {}),
+    } satisfies JurisdictionReviewRuleProposal;
+  }).filter((p) => p.ruleId);
+}
+
+/** A person approved one review-rule proposal: the shared row turns 'approved', carrying the
+ *  correction's CURRENT classification (the triage agent may have refined it since intake). Refused
+ *  when the correction is no longer a learnable rejection (re-bucketed C, retracted). */
+function approveReviewRule(db: AppDb, p: JurisdictionReviewRuleProposal, correctionId: string, actor: string, projectId: string): { status: "applied" | "refused"; note: string } {
+  const c = db.get<Row>("SELECT correction_bucket, root_cause, required_action, learning_retracted FROM corrections WHERE id = ?", [correctionId]);
+  if (!c || !isLearnableCorrectionBucket(txt(c.correction_bucket)) || Number(c.learning_retracted ?? 0) === 1) {
+    return { status: "refused", note: "The correction is no longer classified as a rejection to learn from; no rule was approved." };
+  }
+  const row = reviewRuleFromRow(db.get<Row>("SELECT * FROM jurisdiction_review_rules WHERE id = ?", [p.ruleId]) ?? {});
+  if (!row) return { status: "refused", note: "The proposed rule no longer exists." };
+  if (row.status === "approved") return { status: "applied", note: "Already approved — the rule is running." };
+  const ts = nowIso();
+  db.run(
+    "UPDATE jurisdiction_review_rules SET status = 'approved', bucket = ?, root_cause = ?, required_action = ?, approved_at = ?, updated_at = ? WHERE id = ? AND status = 'proposed'",
+    [txt(c.correction_bucket), txt(c.root_cause), txt(c.required_action), ts, ts, p.ruleId],
+  );
+  // Who approved it is this org's record (the project's audit log), never a column of the shared row.
+  addAuditLog(db, projectId || null, "human", actor || "operator", "correction.review_rule_approved", {
+    correctionId, ruleId: p.ruleId, ahj: row.ahj, check: row.check,
+  });
+  return { status: "applied", note: `Approved: ${row.ahj}'s next plans are checked for this.` };
+}
+
 /** The ONE linked review item for a correction (any status), with its raw payload. */
 function linkedTriageItem(db: AppDb, correctionId: string, statuses: string[]): { id: string; status: string; payload: Record<string, unknown> } | null {
   const c = db.get<Row>("SELECT project_id FROM corrections WHERE id = ?", [correctionId]);
@@ -448,13 +539,17 @@ function linkedTriageItem(db: AppDb, correctionId: string, statuses: string[]): 
  *  best-effort (a failure here must never lose the correction). Returns how many attached. */
 export function attachJurisdictionProposals(db: AppDb, correctionId: string, origin?: CorrectionReadingOrigin | null): number {
   try {
-    const proposals = buildJurisdictionProposals(db, correctionId, origin);
-    if (!proposals.length) return 0;
     const item = linkedTriageItem(db, correctionId, ["pending"]);
     if (!item) return 0;
-    db.run("UPDATE human_review_items SET notes = ? WHERE id = ?",
-      [`agent-triage:${JSON.stringify({ ...item.payload, jurisdictionProposals: proposals })}`, item.id]);
-    return proposals.length;
+    const proposals = buildJurisdictionProposals(db, correctionId, origin);
+    const rules = proposeReviewRules(db, correctionId, origin);
+    if (!proposals.length && !rules.length) return 0;
+    db.run("UPDATE human_review_items SET notes = ? WHERE id = ?", [`agent-triage:${JSON.stringify({
+      ...item.payload,
+      ...(proposals.length ? { jurisdictionProposals: proposals } : {}),
+      ...(rules.length ? { reviewRuleProposals: rules } : {}),
+    })}`, item.id]);
+    return proposals.length + rules.length;
   } catch (err) {
     logger.warn("correction-agent", `jurisdiction proposals not attached: ${err instanceof Error ? err.message : String(err)}`, { correctionId });
     return 0;
@@ -490,7 +585,7 @@ export function applyJurisdictionProposals(db: AppDb, correctionId: string, fiel
   // A project half already applied (applyCorrectionProposals kept the item open for these
   // jurisdiction proposals) is not work again: no second snapshot write, no second designer wait.
   const projectDone = Boolean(item.payload.projectAppliedAt);
-  const hasProjectWork = !projectDone && (!fields || fields.some((f) => !f.startsWith("jurisdiction:")))
+  const hasProjectWork = !projectDone && (!fields || fields.some((f) => !f.startsWith("jurisdiction:") && !f.startsWith("review-rule:")))
     && (selectedProject.some((p) => p.proposedValue.trim()) || txt(c.correction_bucket) === "B_designer_fix");
   const result: JurisdictionApplyResult = { projectId, attempted: 0, applied: [], refused: [], hasProjectWork };
   for (const p of proposals) {
@@ -501,9 +596,22 @@ export function applyJurisdictionProposals(db: AppDb, correctionId: string, fiel
     p.statusNote = r.note;
     (r.status === "applied" ? result.applied : result.refused).push({ id: p.id, note: r.note });
   }
+  // The AHJ's correction as a review rule (#146): approved here, by this person, or not at all.
+  const rules = parsed?.reviewRuleProposals ?? [];
+  for (const p of rules) {
+    if (p.status !== "proposed" || (fields && !fields.includes(p.id))) continue;
+    result.attempted++;
+    const r = approveReviewRule(db, p, correctionId, actor, projectId);
+    p.status = r.status;
+    p.statusNote = r.note;
+    (r.status === "applied" ? result.applied : result.refused).push({ id: p.id, note: r.note });
+  }
   if (result.attempted) {
-    db.run("UPDATE human_review_items SET notes = ?, updated_at = ? WHERE id = ?",
-      [`agent-triage:${JSON.stringify({ ...item.payload, jurisdictionProposals: proposals })}`, nowIso(), item.id]);
+    db.run("UPDATE human_review_items SET notes = ?, updated_at = ? WHERE id = ?", [`agent-triage:${JSON.stringify({
+      ...item.payload,
+      ...(proposals.length ? { jurisdictionProposals: proposals } : {}),
+      ...(rules.length ? { reviewRuleProposals: rules } : {}),
+    })}`, nowIso(), item.id]);
   }
   return result;
 }
@@ -537,7 +645,8 @@ function closeReviewedCorrectionIfDone(db: AppDb, correctionId: string, actor: s
   if (!item) return;
   const c = db.get<Row>("SELECT project_id, correction_bucket FROM corrections WHERE id = ?", [correctionId]);
   const parsed = parseCorrectionProposals(`agent-triage:${JSON.stringify(item.payload)}`);
-  const jurisdictionOpen = (parsed?.jurisdictionProposals ?? []).some((p) => p.status === "proposed");
+  const jurisdictionOpen = (parsed?.jurisdictionProposals ?? []).some((p) => p.status === "proposed")
+    || (parsed?.reviewRuleProposals ?? []).some((p) => p.status === "proposed");
   const projectOwed = !item.payload.projectAppliedAt
     && ((parsed?.proposals ?? []).some((p) => p.proposedValue.trim()) || txt(c?.correction_bucket) === "B_designer_fix");
   if (jurisdictionOpen || projectOwed) return;

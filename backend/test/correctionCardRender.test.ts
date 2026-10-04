@@ -40,6 +40,7 @@ const cut = (kind: "function" | "const", name: string): string => {
 const bundle = [
   cut("function", "esc"), cut("function", "humanize"), cut("function", "fmtDate"), cut("function", "correctionSlaBadge"),
   cut("const", "JURISDICTION_CRITERION_LABELS"), cut("const", "JURISDICTION_STATUS_LABELS"), cut("function", "jurisdictionProposalsHtml"),
+  cut("const", "REVIEW_RULE_FIELD_LABELS"), cut("const", "REVIEW_RULE_STATUS_LABELS"), cut("function", "reviewRuleProposalsHtml"),
   cut("function", "correctionTriageHtml"), cut("const", "CORRECTION_LEAD_CHARS"), cut("function", "correctionCardHtml"),
 ].join("\n\n");
 type Card = (correction: Record<string, unknown>, triage: Record<string, unknown> | null, projectStatus: string) => string;
