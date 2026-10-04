@@ -5,6 +5,7 @@ import { pathWordingScope, resolvePermitPath, usStateCode } from "./permitPath";
 import { classifyRoofCovering, statedRoofDeadLoads, tileAttachmentFromText, tileAttachmentMethodOf, TILE_MIN_ROOF_DEAD_LOAD_PSF } from "./roofCovering";
 import {
   evaluateDesignCriteriaFindings,
+  evaluateFirePathwayFindings,
   extractAttachmentSpacings,
   packageTextSources,
   PARSED_FIELDS_SOURCE,
@@ -677,7 +678,13 @@ export function evaluateDesignCodeFindings(
   // The old list here accepted a bare "setback" or "ridge" — ordinary zoning and roof-geometry
   // words — so this rule cleared on any plan set too, in step with the evidence topic. Letting
   // the two drift apart is how the gate ends up contradicting itself about the same project.
-  if (roofMounted && !hasAny(all, FIRE_PATHWAY_PATTERNS)) {
+  //
+  // MEASURED FIRST (issue #142): the plan's stated pathway widths and ridge setback against the
+  // jurisdiction's fireSetbacks, else the adopted edition's model-code default. The word list
+  // below is now only the fallback, for a plan with no pathway text AND no readable dimension.
+  const fire = ctx ? evaluateFirePathwayFindings(project, ctx, { roofMounted, extraTexts: documentTexts }) : { findings: [], measured: false };
+  out.push(...fire.findings);
+  if (roofMounted && !fire.measured && !hasAny(all, FIRE_PATHWAY_PATTERNS)) {
     out.push(finding({
       id: "city.fire.pathways-missing",
       severity: "blocker",

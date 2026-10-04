@@ -1727,6 +1727,32 @@ export interface FireSetbackRule {
   codeReference?: CodeReference;
 }
 
+/** A roof-plan fire access dimension (IRC R324.6 / IFC 1205): a pathway's width or the array's
+ *  clear setback from a ridge. Hip/valley clearances are not read yet. */
+export type RoofPlanDimensionKind = "pathwayWidth" | "ridgeSetback";
+
+/** One fire access dimension a text STATES (label-anchored), in inches. */
+export interface StatedRoofPlanDimension {
+  kind: RoofPlanDimensionKind;
+  inches: number;
+  source: string;
+  excerpt: string;
+  /** A reading of the documents (parser summary, merged blob), not a document: never blocks alone. */
+  derived: boolean;
+}
+
+/** What a roof plan must show for one dimension, and whose number that is. */
+export interface RoofPlanRequiredDimension {
+  kind: RoofPlanDimensionKind;
+  inches: number;
+  /** "ahj": parsed from the jurisdiction's fireSetbacks; "model_code": the adopted IRC edition's default. */
+  basis: "ahj" | "model_code";
+  /** The fireSetbacks row is human-verified (always false for a model-code default). */
+  verified: boolean;
+  /** Where the number came from, said for the operator. */
+  source: string;
+}
+
 /** A design criterion a submittal package STATES (label-anchored), per source. */
 export type StatedDesignCriterionKind =
   | "windSpeedMph"
@@ -1951,6 +1977,9 @@ export interface ReviewerVisionVerdict {
   page: number; // 1-based plan-set page the model inspected
   observed: string; // what the model reports seeing on the sheet
   note: string;
+  /** A MEASUREMENT verdict (city.fire.pathway-unmeasured): the dimensions the sheet states, in
+   *  inches, null where it states none. Absent on an ordinary "is it on the sheet?" verdict. */
+  measured?: { pathwayWidthIn: number | null; ridgeSetbackIn: number | null };
 }
 
 export interface ReviewerFinding {
@@ -1968,6 +1997,9 @@ export interface ReviewerFinding {
   evidenceFound?: ReviewerFindingEvidence[];
   /** Optional Claude-vision confirmation of this finding against the rendered sheet. */
   visionVerification?: ReviewerVisionVerdict;
+  /** On city.fire.pathway-unmeasured only: what the roof plan must show, so the vision pass can
+   *  compare a measured sheet against the same requirement the text rule used. */
+  roofPlanRequired?: RoofPlanRequiredDimension[];
 }
 
 export interface FinalSubmitGate {

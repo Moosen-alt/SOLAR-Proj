@@ -41,11 +41,15 @@ import type {
   ProjectRecord,
   ReviewerFinding,
   ReviewerFindingEvidence,
+  ReviewerVisionVerdict,
+  RoofPlanDimensionKind,
+  RoofPlanRequiredDimension,
   StatedCodeBasisEntry,
   StatedDesignCriteria,
   StatedDesignCriterion,
   StatedDesignCriterionKind,
   StatedDesignCriterionQualifier,
+  StatedRoofPlanDimension,
   UpcomingCodeEdition,
 } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
@@ -1574,6 +1578,308 @@ export function extractAttachmentSpacings(text: string): StatedAttachmentSpacing
     out.push({ at: s.at, inches: Math.round(s.inches * 100) / 100, excerpt: flat(src.slice(from, s.end)).slice(0, 120) });
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// FIRE ACCESS PATHWAYS AND RIDGE SETBACKS, MEASURED (issue #142).
+//
+// The gate used to ask only whether a roof plan MENTIONED a fire pathway (city.fire.pathways-
+// missing, a word list) and listed the AHJ's own placement rules under "confirm the roof plan
+// meets them" (reviewer.plan.ahj-placement-rules): shown, never checked. A plan printing 18"
+// PATHWAY for a jurisdiction that requires 36" passed both. This reads the NUMBERS, with ONE reader
+// for both sides, as attachment spacing does: what the AHJ's rule requires ("minimum 36-inch
+// pathways", "3 feet from the ridge") and what the plan states ("36\" FIRE ACCESS PATHWAY",
+// "18\" SETBACK FROM RIDGE").
+//
+// A dimension belongs to the NEAREST label in its clause: a pathway word, a ridge, or a roof edge
+// this does not check (eave, rake, hip, valley, gutter, a property line). "18\" FROM HIP/VALLEY" is
+// a hip/valley clearance, not an 18" pathway, and "3' FROM EAVE" is not a ridge setback.
+// ---------------------------------------------------------------------------
+
+/** 36", 36 in, 36-inch, 3', 3 ft, 3-foot, 3'-0", 1'-6", "three (3) feet". Group 2 is the inch
+ *  tail of a feet value; group 3 marks an inch-only value. */
+// The units carry no leading \b, so "36in" and "3ft" (no space) read too.
+const ROOF_DIM_VALUE = /(?<![\d.])(\d+(?:\.\d+)?)\s*\)?\s*-?\s*(?:(?:'(?!')|’|ft\b\.?|feet\b|foot\b)(?:\s*-?\s*(\d+(?:\.\d+)?)\s*(?:"|”|in\b\.?|inch(?:es)?\b))?|(''|"|”|in\b\.?|inch(?:es)?\b))/gi;
+const ROOF_DIM_LABEL = /\b(?:(?<path>(?:fire\s+)?(?:access\s+)?path(?:way)?s?|walkways?|access\s+aisles?|fire\s+access)|(?<ridge>ridges?)|(?<other>eaves?|rakes?|hips?|valleys?|gutters?|edges?|(?:property|lot)\s+lines?))\b/gi;
+/** A clause ends at a sentence stop (not an abbreviation's or a decimal's dot), a list mark, a
+ *  comma or a joining "and"/"&": "36\" FROM RIDGE AND 18\" CLEAR OF HIPS" is two clauses, and the
+ *  18" is the hips' (read across the "and", the ridge label won and a compliant plan blocked). */
+const CLAUSE_BREAK = /(?<!\b(?:min|max|typ|approx|in|ft|no|o\.c|e\.g|i\.e))\.(?!\d)|[;,&•▪●■◦]|\band\b/i;
+/** The gap from a value to the label after it is only a preposition ("36\" FROM RIDGE", "18\" CLEAR
+ *  OF HIPS"): the value is attached to that label, even with no break after a ridge label before it. */
+const ATTACHED_AFTER = /^\s*(?:(?:clear|setback|set\s+back|offset|min(?:imum)?\.?|max(?:imum)?\.?)\s+)?(?:from|of|to|at)\s+(?:the\s+)?$/i;
+/** "RIDGE VENT 12\"", "RIDGE HEIGHT": a ridge, but not a setback from it. */
+const RIDGE_NOT_SETBACK = /\b(?:vent|cap|height|board|beam|elev(?:ation)?)\b/i;
+const ROOF_DIM_WINDOW = 60;
+
+/** One fire access dimension a text states: where, which, how many inches. */
+export interface ReadRoofPlanDimension {
+  at: number;
+  kind: RoofPlanDimensionKind;
+  inches: number;
+  excerpt: string;
+}
+
+/**
+ * Every pathway width and ridge setback a text STATES, label-anchored, in inches (6..120). Pure
+ * text in, so the same reader serves a plan sheet and an AHJ's fire setback rule.
+ */
+export function readRoofPlanDimensions(text: string): ReadRoofPlanDimension[] {
+  const src = flat(String(text || ""));
+  const out: ReadRoofPlanDimension[] = [];
+  const values: Array<{ at: number; end: number; inches: number }> = [];
+  for (const m of src.matchAll(ROOF_DIM_VALUE)) {
+    const n = toNumber(m[1]);
+    if (n == null) continue;
+    const inches = m[3] ? n : n * 12 + (m[2] ? toNumber(m[2]) ?? 0 : 0);
+    values.push({ at: m.index ?? 0, end: (m.index ?? 0) + m[0].length, inches });
+  }
+  for (const v of values) {
+    if (v.inches < 6 || v.inches > 120) continue;
+    // The value's clause, at most ROOF_DIM_WINDOW characters either side.
+    let from = Math.max(0, v.at - ROOF_DIM_WINDOW);
+    const before = src.slice(from, v.at);
+    let stop = -1;
+    for (const b of before.matchAll(new RegExp(CLAUSE_BREAK.source, "gi"))) stop = (b.index ?? 0) + b[0].length;
+    if (stop >= 0) from += stop;
+    let to = Math.min(src.length, v.end + ROOF_DIM_WINDOW);
+    const after = src.slice(v.end, to).search(CLAUSE_BREAK);
+    if (after >= 0) to = v.end + after;
+    let best: { kind: "path" | "ridge" | "other"; dist: number; start: number; end: number } | null = null;
+    for (const l of src.slice(from, to).matchAll(ROOF_DIM_LABEL)) {
+      const start = from + (l.index ?? 0);
+      const end = start + l[0].length;
+      const gap = end <= v.at ? src.slice(end, v.at) : start >= v.end ? src.slice(v.end, start) : null;
+      if (gap == null) continue;
+      // Another dimension between them: the label is that one's.
+      if (values.some((o) => o !== v && o.at >= Math.min(end, v.end) && o.end <= Math.max(start, v.at))) continue;
+      const kind = l.groups?.path ? "path" : l.groups?.ridge ? "ridge" : "other";
+      if (kind === "ridge" && RIDGE_NOT_SETBACK.test(gap)) continue;
+      // "RIDGE SETBACK: 18\"" assigns; "18\" CLEAR OF HIPS" attaches to the label after it;
+      // otherwise a label AFTER the value wins a tie (callouts print "36\" FIRE ACCESS PATHWAY").
+      const dist = end <= v.at ? (/^\s*[:=]/.test(gap) ? -1 : gap.length + 0.5) : ATTACHED_AFTER.test(gap) ? -0.5 : gap.length;
+      if (!best || dist < best.dist) best = { kind, dist, start, end };
+    }
+    if (!best || best.kind === "other") continue;
+    out.push({
+      at: v.at,
+      kind: best.kind === "path" ? "pathwayWidth" : "ridgeSetback",
+      inches: Math.round(v.inches * 100) / 100,
+      excerpt: src.slice(Math.min(best.start, v.at), Math.max(best.end, v.end)).slice(0, 120),
+    });
+  }
+  return out;
+}
+
+/**
+ * The fire access dimensions the PACKAGE states, per source (the same one-source-per-document
+ * reading as the design criteria): the documents first, then the snapshot's sheet text, then the
+ * parser's roof/site plan summaries, which are readings (derived) and never block alone.
+ */
+export function extractRoofPlanDimensions(project: ProjectRecord, extraTexts: DesignTextSource[] = []): StatedRoofPlanDimension[] {
+  const out: StatedRoofPlanDimension[] = [];
+  const seen = new Set<string>();
+  for (const s of readSources(project, extraTexts)) {
+    for (const d of readRoofPlanDimensions(s.text)) {
+      const key = `${s.label}|${d.kind}|${d.inches}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ kind: d.kind, inches: d.inches, source: s.label, excerpt: d.excerpt, derived: s.derived });
+    }
+  }
+  return out;
+}
+
+/** The adopted IRC edition (or the IRC edition a state residential code is built on), else the IFC's. */
+function fireCodeEditionYear(ctx: EffectiveCodeContext): number | null {
+  for (const family of ["IRC", "IFC"]) {
+    for (const a of ctx.adoptedCodes ?? []) {
+      const e = profileCodeEntry(a);
+      const year = Number(e.code === family ? e.edition : e.base?.code === family ? e.base.edition : "");
+      if (year >= 2000 && year < 2100) return year;
+    }
+  }
+  return null;
+}
+
+/**
+ * WHAT THE ROOF PLAN MUST SHOW, per dimension: the jurisdiction's own number where one of its
+ * fireSetbacks rules states it (the strictest, when several do), else the model-code default for
+ * the adopted edition: 36 in pathways (IRC R324.6.1); a ridge setback of 18 in from the 2015 IRC
+ * on (R324.6.2, mirroring IFC 2015 605.11.3.2.3: 18 in where the array covers no more than 33% of
+ * the roof, 36 in above; coverage is not read here, so 18 in is the floor and the message names the
+ * 36 in case), and 36 in before it (the 36-in-only text is the 2012 IFC's). Model-code lines never
+ * block, so the floor can only under-warn, never stop a compliant plan.
+ */
+export function requiredRoofPlanDimensions(ctx: EffectiveCodeContext): RoofPlanRequiredDimension[] {
+  const who = ctx.ahj || ctx.state || "the jurisdiction";
+  const prov = fieldProvenance(ctx, "fireSetbacks");
+  const year = fireCodeEditionYear(ctx);
+  const edition = year != null ? `IRC ${year}` : "IRC (adopted edition not on file; 2015 or later assumed)";
+  const out: RoofPlanRequiredDimension[] = [];
+  for (const kind of ["pathwayWidth", "ridgeSetback"] as const) {
+    let best: { inches: number; description: string } | null = null;
+    for (const rule of ctx.fireSetbacks ?? []) {
+      for (const d of readRoofPlanDimensions(rule.description)) {
+        if (d.kind === kind && (!best || d.inches > best.inches)) best = { inches: d.inches, description: rule.description };
+      }
+    }
+    if (best) {
+      out.push({ kind, inches: best.inches, basis: "ahj", verified: prov.verified, source: `${who}'s rule "${flat(best.description).slice(0, 160)}" (${prov.text})` });
+    } else if (kind === "pathwayWidth") {
+      out.push({ kind, inches: 36, basis: "model_code", verified: false, source: `${edition} R324.6.1 model-code default; no ${who} pathway width on file` });
+    } else if (year != null && year < 2015) {
+      out.push({ kind, inches: 36, basis: "model_code", verified: false, source: `${edition} model-code default (3 ft from the ridge, IFC 2012); no ${who} ridge setback on file` });
+    } else {
+      out.push({ kind, inches: 18, basis: "model_code", verified: false, source: `${edition} R324.6.2 / IFC 605.11.3.2.3 model-code default (18 in each side of a horizontal ridge where the array covers no more than 33% of the roof; 36 in where it covers more, which is not read here); no ${who} ridge setback on file` });
+    }
+  }
+  return out;
+}
+
+export const FIRE_PATHWAY_BELOW_ID = "city.fire.pathway-below-required";
+export const FIRE_PATHWAY_UNMEASURED_ID = "city.fire.pathway-unmeasured";
+const ROOF_DIM_NAME: Record<RoofPlanDimensionKind, string> = {
+  pathwayWidth: "Fire access pathway width",
+  ridgeSetback: "Array setback from the ridge",
+};
+
+interface RoofPlanBelowLine {
+  req: RoofPlanRequiredDimension;
+  values: Array<{ inches: number; source: string; excerpt: string; derived: boolean }>;
+}
+
+/**
+ * RULE 3 SHAPE: a BLOCKER only when the requirement is the jurisdiction's own (fireSetbacks) on a
+ * human-verified row AND a document, not the parser's reading, states the short dimension; every
+ * other short dimension (a model-code default, a seeded rule, a parser summary, a number vision
+ * read off the sheet image) is a WARNING that says which of those it lacks.
+ */
+function roofPlanBelowFinding(lines: RoofPlanBelowLine[], codeReferences: CodeReference[], vision: ReviewerVisionVerdict | null): ReviewerFinding {
+  const blocks = !vision && lines.some((l) => l.req.basis === "ahj" && l.req.verified && l.values.some((v) => !v.derived));
+  const text = lines.map((l) => {
+    const stated = [...new Set(l.values.map((v) => `${v.inches} in (${v.source})`))].join(", ");
+    const why = blocks ? [] : [
+      vision ? `read from the sheet image by vision (page ${vision.page}, ${vision.confidence} confidence), not from a document's text` : "",
+      l.req.basis === "model_code" ? "the requirement is the model-code default, not a rule on file for this jurisdiction" : "",
+      l.req.basis === "ahj" && !l.req.verified ? "the jurisdiction's rule is not human-verified" : "",
+      !vision && l.values.every((v) => v.derived) ? "only the parser's reading states it" : "",
+    ].filter(Boolean);
+    return `${ROOF_DIM_NAME[l.req.kind]}: stated ${stated}; requires at least ${l.req.inches} in — ${l.req.source}${why.length ? ` (a warning: ${why.join("; ")})` : ""}`;
+  });
+  const asks = lines.map((l) => l.req.kind === "pathwayWidth" ? `fire access pathways at least ${l.req.inches} in wide` : `the array at least ${l.req.inches} in from the ridge`);
+  return {
+    id: FIRE_PATHWAY_BELOW_ID,
+    severity: blocks ? "blocker" : "warning",
+    category: "plan_set",
+    title: "Fire access pathway / ridge setback below the required dimension",
+    message: `${text.join(". ")}.`,
+    cityFeedback: `Revise the roof plan to provide ${asks.join(" and ")}, dimensioned on the plan.`,
+    designTeamAction: "Re-lay the array so every fire access pathway and the ridge setback meet the required dimensions, then reissue the roof/site plan with those dimensions shown.",
+    evidenceNeeded: [`Roof plan dimensioning ${asks.join(" and ")}`, ...text].slice(0, 6),
+    codeReferences,
+    installerCallout: true,
+    evidenceStatus: vision ? "weak" : "verified",
+    evidenceFound: lines.flatMap((l) => l.values.slice(0, 3).map((v): ReviewerFindingEvidence => ({
+      kind: vision ? "source_excerpt" : v.derived ? "field_value" : "source_excerpt",
+      label: `${ROOF_DIM_NAME[l.req.kind]} ${v.inches} in`,
+      source: v.source,
+      excerpt: v.excerpt,
+      confidence: vision ? vision.confidence : v.derived ? "medium" : "high",
+      pageHint: vision ? `page ${vision.page}` : "",
+      screenshotPath: "",
+      verifier: vision ? "vision" : v.derived ? "parser" : "rule_engine",
+      note: `Compared against ${l.req.inches} in: ${l.req.source}.`,
+    }))),
+  };
+}
+
+function roofPlanRef(ctx: EffectiveCodeContext): CodeReference {
+  return ref(ctx, "R324.6", "Roof access and pathways", "Fire access pathway widths and ridge setbacks for rooftop PV; the jurisdiction may amend them.");
+}
+
+/**
+ * The measured fire access rule and its honest fallback, for a roof-mounted array:
+ *   city.fire.pathway-below-required  a stated dimension below what the plan must show
+ *   city.fire.pathway-unmeasured      no dimension readable from the text: a callout carrying the
+ *                                     requirement (roofPlanRequired), so the vision pass can make
+ *                                     its one measurement of the sheet against the same numbers
+ * `measured` tells the caller whether any dimension was read (city.fire.pathways-missing, the
+ * presence check, is then only the fallback for a plan with no pathway text or dimension).
+ */
+export function evaluateFirePathwayFindings(
+  project: ProjectRecord,
+  ctx: EffectiveCodeContext,
+  opts: { roofMounted: boolean; extraTexts?: DesignTextSource[] },
+): { findings: ReviewerFinding[]; measured: boolean } {
+  if (!opts.roofMounted) return { findings: [], measured: false };
+  const stated = extractRoofPlanDimensions(project, opts.extraTexts ?? []);
+  const required = requiredRoofPlanDimensions(ctx);
+  const codeReferences = [roofPlanRef(ctx)];
+  if (!stated.length) {
+    const who = ctx.ahj || ctx.state || "the jurisdiction";
+    const wants = required.map((r) => `${ROOF_DIM_NAME[r.kind].toLowerCase()} at least ${r.inches} in (${r.source})`);
+    // What the plan DOES say about pathways, quoted from the label to the end of its clause —
+    // never the characters around it (title blocks carry the homeowner's name).
+    let quote: { source: string; excerpt: string } | null = null;
+    for (const s of readSources(project, opts.extraTexts ?? [])) {
+      const m = /\b(?:fire\s+access|(?:access\s+)?pathways?|ridge\s+setback|setback\s+(?:from|at)\s+(?:the\s+)?ridge)\b/i.exec(s.text);
+      if (!m) continue;
+      const rest = s.text.slice(m.index, m.index + 120);
+      const cut = rest.slice(1).search(CLAUSE_BREAK);
+      quote = { source: s.label, excerpt: (cut >= 0 ? rest.slice(0, cut + 1) : rest).trim() };
+      break;
+    }
+    return {
+      measured: false,
+      findings: [{
+        id: FIRE_PATHWAY_UNMEASURED_ID,
+        severity: "callout",
+        category: "plan_set",
+        title: "Fire pathway width and ridge setback not dimensioned in the plan text — not measured",
+        message: `No fire access pathway width or ridge setback could be read from the package text, so neither has been measured against ${wants.join("; ")}.`
+          + (quote ? ` The plan says: "${quote.excerpt}" (${quote.source}).` : " The package text does not mention fire access pathways at all."),
+        cityFeedback: `Dimension the fire access pathways and the ridge setback on the roof plan; ${who} reviews them against ${required.map((r) => `${r.inches} in`).join(" / ")}.`,
+        designTeamAction: `Confirm the roof plan dimensions each fire access pathway (at least ${required.find((r) => r.kind === "pathwayWidth")?.inches} in) and the ridge setback (at least ${required.find((r) => r.kind === "ridgeSetback")?.inches} in).`,
+        evidenceNeeded: ["Dimensioned fire access pathways on the roof plan", "Dimensioned ridge setback on the roof plan"],
+        codeReferences,
+        installerCallout: false,
+        evidenceStatus: "missing",
+        evidenceFound: [quote
+          ? { kind: "source_excerpt", label: "Pathway mention without a dimension", source: quote.source, excerpt: quote.excerpt, confidence: "low", pageHint: "", screenshotPath: "", verifier: "rule_engine", note: "The plan mentions fire access, but no width or setback dimension could be read next to it." }
+          : { kind: "absence_check", label: "No pathway width or ridge setback stated", source: "Package text", excerpt: "No dimensioned fire access pathway or ridge setback in the package text.", confidence: "low", pageHint: "", screenshotPath: "", verifier: "rule_engine", note: "Absence check over the package text." }],
+        roofPlanRequired: required,
+      }],
+    };
+  }
+  const lines: RoofPlanBelowLine[] = [];
+  for (const req of required) {
+    const values = stated.filter((s) => s.kind === req.kind && s.inches < req.inches);
+    if (values.length) lines.push({ req, values });
+  }
+  return { measured: true, findings: lines.length ? [roofPlanBelowFinding(lines, codeReferences, null)] : [] };
+}
+
+/**
+ * THE ONE VISION MEASUREMENT, APPLIED (reviewerVision.ts makes it within MAX_VISION_CHECKS and caches
+ * it). A measured short dimension becomes city.fire.pathway-below-required — a WARNING at most: a
+ * number read off a sheet image is not a document's statement, so it never blocks (rule 3). A
+ * measurement that meets the requirement, or a low-confidence one, leaves the callout as it was,
+ * with the verdict attached for the operator. Vision never relaxes anything here.
+ */
+export function applyRoofPlanMeasurement(finding: ReviewerFinding, verdict: ReviewerVisionVerdict): ReviewerFinding {
+  const out: ReviewerFinding = { ...finding, visionVerification: verdict };
+  const m = verdict.measured;
+  if (finding.id !== FIRE_PATHWAY_UNMEASURED_ID || !verdict.checked || !m || verdict.confidence === "low" || !finding.roofPlanRequired?.length) return out;
+  const lines: RoofPlanBelowLine[] = [];
+  for (const req of finding.roofPlanRequired) {
+    const inches = req.kind === "pathwayWidth" ? m.pathwayWidthIn : m.ridgeSetbackIn;
+    if (typeof inches === "number" && inches > 0 && inches < req.inches) {
+      lines.push({ req, values: [{ inches, source: "Plan-set sheet image (vision)", excerpt: verdict.observed.slice(0, 200), derived: true }] });
+    }
+  }
+  if (!lines.length) return out;
+  return { ...roofPlanBelowFinding(lines, finding.codeReferences, verdict), visionVerification: verdict };
 }
 
 /**
