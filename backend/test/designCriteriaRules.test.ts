@@ -20,8 +20,8 @@ import type { JurisdictionCodeProfile, ProjectRecord, ReviewerFinding } from "..
 import { buildCodeContext } from "../src/codeProfiles";
 import { evaluateDesignCodeFindings } from "../src/codeReviewRules";
 import { extractStatedDesignCriteria, type DesignTextSource } from "../src/designCriteria";
-import { buildReviewerReport } from "../src/reviewerEngine";
-import { visionMayRelax } from "../src/reviewerVision";
+import { buildReviewerReport, topicForFinding } from "../src/reviewerEngine";
+import { MEASURED_FINDING_IDS, visionMayRelax } from "../src/reviewerVision";
 import { amendmentSourceKey } from "../src/amendmentChecks";
 
 let failures = 0;
@@ -917,30 +917,46 @@ check("#145 max_value: PV dead load 3.5 psf vs a verified 3 psf maximum, and 72 
   assert.ok(!get(run(project({ planSetExtractedText: ok }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: ok }]), NOT_MET));
 });
 
-const WORDING = "city.code.amendment-wording-missing";
-check("#145 required_text: verified wording absent from the sheets' text is an ABSENCE -> WARNING under its own id, which vision MAY relax (a placard can be drawn); present (any punctuation/case) -> nothing", () => {
+const MISSING_WORDING = "city.code.amendment-wording-missing";
+check("#145 required_text: a verified placard wording the text layer does not carry -> its OWN finding, WARNING at most, never not-met; present (any punctuation/case) -> nothing", () => {
   const ams = [amend({ kind: "required_text", field: "planText", value: "SOLAR PV SYSTEM EQUIPPED WITH RAPID SHUTDOWN" })];
   const fs = run(amPlan, ctxFor({ ...VERIFIED, amendments: ams }), amDocs);
-  assert.ok(!get(fs, NOT_MET), "an absence must not ride the measured blocker id");
-  const w = get(fs, WORDING);
-  assert.equal(w?.severity, "warning");
-  assert.equal(visionMayRelax(w!), true);
+  // Absence is not a stated value: the placard may be drawn as an image the text layer never saw.
+  assert.ok(!get(fs, NOT_MET), "required wording absent from the text layer must not be a measured not-met");
+  const f = get(fs, MISSING_WORDING);
+  assert.equal(f?.severity, "warning");
+  assert.match(f!.message, /SOLAR PV SYSTEM EQUIPPED WITH RAPID SHUTDOWN/);
   const ok = `${AM_PLAN} PLACARD: "Solar PV system — equipped with rapid shutdown"`;
-  assert.ok(!get(run(project({ planSetExtractedText: ok }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: ok }]), WORDING));
+  const okFs = run(project({ planSetExtractedText: ok }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: ok }]);
+  assert.ok(!get(okFs, MISSING_WORDING));
+  assert.ok(!get(okFs, NOT_MET));
 });
 
-check("#145 required_text: a NEGATED mention ('NO RAPID SHUTDOWN REQUIRED') does not satisfy required 'rapid shutdown'", () => {
+check("#145 required_text absence is NOT measured: vision may relax it (a picture of the placard is the evidence)", () => {
+  assert.ok(!MEASURED_FINDING_IDS.has(MISSING_WORDING));
+  const f = get(run(amPlan, ctxFor({ ...VERIFIED, amendments: [amend({ kind: "required_text", field: "planText", value: "rapid shutdown" })] }), amDocs), MISSING_WORDING)!;
+  assert.equal(visionMayRelax(f), true);
+  assert.equal(topicForFinding(f), "labels", "vision must have a plan topic to look at, or relaxable is moot");
+});
+
+check("#145 required_text: a NEGATED mention ('NO RAPID SHUTDOWN REQUIRED') does not carry the required wording", () => {
   const ams = [amend({ kind: "required_text", field: "planText", value: "rapid shutdown" })];
-  const neg = "ELECTRICAL NOTES: NO RAPID SHUTDOWN REQUIRED.";
-  assert.equal(get(run(project({ planSetExtractedText: neg }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: neg }]), WORDING)?.severity, "warning");
-  const aff = "ELECTRICAL NOTES: RAPID SHUTDOWN PER NEC 690.12.";
-  assert.ok(!get(run(project({ planSetExtractedText: aff }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: aff }]), WORDING));
+  const neg = `${AM_PLAN} NO RAPID SHUTDOWN REQUIRED.`;
+  const f = get(run(project({ planSetExtractedText: neg }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: neg }]), MISSING_WORDING);
+  assert.equal(f?.severity, "warning");
+  const pos = `${AM_PLAN} SYSTEM EQUIPPED WITH RAPID SHUTDOWN.`;
+  assert.ok(!get(run(project({ planSetExtractedText: pos }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: pos }]), MISSING_WORDING));
 });
 
-check("#145 a ground snow stated only as roof snow is 'not comparable', not 'does not state'", () => {
-  const roofOnly = "ROOF SNOW LOAD = 25 PSF";
-  const c = get(run(project({ planSetExtractedText: roofOnly }), ctxFor({ ...VERIFIED, amendments: [amend({ kind: "min_value", field: "groundSnowPsf", value: 30, unit: "psf" })] }), [{ label: "Plan set", text: roofOnly }]), BY_HAND);
-  assert.match(c!.message, /not comparable/);
+check("#145 a plan stating only a NON-comparable form (roof snow, nominal wind) -> the by-hand callout says 'not comparable', not 'does not state'", () => {
+  const ams = [amend({ kind: "min_value", field: "groundSnowPsf", value: 30, unit: "psf" }), amend({ kind: "min_value", field: "windSpeedMph", value: 115, unit: "mph" })];
+  const t = "ROOF SNOW LOAD = 20 PSF. NOMINAL WIND SPEED (VASD) = 85 MPH.";
+  const fs = run(project({ planSetExtractedText: t }), ctxFor({ ...VERIFIED, amendments: ams }), [{ label: "Plan set", text: t }]);
+  assert.ok(!get(fs, NOT_MET));
+  const c = get(fs, BY_HAND)!;
+  assert.match(c.message, /roof snow load of 20 psf, not comparable/);
+  assert.match(c.message, /nominal \/ ASD wind speed of 85 mph, not comparable/);
+  assert.doesNotMatch(c.message, /does not state/);
 });
 
 check("#145 prohibited: a verified 'no roof-mounted disconnect' amendment vs a plan showing one -> BLOCKER; a plan saying NO roof-mounted disconnect -> nothing", () => {
