@@ -35,17 +35,21 @@ import { saveProjectDocument, listProjectDocuments, projectDocsByType, documentT
 // only a structural sheet NAME (MOUNT/ATTACHMENT DETAIL, S 1.x) pulls it into structural;
 // otherwise it stays in its named category or unclassified.
 const ELECTRICAL_SHEET = /\bE\s*-?\s*\d+\.\d+\b/i;
-const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegExp[]; words?: RegExp[]; vocabulary?: RegExp[] }> = [
+// `patterns` are sheet NAMES (and labels drawn only on that sheet); `sheetNumbers` are the bare
+// sheet-number regexes (E 1.1, PV 1.0…). Both score the same — filing sums them — but a number is
+// also how other sheets CITE a sheet ("SEE E 1.1 FOR WIRING"), so only a `patterns` hit counts as
+// the page's own title-block name for the undecided-spec report (#119).
+const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegExp[]; sheetNumbers?: RegExp[]; words?: RegExp[]; vocabulary?: RegExp[] }> = [
   // "ELECTRICAL LINE DIAGRAM" is how the Synthetic-style sets title their SLD (sheet PV-6) —
   // neither "one-line" nor "3-line" appears anywhere on the sheet, so the whole electrical
   // diagram went unsplit and the submit gate reported the SLD missing from a plan set that
   // plainly contains one. Anchored on LINE DIAGRAM with an electrical qualifier; a bare
   // /LINE DIAGRAM/ is deliberately NOT used ("property line", "setback line" prose risk).
-  { docType: "sld", label: "SLD / one-line", patterns: [/\b3-?LINE DIAGRAM\b/i, /\bONE-?LINE\b/i, /\bSINGLE-?LINE\b/i, /\bELECTRICAL\s+LINE\s+DIAGRAM\b/i, /\bE\s*1\.1\b/i] },
+  { docType: "sld", label: "SLD / one-line", patterns: [/\b3-?LINE DIAGRAM\b/i, /\bONE-?LINE\b/i, /\bSINGLE-?LINE\b/i, /\bELECTRICAL\s+LINE\s+DIAGRAM\b/i], sheetNumbers: [/\bE\s*1\.1\b/i] },
   // Fire access pathways / setbacks are drawn and labeled on the site plan (the fire-access
   // sheet the gate asks for), so they identify it alongside the sheet name.
-  { docType: "site_plan", label: "Site / plot plan", patterns: [/\bSITE PLAN\b/i, /\bPLOT PLAN\b/i, /\bPV\s*1\.[01]\b/i, /\bFIRE\s+(?:PATHWAYS?|SETBACKS?|ACCESS)\b/i] },
-  { docType: "structural", label: "Structural / roof framing", patterns: [/\bMOUNT DETAIL\b/i, /\bATTACHMENT DETAIL\b/i, /\bS\s*1\.\d\b/i], words: [/STRUCTURAL/i], vocabulary: [/\bROOF SECTION\b/i, /\bRAFTER\b/i, /\bTRUSS\b/i] },
+  { docType: "site_plan", label: "Site / plot plan", patterns: [/\bSITE PLAN\b/i, /\bPLOT PLAN\b/i, /\bFIRE\s+(?:PATHWAYS?|SETBACKS?|ACCESS)\b/i], sheetNumbers: [/\bPV\s*1\.[01]\b/i] },
+  { docType: "structural", label: "Structural / roof framing", patterns: [/\bMOUNT DETAIL\b/i, /\bATTACHMENT DETAIL\b/i], sheetNumbers: [/\bS\s*1\.\d\b/i], words: [/STRUCTURAL/i], vocabulary: [/\bROOF SECTION\b/i, /\bRAFTER\b/i, /\bTRUSS\b/i] },
   // Match the dedicated SPEC SHEET by its title-block Sheet Name only. Model strings
   // (Q.TRON, Q.MI) and the word "PV MODULE" appear in the spec-callout block on the site
   // plan, SLD, etc., so they are NOT reliable — only the sheet name "… SPEC(IFICATION) SHEET"
@@ -70,7 +74,7 @@ const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegEx
   // inverter_spec split and bloated it past PowerClerk's 5 MB upload limit. Match the dedicated
   // SPEC SHEET by its title-block name only, per this file's stated discipline.
   { docType: "inverter_spec", label: "Inverter spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MICRO-?INVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bINVERTER\s+SPEC(?:IFICATION)?S?\b/i] },
-  { docType: "labels", label: "Labels / placards", patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i, /\bE\s*1\.3\b/i] },
+  { docType: "labels", label: "Labels / placards", patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i], sheetNumbers: [/\bE\s*1\.3\b/i] },
 ];
 
 // A calculations sheet (WIRING CALCULATIONS, ELECTRICAL CALCULATIONS). Its body tabulates the
@@ -87,7 +91,11 @@ const SPEC_DOC_TYPES = new Set(["module_spec", "inverter_spec"]);
 // wins the structural category on that one stray hit, and before, only a page NO category claimed
 // was reported — so it went into the structural part with nothing said. It still goes there (the
 // winner-take-all scoring is unchanged); `undecidedSpecFiledAs` names the category that took it.
-// A calculations sheet is not undecided — it is known not to be a spec sheet.
+// A calculations sheet is not undecided — it is known not to be a spec sheet. Neither is a page whose
+// winning category hit a title-block sheet NAME (#119): a dense SLD whose callout cites "INVERTER
+// SPECIFICATIONS" won sld on its own sheet name, so the filing has a strong reason and the report
+// would be noise. A winner on `words`/`vocabulary` only (the STRUCTURAL brochure) or on a bare sheet
+// NUMBER only (an EQUIPMENT SPECIFICATION page whose body says "SEE E 1.1") is still reported.
 const SPEC_SHEET_NAME = /(?:MICRO-?)?(?:INVERTERS?|MODULES?|EQUIPMENT)\s+SPEC(?:IFICATION)?S?\b/i;
 
 // The general-notes / sheet-index cover page lists every sheet name and would otherwise
@@ -105,25 +113,30 @@ function isIndexOrNotesPage(text: string): boolean {
 // The one legitimate multi-category case is preserved explicitly: a COMBINED
 // "MODULE / INV SPECIFICATION SHEET" genuinely IS both the module spec and the inverter spec,
 // so that single sheet is added to both — and nothing else fans out.
-function classifyPage(text: string): string[] {
-  if (isIndexOrNotesPage(text)) return [];
+//
+// `byPattern` says whether the winning category scored at least one title-block sheet-NAME
+// (`patterns`) hit, as opposed to only a sheet number or `words` / `vocabulary` — the undecided-spec
+// report reads it (#119). Filing never does: the score is the same sum it always was.
+function scorePage(text: string): { docTypes: string[]; byPattern: boolean } {
+  if (isIndexOrNotesPage(text)) return { docTypes: [], byPattern: false };
   const electricalSheet = ELECTRICAL_SHEET.test(text);
   const calcsSheet = CALCS_SHEET.test(text);
-  let best: { docType: string; score: number } | null = null;
+  let best: { docType: string; score: number; patternHits: number } | null = null;
   for (const cat of CATEGORY_PATTERNS) {
     if (calcsSheet && SPEC_DOC_TYPES.has(cat.docType)) continue;
     const hits = (res: RegExp[] | undefined) => (res ?? []).reduce((n, re) => (re.test(text) ? n + 1 : n), 0);
-    const score = hits(cat.patterns)
+    const patternHits = hits(cat.patterns);
+    const score = patternHits + hits(cat.sheetNumbers)
       + (electricalSheet ? 0 : hits(cat.words) + (cat.vocabulary?.some((re) => re.test(text)) ? 1 : 0));
-    if (score > 0 && (!best || score > best.score)) best = { docType: cat.docType, score };
+    if (score > 0 && (!best || score > best.score)) best = { docType: cat.docType, score, patternHits };
   }
-  if (!best) return [];
+  if (!best) return { docTypes: [], byPattern: false };
   const out = [best.docType];
   if (!calcsSheet && /MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i.test(text)) {
     if (!out.includes("module_spec")) out.push("module_spec");
     if (!out.includes("inverter_spec")) out.push("inverter_spec");
   }
-  return out;
+  return { docTypes: out, byPattern: best.patternHits > 0 };
 }
 
 // Which documents each submission TYPE needs in its upload package. The package is
@@ -281,9 +294,10 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
   return { target, planSetDocId: planSet.id, pages: total, parts, packagedDocTypes: packaged, missingDocTypes: missing, zipDocumentId: zipDoc.id, unclassifiedPages: unclassified, missingSheetTypes, undecidedSpecPages: undecidedSpec, undecidedSpecFiledAs };
 }
 
-// Assign each page of the plan set to its categories (classifyPage). 1-based unclassified pages;
+// Assign each page of the plan set to its categories (scorePage). 1-based unclassified pages;
 // the pages that name a spec sheet but landed in no spec part are listed as undecided spec pages,
-// with the category that took each one, if any (#91).
+// with the category that took each one, if any (#91) — unless that category won on a title-block
+// sheet-name hit (#119).
 async function classifyPlanSetPages(planSetPath: string, total: number): Promise<{ byCategory: Map<string, number[]>; unclassified: number[]; undecidedSpec: number[]; undecidedSpecFiledAs: Record<string, string>; pageTexts: string[] }> {
   const pageTexts = await extractPdfPages(planSetPath, 80);
   const byCategory = new Map<string, number[]>();
@@ -292,15 +306,19 @@ async function classifyPlanSetPages(planSetPath: string, total: number): Promise
   const undecidedSpecFiledAs: Record<string, string> = {};
   for (let i = 0; i < total; i++) {
     const text = pageTexts[i] ?? "";
-    const docTypes = classifyPage(text);
+    const { docTypes, byPattern } = scorePage(text);
     for (const docType of docTypes) {
       const arr = byCategory.get(docType) ?? [];
       arr.push(i);
       byCategory.set(docType, arr);
     }
     if (!docTypes.length) unclassified.push(i + 1);
+    // A page whose winner came from a title-block sheet name (a dense SLD citing "INVERTER
+    // SPECIFICATIONS" in a callout, won by its own sheet name) is filed right, so reporting it is
+    // noise (#119). A stray `words`-only winner (#91's STRUCTURAL racking brochure), a winner on a
+    // cited sheet number only ("SEE E 1.1"), or no winner at all leaves the page undecided.
     if (SPEC_SHEET_NAME.test(text) && !CALCS_SHEET.test(text) && !isIndexOrNotesPage(text)
-      && !docTypes.some((t) => SPEC_DOC_TYPES.has(t))) {
+      && !docTypes.some((t) => SPEC_DOC_TYPES.has(t)) && !byPattern) {
       undecidedSpec.push(i + 1);
       if (docTypes.length) undecidedSpecFiledAs[String(i + 1)] = docTypes[0];
     }
