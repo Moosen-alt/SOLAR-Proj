@@ -33,6 +33,7 @@ const MEASURED = [
   "city.struct.anchor-spacing-exceeds-ahj",
   "city.plan.ul-listings-missing",
   "city.struct.wind-exceeds-prescriptive-cap",
+  "city.fire.pathway-below-required",
 ];
 
 const PLAN = "GROUND SNOW LOAD = 20 PSF WIND SPEED = 110 MPH EXPOSURE CATEGORY = C GOVERNING CODES: 2023 ORSC 2023 OESC (NEC 2020) NEW PV ATTACHMENTS AT 4'-0\" O.C.";
@@ -54,6 +55,8 @@ const produced: ReviewerFinding[] = [
   ...buildReviewerReport(project, { codeContext: buildCodeContext("OR", "City of Testport", profile({})), documentTexts: docs }).findings,
   // On the prescriptive path, the plan's 110 mph in Exposure C is above a 100 mph Exposure C cap.
   ...buildReviewerReport({ ...project, parserSnapshot: { ...project.parserSnapshot, permitPath: "Prescriptive" } } as unknown as ProjectRecord, { codeContext: buildCodeContext("OR", "City of Testport", profile({ prescriptive: { maxWindSpeedMphExpC: 100 } })), documentTexts: docs }).findings,
+  // An 18" pathway against the jurisdiction's 36" (issue #142).
+  ...buildReviewerReport(project, { codeContext: buildCodeContext("OR", "City of Testport", profile({ fireSetbacks: [{ id: "fire-1", description: "Minimum 36-inch fire access pathways." }] })), documentTexts: [{ label: "Plan set", text: '18" FIRE ACCESS PATHWAY' }] }).findings,
 ];
 
 for (const id of MEASURED) {
