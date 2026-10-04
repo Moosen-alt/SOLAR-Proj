@@ -28,7 +28,7 @@ interface ProfileData {
 //      apart. A JSON.parse failure was worse: it threw into callers that all swallow
 //      (applicationDocContext, qc, repository), landing in the same silent state.
 //
-// Measured against the live DB with the file made unreachable: Christopher Ivy's
+// Measured against the live DB with the file made unreachable: Drew Example's
 // blocking set went from [building_application, electrical_application,
 // solar_checklist] to [] — the packet card printed the pass-green "Every required
 // document is attached" and the submit gate fell from blocker to warning. Those are

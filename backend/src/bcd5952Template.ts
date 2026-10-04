@@ -45,7 +45,7 @@ export function bcd5952TemplateForHash(sha256: string, sourceUrl: string) {
     // else the AHJ (ahjForms computed.buildingDepartment).
     overlayFields: [{ source: "computed.buildingDepartment", page: 0, x: 270, y: 693.82, size: 10 }],
     // The blank declares auto-size (0 Tf) on its 18-pt-tall boxes, which set every value at 14 pt
-    // beside 10-11 pt labels — the "janky" look on Michael Sheridan's checklist. One size for all;
+    // beside 10-11 pt labels — the "janky" look on Jules Testperson's checklist. One size for all;
     // a value too wide for its box at 10 pt falls back to fit (ahjForms.fillLoadedForm).
     fieldFontSizes: Object.fromEntries(BCD_5952_TEXT_FIELDS.map((name) => [name, BCD_5952_VALUE_PT])),
     signatureFields: [],

@@ -134,7 +134,7 @@ export const ENGINEERED_REQUIRED_DOCS = [
 // Twice now, a sentence stating that a sealed document is ABSENT has been counted
 // as proof that it is PRESENT:
 //
-//   Coos Bay 187-26-000309-STR (Ann Marineau, 1780 Ocean Blvd) — filed, then sent
+//   Coos Bay 187-26-000309-STR (Emery Placeholder, 5050 Placeholder Blvd) — filed, then sent
 //   to plan review for stamps. The parser had already written:
 //     "No PE stamp/seal shown (title block 'Signature with Seal' is blank); AHJ
 //      may require stamped structural for 2x4 @16" rafters"
@@ -235,7 +235,7 @@ function withoutNumberAbbreviation(clause: string): string {
  *   set — may only DENY. It cannot assert, because an empty title block prints
  *   the words "SIGNATURE WITH SEAL" exactly like a signed one does. Measured on
  *   the live database: reading raw plan text in the positive direction flipped
- *   two projects (15622 SE Vivian Way, 990 17th St NE) to "stamped" on that
+ *   two projects (50030 SE Testing Way, 520 Example St NE) to "stamped" on that
  *   boilerplate alone, with no seal anywhere in either set. An extracted string is
  *   not an assessment, and a label is not a signature.
  *
@@ -596,7 +596,7 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
   // roofing row) — a membrane roof is outside it no matter how clean the numbers are.
   // Operator ruling (2026-09-21): "In Oregon, a PV solar installation on a TPO roof is
   // automatically a non-prescriptive project... we had to get stamps for them." Proven on
-  // David Simmons: TPO + ballasted, numerics all inside the limits, screen said
+  // Finley Mockdata: TPO + ballasted, numerics all inside the limits, screen said
   // prescriptive — his REAL filing is 187-26-000328-STR, a stamped STRUCTURAL permit.
   // An UNKNOWN material stays silent (absence is not failure); only a RECOGNIZED
   // non-qualifying covering fails the screen.

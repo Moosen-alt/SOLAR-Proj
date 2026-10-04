@@ -460,6 +460,47 @@ export function isPermitPlatformUrl(url: string | null | undefined): boolean {
   if (!host) return false;
   return PERMIT_PLATFORM_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
 }
+
+// ── A city's SELF-HOSTED permit portal (issue #128, rule 5) ─────────────────────────────
+// PERMIT_PLATFORM_HOSTS knows the vendors' CLOUD domains only. A city that runs the same software
+// on its own .gov host (Provo: cvportal.provo.gov/CityViewPortal) was no permit portal to rule 5,
+// so the NEM track launched it. Two signals, both refusals on the NEM track only (isVendorDomain
+// and the permit-side lookups keep asking isPermitPlatformUrl — a city's .gov is not a vendor's):
+//   - the permit software's own install signature (a first host label or first path segment the
+//     product installs under): CityView (cvportal. / /CityViewPortal), Tyler EnerGov (energov. /
+//     /EnerGov_Prod …), CentralSquare eTRAKiT (etrakit. / /eTRAKiT3), self-hosted Accela Citizen
+//     Access (/CitizenAccess);
+//   - a portal an AHJ row (seeded or verified KB row, an AHJ recipe) names as the city's permit
+//     portal: PortalEntity.permitPortals, built by portalRecipes.portalEntityEvidence.
+// The ONE way such a portal opens on the NEM track is unchanged: the utility's own human-VERIFIED
+// record names that host and tenant (hostFitsTrackAndEntity step 1).
+const SELF_HOSTED_PERMIT_HOST_LABEL = /^(?:cvportal|cityview(?:portal)?|energov\w*|etrakit\d*|citizenaccess)$/i;
+const SELF_HOSTED_PERMIT_PATH_SEGMENT = /^(?:cityviewportal|cityview|energov\w*|etrakit\d*|citizenaccess)$/i;
+export function isSelfHostedPermitPortalUrl(url: string | null | undefined): boolean {
+  const host = portalHostOf(url);
+  if (!host) return false;
+  if (SELF_HOSTED_PERMIT_HOST_LABEL.test(host.split(".")[0] ?? "")) return true;
+  return SELF_HOSTED_PERMIT_PATH_SEGMENT.test(portalTenantOf(url));
+}
+/** Is this URL an AHJ PERMIT portal, as the NEM track must judge it: a permit-software vendor's
+ *  host, a self-hosted install of permit software, or a portal an AHJ row names (`permitPortals`,
+ *  matched by samePortal — the host, and its first path segment when both name one). */
+export function isPermitPortalUrl(url: string | null | undefined, permitPortals: string[] = []): boolean {
+  if (!portalHostOf(url)) return false;
+  return isPermitPlatformUrl(url) || isSelfHostedPermitPortalUrl(url) || permitPortals.some((p) => samePortal(p, url));
+}
+/** The portal URLs a KB row's free text names ("Provo Online Portal (CityView,
+ *  cvportal.provo.gov/CityViewPortal): apply …" — reference imports file the link in portal_name,
+ *  often without a scheme), as https URLs. Only common TLDs, so "e.g." and "U.S." name nothing. */
+export function portalUrlsInText(text: string | null | undefined): string[] {
+  const out: string[] = [];
+  const re = /(?:https?:\/\/)?((?:[a-z0-9-]+\.)+(?:gov|us|org|com|net|edu|io|info|site|app|cloud))(?![a-z0-9-])(\/[^\s,;()"'<>]*)?/gi;
+  for (const m of String(text ?? "").matchAll(re)) {
+    const u = `https://${m[1]}${(m[2] ?? "").replace(/[.:]+$/, "")}`;
+    if (portalHostOf(u) && !out.includes(u)) out.push(u);
+  }
+  return out;
+}
 /** ONE definition of "a host where ONE instance serves many agencies and the tenant is in the path
  *  or a query parameter": a page on such a host attests only its OWN tenant (portalTenantKey), never
  *  a sibling's. The catalog's tenant token and the lookup's portal door both ask this (lookup-close-5
@@ -785,7 +826,7 @@ export function trackSafeUrl(track: string | null | undefined, url: string | nul
   const value = String(url ?? "").trim();
   if (!value) return "";
   if (scopeForTrack(track) === "ahj") return isUtilityPlatformUrl(value) ? "" : value;
-  return isPermitPlatformUrl(value) ? "" : value;
+  return isPermitPlatformUrl(value) || isSelfHostedPermitPortalUrl(value) ? "" : value;
 }
 
 // ── Does this URL belong to THIS track and THIS entity? ─────────────────────────────────
@@ -822,6 +863,11 @@ export interface PortalEntity {
    *  (a municipal utility whose NEM application lives inside the city's permit portal — Utah munis,
    *  Austin Energy, BTU, Denton). The ONLY way a permit-platform host opens on the NEM track. */
   verifiedPermitPlatformPortals?: string[];
+  /** UTILITY scope only: portals AHJ rows (seeded or verified KB rows, AHJ recipes) name as a
+   *  city's PERMIT portal (issue #128: a self-hosted .gov permit portal is on no vendor list). Each
+   *  is a permit portal on the NEM track — refused unless the carve-out above names it. Never a
+   *  claim for anyone, never an opening. */
+  permitPortals?: string[];
 }
 
 /** Where a candidate URL came from. `operator` = typed by a person on a route; `statewide` =
@@ -869,8 +915,11 @@ export function hostFitsTrackAndEntity(
   //    host-wide, never from a seeded/researched row, never from the AHJ's row
   //    (portalEntityEvidence builds verifiedPermitPlatformPortals from utility-keyed verified rows
   //    only). A permit track never gains the mirror carve-out: it never launches a utility portal.
+  //    A permit portal here is a vendor's host, a self-hosted install, or one an AHJ row names
+  //    (isPermitPortalUrl, issue #128) — the carve-out below is the same for all three.
+  const permitPortal = scope === "utility" && isPermitPortalUrl(value, entity?.scope === "utility" ? entity.permitPortals : []);
   if (
-    scope === "utility" && entity?.scope === "utility" && isPermitPlatformUrl(value)
+    permitPortal && entity?.scope === "utility"
     && (entity.verifiedPermitPlatformPortals ?? []).some((p) => portalTenantKey(p) === portalTenantKey(value))
   ) {
     return { fits: true, code: "ok", reason: `${host} is the portal ${entity.name || "this utility"}'s own human-verified record names for its interconnection application` };
@@ -883,8 +932,8 @@ export function hostFitsTrackAndEntity(
   if (sf && sf !== "agency" && entity?.scope === "ahj" && entity.verifiedPortals.some((p) => samePortal(p, value))) {
     return { fits: true, code: "ok", reason: `${host} is the Salesforce site ${entity.name || "this AHJ"}'s own human-verified record names for its permit applications` };
   }
-  if (!trackSafeUrl(track, value)) {
-    if (scope === "utility" && entity?.scope === "utility" && isPermitPlatformUrl(value)) {
+  if (!trackSafeUrl(track, value) || permitPortal) {
+    if (permitPortal && entity?.scope === "utility") {
       return {
         fits: false,
         code: "track_conflict",

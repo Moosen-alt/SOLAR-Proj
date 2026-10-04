@@ -14,6 +14,10 @@
 //                failed -> no retry until origin/main moves; a fresh lock is never taken over.
 //   BOOKKEEPING  the lock is touched before every long step; pre-update snapshots capped at 3;
 //                /health counts only a git-sourced sha.
+//   #99          a waiting portal run / filing holds the update only while its window can be open:
+//                staged since the running server started (from /health uptimeSec) and not on an
+//                archived project. A stale row (an earlier server's) never holds it forever; an
+//                unknown start keeps the old, cautious count.
 //
 // Run: npx tsx backend/test/localAutoUpdate.test.ts
 import { ISOLATED_CWD, REPO } from "./_isolate";
@@ -26,7 +30,7 @@ import { pathToFileURL } from "node:url";
 const mod = await import(pathToFileURL(path.join(REPO, "scripts", "local-auto-update.mjs")).href);
 const {
   runCycle, busyReasons, readBusyCounts, BUSY_PORTAL_RUN_STATUSES, readFailedMarker, preUpdateSnapshotsToPrune,
-  takeLock, touchLock, LOCK_STALE_MS, healthReportsCommit,
+  takeLock, touchLock, LOCK_STALE_MS, healthReportsCommit, liveSessionCutoff, readStaleWaiting, LIVE_SLACK_MS,
 } = mod;
 
 let failures = 0;
@@ -344,6 +348,66 @@ await check("readBusyCounts against the real schema, opened read-only", async ()
   assert.ok(BUSY_PORTAL_RUN_STATUSES.includes("awaiting_human_submit") && BUSY_PORTAL_RUN_STATUSES.includes("paused_for_human"));
   db.close?.();
   assert.ok(fs.existsSync(dbPath));
+});
+
+console.log("local auto-update: which waiting rows can still have a window (#99)");
+
+await check("liveSessionCutoff: the running server's start (uptime + a minute of slack); no server = now; unknown = null", () => {
+  const nowMs = Date.parse("2026-10-04T12:00:00.000Z");
+  assert.equal(LIVE_SLACK_MS, 60_000);
+  assert.equal(liveSessionCutoff({ uptimeSec: 3600 }, null, nowMs), "2026-10-04T10:59:00.000Z", "up an hour -> rows since 10:59 can be open");
+  assert.equal(liveSessionCutoff(null, { roots: [] }, nowMs), "2026-10-04T12:00:00.000Z", "nothing listening -> no window can be open");
+  assert.equal(liveSessionCutoff(null, { roots: [4242] }, nowMs), null, "a server that does not answer /health -> unknown, stay cautious");
+  assert.equal(liveSessionCutoff(null, null, nowMs), null, "process list unreadable -> unknown");
+  assert.equal(liveSessionCutoff({ jobs: { inFlightThisProcess: 0 } }, null, nowMs), null, "an older server without uptimeSec -> unknown");
+  assert.equal(liveSessionCutoff({ uptimeSec: null }, null, nowMs), null, "a null uptime is not 'just started'");
+});
+
+await check("readBusyCounts with liveSince: only rows staged since the server started, never on archived projects", async () => {
+  const dbPath = path.join(ISOLATED_CWD, "auto-update-99.sqlite");
+  process.env.AUTOPILOT_DB_PATH = dbPath;
+  const { openDatabase } = await import("../src/db");
+  const db = await openDatabase();
+  const t = "2026-10-04T09:00:00.000Z";
+  db.run("INSERT INTO projects (id, status, parser_json, created_at, updated_at) VALUES ('pa','ready_to_stage','{}',?,?)", [t, t]);
+  db.run("INSERT INTO projects (id, status, parser_json, created_at, updated_at, archived_at, archived_reason) VALUES ('pb','ready_to_stage','{}',?,?,?,'test')", [t, t, t]);
+  // portal_runs.started_at is NOT NULL in the schema, so every run has a time to compare.
+  const run = (id: string, project: string, status: string, startedAt: string) =>
+    db.run("INSERT INTO portal_runs (id, project_id, run_type, status, started_at) VALUES (?, ?, 'stage', ?, ?)", [id, project, status, startedAt]);
+  run("r-old", "pa", "awaiting_human_submit", "2026-09-28T22:20:15.446Z");   // an earlier server's: window gone
+  run("r-new", "pa", "awaiting_human_submit", "2026-10-04T10:05:00.000Z");   // this server's: window may be open
+  run("r-arch", "pb", "paused_for_human", "2026-10-04T10:06:00.000Z");       // archived: never filed
+  run("r-sp-before", "pa", "awaiting_human_resubmit", "2026-10-04 09:30:00"); // space format, before
+  run("r-sp-after", "pa", "awaiting_human_resubmit", "2026-10-04 10:30:00");  // space format, after
+  const sub = (id: string, project: string, createdAt: string) =>
+    db.run("INSERT INTO submissions (id, project_id, submission_type, status, created_at) VALUES (?, ?, 'permit', 'awaiting_human_submit', ?)", [id, project, createdAt]);
+  sub("s-old", "pa", "2026-08-25T19:12:52.882Z");
+  sub("s-new", "pa", "2026-10-04T11:00:00.000Z");
+  sub("s-arch", "pb", "2026-10-04T11:00:00.000Z");
+  const Database = createRequire(path.join(REPO, "package.json"))("better-sqlite3");
+  const read = <T>(fn: (ro: unknown) => T): T => { const ro = new Database(dbPath, { readonly: true }); try { return fn(ro); } finally { ro.close(); } };
+  const now = "2026-10-04T12:00:00.000Z";
+  const liveSince = "2026-10-04T10:00:00.000Z";
+
+  const live = read((ro) => readBusyCounts(ro, now, liveSince));
+  assert.equal(live.portalRuns, 2, "r-new and r-sp-after only (julianday reads the space format; a string compare would drop r-sp-after)");
+  assert.equal(live.filings, 1, "s-new only");
+  assert.deepEqual(busyReasons(live, { uptimeSec: 7200, jobs: { inFlightThisProcess: 0 } }).length, 2, "a live staged run still holds the update");
+
+  const unknown = read((ro) => readBusyCounts(ro, now, null));
+  assert.equal(unknown.portalRuns, 4, "start unknown: every waiting row counts except the archived project's");
+  assert.equal(unknown.filings, 2);
+
+  const stale = read((ro) => readStaleWaiting(ro, liveSince));
+  assert.deepEqual(stale, { portalRuns: 3, filings: 2 }, "what was set aside: r-old, r-arch, r-sp-before; s-old, s-arch");
+
+  // The live shape that held the owner's install (#99): nothing but stale rows -> idle.
+  db.run("DELETE FROM portal_runs WHERE id IN ('r-new','r-sp-after')");
+  db.run("DELETE FROM submissions WHERE id = 's-new'");
+  const onlyStale = read((ro) => readBusyCounts(ro, now, liveSince));
+  assert.deepEqual(onlyStale, { jobs: 0, portalRuns: 0, filings: 0 }, "only an earlier server's staged rows and archived ones -> idle");
+  assert.deepEqual(busyReasons(onlyStale, { uptimeSec: 7200, jobs: { inFlightThisProcess: 0 } }), []);
+  db.close?.();
 });
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

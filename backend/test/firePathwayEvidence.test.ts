@@ -94,7 +94,7 @@ console.log("\n3. THE REAL CORPUS VOCABULARY IS ACCEPTED");
 // Harvested verbatim from live plan sets. A tightened rule that rejects the operator's own
 // wording would turn a false clear into a false-blocker wave on day one.
 const REAL_PHRASINGS: [string, string][] = [
-  ["Basson / Miner / Reavis", 'ROOF PLAN. 36" FIRE SETBACK AT RIDGE AND 18" FIRE SETBACK AT EAVES.'],
+  ["Synthetic / Fakename / Reavis", 'ROOF PLAN. 36" FIRE SETBACK AT RIDGE AND 18" FIRE SETBACK AT EAVES.'],
   ["Fire setbacks sentence", 'Fire setbacks shown: 36" at ridge and 18" setbacks at edges/eaves, two roof access points.'],
   ["demo set", "SITE PLAN. Array location, fire access pathways and setbacks shown."],
   ["IFC citation", "PATHWAYS PROVIDED PER IFC 1205.2 AND R324.6."],

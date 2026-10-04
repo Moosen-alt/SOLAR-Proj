@@ -5,6 +5,7 @@ import { pathWordingScope, resolvePermitPath, usStateCode } from "./permitPath";
 import { classifyRoofCovering, statedRoofDeadLoads, tileAttachmentFromText, tileAttachmentMethodOf, TILE_MIN_ROOF_DEAD_LOAD_PSF } from "./roofCovering";
 import {
   evaluateDesignCriteriaFindings,
+  evaluateFirePathwayFindings,
   extractAttachmentSpacings,
   packageTextSources,
   PARSED_FIELDS_SOURCE,
@@ -784,7 +785,13 @@ export function evaluateDesignCodeFindings(
   // The old list here accepted a bare "setback" or "ridge" — ordinary zoning and roof-geometry
   // words — so this rule cleared on any plan set too, in step with the evidence topic. Letting
   // the two drift apart is how the gate ends up contradicting itself about the same project.
-  if (roofMounted && !hasAny(all, FIRE_PATHWAY_PATTERNS)) {
+  //
+  // MEASURED FIRST (issue #142): the plan's stated pathway widths and ridge setback against the
+  // jurisdiction's fireSetbacks, else the adopted edition's model-code default. The word list
+  // below is now only the fallback, for a plan with no pathway text AND no readable dimension.
+  const fire = ctx ? evaluateFirePathwayFindings(project, ctx, { roofMounted, extraTexts: documentTexts }) : { findings: [], measured: false };
+  out.push(...fire.findings);
+  if (roofMounted && !fire.measured && !hasAny(all, FIRE_PATHWAY_PATTERNS)) {
     out.push(finding({
       id: "city.fire.pathways-missing",
       severity: "blocker",
@@ -1361,7 +1368,7 @@ export function evaluateDesignCodeFindings(
   // LOAD-SIDE rule. A SUPPLY-SIDE (line-side) tap is 705.11 and is not governed by it at all:
   // the question there is whether the tap conductors and their OCPD are sized to the service.
   //
-  // The old gate matched the bare word "breaker", so Edgar Miner's parsed interconnection
+  // The old gate matched the bare word "breaker", so Harper Fakename's parsed interconnection
   // "Supply Breaker" — corroborated by his own plan set, "POINT OF INTERCONNECT, SUPPLY
   // BREAKER FEED THRU LUG" — was measured against the load-side rule and produced a BLOCKER
   // that the code it cites does not support. 200A main + 50A PV on a 200A bus exceeds 240A
@@ -1439,7 +1446,7 @@ export function evaluateDesignCodeFindings(
     // label, it skipped the only NEC 705.12 calculation in the product.
     //
     // The trigger is not exotic. "Net Metering" is the FIRST example value in the parser's own
-    // prompt (llm.ts), and Daniel Daly's live row carries exactly that string — measured, his
+    // prompt (llm.ts), and Blake Fixture's live row carries exactly that string — measured, his
     // filing has never had its busbar screen run. Six of eight realistic wordings were silent.
     //
     // An unknown method is NOT routed into the load-side branch: demanding a 705.12 busbar calc

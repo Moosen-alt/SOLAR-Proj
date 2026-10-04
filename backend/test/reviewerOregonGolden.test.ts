@@ -163,7 +163,7 @@ try {
 // The plan-set requirement was decided from parser TEXT (splitPagesText /
 // utilityDownloadChecklistText / projectDescriptionText). Those are a proxy for "a package
 // was produced", and the proxy reads MISSING for a project that holds every split document.
-// Live: Abby Johnson (Happy Valley) had plan_set, sld, site_plan, module_spec, inverter_spec
+// Live: Casey Testcase (Happy Valley) had plan_set, sld, site_plan, module_spec, inverter_spec
 // and five more attached, and staging was hard-blocked with "No split mapping found" —
 // unclearable from the UI, because nothing an operator can type creates parser text.
 //

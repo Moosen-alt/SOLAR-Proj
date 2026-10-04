@@ -2,7 +2,7 @@ import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, 
 import { looksLikeEmail } from "../../shared/src/emailAddress";
 import { evaluateDesignCodeFindings, mountKindForProject, isMlpeDesignForProject } from "./codeReviewRules";
 import { pvWorksheetFindings, serviceRatingConsistencyFindings, type PvWorksheetGateInput } from "./pvWorksheetGate";
-import type { DesignTextSource } from "./designCriteria";
+import { extractRoofPlanDimensions, type DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
 import { findApplicationProfile } from "./applicationDocs";
 import { permitProcessFor } from "./permitProcess";
@@ -120,7 +120,7 @@ export function buildReviewerReport(
   if (opts.pvWorksheet) findings.push(...pvWorksheetFindings(project, opts.pvWorksheet));
   findings.push(...serviceRatingConsistencyFindings(project, [String(project.parserSnapshot?.planSetExtractedText ?? ""), ...(opts.documentTexts ?? []).map((d) => d.text)].join("\n")));
   addPlanSetFindings(project, findings);
-  addPlacementRuleFindings(project, opts.codeContext, findings);
+  addPlacementRuleFindings(project, opts.codeContext, findings, opts.documentTexts ?? []);
   addUtilityFindings(project, findings);
   addProfileFindings(project, profile, findings, opts.uploadedDocTypes ?? []);
   addPermitPathFindings(project, findings);
@@ -854,20 +854,29 @@ function addPlanSetFindings(project: ProjectRecord, findings: ReviewerFinding[])
  * 2026-09-26) was its checklist item 11 — an access path clear of the incoming electrical service —
  * and the gate had shown a green check for "fire access + escape pathways" because a FILE was
  * attached. Nothing here reads the drawing, so the evidence is "weak" and the words say "confirm".
+ *
+ * Pathway widths and ridge setbacks the rules state ARE now measured against the plan, by
+ * city.fire.pathway-below-required (designCriteria.ts, issue #142). The rules' other conditions
+ * (clear of the service, a skylight, a parapet) are not, so this stays a callout, and it quotes
+ * what the plan states next to the rules for the person who checks the rest.
  */
-function addPlacementRuleFindings(project: ProjectRecord, ctx: EffectiveCodeContext | undefined, findings: ReviewerFinding[]): void {
+function addPlacementRuleFindings(project: ProjectRecord, ctx: EffectiveCodeContext | undefined, findings: ReviewerFinding[], documentTexts: DesignTextSource[]): void {
   const rules = (ctx?.fireSetbacks ?? []).filter((r) => String(r.id || "").startsWith("placement-research:"));
   if (!rules.length) return;
   const kind = mountKindForProject(project);
   if (kind !== "roof" && kind !== "unknown") return;
   const who = project.ahj || ctx?.ahj || "The AHJ";
   const lines = rules.slice(0, 6).map((r) => `"${r.description}"${r.codeReference?.section ? ` (${r.codeReference.section})` : ""}`);
+  const stated = extractRoofPlanDimensions(project, documentTexts);
+  const planSays = stated.length
+    ? ` The plan states: ${stated.slice(0, 4).map((d) => `"${d.excerpt}" (${d.source})`).join("; ")}. The pathway widths and ridge setbacks these rules state are measured separately (fire pathway check); nothing else in them is.`
+    : " No fire access pathway width or ridge setback could be read from the plan text.";
   findings.push(finding(
     "reviewer.plan.ahj-placement-rules",
     "callout",
     "plan_set",
     `${who}'s own PV placement / fire access rules — confirm the roof plan meets them`,
-    `AHJ rule${rules.length > 1 ? "s" : ""} on file (from ${who}'s own page; not checked against the drawing): ${lines.join("; ")}.`,
+    `AHJ rule${rules.length > 1 ? "s" : ""} on file (from ${who}'s own page; not checked against the drawing): ${lines.join("; ")}.${planSays}`,
     true,
     {
       cityFeedback: `Show on the roof/site plan that the array meets ${who}'s published placement and fire access rules: ${lines.join("; ")}.`,

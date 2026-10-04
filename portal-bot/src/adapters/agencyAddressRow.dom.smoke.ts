@@ -49,9 +49,9 @@ const GRIDS: Record<string, string> = {
   live: row("county-owner", "100 EXAMPLE RD SE, 1701000, COUNTY APPLICATIONS, SOUTH, JEFFERSON MARION OR 97352, 100 EXAMPLE RD SE, JEFFERSON, OR 97352", "COUNTY APPLICATIONS", "JEFFERSON", "97352", "CUSTOMER, SAMPLE")
     + row("county-other", "100 EXAMPLE RD SE, 1701000, COUNTY APPLICATIONS, SOUTH, JEFFERSON MARION OR 97352, 100 EXAMPLE RD SE, JEFFERSON, OR 97352", "COUNTY APPLICATIONS", "JEFFERSON", "97352"),
   cityOnly: JEFF_CITY + JEFF_DEQ,
-  coos: row("deq", "773 KENTUCKY AV, DEQ Applications, COOS BAY Coos OR 97420", "DEQ Applications", "COOS BAY", "97420", "GILPIN, BILLY")
-    + row("city", "773 KENTUCKY AVE, City Applications, EMPIRE, COOS BAY COOS OR 97420", "City Applications", "COOS BAY", "97420", "SAKSCHEWSKI, GERHARD")
-    + row("county", "773 KENTUCKY AVE, COUNTY APPLICATIONS, COOS BAY COOS OR 97420", "COUNTY APPLICATIONS", "COOS BAY", "97420", "HUISMAN, VINCENT"),
+  coos: row("deq", "540 MOCKUP AV, DEQ Applications, COOS BAY Coos OR 97420", "DEQ Applications", "COOS BAY", "97420", "SAMPLE, ALEX")
+    + row("city", "540 MOCKUP AVE, City Applications, EMPIRE, COOS BAY COOS OR 97420", "City Applications", "COOS BAY", "97420", "SAKSCHEWSKI, GERHARD")
+    + row("county", "540 MOCKUP AVE, COUNTY APPLICATIONS, COOS BAY COOS OR 97420", "COUNTY APPLICATIONS", "COOS BAY", "97420", "HUISMAN, VINCENT"),
 };
 const page = (grid: string): string => `<!doctype html><html><head><title>BuildingPermits.Test.gov</title></head><body>
   <h2>Enter Work Site Location</h2>
@@ -108,7 +108,7 @@ async function replay(grid: string, discipline: string, recordedNote: string, va
 }
 const sayR = (o: ReplayOut) => `picked=${JSON.stringify(o.picked)} ok=${o.ok} msg=${o.message.slice(0, 260)} aging=${JSON.stringify(o.aging.filter((a) => /address/.test(a)))} drift=${JSON.stringify(o.drift.slice(0, 3))}`;
 const JEFF_VALUES = { city: "Jefferson", zip: "97352", homeownerName: "Sample Customer" };
-const COOS_VALUES = { city: "Coos Bay", zip: "97420", homeownerName: "Christopher Ivy" };
+const COOS_VALUES = { city: "Coos Bay", zip: "97420", homeownerName: "Drew Example" };
 // The notes as the Coos Bay recipes recorded them, with the agency appended the way
 // bindRecipeForReplay appends it.
 const STRUCT_NOTE = (agency: string) => `address version: City Applications${agency ? ` — issuing agency: ${agency} (per-job lookup)` : ""}`;

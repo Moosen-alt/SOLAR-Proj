@@ -31,12 +31,12 @@ const check = (label: string, ok: boolean, detail = ""): void => {
 // A project shaped like the ones this system files.
 const PROJECT = {
   id: "p1",
-  homeownerName: "Wynema Wright",
-  street: "1075 Flanagan Ave",
+  homeownerName: "Avery Sample",
+  street: "5010 Fixture Ave",
   city: "Coos Bay",
   state: "OR",
   zip: "97420",
-  homeownerEmail: "wright@example.com",
+  homeownerEmail: "sample@example.com",
   homeownerPhone: "(541) 555-0142",
 } as unknown as ProjectRecord;
 
@@ -46,8 +46,8 @@ const table = (rows: Array<[string, string]>): string =>
   `<table>${rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("")}</table>`;
 
 const CORRECT: Array<[string, string]> = [
-  ["Applicant Name", "Wynema Wright"],
-  ["Site Address", "1075 Flanagan Ave"],
+  ["Applicant Name", "Avery Sample"],
+  ["Site Address", "5010 Fixture Ave"],
   ["City", "Coos Bay"],
   ["State", "OR"],
   ["Zip", "97420"],
@@ -55,7 +55,7 @@ const CORRECT: Array<[string, string]> = [
 // The live failure this exists to catch: a drifted selector put the WRONG NAME in.
 const WRONG_NAME: Array<[string, string]> = [
   ["Applicant Name", "Charles Bitton"],
-  ["Site Address", "1075 Flanagan Ave"],
+  ["Site Address", "5010 Fixture Ave"],
   ["City", "Coos Bay"],
   ["State", "OR"],
   ["Zip", "97420"],

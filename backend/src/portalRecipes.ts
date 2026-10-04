@@ -12,7 +12,7 @@ import { knowledgeProfileKey, knowledgeNameMatchScore, isJunkEntityName, isVerif
 import { ahjLooksLikeHostname } from "./codeProfiles";
 import {
   hostFitsTrackAndEntity, portalHostOf, recipeDisciplineForTrack, recipeDisciplineFromSteps, recipeRecordTypeFromSteps,
-  samePortal, scopeForTrack, trackSafeUrl, isInformationalPageUrl, isPermitPlatformUrl,
+  samePortal, scopeForTrack, trackSafeUrl, isInformationalPageUrl, isPermitPortalUrl, portalUrlsInText,
   type HostFit, type PortalEntity, type PortalUrlSource,
 } from "./portalChannel";
 import { isHarnessAbort, looksBotBlocked } from "./runAbort";
@@ -376,6 +376,25 @@ export function portalEntityEvidence(
   // it is not a claim on the portal for anyone else, and only hostFitsTrackAndEntity's one
   // carve-out reads it.
   const verifiedPermitPlatform: Claim[] = [];
+  // UTILITY scope: every portal an AHJ row names as a city's PERMIT portal — seeded or verified KB
+  // rows (the link in portal_url, or in portal_name's text: "… (CityView,
+  // cvportal.provo.gov/CityViewPortal) …") and AHJ recipes (issue #128). A city's self-hosted .gov
+  // permit portal is on no vendor list; this is how the NEM track knows it is one. Only hosts that
+  // fit the permit track count (a Tigard row mis-keyed to PGE's PowerClerk names no permit portal),
+  // and never an information page.
+  const permitPortals: string[] = [];
+  if (scope === "utility") {
+    const named = (u: string) => {
+      if (portalHostOf(u) && !isInformationalPageUrl(u) && trackSafeUrl("permit", u) && !permitPortals.includes(u)) permitPortals.push(u);
+    };
+    for (const row of db.query<Row>(
+      "SELECT portal_url FROM portal_recipes WHERE scope_type = 'ahj' AND portal_url IS NOT NULL AND portal_url != ''",
+    )) named(s(row.portal_url).trim());
+    for (const row of db.query<Row>(
+      `SELECT portal_url, portal_name FROM permit_utility_knowledge WHERE ahj IS NOT NULL AND ahj != ''
+         AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE '%.%')`,
+    )) for (const u of [...portalUrlsInText(s(row.portal_url)), ...portalUrlsInText(s(row.portal_name))]) named(u);
+  }
   const add = (url: unknown, rowState: unknown, rowName: unknown, verified: boolean, fromKbRow = false) => {
     const u = s(url).trim();
     const n = s(rowName).trim();
@@ -384,8 +403,8 @@ export function portalEntityEvidence(
     // An information page (a help/guide page, a PDF) is nobody's portal — a junk recipe saved on
     // BCD's help page must not make oregon.gov "City of Jefferson's own portal".
     if (isInformationalPageUrl(u)) return;
-    if (!trackSafeUrl(trackForScope, u)) {
-      if (scope === "utility" && verified && fromKbRow && isPermitPlatformUrl(u)) verifiedPermitPlatform.push({ url: u, state: st, name: n, verified });
+    if (!trackSafeUrl(trackForScope, u) || (scope === "utility" && isPermitPortalUrl(u, permitPortals))) {
+      if (scope === "utility" && verified && fromKbRow && isPermitPortalUrl(u, permitPortals)) verifiedPermitPlatform.push({ url: u, state: st, name: n, verified });
       return;
     }
     claims.push({ url: u, state: st, name: n, verified });
@@ -439,6 +458,7 @@ export function portalEntityEvidence(
     otherClaims,
     sharedPortals,
     verifiedPermitPlatformPortals: [...new Set(verifiedPermitPlatform.filter((c) => sameEntity(state, name, c.state, c.name)).map((c) => c.url))],
+    permitPortals,
   };
 }
 
@@ -1891,7 +1911,7 @@ export function resolveRecipeFieldValues(
   //
   // The permit goes under the property owner; the interconnection goes under whoever holds
   // the utility ACCOUNT, and they are routinely different people. Live: Ivy's account reads
-  // "PROF CHRIS A IVY" where the project says "Christopher Ivy", and Marineau's account is
+  // "PROF CHRIS A IVY" where the project says "Drew Example", and Placeholder's account is
   // held by CRAIG while the plan set names ANN — a joint account. Filing a NEM application
   // under a name the utility has no account for is a rejection, or worse, a second account.
   //
@@ -1906,7 +1926,7 @@ export function resolveRecipeFieldValues(
   // homeowner* instead "to be safe" — and then a filing names the wrong person the moment
   // the account holder is not the homeowner. That is exactly what happened on PacifiCorp
   // APP-111681, where the customer block was bound to homeownerFirstName/LastName and the
-  // application went out as David Simmons against Stephanie Simmons' account.
+  // application went out as Finley Mockdata against Stephanie Mockdata' account.
   // With the fallback the keys are always populated, so the customer block can be bound to
   // the account holder unconditionally: identical output when the holder IS the homeowner,
   // correct output when they differ.
@@ -2063,7 +2083,7 @@ export function resolveRecipeFieldValues(
     // the recipe instead of the run (see docs/HANDOFF.md, 2026-09-12).
     //
     // Parsed where the plan set states them — never another house's. Where it does not, "0"
-    // (operator ruling 2026-09-27, Michael Sheridan's Marion building page refused three blanks:
+    // (operator ruling 2026-09-27, Jules Testperson's Marion building page refused three blanks:
     // "Just put 0's there, that's what we do normally"): a rooftop retrofit's permit geometry is
     // entered as 0 by the operators themselves, and a blank only stops the filing.
     existingBuildingArea: String(snapshotFlat.existingBuildingArea ?? "").trim() || "0",
@@ -2301,9 +2321,9 @@ export function resolveRecipeFieldValues(
   const feeBrackets = feeBracketQuantityFields(db, project);
   const merged: Record<string, string> = { ...snapshotFlat, ...equipment, ...existingSys, ...projectFields, ...overlay, ...licenceKeys, ...installerSplit, ...certifiedModels, ...feeBrackets };
   // A WHOLE-PHONE VALUE IS TYPED INTO A MASKED BOX VERBATIM. A number stored E.164
-  // ("+15414042243") fed to a "(###) ###-####" mask keeps its first ten digits —
+  // ("+15550100060") fed to a "(###) ###-####" mask keeps its first ten digits —
   // "(154) 140-4224" — and drops the last one: a valid-looking phone belonging to nobody,
-  // live on Simmons's NEM. The segment keys already strip the country code (phoneSegmentKeys);
+  // live on Mockdata's NEM. The segment keys already strip the country code (phoneSegmentKeys);
   // the whole-number keys get the same treatment, formatted the way US portals render it.
   // Anything that isn't a clean 10-digit US number is left untouched — never fabricate.
   for (const [k, v] of Object.entries(merged)) {

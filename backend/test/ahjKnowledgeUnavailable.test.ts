@@ -17,7 +17,7 @@
 //                   file was worse: JSON.parse threw into callers that all `catch {}`, landing
 //                   in the same state by a different road.
 //
-// Measured against a copy of the live database with the file made unreachable, Christopher Ivy
+// Measured against a copy of the live database with the file made unreachable, Drew Example
 // (720b05f3, Coos Bay, stalled on Accela "Intake Requirements Needed") lost his ENTIRE blocking
 // set — [building_application, electrical_application, solar_checklist] became [] — the packet
 // card printed the pass-green "Every required document is attached", and the submit gate fell

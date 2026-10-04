@@ -250,7 +250,7 @@ async function main(): Promise<void> {
   //
   // MEASURED, on a copy of the live database, applying an ordinary two-row
   // findings file for Coos Bay / Coos County:
-  //     before   Christopher Ivy's permit total  $335.00
+  //     before   Drew Example's permit total  $335.00
   //              = Coos County ELECTRICAL $135.00 + City of Coos Bay STRUCTURAL $200.00
   //     after    $200.00, ONE line. The county's electrical permit left the quote
   //              entirely; both split rows were still in the table, untouched and

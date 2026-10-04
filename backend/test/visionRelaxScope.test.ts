@@ -78,6 +78,8 @@ ${letter}` });
   for (const f of buildReviewerReport(p, { codeContext: buildCodeContext("OR", "City of Coos Bay", null), documentTexts: [{ label: "Plan set", text: plan }] }).findings) allProducibleIds.add(f.id);
   // On the prescriptive path, a stated 110 mph Exposure C over a 100 mph Exposure C cap (issue #111).
   const capped = mk({ permitPath: "Prescriptive", planSetExtractedText: "WIND SPEED = 110 MPH EXPOSURE CATEGORY = C" });
+  // An 18" pathway against the jurisdiction's 36" fire access rule (issue #142).
+  for (const f of buildReviewerReport(mk({ planSetExtractedText: '18" FIRE ACCESS PATHWAY' }), { codeContext: buildCodeContext("OR", "City of Coos Bay", { ...base, designCriteria: {}, prescriptive: {}, fireSetbacks: [{ id: "fire-1", description: "Minimum 36-inch fire access pathways." }] }), documentTexts: [{ label: "Plan set", text: '18" FIRE ACCESS PATHWAY' }] }).findings) allProducibleIds.add(f.id);
   for (const f of buildReviewerReport(capped, { codeContext: buildCodeContext("OR", "City of Coos Bay", { ...base, designCriteria: {}, prescriptive: { maxWindSpeedMphExpC: 100 } }), documentTexts: [{ label: "Plan set", text: "WIND SPEED = 110 MPH EXPOSURE CATEGORY = C" }] }).findings) allProducibleIds.add(f.id);
 }
 for (const id of [...MEASURED_FINDING_IDS]) {

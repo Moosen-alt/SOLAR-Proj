@@ -2,10 +2,10 @@
 //
 // The record-type checkbox is recorded with its label AND a positional fallback
 // (cbListServices_1). The offered list differs per jurisdiction: Coos Bay's CITY record has
-// no "Residential - Electrical" at all — that lives on the COUNTY record. On Marineau the
+// no "Residential - Electrical" at all — that lives on the COUNTY record. On Placeholder the
 // label matched nothing, the positional fallback fired, and index 1 on the city list is
 // "Residential - Mechanical". A MECHANICAL permit was filed and ISSUED on a solar job at
-// 1780 Ocean Blvd, and its fees were paid.
+// 5050 Placeholder Blvd, and its fees were paid.
 //
 // The label is the only thing that identifies a permit type. If the recorded type is not on
 // offer, that is information — this jurisdiction files this discipline elsewhere — and the

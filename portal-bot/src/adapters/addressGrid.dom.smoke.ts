@@ -41,10 +41,10 @@ const PAGE = `<!doctype html><html><body>
   <button>Select a report</button>
   <table>
     <tr><th>Action</th><th>Address</th><th>Description</th><th>City</th><th>Zip</th><th>Parcel</th><th>Owner</th></tr>
-    <tr><td><a href="#">Select</a></td><td>773 KENTUCKY AV, DEQ Applications, COOS BAY Coos OR 97420</td><td>DEQ Applications</td><td>COOS BAY</td><td>97420</td><td>25S13W20CC2503</td><td>GILPIN, BILLY, JR.</td></tr>
-    <tr><td><a href="#">Select</a></td><td>773 KENTUCKY AVE, City Applications, EMPIRE, COOS BAY COOS OR 97420</td><td>City Applications</td><td>COOS BAY</td><td>97420</td><td>25S13W20CCTL0250300</td><td>SAKSCHEWSKI, GERHARD</td></tr>
-    <tr><td><a href="#">Select</a></td><td>773 KENTUCKY AVE, COUNTY APPLICATIONS, COOS BAY COOS OR 97420</td><td>COUNTY APPLICATIONS</td><td>COOS BAY</td><td>97420</td><td>25S1320CC02503</td><td>HUISMAN, VINCENT</td></tr>
-    <tr><td><a href="#">Select</a></td><td>773 KENTUCKY ST, PORTLAND OR 97213</td><td>City Applications</td><td>PORTLAND</td><td>97213</td><td>1N2E32DA10900</td><td>SOMEONE ELSE</td></tr>
+    <tr><td><a href="#">Select</a></td><td>540 MOCKUP AV, DEQ Applications, COOS BAY Coos OR 97420</td><td>DEQ Applications</td><td>COOS BAY</td><td>97420</td><td>25S13W20CC0000</td><td>SAMPLE, ALEX, JR.</td></tr>
+    <tr><td><a href="#">Select</a></td><td>540 MOCKUP AVE, City Applications, EMPIRE, COOS BAY COOS OR 97420</td><td>City Applications</td><td>COOS BAY</td><td>97420</td><td>25S13W20CCTL0000000</td><td>FIXTURE, JORDAN</td></tr>
+    <tr><td><a href="#">Select</a></td><td>540 MOCKUP AVE, COUNTY APPLICATIONS, COOS BAY COOS OR 97420</td><td>COUNTY APPLICATIONS</td><td>COOS BAY</td><td>97420</td><td>25S1320CC02503</td><td>HUISMAN, VINCENT</td></tr>
+    <tr><td><a href="#">Select</a></td><td>540 MOCKUP ST, PORTLAND OR 97213</td><td>City Applications</td><td>PORTLAND</td><td>97213</td><td>1N2E32DA10900</td><td>SOMEONE ELSE</td></tr>
   </table>
 </body></html>`;
 
@@ -68,7 +68,7 @@ check("each row carries only its OWN text, not the whole table",
   rows.every((r) => (r.text.match(/KENTUCKY/g) || []).length === 1),
   JSON.stringify(rows.map((r) => r.text.slice(0, 40))));
 
-const IVY = { city: "Coos Bay", zip: "97420", homeownerName: "Christopher Ivy" };
+const IVY = { city: "Coos Bay", zip: "97420", homeownerName: "Drew Example" };
 const pick = (isElectrical: boolean) => {
   const { ranked, rejected } = rankAddressVersions(rows.map((r) => r.text), { ...IVY, isElectrical });
   return { top: ranked[0]?.text ?? "", count: ranked.length, rejected: rejected.length };
@@ -104,7 +104,7 @@ check("a grid holding only other properties yields no candidate — the caller r
 //
 // ACA nests the results grid inside an outer layout table, so a text match on a row matches
 // the city's row AND the wrapper <tr> holding the whole grid — and the wrapper comes FIRST in
-// document order. Live on Marineau's structural filing at 1780 Ocean Blvd: the pass aimed at
+// document order. Live on Placeholder's structural filing at 5050 Placeholder Blvd: the pass aimed at
 // the city row with tr:has-text("CITY APPLICATIONS") a:has-text("Select") and .first() handed
 // it the wrapper, whose first Select link belongs to the COUNTY row. The page then offered
 // only Coos County's services (Commercial - Electrical, Residential - Electrical), the city's
@@ -112,8 +112,8 @@ check("a grid holding only other properties yields no candidate — the caller r
 await page.setContent(`<!doctype html><html><body>
   <table><tr><td>
     <table>
-      <tr><td><a href="#" id="county">Select</a></td><td>1780 OCEAN BLVD SE, COUNTY APPLICATIONS, COOS BAY COOS OR 97420</td><td>COUNTY APPLICATIONS</td><td>COOS BAY</td></tr>
-      <tr><td><a href="#" id="city">Select</a></td><td>1780 OCEAN BLVD, City Applications, COOS BAY, COOS BAY COOS OR 97420</td><td>City Applications</td><td>COOS BAY</td></tr>
+      <tr><td><a href="#" id="county">Select</a></td><td>5050 PLACEHOLDER BLVD SE, COUNTY APPLICATIONS, COOS BAY COOS OR 97420</td><td>COUNTY APPLICATIONS</td><td>COOS BAY</td></tr>
+      <tr><td><a href="#" id="city">Select</a></td><td>5050 PLACEHOLDER BLVD, City Applications, COOS BAY, COOS BAY COOS OR 97420</td><td>City Applications</td><td>COOS BAY</td></tr>
       <tr><td><a href="#" id="deq">Select</a></td><td>1780 SE OCEAN BV, DEQ Applications, COOS BAY Coos OR 97420</td><td>DEQ Applications</td><td>COOS BAY</td></tr>
     </table>
   </td></tr></table>
@@ -143,7 +143,7 @@ check("the leaf row's Select is the CITY's — the version this filing needs", l
 const nestedRows = await page.evaluate(scrapeRows);
 check("the ranked chooser scrapes 3 versions, not 4", nestedRows.length === 3, `got ${nestedRows.length}`);
 const nestedPick = rankAddressVersions(nestedRows.map((r) => r.text), {
-  city: "Coos Bay", zip: "97420", homeownerName: "Ann Marineau", isElectrical: false,
+  city: "Coos Bay", zip: "97420", homeownerName: "Emery Placeholder", isElectrical: false,
 });
 check("and ranks the CITY version first for a structural filing",
   /City Applications/.test(nestedPick.ranked[0]?.text ?? ""), (nestedPick.ranked[0]?.text ?? "").slice(0, 60));

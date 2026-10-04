@@ -73,8 +73,8 @@ const PAGES: Record<string, string> = {
   // One complaint, a page full of filled fields. It must claim the ONE field it sits under,
   // not every control on the page.
   oneComplaintManyFields: shell(`
-    <div class="form-group"><label for="a">Applicant *</label><input id="a" value="Wynema Wright" /></div>
-    <div class="form-group"><label for="b">Street *</label><input id="b" value="1075 Flanagan Ave" /></div>
+    <div class="form-group"><label for="a">Applicant *</label><input id="a" value="Avery Sample" /></div>
+    <div class="form-group"><label for="b">Street *</label><input id="b" value="5010 Fixture Ave" /></div>
     <div class="form-group"><label for="c">City *</label><input id="c" value="Coos Bay" /></div>
     <div class="form-group"><label for="d">Meter number *</label><input id="d" value="" />
       <span class="err">This field is required.</span></div>`),
