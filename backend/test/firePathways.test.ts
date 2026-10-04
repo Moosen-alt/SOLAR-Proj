@@ -89,6 +89,16 @@ await check("MUST PASS: the AHJ's own sentence (36-inch, three (3) feet)", () =>
 await check("MUST EXCLUDE: hip/valley and eave clearances are not pathways or ridge setbacks", () => {
   assert.deepEqual(read('36" PATHWAY FROM EAVE TO RIDGE. 18" CLEAR FROM HIP/VALLEY. 3\' FROM EAVE'), ["pathwayWidth=36"]);
 });
+await check("MUST EXCLUDE: a clearance joined to a ridge setback by AND is not a second (short) ridge setback", () => {
+  // Read across "AND", the ridge label won and a compliant plan read 18 in from the ridge.
+  assert.deepEqual(read('MAINTAIN 36" FROM RIDGE AND 18" CLEAR OF HIPS AND VALLEYS'), ["ridgeSetback=36"]);
+  assert.deepEqual(read('ARRAY 36" FROM RIDGE AND 18" FROM EAVE'), ["ridgeSetback=36"]);
+  assert.deepEqual(read('ARRAY 36" FROM RIDGE, 18" FROM EAVE'), ["ridgeSetback=36"]);
+});
+await check("MUST PASS: units with no space (36in, 3ft)", () => {
+  assert.deepEqual(read("36in FIRE ACCESS PATHWAY"), ["pathwayWidth=36"]);
+  assert.deepEqual(read("RIDGE SETBACK 3ft"), ["ridgeSetback=36"]);
+});
 await check("MUST EXCLUDE: a ridge vent, rafter spacing, a zoning setback, attachment spacing", () => {
   assert.deepEqual(read('RAFTER @ 24" O.C. RIDGE VENT 12" FRONT SETBACK 20 FT. NEW PV ATTACHMENTS AT 4\'-0" O.C.'), []);
 });
@@ -129,13 +139,21 @@ await check("MUST PASS: no AHJ rule — the adopted IRC 2021 default (36 in path
   assert.equal(f?.severity, "warning");
   assert.match(f!.message, /IRC 2021 R324\.6\.1 model-code default/);
 });
-await check("MUST PASS: the edition decides the default ridge setback (IRC 2015: 36 in; IRC 2021: 18 in)", () => {
+await check("MUST PASS: the edition decides the default ridge setback (IRC 2012: 36 in; IRC 2015 on: the 18 in floor)", () => {
+  // IRC 2015 R324.6.2 (mirroring IFC 2015 605.11.3.2.3) already splits on roof coverage: 18 in at
+  // no more than 33%, 36 in above. Coverage is not read, so the floor applies and the message
+  // names the 36 in case. The 36-in-only text is the 2012 IFC's.
   const at = (edition: string) => buildCodeContext("OR", "City of Testport", profile({ adoptedCodes: [{ code: "IRC", edition }] }));
-  assert.equal(requiredRoofPlanDimensions(at("2015")).find((r) => r.kind === "ridgeSetback")?.inches, 36);
-  assert.equal(requiredRoofPlanDimensions(at("2021")).find((r) => r.kind === "ridgeSetback")?.inches, 18);
-  const docs = plan('36" FIRE ACCESS PATHWAY. 24" SETBACK FROM RIDGE.');
-  assert.equal(get(run(project({}), at("2015"), docs), BELOW)?.severity, "warning");
-  assert.equal(get(run(project({}), at("2021"), docs), BELOW), undefined);
+  assert.equal(requiredRoofPlanDimensions(at("2012")).find((r) => r.kind === "ridgeSetback")?.inches, 36);
+  for (const edition of ["2015", "2018", "2021"]) {
+    const ridge = requiredRoofPlanDimensions(at(edition)).find((r) => r.kind === "ridgeSetback");
+    assert.equal(ridge?.inches, 18, `IRC ${edition}`);
+    assert.match(ridge!.source, /R324\.6\.2 \/ IFC 605\.11\.3\.2\.3 .*36 in where it covers more/);
+  }
+  const docs = plan('36" FIRE ACCESS PATHWAY. 12" SETBACK FROM RIDGE.');
+  assert.equal(get(run(project({}), at("2012"), docs), BELOW)?.severity, "warning");
+  assert.equal(get(run(project({}), at("2015"), docs), BELOW)?.severity, "warning", "12 in is under the 18 in floor");
+  assert.equal(get(run(project({}), at("2015"), plan('36" FIRE ACCESS PATHWAY. 24" SETBACK FROM RIDGE.')), BELOW), undefined);
 });
 await check("MUST EXCLUDE: a ground mount is never measured for roof pathways", () => {
   const fs = run(project({ mounting: "Ground mount" }), withRule("verified"), plan('18" FIRE ACCESS PATHWAY'));
@@ -215,6 +233,31 @@ db.run(
 );
 // The other plan-topic findings get their ordinary "is it on the sheet?" call (answered "not
 // present", so nothing relaxes); only the measurement prompt is counted.
+console.log("\n6. THE TWO-LAYER PROFILE — whose fireSetbacks, verified by whom");
+{
+  const { saveVerifiedCodeProfile, saveResearchedCodeProfile, resolveEffectiveCodeContext } = await import("../src/codeProfiles");
+  const row = (ahj: string, fireSetbacks: JurisdictionCodeProfile["fireSetbacks"]): JurisdictionCodeProfile => ({
+    key: "", state: "WY", ahj, confidence: "seeded", adoptedCodes: [{ code: "IRC", edition: "2021" }],
+    amendments: [], designCriteria: {}, prescriptive: {}, fireSetbacks, citations: [], updatedAt: "",
+  });
+  saveVerifiedCodeProfile(db, row("", [{ id: "state-fire", description: "Minimum 36-inch fire access pathways." }]), "operator");
+  saveResearchedCodeProfile(db, row("Town of Seededburg", [{ id: "city-fire", description: "Minimum 36-inch fire access pathways." }]));
+  saveResearchedCodeProfile(db, row("Town of Inheritville", []));
+  const pathway = (ahj: string) => requiredRoofPlanDimensions(resolveEffectiveCodeContext(db, "WY", ahj)).find((r) => r.kind === "pathwayWidth")!;
+  await check("MUST PASS: a seeded city's own rules under a verified state row do not read as verified (no blocker)", () => {
+    const req = pathway("Town of Seededburg");
+    assert.equal(req.basis, "ahj");
+    assert.equal(req.verified, false);
+    const f = get(run(project({}, { state: "WY", ahj: "Town of Seededburg" } as Partial<ProjectRecord>), resolveEffectiveCodeContext(db, "WY", "Town of Seededburg"), plan('18" FIRE ACCESS PATHWAY')), BELOW);
+    assert.equal(f?.severity, "warning");
+  });
+  await check("MUST PASS: a seeded city with no rules of its own inherits the verified state's — verified", () => {
+    const req = pathway("Town of Inheritville");
+    assert.equal(req.basis, "ahj");
+    assert.equal(req.verified, true, "the merged row reads seeded; the field's own layer is the verified state row");
+  });
+}
+
 let calls = 0;
 let allCalls = 0;
 const fakeLlm = {

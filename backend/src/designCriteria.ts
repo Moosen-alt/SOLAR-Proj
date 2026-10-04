@@ -1598,10 +1598,13 @@ export function extractAttachmentSpacings(text: string): StatedAttachmentSpacing
 
 /** 36", 36 in, 36-inch, 3', 3 ft, 3-foot, 3'-0", 1'-6", "three (3) feet". Group 2 is the inch
  *  tail of a feet value; group 3 marks an inch-only value. */
-const ROOF_DIM_VALUE = /(?<![\d.])(\d+(?:\.\d+)?)\s*\)?\s*-?\s*(?:(?:'(?!')|’|\bft\b\.?|\bfeet\b|\bfoot\b)(?:\s*-?\s*(\d+(?:\.\d+)?)\s*(?:"|”|\bin\b\.?|\binch(?:es)?\b))?|(''|"|”|\bin\b\.?|\binch(?:es)?\b))/gi;
+// The units carry no leading \b, so "36in" and "3ft" (no space) read too.
+const ROOF_DIM_VALUE = /(?<![\d.])(\d+(?:\.\d+)?)\s*\)?\s*-?\s*(?:(?:'(?!')|’|ft\b\.?|feet\b|foot\b)(?:\s*-?\s*(\d+(?:\.\d+)?)\s*(?:"|”|in\b\.?|inch(?:es)?\b))?|(''|"|”|in\b\.?|inch(?:es)?\b))/gi;
 const ROOF_DIM_LABEL = /\b(?:(?<path>(?:fire\s+)?(?:access\s+)?path(?:way)?s?|walkways?|access\s+aisles?|fire\s+access)|(?<ridge>ridges?)|(?<other>eaves?|rakes?|hips?|valleys?|gutters?|edges?|(?:property|lot)\s+lines?))\b/gi;
-/** A clause ends at a sentence stop (not an abbreviation's or a decimal's dot) or a list mark. */
-const CLAUSE_BREAK = /(?<!\b(?:min|max|typ|approx|in|ft|no|o\.c|e\.g|i\.e))\.(?!\d)|[;•▪●■◦]/i;
+/** A clause ends at a sentence stop (not an abbreviation's or a decimal's dot), a list mark, a
+ *  comma or a joining "and"/"&": "36\" FROM RIDGE AND 18\" CLEAR OF HIPS" is two clauses, and the
+ *  18" is the hips' (read across the "and", the ridge label won and a compliant plan blocked). */
+const CLAUSE_BREAK = /(?<!\b(?:min|max|typ|approx|in|ft|no|o\.c|e\.g|i\.e))\.(?!\d)|[;,&•▪●■◦]|\band\b/i;
 /** "RIDGE VENT 12\"", "RIDGE HEIGHT": a ridge, but not a setback from it. */
 const RIDGE_NOT_SETBACK = /\b(?:vent|cap|height|board|beam|elev(?:ation)?)\b/i;
 const ROOF_DIM_WINDOW = 60;
@@ -1699,15 +1702,17 @@ function fireCodeEditionYear(ctx: EffectiveCodeContext): number | null {
 /**
  * WHAT THE ROOF PLAN MUST SHOW, per dimension: the jurisdiction's own number where one of its
  * fireSetbacks rules states it (the strictest, when several do), else the model-code default for
- * the adopted edition: 36 in pathways (IRC R324.6.1); a ridge setback of 18 in from the 2018 IRC
- * on (R324.6.2; 36 in where the array covers more than 33% of the roof, which is not read here,
- * so 18 in is the floor), 36 in before it.
+ * the adopted edition: 36 in pathways (IRC R324.6.1); a ridge setback of 18 in from the 2015 IRC
+ * on (R324.6.2, mirroring IFC 2015 605.11.3.2.3: 18 in where the array covers no more than 33% of
+ * the roof, 36 in above; coverage is not read here, so 18 in is the floor and the message names the
+ * 36 in case), and 36 in before it (the 36-in-only text is the 2012 IFC's). Model-code lines never
+ * block, so the floor can only under-warn, never stop a compliant plan.
  */
 export function requiredRoofPlanDimensions(ctx: EffectiveCodeContext): RoofPlanRequiredDimension[] {
   const who = ctx.ahj || ctx.state || "the jurisdiction";
   const prov = fieldProvenance(ctx, "fireSetbacks");
   const year = fireCodeEditionYear(ctx);
-  const edition = year != null ? `IRC ${year}` : "IRC (adopted edition not on file; 2018 or later assumed)";
+  const edition = year != null ? `IRC ${year}` : "IRC (adopted edition not on file; 2015 or later assumed)";
   const out: RoofPlanRequiredDimension[] = [];
   for (const kind of ["pathwayWidth", "ridgeSetback"] as const) {
     let best: { inches: number; description: string } | null = null;
@@ -1720,10 +1725,10 @@ export function requiredRoofPlanDimensions(ctx: EffectiveCodeContext): RoofPlanR
       out.push({ kind, inches: best.inches, basis: "ahj", verified: prov.verified, source: `${who}'s rule "${flat(best.description).slice(0, 160)}" (${prov.text})` });
     } else if (kind === "pathwayWidth") {
       out.push({ kind, inches: 36, basis: "model_code", verified: false, source: `${edition} R324.6.1 model-code default; no ${who} pathway width on file` });
-    } else if (year != null && year < 2018) {
-      out.push({ kind, inches: 36, basis: "model_code", verified: false, source: `${edition} R324.6.2 model-code default (3 ft from the ridge); no ${who} ridge setback on file` });
+    } else if (year != null && year < 2015) {
+      out.push({ kind, inches: 36, basis: "model_code", verified: false, source: `${edition} model-code default (3 ft from the ridge, IFC 2012); no ${who} ridge setback on file` });
     } else {
-      out.push({ kind, inches: 18, basis: "model_code", verified: false, source: `${edition} R324.6.2 model-code default (18 in each side of a horizontal ridge; 36 in where the array covers more than 33% of the roof); no ${who} ridge setback on file` });
+      out.push({ kind, inches: 18, basis: "model_code", verified: false, source: `${edition} R324.6.2 / IFC 605.11.3.2.3 model-code default (18 in each side of a horizontal ridge where the array covers no more than 33% of the roof; 36 in where it covers more, which is not read here); no ${who} ridge setback on file` });
     }
   }
   return out;
