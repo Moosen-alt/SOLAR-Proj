@@ -60,6 +60,8 @@ export interface PortalAdapter {
    *  SAFETY: must never click submit, modify, or pay anything.
    *  Returns null if the adapter has no live scrape capability. */
   checkStatus?(applicationNumbers: string[]): Promise<string | null>;
+  /** Why the last checkStatus() returned nothing (issue #161), for an adapter that can say. */
+  lastStatusReason?: string;
   /** Enable LLM-assisted gap-fill: after the adapter's fixed fills on each page, an LLM
    *  planner fills any REQUIRED field the fixed selectors missed — from real project data
    *  only (never invented). Optional; a no-op for adapters that don't implement it. */
