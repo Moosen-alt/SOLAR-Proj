@@ -45,7 +45,9 @@ export const NEC_EDITION_REQUIREMENTS: Readonly<Record<NecEditionYear, NecEditio
       limits: "outside the array boundary (1 ft from the array) controlled conductors limited to 30 V within 30 seconds; inside the boundary a listed PV hazard control system, 80 V within 30 seconds, or no exposed wiring",
       insideBoundaryArticle: "690.12(B)(2)",
       requiresListedEquipment: true,
-      initiationDeviceArticle: null,
+      // One- and two-family dwellings: the initiation device at a readily accessible location
+      // outside the building — introduced in the 2017 NEC, and a plan reviewer asks where it is.
+      initiationDeviceArticle: "690.12(C)",
     },
     labels: {
       rapidShutdown: "690.56(C)",
@@ -66,8 +68,6 @@ export const NEC_EDITION_REQUIREMENTS: Readonly<Record<NecEditionYear, NecEditio
       limits: "outside the array boundary (1 ft from the array) controlled conductors limited to 30 V within 30 seconds; inside the boundary a listed PV hazard control system, 80 V within 30 seconds, or no exposed wiring",
       insideBoundaryArticle: "690.12(B)(2)",
       requiresListedEquipment: true,
-      // One- and two-family dwellings: the initiation device at a readily accessible location
-      // outside the building — new in 2020, and a plan reviewer asks where it is.
       initiationDeviceArticle: "690.12(C)",
     },
     labels: {

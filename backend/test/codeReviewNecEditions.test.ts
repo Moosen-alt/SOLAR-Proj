@@ -3,8 +3,8 @@
 // Rapid shutdown, PV labels and the 705 interconnection rules cited "NEC 690.12" / "NEC 705.12"
 // whatever cycle the jurisdiction is on, and asked only whether the words appear. A plan checker
 // applies the ADOPTED edition: 2014 measures rapid shutdown from 10 ft; 2017+ adds the inside-
-// the-array-boundary requirement (690.12(B)(2)); 2020+ asks where the initiation device is
-// (690.12(C)) and moves supply-side connections to 705.11. The same plan set is run under each
+// the-array-boundary requirement (690.12(B)(2)) and asks where the initiation device is
+// (690.12(C)); 2020+ moves supply-side connections to 705.11. The same plan set is run under each
 // edition and must come back with that edition's articles and that edition's missing evidence.
 // Severity is rule-3 shaped: VERIFIED edition + documents actually read → blocker; seeded, or
 // parser fields only → warning. Unknown edition → today's generic rules plus one callout.
@@ -94,16 +94,16 @@ check("2014: no 2017+ evidence demanded; labels cite 690.56(C)/690.54/690.53 und
   assert.deepEqual(sections(tap), ["2014 NEC 705.12(A)"]);
   assert.match(tap!.message, /705\.12\(D\)\(2\)\(3\)\(b\)/);
 });
-check("2017: inside-boundary listed equipment (690.12(B)(2)) missing → blocker; no 690.12(C) demand; 690.13(B) label asked", () => {
+check("2017: inside-boundary listed equipment (690.12(B)(2)) and initiation device (690.12(C)) missing → blocker; 690.13(B) label asked", () => {
   const fs = run({ edition: "2017" });
   const rsd = get(fs, RSD_EDITION);
   assert.ok(rsd, "rapid-shutdown-edition-evidence expected");
   assert.equal(rsd.severity, "blocker");
-  assert.deepEqual(sections(rsd), ["2017 NEC 690.12(B)(2)"]);
+  assert.deepEqual(sections(rsd), ["2017 NEC 690.12(B)(2)", "2017 NEC 690.12(C)"]);
   assert.deepEqual(sections(get(fs, LABELS_EDITION)), ["2017 NEC 690.56(C)", "2017 NEC 690.13(B)", "2017 NEC 690.54", "2017 NEC 690.53"]);
   assert.deepEqual(sections(get(fs, "city.elec.supply-side-tap")), ["2017 NEC 705.12(A)"]);
 });
-check("2020: 690.12(B)(2) AND 690.12(C) initiation device missing; supply side renumbered to 705.11", () => {
+check("2020: the same 690.12(B)(2) and 690.12(C) evidence; supply side renumbered to 705.11", () => {
   const fs = run({ edition: "2020" });
   assert.deepEqual(sections(get(fs, RSD_EDITION)), ["2020 NEC 690.12(B)(2)", "2020 NEC 690.12(C)"]);
   const tap = get(fs, "city.elec.supply-side-tap");
@@ -122,6 +122,21 @@ check("a plan showing every edition element → no edition findings under any ed
     assert.equal(get(fs, RSD_EDITION), undefined, `${e}: ${get(fs, RSD_EDITION)?.message}`);
     assert.equal(get(fs, LABELS_EDITION), undefined, `${e}: ${get(fs, LABELS_EDITION)?.message}`);
   }
+});
+check("a 'rapid shutdown switch' (the 690.12(C) device) does not satisfy the 690.56(C) label", () => {
+  const fs = run({ edition: "2020", text: `${GENERIC} RAPID SHUTDOWN SWITCH AT EXTERIOR OF DWELLING.` });
+  assert.equal(get(fs, RSD_EDITION)?.codeReferences.some((r) => r.section === "690.12(C)"), false, "the switch answers 690.12(C)");
+  assert.ok(sections(get(fs, LABELS_EDITION)).includes("2020 NEC 690.56(C)"), "the label is still owed");
+});
+check("an inverter spec sheet's 'rated AC output current' / 'maximum DC voltage' does not satisfy 690.54 / 690.53", () => {
+  const project = { ...plan(), parserSnapshot: { ...(plan().parserSnapshot || {}), planSetExtractedText: GENERIC } } as ProjectRecord;
+  const ctx = buildCodeContext(STATE, AHJ, profile("verified", nec("2020")));
+  const fs = evaluateDesignCodeFindings(project, null, ctx, [], [
+    { label: "Plan set", text: GENERIC },
+    { label: "Inverter spec sheet", text: "RATED AC OUTPUT CURRENT 32 A. NOMINAL AC VOLTAGE 240 V. MAXIMUM DC VOLTAGE 480 V." },
+  ]);
+  const owed = sections(get(fs, LABELS_EDITION));
+  assert.ok(owed.includes("2020 NEC 690.54") && owed.includes("2020 NEC 690.53"), owed.join(", "));
 });
 check("no rapid shutdown at all under 2017 → the presence rule names the 1 ft boundary and cites 690.12 + 690.56(C)", () => {
   const fs = run({ edition: "2017", text: "E-1 ONE-LINE DIAGRAM. LABEL SCHEDULE: DIRECTORY." });

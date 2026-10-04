@@ -549,12 +549,13 @@ export const RSD_LISTED_EQUIPMENT_PATTERNS: RegExp[] = [
   /\blisted\b[^.;\n]{0,40}\b(?:rapid\s*shutdown|RSD)\b/i,
   /\b(?:rapid\s*shutdown|RSD)\b[^.;\n]{0,40}\blisted\b/i,
 ];
-/** 690.12(C) (2020+): where the initiation device is. */
+/** 690.12(C) (2017+): where the initiation device is. */
 export const RSD_INITIATION_PATTERNS: RegExp[] = [
   /\binitiat(?:ion|ing|or)\b/i,
   /\b(?:rapid\s*shutdown|RSD)\s*(?:switch|initiator|button)\b/i,
   /690\.12\s*\(\s*C\s*\)/i,
 ];
+const SPEC_SHEET_SOURCE = /\bspec(?:ification)?s?\s*sheet|\bdata\s*sheet|\bcut\s*sheet/i;
 const STAND_ALONE = /\boff.?grid\b|\bstand.?alone\s+(?:system|PV|solar)/i;
 
 /** The marker projectDocuments stores for a PDF with no text layer — nothing was read from it. */
@@ -596,7 +597,9 @@ function necLabelRequirements(nec: NecEditionRequirements, opts: { rsdApplies: b
   if (opts.rsdApplies) {
     out.push({
       label: "Rapid shutdown label", section: l.rapidShutdown, wording: l.rapidShutdownWording,
-      patterns: [/equipped\s+with\s+rapid\s+shutdown/i, /690\.56\s*\(\s*C\s*\)/i, /\b(?:rapid\s*shutdown|RSD)\s*(?:label|placard|sign|switch)\b/i],
+      // The 690.56(C) PLACARD, not the device: "rapid shutdown switch" names the initiation
+      // device (690.12(C)) and must not satisfy the label.
+      patterns: [/equipped\s+with\s+rapid\s+shutdown/i, /690\.56\s*\(\s*C\s*\)/i, /\b(?:rapid\s*shutdown|RSD)\s*(?:label|placard|sign)\b/i],
     });
   }
   out.push({ label: "Power-source directory", section: l.powerSourceDirectory, patterns: POWER_SOURCE_DIRECTORY_PATTERNS });
@@ -1271,8 +1274,8 @@ export function evaluateDesignCodeFindings(
 
   // THE EDITION'S OWN EVIDENCE (issue #143). A plan set that says "rapid shutdown" has cleared the
   // presence rule above; a 2017+ checker then asks HOW the inside-the-array-boundary requirement is
-  // met (a listed PV hazard control system / listed RSD equipment, 690.12(B)(2)), and a 2020+ one
-  // where the initiation device is (690.12(C): outside, readily accessible, on a dwelling). Rule-3
+  // met (a listed PV hazard control system / listed RSD equipment, 690.12(B)(2)), and where the
+  // initiation device is (690.12(C): outside, readily accessible, on a dwelling). Rule-3
   // shape: a human-VERIFIED edition and a package whose documents were actually read → blocker;
   // a seeded edition, or nothing but parser fields to read → warning. An MLPE design meets
   // 690.12 inherently, so its gap is documentation: never more than a warning.
@@ -1321,10 +1324,15 @@ export function evaluateDesignCodeFindings(
         : [rapidShutdownRef, powerSourceDirectoryRef],
     }));
   } else if (nec) {
+    // A CUT SHEET IS NOT A LABEL. An inverter datasheet prints "rated AC output current" and
+    // "maximum DC voltage" as specifications, which would otherwise answer 690.54 / 690.53. Where a
+    // source is known to be a spec sheet it is not read for labels; the merged plan-set text, whose
+    // sheet types are not known, still is.
+    const labelTexts = packageTexts.filter((s) => !SPEC_SHEET_SOURCE.test(s.label));
     // The schedule exists; does it carry the labels THIS edition names? Same rule-3 severity as the
     // rapid-shutdown evidence above. Each missing label is cited by the edition's own section.
     const missingLabels = necLabelRequirements(nec, { rsdApplies, standAlone: STAND_ALONE.test(all), dcCircuits: !isMicroinverterDesign(project, all) })
-      .filter((l) => !affirmedIn(packageTexts, l.patterns));
+      .filter((l) => !affirmedIn(labelTexts, l.patterns));
     if (missingLabels.length) {
       out.push(finding({
         id: "city.elec.labels-edition-missing",
