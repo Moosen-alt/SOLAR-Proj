@@ -44,6 +44,8 @@ import {
 // The acquisition's pre-fetch predicates live in formAcquisitionPlan.ts — the ONE answer the pre-Stage
 // gate reads too (gates-proper C1). Re-exported so every existing caller of this module keeps working.
 export { applicationKindForProject, hasStoredTemplateOfType, type EnsureFormResult } from "./formAcquisitionPlan";
+import { clearFormSearchTimeout, noteFormSearchTimeout, recentFormSearchTimeout, type FormSearchTimeout } from "./formAcquisitionPlan";
+import { formatBudget } from "./llm";
 import { isRefusal, PAGE_READ_MIN_GAP_MS, type PageReader } from "./agencyPageReader";
 // Its own line (not beside the applicationDocs import above): forms-fill rewrites the ahjForms import next to it.
 import { permitStructureForProject } from "./applicationDocs";
@@ -1065,14 +1067,34 @@ async function runAhjFormsPass(
   // when research may run; with research off no forms page is ever named, so none is read.
   let formsPage: FormsPageOptions | undefined = opts.formsPage;
   if (opts.allowResearch !== false && formsPage?.reader === undefined) formsPage = { ...(formsPage ?? {}), reader: await defaultFormsPageReader() };
+  // One search budget per pass: once a form type's search times out, the rest of the pass does not
+  // run the same search again (searchTimeoutResult).
+  const searchPass: FormSearchPass = {};
   for (const item of needed.values()) {
     results.push({
       formType: item.formType,
       applicationKind: item.applicationKind,
-      ...(await ensureAhjFormTemplate(db, llm, project, item.formType, { applicationKind: item.applicationKind, allowResearch: opts.allowResearch, allowMapping: opts.allowMapping, skipRecentlyFailed: opts.skipRecentlyFailed, formsPage })),
+      ...(await ensureAhjFormTemplate(db, llm, project, item.formType, { applicationKind: item.applicationKind, allowResearch: opts.allowResearch, allowMapping: opts.allowMapping, skipRecentlyFailed: opts.skipRecentlyFailed, formsPage, searchPass })),
     });
   }
   return { neededTypes: [...needed.keys()], needed: [...needed.values()], results };
+}
+
+/** One acquisition pass's shared search state: set when a form type's search ran out of budget. */
+export interface FormSearchPass { timedOut?: FormSearchTimeout }
+
+/** The operator's sentence for a timed-out form search (the App Docs panel shows it as the message). */
+export function searchTimeoutMessage(t: Pick<FormSearchTimeout, "budgetMs" | "pagesSeen" | "leads">): string {
+  const leads = t.leads.slice(0, 3);
+  return `The form search timed out after ${formatBudget(t.budgetMs)}; ${t.pagesSeen} page(s) seen${leads.length ? ` (${leads.join(", ")})` : ""}. Try Find official form again or upload the blank`;
+}
+
+/** A later form type of a pass whose search already timed out: no second search, the same detail. */
+function searchTimeoutResult(project: ProjectRecord, t: FormSearchTimeout): EnsureFormResult {
+  return {
+    status: "not_found", lookupFailed: true, searchTimeout: t,
+    message: `${searchTimeoutMessage(t)} — the search was not run again for this form in the same pass; not a finding about ${project.ahj}, and nothing has been counted as present.`,
+  };
 }
 
 // WHICH of the two building-side applications a form search is for — and NONE where the split does
@@ -1086,7 +1108,7 @@ export async function ensureAhjFormTemplate(
   llm: LLMProvider,
   project: ProjectRecord,
   formType = "permit_application",
-  opts: { applicationKind?: "prescriptive" | "structural" | null; allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean; formsPage?: FormsPageOptions } = {},
+  opts: { applicationKind?: "prescriptive" | "structural" | null; allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean; formsPage?: FormsPageOptions; searchPass?: FormSearchPass } = {},
 ): Promise<EnsureFormResult> {
   // THE UTILITY'S FILING LOCATION rides every per-project form-research pass — the pipeline's
   // (ensureAhjFormsForProject) and the operator's "Find official form" — fire-and-forget, once per
@@ -1198,9 +1220,25 @@ export async function ensureAhjFormTemplate(
     : applicationKind === "structural"
       ? "This project is on the ENGINEERED (non-prescriptive) path. Find the AHJ's STRUCTURAL / standard building permit application. Do NOT return the prescriptive solar application — the AHJ accepts exactly one of the two."
       : "";
-  const knownContext = [kbHint?.text, kindDirective].filter(Boolean).join("\n\n") || undefined;
+  // A SEARCH THAT RAN OUT OF BUDGET IS NOT RE-RUN BLIND (issue #163). Inside this pass: not at all —
+  // another form type's identical search would cost another four minutes. On the next trigger: told
+  // that the broad search timed out, and to scope to the state and its issuer (issue #162's path).
+  if (opts.searchPass?.timedOut) return searchTimeoutResult(project, opts.searchPass.timedOut);
+  const priorTimeout = recentFormSearchTimeout(project.ahj, project.state);
+  const timeoutDirective = priorTimeout
+    ? `The previous search for ${project.ahj} timed out after ${formatBudget(priorTimeout.budgetMs)} (${priorTimeout.pagesSeen} page(s) seen). Do not repeat a broad, unscoped search: put "${project.state}" in every query, discard same-named places in other states, and if ${project.ahj} does not run its own building program, look for the county's or the state building agency's forms instead.`
+    : "";
+  const knownContext = [kbHint?.text, kindDirective, timeoutDirective].filter(Boolean).join("\n\n") || undefined;
 
   const research = await llm.findAhjFormUrl({ ahj: project.ahj, state: project.state, formType, knownContext });
+  let searchTimeout: FormSearchTimeout | undefined;
+  if (research.searchTimeout) {
+    searchTimeout = { at: Date.now(), ...research.searchTimeout, leads: (research.searchResults ?? []).map((r) => r.url).slice(0, 10) };
+    noteFormSearchTimeout(project.ahj, project.state, searchTimeout);
+    if (opts.searchPass) opts.searchPass.timedOut = searchTimeout;
+  } else if (!research.lookupFailed && research.provider !== "stub") {
+    clearFormSearchTimeout(project.ahj, project.state);
+  }
 
   // Learn the submittal portal/platform/requirements so the record-portal training
   // step pre-fills the portal URL for this new AHJ, and future projects skip the
@@ -1246,7 +1284,9 @@ export async function ensureAhjFormTemplate(
   const harvestNote = `${harvest.note ? ` ${harvest.note}` : ""}${skippedOnRefused ? ` ${skippedOnRefused} other link(s) on that site (the search's or the knowledge base's) were not requested either.` : ""}`;
   // "WE COULD NOT LOOK" IS NOT "THERE IS NO FORM" (Waltham, 09-25: the search aborted at its 180s
   // budget and Stage reported "No downloadable PDF form was found" — then held the 24h cooldown).
-  const couldNotRun = research.lookupFailed
+  const couldNotRun = searchTimeout
+    ? `${searchTimeoutMessage(searchTimeout)} — not a finding about ${project.ahj}; nothing has been counted as present.`
+    : research.lookupFailed
     ? `The form search could not run: ${research.lookupError || "the web-search call failed"} — not a finding about ${project.ahj}. Nothing has been counted as present; search again (Find official form) before concluding anything.`
     : "";
 
@@ -1256,7 +1296,7 @@ export async function ensureAhjFormTemplate(
       : "";
     const reqNote = research.submittalRequirements ? ` Requirements: ${research.submittalRequirements}` : "";
     if (research.lookupFailed) {
-      return { status: "not_found", lookupFailed: true, permitType: permitType.callout, message: `${couldNotRun}${harvestNote}${portalNote}${reqNote} Permitting type: ${permitType.callout}` };
+      return { status: "not_found", lookupFailed: true, ...(searchTimeout ? { searchTimeout } : {}), permitType: permitType.callout, message: `${couldNotRun}${harvestNote}${portalNote}${reqNote} Permitting type: ${permitType.callout}` };
     }
     return {
       status: "not_found",
@@ -1311,6 +1351,7 @@ export async function ensureAhjFormTemplate(
       status: "not_found",
       permitType: permitType.callout,
       ...(research.lookupFailed ? { lookupFailed: true } : {}),
+      ...(searchTimeout ? { searchTimeout } : {}),
       message: `${couldNotRun ? `${couldNotRun} ` : ""}Permitting type: ${permitType.callout} Found candidate links for ${project.ahj} but none returned a valid PDF (link rot or login-gated). Upload the blank PDF to proceed. Tried: ${candidateUrls.join(", ")}${harvestNote}`,
     };
   }

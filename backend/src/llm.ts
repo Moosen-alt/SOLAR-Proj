@@ -860,6 +860,11 @@ export function webResearchBudgetMs(): number {
   return Math.max(45000, Number(process.env.WEB_RESEARCH_TIMEOUT_MS) || Number(process.env.AHJ_FORM_LOOKUP_TIMEOUT_MS) || 240000);
 }
 
+/** A budget in the operator's words: "4 min" for 240,000 ms, "45 s" under a minute. */
+export function formatBudget(ms: number): string {
+  return ms >= 60000 ? `${Math.round(ms / 60000)} min` : `${Math.round(ms / 1000)} s`;
+}
+
 /** Output budget for the research siblings. Their outputs measured 4.7-5.8k tokens; at the old
  *  3000 a fixed timeout would only have turned into max_tokens truncation that parses to {} —
  *  the trap findAhjFormUrl hit (44c9ba5). */
@@ -3287,6 +3292,8 @@ Rules:
     // URL and title; only the model's text was kept, so a document link the model saw but did not
     // list was thrown away. Kept as data for the acquisition's own predicate (ahjFormAuto).
     let searchResults: Array<{ url: string; title: string }> = [];
+    let searchTimeout: AhjFormUrlResult["searchTimeout"];
+    const budgetMs = webResearchBudgetMs();
     try {
       // A GROUNDED SEARCH NEEDS A GROUNDED BUDGET. This ran on askWithWebSearch's 45-second
       // default while making up to three web searches, and on City of Salem it aborted at
@@ -3295,7 +3302,6 @@ Rules:
       // kind of call (FEE_RESEARCH_CLIENT_TIMEOUT_MS); webResearchBudgetMs matches it (it said so
       // at 180s and did not — one Beaverton search aborted at 180,012 ms) and stays
       // env-overridable for a machine on a slower link.
-      const budgetMs = webResearchBudgetMs();
       // 1024 was the signature default and far too small for this call: with the budget fixed it
       // stopped timing out and immediately hit max_tokens instead (outTok 2918, stop=max_tokens),
       // truncating the JSON so it parsed to {} — which the harvest then read as "this AHJ has no
@@ -3315,7 +3321,17 @@ Rules:
       }
     } catch (err) {
       lookupError = errMsg(err);
-      logger.warn("llm", "findAhjFormUrl web search failed", { ahj: input.ahj, state: input.state, err: lookupError });
+      // OUR BUDGET RAN OUT (issue #163: an Oregon county aborted at 240,012 ms with "Request was
+      // aborted" and the operator got nothing actionable). The ceiling stays; what the searches had
+      // already returned is kept as leads — the acquisition reads them exactly as it reads a finished
+      // search's results — and the error says what happened in budget terms, not the SDK's words.
+      if (err instanceof WebSearchAbortedError) {
+        searchResults = err.partial.resultUrls.slice(0, 20).map((url) => ({ url, title: String(err.partial.resultTitles[url] || "") }));
+        const pagesSeen = new Set([...err.partial.resultUrls, ...err.partial.fetchedUrls]).size;
+        searchTimeout = { budgetMs, pagesSeen };
+        lookupError = `search timed out after ${formatBudget(budgetMs)}; ${pagesSeen} page(s) seen`;
+      }
+      logger.warn("llm", "findAhjFormUrl web search failed", { ahj: input.ahj, state: input.state, err: lookupError, ...(searchTimeout ? { pagesSeen: searchTimeout.pagesSeen } : {}) });
     }
     const urls = Array.isArray(parsed.candidateUrls)
       ? parsed.candidateUrls.map((u) => String(u)).filter((u) => /^https?:\/\//i.test(u))
@@ -3339,6 +3355,7 @@ Rules:
       lookupFailed: Boolean(lookupError),
       lookupError,
       searchResults,
+      ...(searchTimeout ? { searchTimeout } : {}),
     };
   }
 

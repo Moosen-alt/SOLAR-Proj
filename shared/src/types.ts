@@ -3345,6 +3345,9 @@ export interface AhjFormUrlResult {
   lookupFailed?: boolean;
   /** Why it could not be made, when it could not. */
   lookupError?: string;
+  /** Set when OUR budget aborted the search (not an upstream error): the budget it ran out of and how
+   *  many distinct pages its searches had already returned or read. Those pages are in searchResults. */
+  searchTimeout?: { budgetMs: number; pagesSeen: number };
   /** The raw web-search results the call received (URL + the result's title), kept so the
    *  acquisition can take a document link the model saw but did not list (a CivicPlus
    *  /DocumentCenter/View/<id>/<name> link has no ".pdf"). Data, never an instruction. */

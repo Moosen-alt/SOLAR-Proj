@@ -47,6 +47,33 @@ export interface EnsureFormResult {
    *  has no form". Stage shortens its 24h cooldown claim to a short back-off on it
    *  (prepareOfficialDocuments.LOOKUP_FAILED_RETRY_MS — never to zero). */
   lookupFailed?: boolean;
+  /** Set when the search ran out of its budget (issue #163): the budget, how many pages it had seen,
+   *  and the leads it had gathered (their URLs) — the not-found detail, never a bare abort. */
+  searchTimeout?: FormSearchTimeout;
+}
+
+// ── Timed-out form searches (bounded, never re-run blind) ─────────────────────────────────
+// A form search that ran out of its 240 s budget (issue #163: an Oregon county, 240,012 ms, then a
+// 385 s request that returned nothing actionable) is NOT re-run with the same query in the same pass
+// — the next form type of that pass would spend another four minutes on the same broad search. The
+// attempt is recorded per AHJ so the NEXT trigger's search is told it timed out and to take the
+// state-scoped / served-city path instead (issue #162). In-process (a restart forgets it — at most
+// one more broad search); a search that completes clears it.
+export interface FormSearchTimeout { at: number; budgetMs: number; pagesSeen: number; leads: string[] }
+export const FORM_SEARCH_TIMEOUT_MEMORY_MS = 24 * 60 * 60 * 1000;
+const formSearchTimeouts = new Map<string, FormSearchTimeout>();
+const formSearchKey = (ahj: string, state: string): string => `${String(state || "").trim().toUpperCase()}|${String(ahj || "").trim().toLowerCase()}`;
+export function noteFormSearchTimeout(ahj: string, state: string, t: FormSearchTimeout): void {
+  formSearchTimeouts.set(formSearchKey(ahj, state), t);
+}
+export function clearFormSearchTimeout(ahj: string, state: string): void {
+  formSearchTimeouts.delete(formSearchKey(ahj, state));
+}
+/** The last timed-out search for this AHJ within FORM_SEARCH_TIMEOUT_MEMORY_MS, else null. */
+export function recentFormSearchTimeout(ahj: string, state: string): FormSearchTimeout | null {
+  const t = formSearchTimeouts.get(formSearchKey(ahj, state));
+  if (!t || Date.now() - t.at >= FORM_SEARCH_TIMEOUT_MEMORY_MS) return null;
+  return t;
 }
 
 // ── Recently failed downloads (go gently) ─────────────────────────────────────────────────

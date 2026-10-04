@@ -6839,6 +6839,14 @@ async function findAhjForm() {
     const missing = results.filter(r => !["acquired", "exists"].includes(r.status));
     const acquired = results.filter(r => r.status === "acquired").length;
     renderApplicationDocs();
+    // A TIMED-OUT SEARCH SAYS SO in budget terms (issue #163) — "Request was aborted" after six
+    // minutes told the operator nothing. The server's sentence leads each such message.
+    const timedOut = results.find(r => r.searchTimeout);
+    const findStatus = $("findAhjFormStatus");
+    if (findStatus && timedOut) {
+      const t = timedOut.searchTimeout;
+      findStatus.textContent = `Search timed out after ${t.budgetMs >= 60000 ? `${Math.round(t.budgetMs / 60000)} min` : `${Math.round(t.budgetMs / 1000)} s`}; ${t.pagesSeen} page(s) seen. Try Find official form again or upload the blank.`;
+    }
     if (missing.length) showMessage(missing.map(r => r.message).join(" ") || "Some required forms still need attention.", "warning");
     else showMessage(acquired ? `${acquired} official form(s) acquired. Review the filled PDFs and remaining project requirements.` : "Available official forms are up to date with the stored templates. Review remaining project requirements.", "success");
   } catch (err) {
