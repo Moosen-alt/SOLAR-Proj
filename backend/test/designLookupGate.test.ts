@@ -319,6 +319,10 @@ await check("AC7: a state-layer code_research landing re-judges the state's proj
   R.getReviewerReport(db, PK);
   assert.equal(basisOf(PK), undefined, "control: no state editions on file, yet a basis finding");
   finishAllPending();
+  // The state re-judge runs the gate, which auto-queues the AHJ's own lookups; through the test
+  // enqueuers those would land via enqueueJob's instant-kick drain and re-judge PK concurrently.
+  CP.setCodeResearchEnqueuerForTests(() => {});
+  CP.setDesignResearchEnqueuerForTests(() => {});
   enqueueJob(db, "code_research", { state: ST2, ahj: "", profileKey: CP.codeProfileKey({ state: ST2, ahj: "" }) }, { priority: 3, maxRetries: 2 });
   // The research's landing: its editions are stored (seeded, cited) before its row leaves 'running'.
   CP.saveResearchedCodeProfile(db, {

@@ -5094,6 +5094,8 @@ export async function rejudgeReviewerGatesAfterLookup(
       if (!stateScope && resolveCriteriaWriteRow(db, st, text(row.ahj))?.key !== key) continue;
       const already = lookupRejudgeStartedAt.get(projectId);
       if (opts.landedMark != null && already != null && already.mark > opts.landedMark) continue;
+      // Recorded before the work: a re-judge that throws still suppresses a sibling landing it would
+      // have covered (best effort, like the rest of this re-judge — the next gate run corrects it).
       lookupRejudgeStartedAt.set(projectId, { mark: lookupLandingMark(), at: Date.now() });
       const detail = getProjectDetail(db, projectId);
       let report = buildReviewerReportFor(db, detail.project);
