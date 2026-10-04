@@ -1430,6 +1430,42 @@ export interface CodeEdition {
   inheritedFrom?: "state";
 }
 
+/** The NEC editions the plan-review rules know article by article (backend/src/necEditions.ts). */
+export type NecEditionYear = 2014 | 2017 | 2020 | 2023;
+
+/** What one NEC edition asks of a PV plan set for rapid shutdown, labels and interconnection.
+ *  A `null` article means the table does not state that edition's number with confidence: the
+ *  rule falls back to the generic citation rather than print a guessed subsection. */
+export interface NecEditionRequirements {
+  edition: NecEditionYear;
+  rapidShutdown: {
+    article: string;
+    /** The controlled-conductor limits this edition states, in its own terms. */
+    limits: string;
+    /** Inside-the-array-boundary requirement (2017+), or null where the edition has none. */
+    insideBoundaryArticle: string | null;
+    /** True when the edition expects a listed PV hazard control system / listed RSD equipment. */
+    requiresListedEquipment: boolean;
+    /** Initiation-device article when the edition expects its location on the plans, else null. */
+    initiationDeviceArticle: string | null;
+  };
+  labels: {
+    rapidShutdown: string;
+    rapidShutdownWording: string;
+    disconnect: string | null;
+    dcSource: string | null;
+    pointOfInterconnection: string | null;
+    powerSourceDirectory: string;
+    standAloneDirectory: string | null;
+    dcConductorMarking: string | null;
+  };
+  interconnection: {
+    supplySide: string;
+    loadSide: string;
+    busbar120: string | null;
+  };
+}
+
 /** The canonical code families a state's own code names map onto (ORSC -> residential,
  *  OSSC -> building, 780 CMR -> building …). codeFamilies.ts owns the mapping. */
 export type CodeFamily = "residential" | "building" | "electrical" | "fire" | "energy" | "mechanical" | "plumbing";
