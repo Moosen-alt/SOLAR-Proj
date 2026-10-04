@@ -856,6 +856,17 @@ check("#111 not on file: the plan's SDC / frost depth / risk category ride along
   assert.doesNotMatch(String(onFile?.message), /seismic design category —/);
 });
 
+// #142: fire access dimensions ride the same rule-3 policy as the design criteria. Full coverage
+// is in firePathways.test.ts; this pins that the design-code path (the one the gate calls) runs it.
+check("#142 fire pathways: an 18 in pathway against the verified AHJ's 36 in is a BLOCKER; seeded, a WARNING", () => {
+  const plan = '18" FIRE ACCESS PATHWAY. 36" SETBACK FROM RIDGE.';
+  const fireSetbacks = [{ id: "fire-1", description: "Minimum 36-inch pathways; arrays set back 36 inches from the ridge." }];
+  const docs = [{ label: "Plan set", text: plan }];
+  assert.equal(get(run(project({ planSetExtractedText: plan }), ctxFor({ ...VERIFIED, fireSetbacks }), docs), "city.fire.pathway-below-required")?.severity, "blocker");
+  assert.equal(get(run(project({ planSetExtractedText: plan }), ctxFor({ fireSetbacks }), docs), "city.fire.pathway-below-required")?.severity, "warning");
+  assert.ok(!get(run(project({ planSetExtractedText: '36" FIRE ACCESS PATHWAY' }), ctxFor({ ...VERIFIED, fireSetbacks }), [{ label: "Plan set", text: '36" FIRE ACCESS PATHWAY' }]), "city.fire.pathway-below-required"));
+});
+
 if (failures) {
   console.error(`\n${failures} design-criteria check(s) FAILED`);
   process.exit(1);

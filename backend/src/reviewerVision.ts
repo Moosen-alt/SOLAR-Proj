@@ -7,6 +7,7 @@ import { StubLLMProvider } from "./llm";
 import { findPlanSetPdf, renderPdfPageToPng, selectTopPagesForTopic } from "./pageImages";
 import { extractPdfPages } from "./batchImport";
 import type { EvidenceTopic } from "./projectEvidence";
+import { applyRoofPlanMeasurement, FIRE_PATHWAY_BELOW_ID, FIRE_PATHWAY_UNMEASURED_ID } from "./designCriteria";
 import { nowIso } from "./time";
 
 // ---------------------------------------------------------------------------
@@ -113,6 +114,9 @@ export const MEASURED_FINDING_IDS: ReadonlySet<string> = new Set([
   // The listings check reads the whole package text (cut sheets included). An image showing a
   // UL mark on one sheet is not the module AND racking listing it asks for.
   "city.plan.ul-listings-missing",
+  // A stated (or vision-measured) pathway width / ridge setback against the required one is
+  // arithmetic (issue #142). A sheet showing a pathway does not make it wide enough.
+  FIRE_PATHWAY_BELOW_ID,
 ]);
 
 /** False when the finding reports a measured result rather than missing evidence. */
@@ -203,6 +207,67 @@ async function verifyOne(
   return firstVerdict ?? { checked: false, present: false, confidence: "low", page: candidates[0], observed: "", note: "Could not render any plan-set page for vision." };
 }
 
+// THE ONE MEASUREMENT (issue #142). Every other vision call asks "is it on the sheet?"; this one
+// asks the roof plan for NUMBERS, and only for city.fire.pathway-unmeasured — the callout the text
+// rule raises when no pathway width or ridge setback could be read from the package text. It costs
+// one call from the same MAX_VISION_CHECKS budget, on the single best-scored roof/site plan page,
+// is cached like any verdict (so cacheOnly reads it back and never calls), and is logged to
+// llm_calls by the provider's instrument(). applyRoofPlanMeasurement compares it with the
+// requirement the finding carries; a vision number never blocks.
+function measurePrompt(finding: ReviewerFinding): string {
+  const wants = (finding.roofPlanRequired || []).map((r) => `- ${r.kind === "pathwayWidth" ? "fire access pathway width" : "array setback from the ridge"} (the jurisdiction requires at least ${r.inches} in)`).join("\n");
+  return `You are a solar plan reviewer reading a single sheet from a residential PV permit plan set (image attached).
+
+Read the DIMENSIONS this roof/site plan STATES for:
+${wants}
+
+Report only dimensions written on the sheet (a dimension string, a callout or a note such as 36" FIRE ACCESS PATHWAY or 18" SETBACK FROM RIDGE). Do not estimate from the drawing's scale. If the sheet states several pathway widths, report the NARROWEST. Hip/valley and eave clearances are not pathway widths. Convert feet to inches (3'-0" = 36).
+
+Return ONLY JSON:
+{
+  "pathwayWidthIn": <number or null if no pathway width is stated>,
+  "ridgeSetbackIn": <number or null if no ridge setback is stated>,
+  "confidence": "high"|"medium"|"low",
+  "observed": "<the exact dimension strings you read, and where on the sheet>"
+}`;
+}
+
+function inchesOf(raw: unknown): number | null {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 && n <= 240 ? n : null;
+}
+
+async function measureOne(llm: LLMProvider, pdfPath: string, pages: string[], finding: ReviewerFinding): Promise<ReviewerVisionVerdict> {
+  const page = selectTopPagesForTopic(pages, "firePathway", "", "", 1)[0] ?? 1;
+  let base64: string;
+  try {
+    base64 = (await renderPdfPageToPng(pdfPath, page)).toString("base64");
+  } catch {
+    return { checked: false, present: false, confidence: "low", page, observed: "", note: "Could not render the roof plan page for a vision measurement." };
+  }
+  let raw: Record<string, unknown>;
+  try {
+    raw = await llm.visionExtract({ imageBase64: base64, mimeType: "image/png", prompt: measurePrompt(finding) });
+  } catch (err) {
+    return { checked: false, present: false, confidence: "low", page, observed: "", note: `Vision call failed: ${(err as Error).message || String(err)}` };
+  }
+  const measured = { pathwayWidthIn: inchesOf(raw.pathwayWidthIn), ridgeSetbackIn: inchesOf(raw.ridgeSetbackIn) };
+  const confidence = raw.confidence === "high" || raw.confidence === "medium" || raw.confidence === "low" ? raw.confidence : "low";
+  const observed = typeof raw.observed === "string" ? raw.observed : "";
+  const present = measured.pathwayWidthIn != null || measured.ridgeSetbackIn != null;
+  const read = [
+    measured.pathwayWidthIn != null ? `pathway ${measured.pathwayWidthIn} in` : "",
+    measured.ridgeSetbackIn != null ? `ridge setback ${measured.ridgeSetbackIn} in` : "",
+  ].filter(Boolean).join(", ");
+  const note = present
+    ? `Vision measured on the plan sheet (page ${page}, ${confidence} confidence): ${read}\n${observed}`.trim()
+    : `Vision read no pathway width or ridge setback on the plan sheet (page ${page}, ${confidence} confidence)\n${observed}`.trim();
+  return { checked: true, present, confidence, page, observed, note, measured };
+}
+
+const isMeasurementTarget = (finding: ReviewerFinding): boolean =>
+  finding.id === FIRE_PATHWAY_UNMEASURED_ID && !!finding.roofPlanRequired?.length;
+
 // Apply a verdict to a finding: vision confirmation upgrades the evidence status
 // and relaxes a text-derived WARNING or BLOCKER to a non-blocking callout when the
 // required items are confirmed present on the sheet (never the reverse — vision
@@ -241,6 +306,12 @@ export function applyCachedVisionVerdicts(db: AppDb, report: ReviewerReport): Re
   const sig = sourceSig(pdfPath);
   let changed = false;
   const findings = report.findings.map((finding) => {
+    if (isMeasurementTarget(finding)) {
+      const measured = readCache(db, report.projectId, finding.id, sig);
+      if (!measured || !measured.checked) return finding;
+      changed = true;
+      return applyRoofPlanMeasurement(finding, measured);
+    }
     if (!needsVision(finding)) return finding;
     const cached = readCache(db, report.projectId, finding.id, sig);
     if (!cached || !cached.checked) return finding;
@@ -277,6 +348,16 @@ export async function applyVisionToReviewerReport(
   let budget = opts.cacheOnly ? 0 : MAX_VISION_CHECKS;
   const findings: ReviewerFinding[] = [];
   for (const finding of report.findings) {
+    if (isMeasurementTarget(finding)) {
+      let measured = readCache(db, report.projectId, finding.id, sig);
+      if (!measured && budget > 0) {
+        budget -= 1;
+        measured = await measureOne(llm, pdfPath, pages, finding);
+        if (measured.checked) writeCache(db, report.projectId, finding.id, sig, measured);
+      }
+      findings.push(measured && measured.checked ? applyRoofPlanMeasurement(finding, measured) : finding);
+      continue;
+    }
     const topic = needsVision(finding);
     if (!topic) {
       findings.push(finding);
