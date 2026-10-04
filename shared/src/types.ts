@@ -1363,8 +1363,23 @@ export interface AhjProcessProfile {
   requiresFloodplainCheck: boolean;
   requiresJurisdictionCheck: boolean;
   otherRequirements: string;
+  /** The AHJ's own cited application checklist (issue #123). At boot the reference seed lands it in
+   *  permit_process_lookups as one 'seeded' permit's documents (knowledgeBase.seedSanitizedAhjProfiles),
+   *  so lookupRequiredList and the verified-list gate have a cited list to read. */
+  documents?: AhjProcessDocuments;
   reviewerNotes: string;
   sourceSheet: string;
+}
+
+export interface AhjProcessDocuments {
+  /** The list as the page words it; [] with `notFound` when the page lists nothing. */
+  items: string[];
+  sourceUrl: string;
+  /** The exact words on the page. */
+  quote: string;
+  notFound?: string;
+  /** ISO date the page was read. A runtime lookup saved on or after it wins (the reference loses). */
+  observedAt: string;
 }
 
 export interface CodeReference {
@@ -1509,6 +1524,9 @@ export interface JurisdictionDesignCriteria {
   specialWindRegion?: boolean;
   seismicDesignCategory?: string;
   frostDepthIn?: number;
+  /** ASCE 7 / IBC Table 1604.5 risk category ("I"…"IV") the jurisdiction requires. Residential PV
+   *  is almost always II; recorded so a plan stating a LOWER category is compared, not assumed. */
+  riskCategory?: string;
   sourceUrl?: string;
 }
 
@@ -1581,7 +1599,7 @@ export interface DesignCriteriaResearchResult {
   provider: "claude" | "stub";
   /** Only values found on a page the search actually returned; each carries its citation. */
   values: Array<{
-    criterion: "groundSnowLoadPsf" | "windSpeedMph" | "windExposure" | "seismicDesignCategory" | "frostDepthIn";
+    criterion: "groundSnowLoadPsf" | "windSpeedMph" | "windExposure" | "seismicDesignCategory" | "frostDepthIn" | "riskCategory";
     value: number | string;
     sourceUrl: string;
     quote?: string;
@@ -1613,6 +1631,7 @@ export type DesignCriteriaChecklistItem =
   | "windExposure"
   | "seismicDesignCategory"
   | "frostDepth"
+  | "riskCategory"
   | "fireSetbacks"
   | "localPvAmendments";
 
@@ -1718,7 +1737,11 @@ export type StatedDesignCriterionKind =
   | "groundSnowPsf"
   | "roofSnowPsf"
   | "riskCategory"
-  | "asce7Edition";
+  | "asce7Edition"
+  /** "A" | "B" | "C" | "D" | "D0" | "D1" | "D2" | "E" | "F", label-anchored. */
+  | "seismicDesignCategory"
+  /** Frost depth in inches (ground-mount / footing notes). */
+  | "frostDepthIn";
 
 /** What KIND of the quantity was stated. Wind: ultimate (Vult / strength) vs nominal
  *  (Vasd / ASD) — a Vult and a Vasd of one design are two different numbers of the same

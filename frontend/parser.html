@@ -299,7 +299,7 @@
   <script src="/vendor/tesseract-5.1.1.min.js"></script>
   <!-- The review-list rules (meter cross-check, notes, resolution, scope callout, locates)
        live in their own DOM-free file so the backend unit test loads the SAME code. -->
-  <script src="parser-review.js?v=9"></script>
+  <script src="parser-review.js?v=10"></script>
 </head>
 
 <body>
@@ -5722,6 +5722,13 @@ async function saveToSystem() {
     if (statusEl) statusEl.textContent = '⚠ Parse a packet first — no homeowner or address to save.';
     return;
   }
+  // The email box saves an address or nothing (#92): a name typed into it is refused here, inline.
+  const email = ParserReview.emailToSave($('homeownerEmail'));
+  if (email === null) {
+    if (statusEl) statusEl.textContent = '⚠ Homeowner email: not an email address.';
+    return;
+  }
+  if (email) payload.homeownerEmail = email;
   const clientId = getVal('clientSelect');
   if (clientId) payload.clientId = clientId;
   const existingId = getVal('existingProjectSelect');

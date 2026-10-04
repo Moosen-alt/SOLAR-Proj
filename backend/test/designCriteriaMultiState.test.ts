@@ -155,7 +155,7 @@ const WA_A = "AHJ CITY OF TESTLAKE ENVIRONMENTAL WIND SPEED: 110 MPH SNOW LOAD: 
 const WA_B = "DESIGN CRITERIA WIND SPEED: 110 mph GROUND SNOW LOAD: 15 lb/ft² WIND EXPOSURE FACTOR: C SEISMIC DESIGN CATEGORY: D SITE SPECIFICATIONS GOVERNING CODES ALL WORK SHALL CONFORM TO THE FOLLOWING CODES 2021 WASHINGTON STATE BUILDING CODE (IBC) 2021 WASHINGTON STATE RESIDENTIAL CODE (IRC) 2021 WASHINGTON STATE FIRE CODE 2023 NATIONAL ELECTRIC CODE";
 const WA_CODES = [ed("IRC", "2021"), ed("IBC", "2021"), ed("IFC", "2021"), ed("NEC", "2023")];
 check("WA MUST-PASS: 'WIND EXPOSURE FACTOR: C', 'GROUND SNOW LOAD: 15 lb/ft²', '(IBC)'/'(IRC)' after the state's name", () => {
-  assert.deepEqual(stated(WA_B).filter((s) => !s.startsWith("asce")), ["groundSnowPsf=15/ground", "windExposure=C/unspecified", "windSpeedMph=110/unspecified"]);
+  assert.deepEqual(stated(WA_B).filter((s) => !s.startsWith("asce")), ["groundSnowPsf=15/ground", "seismicDesignCategory=D/unspecified", "windExposure=C/unspecified", "windSpeedMph=110/unspecified"]);
   assert.deepEqual(codes(WA_B), ["IBC 2021", "IRC 2021", "NEC 2023", "WSFC 2021"]);
   assert.deepEqual(codes(WA_A), ["IBC 2021", "IFC 2021", "IRC 2021", "NEC 2023"]);
 });
@@ -175,7 +175,7 @@ check("WA: a plan matching the WA profile is silent; one a cycle behind is named
 // a 0 psf ground snow, and a California Energy Code that is NOT the Electrical Code.
 const CA = "GOVERNING CODES: 2022 CALIFORNIA RESIDENTIAL CODE (CRC) 2022 CALIFORNIA ELECTRICAL CODE (CEC) 2022 CALIFORNIA FIRE CODE (CFC) 2022 CALIFORNIA ENERGY CODE DESIGN CRITERIA: ULTIMATE WIND SPEED: 110 MPH EXPOSURE CATEGORY: C GROUND SNOW LOAD: 0 PSF SEISMIC DESIGN CATEGORY: D";
 check("CA MUST-PASS: 'GROUND SNOW LOAD: 0 PSF' is a stated value; CRC/CEC/CFC parse; the Energy Code is not the CEC", () => {
-  assert.deepEqual(stated(CA).filter((s) => !s.startsWith("asce")), ["groundSnowPsf=0/ground", "windExposure=C/unspecified", "windSpeedMph=110/ultimate"]);
+  assert.deepEqual(stated(CA).filter((s) => !s.startsWith("asce")), ["groundSnowPsf=0/ground", "seismicDesignCategory=D/unspecified", "windExposure=C/unspecified", "windSpeedMph=110/ultimate"]);
   assert.deepEqual(codes(CA), ["CEC 2022", "CEC-ENERGY 2022", "CFC 2022", "CRC 2022"]);
 });
 check("CA: a 2022-cycle plan against the 2025 profile is named (CRC, CEC), never through the Energy Code", () => {
@@ -202,7 +202,7 @@ check("MUST-EXCLUDE: the NEXT field's 'NOMINAL … WIND SPEED' never qualifies t
 // COLORADO — high ground snow and a county table's "115 mph Vult." (qualifier after the value).
 const CO = "DESIGN CRITERIA: GROUND SNOW LOAD (Pg): 110 PSF ROOF SNOW LOAD: 77 PSF WIND SPEED: 115 mph Vult. EXPOSURE CATEGORY: C SEISMIC DESIGN CATEGORY: C";
 check("CO MUST-PASS: Pg 110 psf, roof 77 psf, '115 mph Vult.' is ultimate; a 120 psf county value names the 110", () => {
-  assert.deepEqual(stated(CO).filter((s) => !s.startsWith("asce")), ["groundSnowPsf=110/ground", "roofSnowPsf=77/roof", "windExposure=C/unspecified", "windSpeedMph=115/ultimate"]);
+  assert.deepEqual(stated(CO).filter((s) => !s.startsWith("asce")), ["groundSnowPsf=110/ground", "roofSnowPsf=77/roof", "seismicDesignCategory=C/unspecified", "windExposure=C/unspecified", "windSpeedMph=115/ultimate"]);
   const f = has(findings("CO", "Testfee County", CO, { designCriteria: { groundSnowLoadPsf: 120 } }), BELOW);
   assert.ok(f && /110/.test(f.message) && !/77/.test(f.message), f?.message);
 });
@@ -287,6 +287,32 @@ check("C MUST-EXCLUDE: a staging/preview copy of a page; a truncated reply says 
   assert.deepEqual(lookup({ groundSnowLoadPsf: { value: 35, sourceUrl: "https://www.city.example.gov/files/table.pdf", quote: "Ground Snow Load (psf) 35" } }), ["groundSnowLoadPsf=35"]);
   assert.ok(/truncated — not a negative result/.test(parseDesignCriteriaLookup({}, true, true).notes));
   assert.ok(!/truncated/.test(parseDesignCriteriaLookup({}, true, false).notes));
+});
+
+// Issue #111: the seismic design category and frost depth formats a cover sheet or ground-mount
+// footing detail prints.
+check("#111 MUST-PASS: SDC as 'SEISMIC DESIGN CATEGORY = D1', 'SDC: C', 'Seismic Cat. B'", () => {
+  assert.deepEqual(stated("SEISMIC DESIGN CATEGORY = D1 SITE CLASS D", "seismicDesignCategory"), ["seismicDesignCategory=D1/unspecified"]);
+  assert.deepEqual(stated("SDC: C", "seismicDesignCategory"), ["seismicDesignCategory=C/unspecified"]);
+  assert.deepEqual(stated("Seismic Cat. B", "seismicDesignCategory"), ["seismicDesignCategory=B/unspecified"]);
+});
+check("#111 MUST-EXCLUDE: a site class, a list, a limit, a lowercase word after the label", () => {
+  assert.deepEqual(stated("SEISMIC SITE CLASS D", "seismicDesignCategory"), []);
+  assert.deepEqual(stated("APPLIES IN SEISMIC DESIGN CATEGORY A, B OR C", "seismicDesignCategory"), []);
+  assert.deepEqual(stated("Prescriptive path limited to seismic design category C", "seismicDesignCategory"), []);
+  assert.deepEqual(stated("the seismic design category and wind exposure", "seismicDesignCategory"), []);
+});
+check("#111 MUST-PASS: frost depth label-first, value-first, in feet, and feet-inches", () => {
+  assert.deepEqual(stated("FROST DEPTH = 24 IN", "frostDepthIn"), ["frostDepthIn=24/unspecified"]);
+  assert.deepEqual(stated("Frost line depth: 30\"", "frostDepthIn"), ["frostDepthIn=30/unspecified"]);
+  assert.deepEqual(stated("36\" FROST DEPTH", "frostDepthIn"), ["frostDepthIn=36/unspecified"]);
+  assert.deepEqual(stated("frost depth of 3 ft", "frostDepthIn"), ["frostDepthIn=36/unspecified"]);
+  assert.deepEqual(stated("FROST DEPTH: 2'-6\" MIN", "frostDepthIn"), ["frostDepthIn=30/unspecified"]);
+});
+check("#111 MUST-EXCLUDE: a footing's embedment below the frost line, a range, a frost-free note", () => {
+  assert.deepEqual(stated("FOOTINGS SHALL EXTEND 12 IN BELOW FROST DEPTH", "frostDepthIn"), []);
+  assert.deepEqual(stated("FROST DEPTH 18-24 IN", "frostDepthIn"), []);
+  assert.deepEqual(stated("FROST PROTECTED SHALLOW FOUNDATION 16 IN", "frostDepthIn"), []);
 });
 
 if (failures) {

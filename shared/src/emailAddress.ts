@@ -9,9 +9,14 @@
 //
 // Deliberately loose — a shape check, not RFC 5322: one "@", something before it, a dotted domain
 // after it, no whitespace. It exists to tell an address from a name or a phone number, never to
-// reject an unusual but real address.
+// reject an unusual but real address. It does refuse what would be wrong TYPED into an Email box
+// as-is (#92): a "mailto:" link, angle brackets, a colon, a trailing dot. firstEmail unwraps the
+// first two, since the address inside them is real.
 
-const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_SHAPE = /^[^\s@<>:]+@[^\s@<>:]+\.[^\s@<>:.]+$/;
+
+/** "mailto:a@b.co" / "<a@b.co>" → "a@b.co"; anything else trimmed as-is. */
+const unwrap = (value: string): string => value.trim().replace(/^mailto:/i, "").replace(/^<([^<>]*)>$/, "$1").trim();
 
 /** True when `value` (trimmed) has the shape of an email address. */
 export function looksLikeEmail(value: unknown): boolean {
@@ -21,6 +26,6 @@ export function looksLikeEmail(value: unknown): boolean {
 
 /** The first of `values` that looks like an email address, trimmed; "" when none does. */
 export function firstEmail(...values: unknown[]): string {
-  for (const v of values) if (looksLikeEmail(v)) return String(v).trim();
+  for (const v of values) if (typeof v === "string" && looksLikeEmail(unwrap(v))) return unwrap(v);
   return "";
 }

@@ -223,6 +223,55 @@ check("MUST AGREE with the staging gate — same inventory, read earlier", () =>
     assert.ok(!docRules(verified.id).some((r) => r.rule_id === "docs.utility_bill"));
     assert.notEqual(docGate(verified.id).status, "blocker", JSON.stringify(docGate(verified.id)));
   });
+
+  // #121 — AN UPGRADED ROW KEEPS ITS CITATION ON THE GATE LINE. A row the inventory already holds
+  // (labels, advisory) is upgraded to blocking by a verified list; the cite used to be appended after
+  // the row's own why, and the gate's 190-char line cap cut the URL off. The URL is the line's point.
+  const LABEL_AHJ = "Borough of Placard Hollow";
+  const LABEL_URL = "https://www.placardhollow-pa.example/building/solar-permit-submittal-requirements";
+  savePermitProcessLookup(db, {
+    state: STATE, ahj: LABEL_AHJ, lookedUpAt: new Date().toISOString(), issuingAgency: none(), permitStructure: none(),
+    permits: [{ discipline: "structural", label: "Building permit", issuingAgency: none(), portalUrl: none(), recordType: none(), fee: none(),
+      documents: { value: ["Plan set", "Label and placard schedule"], sourceUrl: LABEL_URL, quote: "", origin: "lookup" } }],
+    confidence: "verified" as const,
+  } as never, { verifiedBy: "test reviewer" });
+  const labelled = createProject(db, {
+    clientId: client.id, owner: `Placard Owner ${++n}`, street: `${n} Placard Ln`, city: "Placard Hollow",
+    state: STATE, ahj: LABEL_AHJ, utility: "Verity Falls Electric", dcKw: "8", acKw: "6.4",
+  }).project;
+  for (const d of FULL_UNIVERSAL.filter((t) => t !== "labels")) attach(labelled.id, d);
+  check("#121 UPGRADED: a verified list upgrades labels to blocking — the gate's evidence line keeps the sourceUrl", () => {
+    const inv = documentInventory(db, { ...proj(labelled.id) as object, ahj: LABEL_AHJ } as never);
+    const row = inv.missingBlocking.find((d) => d.docType === "labels");
+    assert.ok(row?.verifiedList, JSON.stringify(inv.missingBlocking.map((d) => d.docType)));
+    const g = docGate(labelled.id);
+    assert.equal(g.status, "blocker", JSON.stringify(g));
+    const line = g.evidence.find((e) => /MISSING \(required\): Label/.test(e));
+    assert.ok(line && line.includes(LABEL_URL), JSON.stringify(g.evidence));
+  });
+
+  // #121 / hard rule 3 — "verified" is a person's act, never a lookup's word. A row saved with
+  // confidence "verified" but no verifiedBy is not stamped verified_at, and its list never blocks.
+  const CLAIM_AHJ = "Borough of Selfclaim";
+  savePermitProcessLookup(db, {
+    state: STATE, ahj: CLAIM_AHJ, lookedUpAt: new Date().toISOString(), issuingAgency: none(), permitStructure: none(),
+    permits: [{ discipline: "structural", label: "Building permit", issuingAgency: none(), portalUrl: none(), recordType: none(), fee: none(),
+      documents: { value: LIST, sourceUrl: URL, quote: QUOTE, origin: "lookup" } }],
+    confidence: "verified" as const,
+  } as never);
+  const claimed = createProject(db, {
+    clientId: client.id, owner: `Selfclaim Owner ${++n}`, street: `${n} Selfclaim Rd`, city: "Selfclaim",
+    state: STATE, ahj: CLAIM_AHJ, utility: "Verity Falls Electric", dcKw: "8", acKw: "6.4",
+  }).project;
+  for (const d of FULL_UNIVERSAL) attach(claimed.id, d);
+  check("#121 RULE 3: confidence \"verified\" without verifiedBy gets no verified_at and never blocks", () => {
+    const stored = db.get<{ verified_at: string | null }>("SELECT verified_at FROM permit_process_lookups WHERE state = ? AND ahj = ?", [STATE, CLAIM_AHJ]);
+    assert.ok(stored, "the lookup row was not saved");
+    assert.equal(stored!.verified_at, null);
+    const inv = documentInventory(db, { ...proj(claimed.id) as object, ahj: CLAIM_AHJ } as never);
+    assert.ok(!inv.missingBlocking.some((d) => d.docType === "utility_bill" || d.verifiedList), JSON.stringify(inv.missingBlocking.map((d) => d.docType)));
+    assert.notEqual(docGate(claimed.id).status, "blocker", JSON.stringify(docGate(claimed.id)));
+  });
 }
 
 // ---------------------------------------------------------------------------

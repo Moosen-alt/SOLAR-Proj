@@ -37,6 +37,7 @@
 import type {
   CodeReference,
   JurisdictionCriterionKey,
+  JurisdictionDesignCriteria,
   ProjectRecord,
   ReviewerFinding,
   ReviewerFindingEvidence,
@@ -474,6 +475,55 @@ function extractExposureAndRisk(text: string, source: string, out: StatedDesignC
   let a: RegExpExecArray | null;
   while ((a = asce.exec(text))) {
     out.push({ criterion: "asce7Edition", value: `7-${a[1]}`, qualifier: "unspecified", source, derived: false, excerpt: excerptAt(text, a.index, a.index + a[0].length) });
+  }
+}
+
+// --- seismic design category and frost depth -----------------------------------
+
+// "Seismic Design Category D1", "SEISMIC DESIGN CATEGORY = D", "SDC: C", "Seismic Cat. B". Never
+// "Seismic Site Class D" (soil, not the SDC) and never "Seismic Design Categories A, B and C" (a
+// prescriptive limit — the plural does not match). The category is read case-SENSITIVELY after a
+// case-insensitive label: "seismic design category and …" must not read "a" as SDC A.
+const SDC_LABEL = /\b(?:seismic\s+(?:design\s+)?cat(?:egory|\.)|SDC)(?:\s*\(\s*SDC\s*\))?\s*[:=-]?\s*(D[012]|[A-F])(?![A-Za-z0-9])/gi;
+const SDC_LIST_AFTER = /^\s*(?:,|\/|&|\bor\b|\band\b|\bto\b|\bthrough\b|[-–])\s*(?:D[012]|[A-F])(?![A-Za-z0-9])/;
+
+// "FROST DEPTH = 24 IN", "Frost line depth: 30\"", "FROST DEPTH 2'-6\"", "frost depth of 3 ft", and
+// value-first "36\" FROST DEPTH". A footing note ("EXTEND 12 IN BELOW FROST DEPTH") states the
+// footing's embedment, not the frost depth: value-first needs the value directly before the label.
+const FROST_VALUE = String.raw`(\d+(?:\.\d+)?)\s*(?:(in(?:ch(?:es)?)?\b\.?|["”]|'')|(ft\b\.?|feet\b|foot\b|['’])(?:\s*[-–]?\s*(\d+(?:\.\d+)?)\s*(?:in(?:ch(?:es)?)?\b\.?|["”]|''))?)`;
+const FROST_LABEL_FIRST = new RegExp(String.raw`\bfrost\s+(?:line\s+)?depth\b(?:\s+(?:of|is))?\s*[:=]?\s*(?:min(?:imum)?\.?\s*)?${FROST_VALUE}`, "gi");
+const FROST_VALUE_FIRST = new RegExp(String.raw`(?<![\d.])${FROST_VALUE}\s*(?:min(?:imum)?\.?\s+)?frost\s+(?:line\s+)?depth\b`, "gi");
+const FROST_RANGE_AFTER = /^\s*(?:[-–—]|to\b|or\b)\s*\d/i;
+
+function frostInches(m: RegExpExecArray): number | null {
+  const n = toNumber(m[1]);
+  if (n == null) return null;
+  const inches = m[3] ? n * 12 + (m[4] ? toNumber(m[4]) ?? 0 : 0) : n;
+  // A frost depth is a depth below grade: 0 < d <= 120 in. Anything else is another number.
+  return inches > 0 && inches <= 120 ? inches : null;
+}
+
+function extractSeismicAndFrost(text: string, source: string, out: StatedDesignCriterion[]): void {
+  let m: RegExpExecArray | null;
+  SDC_LABEL.lastIndex = 0;
+  while ((m = SDC_LABEL.exec(text))) {
+    if (m[1] !== m[1].toUpperCase()) continue;
+    const end = m.index + m[0].length;
+    const after = text.slice(end, end + 30);
+    if (SDC_LIST_AFTER.test(after)) continue;
+    if (/^\s*(?:or\s+(?:less|lower|greater|more|higher)\b|and\s+(?:below|above|less|greater)\b)/i.test(after)) continue;
+    if (!/[:=]/.test(m[0]) && limitGoverns(text, m.index)) continue;
+    out.push({ criterion: "seismicDesignCategory", value: m[1], qualifier: "unspecified", source, derived: false, excerpt: excerptAt(text, m.index, end) });
+  }
+  for (const re of [FROST_LABEL_FIRST, FROST_VALUE_FIRST]) {
+    re.lastIndex = 0;
+    while ((m = re.exec(text))) {
+      const end = m.index + m[0].length;
+      if (re === FROST_LABEL_FIRST && FROST_RANGE_AFTER.test(text.slice(end, end + 12))) continue;
+      const inches = frostInches(m);
+      if (inches == null) continue;
+      out.push({ criterion: "frostDepthIn", value: inches, qualifier: "unspecified", source, derived: false, excerpt: excerptAt(text, m.index, end) });
+    }
   }
 }
 
@@ -1268,6 +1318,7 @@ function extractFromSources(project: ProjectRecord, sources: ReadSource[]): Stat
     const text = joinSplitDigits(source.text);
     extractWind(text, source.label, found);
     extractExposureAndRisk(text, source.label, found);
+    extractSeismicAndFrost(text, source.label, found);
     const unsureHere = new Set<string>();
     extractSnowBothWays(text, source.label, found, unsureHere);
     for (const c of found) {
@@ -1768,6 +1819,27 @@ export function approvedDesignsNote(ctx: EffectiveCodeContext, criteria: Array<"
 // --- findings ------------------------------------------------------------------
 
 const EXPOSURE_RANK: Record<string, number> = { B: 1, C: 2, D: 3 };
+const RISK_RANK: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4 };
+
+/** "D1", "sdc d1", "Category D1" -> "D1"; anything that is not one category -> null. */
+function normSdc(raw: unknown): string | null {
+  const v = String(raw ?? "").trim().toUpperCase().replace(/^(?:SDC|SEISMIC(?:\s+DESIGN)?\s+CAT(?:EGORY|\.)?|CAT(?:EGORY|\.)?)\s*[:=]?\s*/, "");
+  return /^(?:D[012]|[A-F])$/.test(v) ? v : null;
+}
+function normRiskCategory(raw: unknown): string | null {
+  const v = normRisk(String(raw ?? "").trim().toUpperCase().replace(/^(?:RISK\s+CAT(?:EGORY|\.)?)\s*[:=]?\s*/, ""));
+  return RISK_RANK[v] ? v : null;
+}
+
+/** A plan's SDC BELOW the jurisdiction's: A < B < C < D0 < D1 < D2 < E < F. A bare "D" (the IBC
+ *  category, before the IRC split it into D0/D1/D2) spans all three: it is never below a D
+ *  subcategory, nor a D subcategory below it — that difference is a wording, not a lower design. */
+function sdcBelow(plan: string, ahj: string): boolean {
+  const letter = (v: string): number => "ABCDEF".indexOf(v[0]);
+  if (letter(plan) !== letter(ahj)) return letter(plan) < letter(ahj);
+  if (plan.length < 2 || ahj.length < 2) return false;
+  return plan[1] < ahj[1];
+}
 
 const CRITERION_LABEL: Record<string, string> = {
   "windSpeedMph|ultimate": "Wind speed (ultimate / unqualified)",
@@ -1792,7 +1864,7 @@ function conflictGroup(c: StatedDesignCriterion): string | null {
 }
 
 function unitFor(criterion: StatedDesignCriterionKind): string {
-  return criterion === "windSpeedMph" ? " mph" : criterion === "groundSnowPsf" || criterion === "roofSnowPsf" ? " psf" : "";
+  return criterion === "windSpeedMph" ? " mph" : criterion === "groundSnowPsf" || criterion === "roofSnowPsf" ? " psf" : criterion === "frostDepthIn" ? " in" : "";
 }
 
 function statedEvidence(items: StatedDesignCriterion[], note: string): ReviewerFindingEvidence[] {
@@ -2321,10 +2393,13 @@ export function evaluateDesignCriteriaFindings(
     : null;
   const below: StatedDesignCriterion[] = [];
   const belowLines: string[] = [];
-  const collect = (label: string, unit: string, required: string, pick: (c: StatedDesignCriterion) => boolean): void => {
+  // The profile field behind each line: its severity is THAT field's row's (fieldProvenance).
+  const belowFields: string[] = [];
+  const collect = (field: string, label: string, unit: string, required: string, pick: (c: StatedDesignCriterion) => boolean): void => {
     const hits = stated.criteria.filter(pick);
     if (!hits.length) return;
     below.push(...hits);
+    belowFields.push(`designCriteria.${field}`);
     const byValue = new Map<string, { value: string | number; sources: Set<string> }>();
     for (const c of hits) {
       const e = byValue.get(String(c.value)) ?? { value: c.value, sources: new Set<string>() };
@@ -2334,39 +2409,105 @@ export function evaluateDesignCriteriaFindings(
     belowLines.push(`${label}: stated ${describeValues([...byValue.values()], unit)} — ${who} requires ${required}`);
   };
   if (ahjWind != null) {
-    collect("Wind speed", " mph", `${ahjWind} mph (ultimate)`, (c) => c.criterion === "windSpeedMph" && c.qualifier !== "nominal" && typeof c.value === "number" && c.value < ahjWind);
+    collect("windSpeedMph", "Wind speed", " mph", `${ahjWind} mph (ultimate)`, (c) => c.criterion === "windSpeedMph" && c.qualifier !== "nominal" && typeof c.value === "number" && c.value < ahjWind);
   }
   if (ahjExposure) {
-    collect("Wind exposure", "", `Exposure ${ahjExposure}`, (c) => c.criterion === "windExposure" && (EXPOSURE_RANK[String(c.value)] ?? 99) < EXPOSURE_RANK[ahjExposure]);
+    collect("windExposure", "Wind exposure", "", `Exposure ${ahjExposure}`, (c) => c.criterion === "windExposure" && (EXPOSURE_RANK[String(c.value)] ?? 99) < EXPOSURE_RANK[ahjExposure]);
   }
   // The wind lines can block; the ground snow line blocks only on an UNAMBIGUOUS reading
   // (readGroundSnow) — the same question the state-minimum rule asks.
   const linesBeforeSnow = belowLines.length;
   let snowAmbiguous = false;
   if (ahjSnow != null) {
-    collect("Ground snow load", " psf", `${ahjSnow} psf`, (c) => c.criterion === "groundSnowPsf" && c.qualifier === "ground" && typeof c.value === "number" && c.value < ahjSnow);
+    collect("groundSnowLoadPsf", "Ground snow load", " psf", `${ahjSnow} psf`, (c) => c.criterion === "groundSnowPsf" && c.qualifier === "ground" && typeof c.value === "number" && c.value < ahjSnow);
     const reading = belowLines.length > linesBeforeSnow ? readGroundSnow(stated) : null;
     if (reading?.status === "ambiguous") {
       snowAmbiguous = true;
       belowLines[belowLines.length - 1] += ` (${ambiguousPgNote(reading)})`;
     }
   }
-  const belowCanBlock = linesBeforeSnow > 0 || (belowLines.length > 0 && !snowAmbiguous);
+  // WHOSE VALUE, VERIFIED BY WHOM. The merged profile's confidence is the WEAKER layer's, so a
+  // human-verified AHJ row under a seeded state layer (Utah, #110) read as seeded and never blocked.
+  // Each wind / exposure / ground snow line blocks only when the row that supplied ITS field is
+  // verified, as the state-minimum rule does; the ground snow line also needs an unambiguous
+  // reading (readGroundSnow). The #111 lines below carry their own per-line policy (moreBlocks).
+  const basicLines = belowLines.length;
+  const belowBlocks = belowFields.slice(0, basicLines)
+    .filter((_, i) => i < linesBeforeSnow || !snowAmbiguous)
+    .some((f) => fieldProvenance(ctx, f).verified);
+  // (b1) THE CHEAP NUMERIC ONES (issue #111): seismic design category, frost depth, risk category,
+  // and an ALLOWABLE-STRESS ground snow load against the AHJ's own pg(asd). Same finding, and the
+  // same policy as the lines above — but asked PER LINE, of the row that holds that field:
+  //   · a blocker only when the field's row is human-verified (fieldProvenance) AND a document —
+  //     not the parser's reading, and not one pass of an ambiguous load list — states the value AND
+  //     every reading of that criterion in the package is one value;
+  //   · otherwise a warning that says which of those it lacks.
+  // Pg(asd) is compared ONLY with the AHJ's pg(asd): it is ~0.7 x Pg, so against the strength Pg it
+  // would always read "below" — which is why the line above never compares it.
+  const ahjSdc = normSdc(dc.seismicDesignCategory);
+  const ahjFrost = typeof dc.frostDepthIn === "number" && dc.frostDepthIn > 0 ? dc.frostDepthIn : null;
+  const ahjRisk = normRiskCategory(dc.riskCategory);
+  const ahjSnowAsd = typeof dc.groundSnowLoadAsdPsf === "number" && dc.groundSnowLoadAsdPsf > 0 ? dc.groundSnowLoadAsdPsf : null;
+  let moreBlocks = false;
+  const compareMore = (
+    label: string, unit: string, required: string, field: keyof JurisdictionDesignCriteria,
+    same: (c: StatedDesignCriterion) => boolean, isBelow: (c: StatedDesignCriterion) => boolean,
+  ): void => {
+    const before = belowLines.length;
+    collect(field, label, unit, required, (c) => same(c) && isBelow(c));
+    if (belowLines.length === before) return;
+    const hits = stated.criteria.filter((c) => same(c) && isBelow(c));
+    const prov = fieldProvenance(ctx, `designCriteria.${field}`);
+    const documentStates = hits.some((c) => !c.derived && !stated.unsure.has(readingKey(c)));
+    const oneValue = new Set(stated.criteria.filter(same).map((c) => String(c.value))).size === 1;
+    if (prov.verified && documentStates && oneValue) { moreBlocks = true; return; }
+    const why = [
+      prov.verified ? "" : "the AHJ value is not human-verified",
+      documentStates ? "" : "only the parser's reading states it",
+      oneValue ? "" : "the package states more than one value",
+    ].filter(Boolean);
+    belowLines[belowLines.length - 1] += ` (a warning: ${why.join("; ")})`;
+  };
+  if (ahjSdc) {
+    compareMore("Seismic design category", "", `Seismic Design Category ${ahjSdc}`, "seismicDesignCategory",
+      (c) => c.criterion === "seismicDesignCategory" && normSdc(c.value) != null,
+      (c) => sdcBelow(normSdc(c.value)!, ahjSdc));
+  }
+  if (ahjFrost != null) {
+    compareMore("Frost depth", " in", `${ahjFrost} in`, "frostDepthIn",
+      (c) => c.criterion === "frostDepthIn" && typeof c.value === "number",
+      (c) => (c.value as number) < ahjFrost);
+  }
+  if (ahjRisk) {
+    compareMore("Risk category", "", `Risk Category ${ahjRisk}`, "riskCategory",
+      (c) => c.criterion === "riskCategory" && normRiskCategory(c.value) != null,
+      (c) => RISK_RANK[normRiskCategory(c.value)!] < RISK_RANK[ahjRisk]);
+  }
+  if (ahjSnowAsd != null) {
+    compareMore("Ground snow load pg(asd)", " psf", `${ahjSnowAsd} psf pg(asd) (allowable-stress)`, "groundSnowLoadAsdPsf",
+      (c) => c.criterion === "groundSnowPsf" && c.qualifier === "ground_asd" && typeof c.value === "number",
+      (c) => (c.value as number) < ahjSnowAsd);
+  }
+  const belowProvenance = ctx.profile?.fieldSources
+    ? [...new Set(belowFields.map((f) => fieldProvenance(ctx, f).text))].join(" / ")
+    : provenance(ctx);
   if (belowLines.length) {
     out.push({
       id: "city.struct.design-criteria-below-ahj",
-      severity: ctx.verified && belowCanBlock ? "blocker" : "warning",
+      severity: belowBlocks || moreBlocks ? "blocker" : "warning",
       category: "structural",
       title: "Design criteria below the jurisdiction's requirement",
-      message: `${belowLines.join(". ")}. AHJ value from the ${provenance(ctx)}.${approvedDesignsNote(ctx, [
+      message: `${belowLines.join(". ")}. AHJ value from the ${belowProvenance}.${approvedDesignsNote(ctx, [
         ...(ahjWind != null ? ["windSpeedMph" as const] : []),
         ...(ahjExposure ? ["windExposure" as const] : []),
         ...(ahjSnow != null ? ["groundSnowPsf" as const] : []),
       ])}`,
-      cityFeedback: `Provide updated design criteria on the plan set and in the engineer's letter/calculations. ${who} design criteria: ${[ahjWind != null ? `wind ${ahjWind} mph ultimate` : "", ahjExposure ? `Exposure ${ahjExposure}` : "", ahjSnow != null ? `ground snow ${ahjSnow} psf` : ""].filter(Boolean).join(", ")}. Revise attachment spacing and member checks to the corrected loads.`,
+      cityFeedback: `Provide updated design criteria on the plan set and in the engineer's letter/calculations. ${who} design criteria: ${[ahjWind != null ? `wind ${ahjWind} mph ultimate` : "", ahjExposure ? `Exposure ${ahjExposure}` : "", ahjSnow != null ? `ground snow ${ahjSnow} psf` : "", ahjSnowAsd != null ? `ground snow pg(asd) ${ahjSnowAsd} psf` : "", ahjSdc ? `Seismic Design Category ${ahjSdc}` : "", ahjRisk ? `Risk Category ${ahjRisk}` : "", ahjFrost != null ? `frost depth ${ahjFrost} in` : ""].filter(Boolean).join(", ")}. Revise attachment spacing and member checks to the corrected loads.`,
       designTeamAction: "Re-run the structural design (attachment spacing, member capacity, uplift) at the jurisdiction's criteria and reissue the plan-set structural notes and the engineer's letter with the corrected values.",
       evidenceNeeded: ["Plan-set design criteria matching the jurisdiction", "Engineer's letter/calculation at the jurisdiction's criteria", "Attachment spacing revised to the corrected loads", ...belowLines].slice(0, 8),
-      codeReferences: [ref(ctx, "Table R301.2", "Climatic and geographic design criteria (established by the jurisdiction)", "The jurisdiction sets wind speed, exposure and ground snow load; a design below them is not approvable."), ref(ctx, "R301.2.1", "Wind design criteria", "Compare ultimate design wind speed (Vult) to the jurisdiction's value."), ref(ctx, "R301.2.3", "Snow loads", "Ground snow load Pg per the jurisdiction's criteria.")],
+      codeReferences: [ref(ctx, "Table R301.2", "Climatic and geographic design criteria (established by the jurisdiction)", "The jurisdiction sets wind speed, exposure and ground snow load; a design below them is not approvable."), ref(ctx, "R301.2.1", "Wind design criteria", "Compare ultimate design wind speed (Vult) to the jurisdiction's value."), ref(ctx, "R301.2.3", "Snow loads", "Ground snow load Pg per the jurisdiction's criteria."),
+        ...(ahjSdc ? [ref(ctx, "R301.2.2", "Seismic provisions", "The seismic design category per the jurisdiction's criteria.")] : []),
+        ...(ahjFrost != null ? [ref(ctx, "R403.1.4.1", "Frost protection", "Footings extend below the jurisdiction's frost line depth.")] : [])],
       installerCallout: true,
       evidenceStatus: "verified",
       evidenceFound: statedEvidence(below, `Compared against ${provenance(ctx)}.`),
@@ -2383,6 +2524,55 @@ export function evaluateDesignCriteriaFindings(
   // warning that says so.
   const minFinding = groundSnowMinimumFinding(stated, ctx, opts.permitPath ?? "");
   if (minFinding) out.push(minFinding);
+
+  // (b3) ABOVE THE PRESCRIPTIVE PATH'S WIND CAP — the plan's stated Vult against the cap for the
+  // exposure it states (maxWindSpeedMphExpB / ExpC), on the prescriptive path only. Always a
+  // WARNING: permitPath already decides the path, and a speed over the cap does not make the design
+  // wrong — it means this design needs the engineered path, not the prescriptive one.
+  if (opts.permitPath === "prescriptive") {
+    const p = ctx.prescriptive ?? {};
+    const caps: Record<string, number | null> = {
+      B: typeof p.maxWindSpeedMphExpB === "number" && p.maxWindSpeedMphExpB > 0 ? p.maxWindSpeedMphExpB : null,
+      C: typeof p.maxWindSpeedMphExpC === "number" && p.maxWindSpeedMphExpC > 0 ? p.maxWindSpeedMphExpC : null,
+    };
+    const winds = stated.criteria.filter((c) => c.criterion === "windSpeedMph" && c.qualifier !== "nominal" && typeof c.value === "number");
+    const exposures = stated.criteria.filter((c) => c.criterion === "windExposure");
+    const capLines: string[] = [];
+    const capItems: StatedDesignCriterion[] = [];
+    const capFields: string[] = [];
+    for (const letter of [...new Set(exposures.map((c) => String(c.value)))]) {
+      const cap = caps[letter];
+      if (cap == null) continue;
+      const over = winds.filter((c) => (c.value as number) > cap);
+      if (!over.length) continue;
+      const byValue = new Map<string, { value: string | number; sources: Set<string> }>();
+      for (const c of over) {
+        const e = byValue.get(String(c.value)) ?? { value: c.value, sources: new Set<string>() };
+        e.sources.add(c.source);
+        byValue.set(String(c.value), e);
+      }
+      const field = `prescriptive.maxWindSpeedMphExp${letter}`;
+      capFields.push(field);
+      capLines.push(`Wind speed: stated ${describeValues([...byValue.values()], " mph")} in Exposure ${letter} — ${who}'s prescriptive path allows at most ${cap} mph in Exposure ${letter} (${fieldProvenance(ctx, field).text})`);
+      capItems.push(...over, ...exposures.filter((c) => String(c.value) === letter));
+    }
+    if (capLines.length) {
+      out.push({
+        id: "city.struct.wind-exceeds-prescriptive-cap",
+        severity: "warning",
+        category: "structural",
+        title: "Wind speed above the prescriptive path's limit — engineered path needed",
+        message: `${capLines.join(". ")}. The project is on the prescriptive path, but its stated design wind speed is above what that path covers: an engineered design (stamped calculations) is needed, or the stated speed is wrong.`,
+        cityFeedback: `The design wind speed exceeds the limit of the prescriptive path for the stated exposure. Provide an engineered design (stamped structural calculations) for the stated wind speed, or correct the design criteria.`,
+        designTeamAction: "Confirm the site's ultimate design wind speed and exposure. If they are right, move the project to the engineered path and provide stamped structural calculations; if not, correct the design criteria on the plan set.",
+        evidenceNeeded: ["Site ultimate design wind speed and exposure", "Engineered structural calculations (stamped), if the speed is above the prescriptive limit", ...capLines].slice(0, 6),
+        codeReferences: [ref(ctx, "R301.2.1", "Wind design criteria", "The prescriptive path applies only up to the jurisdiction's wind-speed limit for the exposure.")],
+        installerCallout: true,
+        evidenceStatus: "verified",
+        evidenceFound: statedEvidence(capItems, `Compared against the prescriptive limit${capFields.length > 1 ? "s" : ""} on file.`),
+      });
+    }
+  }
 
   // (c) UNKNOWN — the jurisdiction's value is not on file. Never a blocker, never silent:
   // "no finding" here would read as "the criteria were checked", and they were not.
@@ -2412,11 +2602,20 @@ export function evaluateDesignCriteriaFindings(
       // was checked, so "not checked" and "checked" are not both implied about one number.
       const minimum = groundSnowMinimumFor(ctx, opts.permitPath ?? "");
       const minimumNote = minimum ? ` (compared only with the ${minimum.required} psf minimum for ${opts.permitPath ? `${opts.permitPath === "prescriptive" ? "prescriptive" : "non-prescriptive"} design` : "the stricter path, the permit path being unknown"}, not with the site's own Pg)` : "";
+      // The other criteria the plan STATES and the profile lacks ride along (issue #111): stated and
+      // unchecked is said, but they never raise this callout on their own — residential plans print
+      // "Risk Category II" almost everywhere, and the row rarely records it.
+      const alsoUnchecked = (criterion: StatedDesignCriterionKind, ahjHas: boolean): boolean =>
+        !ahjHas && stated.criteria.some((c) => c.criterion === criterion);
       const lines = [
         ahjSnow == null ? `ground snow — ${say((c) => c.criterion === "groundSnowPsf", " psf")}${minimumNote}` : "",
         ahjWind == null ? `wind speed — ${say((c) => c.criterion === "windSpeedMph", " mph")}` : "",
+        alsoUnchecked("seismicDesignCategory", !!ahjSdc) ? `seismic design category — ${say((c) => c.criterion === "seismicDesignCategory", "")}` : "",
+        alsoUnchecked("frostDepthIn", ahjFrost != null) ? `frost depth — ${say((c) => c.criterion === "frostDepthIn", " in")}` : "",
+        alsoUnchecked("riskCategory", !!ahjRisk) ? `risk category — ${say((c) => c.criterion === "riskCategory", "")}` : "",
       ].filter(Boolean);
-      const quoted = stated.criteria.filter((c) => (ahjSnow == null && c.criterion === "groundSnowPsf") || (ahjWind == null && c.criterion === "windSpeedMph"));
+      const quoted = stated.criteria.filter((c) => (ahjSnow == null && c.criterion === "groundSnowPsf") || (ahjWind == null && c.criterion === "windSpeedMph")
+        || (!ahjSdc && c.criterion === "seismicDesignCategory") || (ahjFrost == null && c.criterion === "frostDepthIn") || (!ahjRisk && c.criterion === "riskCategory"));
       // WHERE THE LOOKUP STANDS (ctx.designLookup, read from the job queue). The first project in a
       // new AHJ is judged while its lookup is still running: "not on file" read as "nobody is
       // looking", and a lookup that ran and found nothing read as one that never ran.

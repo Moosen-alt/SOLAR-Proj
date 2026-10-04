@@ -723,6 +723,139 @@ check("#68 gate: a correct letter plus the range block raises no conflict and no
   assert.ok(!get(fs, CONFLICT), `no conflict: ${get(fs, CONFLICT)?.message}`);
 });
 
+// ---------------------------------------------------------------------------------------
+// Issue #111 — the cheap numeric comparisons: seismic design category, frost depth, the
+// prescriptive path's wind caps, an allowable-stress ground snow load, risk category. Same policy
+// as below-ahj: a BLOCKER only when the field's row is human-verified AND a document (not the
+// parser) states the value; otherwise a warning. Wind caps are never a blocker.
+// ---------------------------------------------------------------------------------------
+const WIND_CAP = "city.struct.wind-exceeds-prescriptive-cap";
+const VERIFIED = { confidence: "verified" as const, verifiedBy: "operator", verifiedAt: "2026-09-20T00:00:00Z" };
+// Wind and snow on file and met, so only the new lines can fire.
+const MET = { windSpeedMph: 110, groundSnowLoadPsf: 25 };
+const plan111 = (extra: string, snap: Record<string, unknown> = {}) =>
+  project({ ...snap, planSetExtractedText: `STRUCTURAL NOTES: GROUND SNOW LOAD = 25 PSF WIND SPEED = 110 MPH EXPOSURE CATEGORY = C ${extra}` });
+
+check("#111 SDC: extractor reads the category, never a site class, a list, or a limit", () => {
+  const sdc = (text: string) => extractStatedDesignCriteria(project({ planSetExtractedText: text })).criteria
+    .filter((c) => c.criterion === "seismicDesignCategory").map((c) => c.value);
+  assert.deepEqual(sdc("SEISMIC DESIGN CATEGORY = C"), ["C"]);
+  assert.deepEqual(sdc("SDC: D2"), ["D2"]);
+  assert.deepEqual(sdc("Seismic Design Category D1. Seismic Site Class D."), ["D1"]);
+  assert.deepEqual(sdc("limited to Seismic Design Categories A, B and C"), []);
+  assert.deepEqual(sdc("Seismic Design Category D0, D1 or D2"), []);
+  assert.deepEqual(sdc("the seismic design category and site class are per ASCE 7"), []);
+});
+
+check("#111 SDC: plan C below the AHJ's D1 — warning on a seeded row, BLOCKER on a verified one", () => {
+  const p = plan111("SEISMIC DESIGN CATEGORY = C");
+  const seeded = get(run(p, ctxFor({ designCriteria: { ...MET, seismicDesignCategory: "D1" } })), BELOW);
+  assert.equal(seeded?.severity, "warning");
+  assert.match(seeded!.message, /Seismic design category: stated C .* requires Seismic Design Category D1/);
+  assert.match(seeded!.message, /not human-verified/);
+  const verified = get(run(p, ctxFor({ ...VERIFIED, designCriteria: { ...MET, seismicDesignCategory: "D1" } })), BELOW);
+  assert.equal(verified?.severity, "blocker");
+});
+
+check("#111 SDC MUST-EXCLUDE: at or above the AHJ, and a bare D against a D subcategory, are not below", () => {
+  for (const [planSdc, ahjSdc] of [["D1", "D1"], ["D2", "D1"], ["D", "D2"], ["D0", "D"], ["E", "D2"]]) {
+    const f = get(run(plan111(`SEISMIC DESIGN CATEGORY = ${planSdc}`), ctxFor({ ...VERIFIED, designCriteria: { ...MET, seismicDesignCategory: ahjSdc } })), BELOW);
+    assert.ok(!f, `plan ${planSdc} vs AHJ ${ahjSdc}: ${f?.message}`);
+  }
+  // D0 < D1 < D2 is compared.
+  assert.ok(get(run(plan111("SEISMIC DESIGN CATEGORY = D0"), ctxFor({ designCriteria: { ...MET, seismicDesignCategory: "D2" } })), BELOW));
+});
+
+check("#111 frost depth: plan 18 in below the AHJ's 24 in — warning seeded, BLOCKER verified; feet-inches read", () => {
+  const p = plan111("GROUND MOUNT FOOTINGS: FROST DEPTH = 18 IN");
+  const seeded = get(run(p, ctxFor({ designCriteria: { ...MET, frostDepthIn: 24 } })), BELOW);
+  assert.equal(seeded?.severity, "warning");
+  assert.match(seeded!.message, /Frost depth: stated 18 in .* requires 24 in/);
+  assert.equal(get(run(p, ctxFor({ ...VERIFIED, designCriteria: { ...MET, frostDepthIn: 24 } })), BELOW)?.severity, "blocker");
+  const ftIn = get(run(plan111("FROST DEPTH: 1'-6\" BELOW GRADE"), ctxFor({ designCriteria: { ...MET, frostDepthIn: 24 } })), BELOW);
+  assert.match(String(ftIn?.message), /stated 18 in/);
+});
+
+check("#111 frost depth MUST-EXCLUDE: no frost depth stated (a footing note), or one at the AHJ's, raises nothing", () => {
+  const ctx = ctxFor({ ...VERIFIED, designCriteria: { ...MET, frostDepthIn: 24 } });
+  assert.ok(!get(run(plan111("FOOTINGS SHALL EXTEND 12 IN BELOW FROST DEPTH"), ctx), BELOW));
+  assert.ok(!get(run(plan111("FROST DEPTH = 24 IN"), ctx), BELOW));
+  assert.ok(!get(run(plan111("FROST DEPTH 18-24 IN"), ctx), BELOW), "a range is not the plan's frost depth");
+});
+
+check("#111 risk category: plan I below the AHJ's II — warning seeded, BLOCKER verified; II vs II is nothing", () => {
+  const p = plan111("RISK CATEGORY = I");
+  const seeded = get(run(p, ctxFor({ designCriteria: { ...MET, riskCategory: "II" } })), BELOW);
+  assert.equal(seeded?.severity, "warning");
+  assert.match(seeded!.message, /Risk category: stated I .* requires Risk Category II/);
+  assert.equal(get(run(p, ctxFor({ ...VERIFIED, designCriteria: { ...MET, riskCategory: "II" } })), BELOW)?.severity, "blocker");
+  assert.ok(!get(run(plan111("RISK CATEGORY = II"), ctxFor({ ...VERIFIED, designCriteria: { ...MET, riskCategory: "II" } })), BELOW));
+});
+
+check("#111 hard rule: a value only the PARSER read never blocks, even against a verified row", () => {
+  // No document states a risk category; the parser's field says I.
+  const p = project({ riskCategory: "I", planSetExtractedText: "STRUCTURAL NOTES: GROUND SNOW LOAD = 25 PSF WIND SPEED = 110 MPH" });
+  const f = get(run(p, ctxFor({ ...VERIFIED, designCriteria: { ...MET, riskCategory: "II" } })), BELOW);
+  assert.equal(f?.severity, "warning");
+  assert.match(f!.message, /only the parser's reading states it/);
+});
+
+check("#111 two different documented values never block: the package contradicts itself", () => {
+  const ctx = ctxFor({ ...VERIFIED, designCriteria: { ...MET, seismicDesignCategory: "D1" } });
+  const f = get(run(project({}), ctx, [
+    { label: "Plan set", text: "GROUND SNOW LOAD = 25 PSF WIND SPEED = 110 MPH SEISMIC DESIGN CATEGORY = C" },
+    { label: "Structural letter", text: "Seismic Design Category: D1" },
+  ]), BELOW);
+  assert.equal(f?.severity, "warning");
+  assert.match(f!.message, /more than one value/);
+});
+
+check("#111 Pg(asd): today it is never compared with the strength Pg (pinned); with the AHJ's pg(asd) on file it is", () => {
+  const p = plan111("GROUND SNOW LOAD, PG(ASD) = 15 PSF");
+  // Pg(asd) 15 against a strength Pg 25 would always read "below": it is not compared.
+  const strengthOnly = get(run(p, ctxFor({ ...VERIFIED, designCriteria: { ...MET } })), BELOW);
+  assert.ok(!strengthOnly, `Pg(asd) mis-compared with Pg: ${strengthOnly?.message}`);
+  const seeded = get(run(p, ctxFor({ designCriteria: { ...MET, groundSnowLoadAsdPsf: 18 } })), BELOW);
+  assert.equal(seeded?.severity, "warning");
+  assert.match(seeded!.message, /Ground snow load pg\(asd\): stated 15 psf .* requires 18 psf pg\(asd\)/);
+  assert.equal(get(run(p, ctxFor({ ...VERIFIED, designCriteria: { ...MET, groundSnowLoadAsdPsf: 18 } })), BELOW)?.severity, "blocker");
+  assert.ok(!get(run(plan111("GROUND SNOW LOAD, PG(ASD) = 18 PSF"), ctxFor({ ...VERIFIED, designCriteria: { ...MET, groundSnowLoadAsdPsf: 18 } })), BELOW));
+});
+
+check("#111 wind cap: 130 mph in Exposure C over a 120 mph cap on the prescriptive path — a WARNING, even verified", () => {
+  const plan = "GROUND SNOW LOAD = 25 PSF WIND SPEED = 130 MPH EXPOSURE CATEGORY = C";
+  const prescriptive = project({ permitPath: "Prescriptive", planSetExtractedText: plan });
+  const caps = { maxWindSpeedMphExpB: 140, maxWindSpeedMphExpC: 120 };
+  for (const ctx of [ctxFor({ designCriteria: { ...MET }, prescriptive: caps }), ctxFor({ ...VERIFIED, designCriteria: { ...MET }, prescriptive: caps })]) {
+    const f = get(run(prescriptive, ctx), WIND_CAP);
+    assert.equal(f?.severity, "warning");
+    assert.match(f!.message, /130 mph .* Exposure C .* at most 120 mph in Exposure C/);
+    assert.match(f!.title, /engineered path needed/);
+  }
+});
+
+check("#111 wind cap MUST-EXCLUDE: engineered or undecided path, within the cap for the stated exposure, or a nominal speed", () => {
+  const caps = { maxWindSpeedMphExpB: 140, maxWindSpeedMphExpC: 120 };
+  const ctx = ctxFor({ ...VERIFIED, designCriteria: { ...MET }, prescriptive: caps });
+  const over = "GROUND SNOW LOAD = 25 PSF WIND SPEED = 130 MPH EXPOSURE CATEGORY = C";
+  assert.ok(!get(run(project({ permitPath: "Engineered", planSetExtractedText: over }), ctx), WIND_CAP));
+  assert.ok(!get(run(project({ planSetExtractedText: over }), ctx), WIND_CAP), "path unknown: permitPath decides, not this rule");
+  assert.ok(!get(run(project({ permitPath: "Prescriptive", planSetExtractedText: "WIND SPEED = 130 MPH EXPOSURE CATEGORY = B" }), ctx), WIND_CAP), "Exposure B's cap is 140");
+  assert.ok(!get(run(project({ permitPath: "Prescriptive", planSetExtractedText: "Vasd = 130 mph EXPOSURE CATEGORY = C" }), ctx), WIND_CAP), "a nominal speed is not Vult");
+});
+
+check("#111 not on file: the plan's SDC / frost depth / risk category ride along in the unknown callout", () => {
+  const p = project({ planSetExtractedText: "SEISMIC DESIGN CATEGORY = D1 FROST DEPTH = 30 IN RISK CATEGORY = II" });
+  const f = get(run(p, ctxFor({ designCriteria: {} })), UNKNOWN);
+  assert.equal(f?.severity, "callout");
+  assert.match(f!.message, /seismic design category — stated in the package: D1/);
+  assert.match(f!.message, /frost depth — stated in the package: 30 in/);
+  assert.match(f!.message, /risk category — stated in the package: II/);
+  // On file -> not repeated as unchecked.
+  const onFile = get(run(p, ctxFor({ designCriteria: { seismicDesignCategory: "D1" } })), UNKNOWN);
+  assert.doesNotMatch(String(onFile?.message), /seismic design category —/);
+});
+
 if (failures) {
   console.error(`\n${failures} design-criteria check(s) FAILED`);
   process.exit(1);

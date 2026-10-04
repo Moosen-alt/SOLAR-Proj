@@ -203,6 +203,7 @@
     </form>
   </div>
 
+  <script src="/parser-review.js?v=10"></script>
   <script>
     const form = document.getElementById("npForm");
     const msg = document.getElementById("npMsg");
@@ -235,6 +236,11 @@
       }
     })();
 
+    // emailToSave flags a refused email with setCustomValidity, and the browser checks validity
+    // BEFORE it fires "submit" — so the flag is cleared on every edit, or a corrected address could
+    // never submit (the stale "not an email address" bubble would block it until reload).
+    form.elements.homeownerEmail.addEventListener("input", (e) => e.target.setCustomValidity(""));
+
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       setMsg("");
@@ -249,6 +255,14 @@
         setMsg("Homeowner name and install address are required.", "error");
         return;
       }
+      // The email box saves an address or nothing (parser-review.js emailToSave, #92).
+      const emailBox = form.elements.homeownerEmail;
+      const email = window.ParserReview ? window.ParserReview.emailToSave(emailBox) : (emailBox.value || "").trim();
+      if (email === null) {
+        setMsg("Homeowner email: not an email address.", "error");
+        return;
+      }
+      if (email) payload.homeownerEmail = email;
       if (!payload.clientId) {
         setMsg("Choose the client / contractor this project is filed for — the permit application carries their CCB licence and the portal logs in as them.", "error");
         return;

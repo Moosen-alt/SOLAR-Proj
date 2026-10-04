@@ -1918,6 +1918,7 @@ const KB_CRITERIA_LABELS = {
   "designCriteria.specialWindRegion": ["Special wind region", ""],
   "designCriteria.seismicDesignCategory": ["Seismic design category", ""],
   "designCriteria.frostDepthIn": ["Frost depth", " in"],
+  "designCriteria.riskCategory": ["Risk category", ""],
   "prescriptive.maxAttachmentSpacingIn": ["Max attachment spacing", " in o.c."],
   "prescriptive.listingEvidenceRequired": ["Module / racking UL listing evidence required", ""],
 };
@@ -1959,6 +1960,7 @@ function kbDesignCriteriaHtml(codeProfile) {
     windExposure: ["Wind exposure", ["windExposure"]],
     seismicDesignCategory: ["Seismic design category", ["seismicDesignCategory"]],
     frostDepth: ["Frost depth", ["frostDepthIn"]],
+    riskCategory: ["Risk category", ["riskCategory"]],
     fireSetbacks: ["Fire setbacks / roof pathways", null],
     localPvAmendments: ["Local PV amendments", null],
   };
@@ -3780,7 +3782,12 @@ async function saveManualEntry() {
   const jobValue = ($("manualJobValue")?.value || "").trim();
   const projectType = ($("manualProjectType")?.value || "").trim();
   const permitPath = ($("manualPermitPath")?.value || "").trim();
-  const email = ($("manualHomeownerEmail")?.value || "").trim();
+  // The email box saves an address or nothing (parser-review.js emailToSave, #92).
+  const email = window.ParserReview ? window.ParserReview.emailToSave($("manualHomeownerEmail")) : ($("manualHomeownerEmail")?.value || "").trim();
+  if (email === null) {
+    if (status) { status.textContent = "Homeowner email: not an email address."; status.className = "muted"; }
+    return;
+  }
   const phone = ($("manualHomeownerPhone")?.value || "").trim();
   const desc = ($("manualDescription")?.value || "").trim();
   if (jobValue) payload.jobValue = jobValue;

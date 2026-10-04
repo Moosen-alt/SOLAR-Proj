@@ -1154,7 +1154,7 @@ export function agencyListStatusResolver(db: AppDb, project: ProjectRecord): Age
 }
 
 /** The per-job lookup's cited document list (every permit's, deduped), or []. */
-function lookupRequiredList(project: ProjectRecord): { items: string[]; sourceUrl: string } {
+export function lookupRequiredList(project: Pick<ProjectRecord, "state" | "ahj">): { items: string[]; sourceUrl: string } {
   const lookup = String(project.ahj || "").trim() ? permitProcessFor({ state: project.state, ahj: project.ahj }) : null;
   const items: string[] = [];
   let sourceUrl = "";
@@ -1212,7 +1212,9 @@ function applyVerifiedRequiredList(project: ProjectRecord, required: RequiredDoc
       for (const r of held) {
         if (r.blocking || r.verifiedList) continue;
         r.blocking = true;
-        r.why = `${r.why} ${cite}`.trim();
+        // Cite first here too: the row's own why runs ahead of it otherwise (labels' is long enough
+        // to push the URL past the gate's line cap — #121), and the cite is why the row now blocks.
+        r.why = `${cite} ${r.why}`.trim();
         r.verifiedList = verifiedList;
       }
       continue;

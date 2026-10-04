@@ -656,9 +656,30 @@ export function claimNextJob(db: AppDb): JobRecord | null {
  *  AFTER its row left 'running', so the re-judged finding reads where the lookup now stands. The
  *  gate of every pre-stage project in that AHJ is re-run (repository.rejudgeReviewerGatesAfterLookup);
  *  a STATE-layer code_research (no AHJ) re-runs every pre-stage project in the state, since its
- *  editions and minimums reach every AHJ that inherits them (#107).
+ *  editions and minimums reach every AHJ that inherits them (#107). A permit-process lookup (the
+ *  AHJ's cited required-documents list) re-judges QC's document rows instead (#112).
  *  Best effort: a failure here never changes the job's own outcome. */
 async function rejudgeAfterJurisdictionLookup(db: AppDb, job: JobRecord): Promise<void> {
+  if (job.jobType === "permit_process_lookup") {
+    // The AHJ's cited required-documents list landed (savePermitProcessLookup wrote it before the job
+    // left 'running'): QC's docs.* / docs.complete rows were judged without it, so re-judge them for
+    // every pre-stage project in that AHJ (repository.rejudgeQcDocumentsAfterLookup, #112).
+    // ONLY A JOB THAT LANDED 'done'. A lookup that failed for good wrote no row, and the re-judge's
+    // QC run fires ensurePermitProcessLookedUp, whose dedupe deliberately ignores failed jobs: it
+    // would queue the same lookup again, fail again, re-judge again — a model-call loop per AHJ. The
+    // row's own status is read (not the branch we came from), so a watchdog that reclaimed the job
+    // mid-run — the 'done' UPDATE is guarded on 'running' — does not count as landed either.
+    const landed = db.get<{ status: string }>("SELECT status FROM job_queue WHERE id = ?", [job.id]);
+    if (String(landed?.status) !== "done") return;
+    const p = job.payload as { state?: unknown; ahj?: unknown };
+    try {
+      const { rejudgeQcDocumentsAfterLookup } = await import("./repository");
+      rejudgeQcDocumentsAfterLookup(db, { state: String(p.state || ""), ahj: String(p.ahj || "") }, `${job.jobType}_landed`);
+    } catch (err) {
+      logger.warn("job-worker", `re-judge after ${job.jobType} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
+  }
   if (job.jobType !== "design_criteria_research" && job.jobType !== "code_research") return;
   // Taken before any await: the job's data and its row's final status are both written by now.
   const landedMark = lookupLandingMark();
