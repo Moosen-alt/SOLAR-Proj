@@ -104,7 +104,7 @@ export async function processStageStep(db: AppDb, projectId: string, opts: Stage
 
   // STEP 0 — SPLIT THE PLAN SET, before anything judges documents. The submit gate names the
   // sheets it wants BY TYPE (site plan, SLD, structural, specs), and every one of them usually
-  // lives inside the uploaded plan set — Basson sat "Blocked: required documents" over sheets
+  // lives inside the uploaded plan set — Synthetic sat "Blocked: required documents" over sheets
   // she had already provided, until a human clicked split. Operator ruling (2026-09-21): "have
   // it auto split everything… once it splits its good, just have it auto do it then check
   // again." Deduped on recency: split rows newer than the newest plan set mean this plan set

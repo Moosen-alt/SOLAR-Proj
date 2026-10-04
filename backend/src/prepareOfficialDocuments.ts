@@ -48,7 +48,7 @@ export const LOOKUP_FAILED_RETRY_MS = 60 * 60 * 1000;
 /** Prepare actual applications before learn/stage assembles upload paths.
  *
  * THE COOLDOWN THROTTLES PAID RESEARCH, NEVER THE FORMS THIS JOB OWES (live 2026-09-27: Michael
- * Sheridan's Marion B-01S / E-01 were not on file at Stage because the City of Jefferson had been
+ * Testperson's Marion B-01S / E-01 were not on file at Stage because the City of Jefferson had been
  * prepared earlier that day, on a version before issuing-agency forms existed, and Stage skipped
  * acquisition for 24 hours). The shared AHJ/path cooldown is persisted and claimed before awaiting
  * network work, so retries and simultaneous projects do not amplify paid research (the web search,

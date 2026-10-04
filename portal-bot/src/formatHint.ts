@@ -1,7 +1,7 @@
 // WHEN A PORTAL PRINTS THE FORMAT IT WANTS, USE IT.
 //
 // PacifiCorp's account field is labelled "Customer's account number - please use this format:
-// xxxxxxxx xxx x". The bill prints "58103504-001 2" and intake stored "58103504-0012", so the
+// xxxxxxxx xxx x". The bill prints "90000000-004 0" and intake stored "90000000-0040", so the
 // submission was rejected with that field named. The digits were right the whole time; only
 // the grouping was wrong, and the portal had already said what the grouping should be.
 //

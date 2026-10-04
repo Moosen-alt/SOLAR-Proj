@@ -1,6 +1,6 @@
 // A CORRECTION POINTING AT THE WRONG PORTAL IS WORSE THAN AN UNCLASSIFIED ONE.
 //
-// Live defect this file exists for: Christopher Ivy's only open correction (cb3cf605 on
+// Live defect this file exists for: Drew Example's only open correction (cb3cf605 on
 // project 720b05f3) is a scrape of the Accela PERMIT record 187-26-000305-STR whose one
 // item is a parcel-level "Sewer Recovery" notice. The old discriminator,
 //   /nem|net.?meter|interconnection|pto|utility|meter|account|powerclerk|inverter|1741/i
@@ -81,7 +81,7 @@ const IVY_REQUIRED_ACTION =
   + "no response on a solar structural permit. Continue monitoring the record for actual plan-review comments.";
 
 // A genuine NEM correction, in the live shape of the other correction on this database
-// (David Simmons bb73adc4, a PacifiCorp interconnection message).
+// (Finley Mockdata bb73adc4, a PacifiCorp interconnection message).
 const REAL_NEM_CORRECTION =
   "PacifiCorp / Pacific Power — APP-111681 (received 2026-09-03, 10 business day review). Your net metering "
   + "interconnection application is incomplete: upload the signed customer generation agreement and the meter photo "

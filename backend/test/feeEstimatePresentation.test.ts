@@ -15,7 +15,7 @@
 //     (`totalConfidence`), and the CLI renderer marks an estimated total
 //     "≈ … (ESTIMATE)" with a caveat — same pattern the dashboard fee card uses.
 //
-// MUST EXCLUDE — the mirror-image defect: Christopher Ivy's fully-published
+// MUST EXCLUDE — the mirror-image defect: Drew Example's fully-published
 // $335.00 (the live Coos pair, rebuilt verbatim below) keeps `known: true`, an
 // empty unknowns list, and a total with NO estimate caveat. A published number
 // presenting as a guess is as wrong as a guess presenting as a fact.
@@ -128,7 +128,7 @@ async function main(): Promise<void> {
     return getProjectDetail(db, id).project;
   };
   const TRASK = mkProject("proj-trask", "Bren Trask", "City of Portland", "PGE", 8.376, 10.32, { jobValue: 30000 });
-  const IVY = mkProject("proj-ivy", "Christopher Ivy", "City of Coos Bay", "Pacific Power", 3.072, 3.52, {
+  const IVY = mkProject("proj-ivy", "Drew Example", "City of Coos Bay", "Pacific Power", 3.072, 3.52, {
     mounting: "Roof mount", pvMicroMake: "Enphase", pvMicroModel: "IQ8PLUS-72-2-US",
   });
 

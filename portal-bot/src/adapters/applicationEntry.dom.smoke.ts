@@ -253,7 +253,7 @@ await check("deep search still refuses a portal that only offers real-filing con
   assert.equal(deep, null, `must not pick ${deep?.match.label}`);
 });
 
-// A DISABLED NAMESAKE IS NEVER THE ENTRY. Live on Marineau's electrical replay: Oregon
+// A DISABLED NAMESAKE IS NEVER THE ENTRY. Live on Placeholder's electrical replay: Oregon
 // ePermitting's landing page carries a DISABLED decorative "Apply" nav pill, headless layout
 // put it first in DOM order, getByText("Apply").first() resolved onto it, and the click
 // waited its full 30s on a button that can never be clicked — while the real Apply link sat

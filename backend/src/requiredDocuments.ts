@@ -164,7 +164,7 @@ export interface ApplicationDocContext {
    *                   zero profiles). EVERY jurisdiction looks unknown, which is
    *                   indistinguishable from the case above by the flags alone — and
    *                   that indistinguishability is the bug: with the file unreachable,
-   *                   Christopher Ivy's blocking set went from three documents to
+   *                   Drew Example's blocking set went from three documents to
    *                   none and the packet printed "Every required document is
    *                   attached". documentInventory() refuses on this value rather
    *                   than computing a set it has no basis for.
@@ -886,7 +886,7 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
   // nothing for a signal that isn't there, missingBlocking comes back empty, and the
   // screen prints the pass-green "Every required document is attached" over a lookup
   // that never happened. Measured on the live database with the file made unreachable,
-  // Christopher Ivy lost building_application, electrical_application and
+  // Drew Example lost building_application, electrical_application and
   // solar_checklist — the operator's own stated reason his permit bounced — and the
   // submit gate dropped from blocker to warning.
   //

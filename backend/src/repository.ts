@@ -335,7 +335,7 @@ function mapProject(row: ProjectRow): ProjectRecord {
     // ARCHIVE STATE TRAVELS WITH THE RECORD (v-archive columns, `SELECT *` above).
     // It was stored and never mapped, so nothing built on a ProjectRecord could
     // tell a retired job from a live one: submissionFees quoted the superseded
-    // Daly pass at $274.43 exactly as it quotes its certified twin. Mapping it
+    // Fixture pass at $274.43 exactly as it quotes its certified twin. Mapping it
     // does NOT hide anything — projectArchive.ts is explicit that operator
     // surfaces keep showing archived work — it only makes the fact sayable.
     archivedAt: text((row as Record<string, unknown>).archived_at),
@@ -2814,7 +2814,7 @@ function renderProcessMapText(report: Omit<ProjectProcessMap, "reportText">): st
 function hasNemSignal(check: PermitStatusCheck | EmailProjectMatch): boolean {
   // A CHECK KNOWS ITS LANE — the target it descends from is typed "permit" | "nem". The
   // text heuristic below predates typed targets, and it misfiled a status check by the
-  // WORDS on the page: Marineau's issued ELECTRICAL permit page mentions "utility", the
+  // WORDS on the page: Placeholder's issued ELECTRICAL permit page mentions "utility", the
   // regex called it a NEM check, the NEM lane showed "Permit issued", and — because
   // "issued" sits in the NEM-approved outcome list — the dashboard badged two live
   // interconnection applications "NEM approved" that PacifiCorp still lists as
@@ -5797,7 +5797,7 @@ export interface CorrectionReopenResult {
 // pasted at three sites, and it was wrong in a way that only live data showed.
 // `utility`, `meter`, `account`, `inverter`, `interconnection` and `1741` are not
 // track signals — they are the vocabulary EVERY residential solar record uses to
-// describe the system. Christopher Ivy's only open correction (cb3cf605) is a scrape
+// describe the system. Drew Example's only open correction (cb3cf605) is a scrape
 // of the Accela PERMIT record 187-26-000305-STR whose sole item is a parcel-level
 // "Sewer Recovery" notice; it matched as NEM on the words "load-side breaker
 // INTERCONNECTION", "within 10 ft of the UTILITY METER" and "microINVERTERs" — every
@@ -7699,7 +7699,7 @@ export function stagingMissingDocuments(inventory: DocumentInventory, track?: Su
 /**
  * THE REQUIRED DOCUMENTS A STAGED DRAFT DID NOT CARRY — how Approve judges a draft that already exists
  * (gates-proper C1). Never the pre-Stage look-ahead: a draft is judged by what went up with it, not by
- * what Stage would acquire now, and not by what is on disk now. Michael Sheridan's electrical draft
+ * what Stage would acquire now, and not by what is on disk now. Jules Testperson's electrical draft
  * (191e45c8) was staged at 18:47Z, before the Marion E-01 existed; once the E-01 was fetched and filled
  * (02:19Z) the disk said "present", and Approve would have read the draft as complete.
  *
@@ -9844,7 +9844,7 @@ export function captureConfirmation(
       // COUNT TRACKS, NOT ROWS. Re-staging a track APPENDS another awaiting_human_submit
       // row rather than superseding the last one, so one filing that was staged four times
       // counts as four outstanding filings. Measured live: Ivy 720b05f3 shows 5 rows for 2
-      // real tracks (4x interconnection/nem + 1x permit/building); Daly cf1c56aa shows 9 rows
+      // real tracks (4x interconnection/nem + 1x permit/building); Fixture cf1c56aa shows 9 rows
       // for 1 track. A row-count here made "are all tracks in?" unanswerable and left the
       // correction closer permanently waiting on filings that do not exist.
       "SELECT COUNT(*) AS n FROM (SELECT status, ROW_NUMBER() OVER (PARTITION BY submission_type, COALESCE(permit_type, '') ORDER BY created_at DESC, id DESC) AS rn FROM submissions WHERE project_id = ?) WHERE rn = 1 AND status = 'awaiting_human_submit'",

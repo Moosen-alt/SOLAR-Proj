@@ -11,7 +11,7 @@
 //   ahj="City of Salem" city="Salem" -> row="Marion Co/…/Salem/Gervais" stamp.required=false
 //   ahj="Salem"         city=""      -> row="Salem"                     stamp.required=TRUE  (source=process_profile)
 // That is a sealed structural letter demanded on a PRESCRIPTIVE Salem job, or not, decided
-// by a spelling. Both live Salem projects are the same homeowner (Daniel Daly) entered two
+// by a spelling. Both live Salem projects are the same homeowner (Blake Fixture) entered two
 // different ways — cf1c56aa as "City of Salem" and 8f4ca8dd as "City Of Salem".
 //
 // OPERATOR RULING 2026-09-19: Salem does NOT require a PE stamp on the prescriptive path;

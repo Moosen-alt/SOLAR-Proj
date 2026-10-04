@@ -3819,7 +3819,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // results grid inside an outer layout table, so tr:has-text("CITY APPLICATIONS") matches
     // BOTH the city's row and the wrapper row containing the whole grid — and the wrapper
     // comes first in document order, so .first() took the wrapper and its first "Select"
-    // link, which belongs to the COUNTY row. Live on Marineau's structural filing: the pass
+    // link, which belongs to the COUNTY row. Live on Placeholder's structural filing: the pass
     // reported picking the city row while the page went on showing Coos County's services
     // (Commercial - Electrical, Residential - Electrical), the city's structural type was
     // never on offer, and the run spent twelve pages being refused.
@@ -6111,7 +6111,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // one on offer is the other kind of jurisdiction — a bare Select would file there.)
           // THE ADDRESS VERSION IS ALREADY CHOSEN — the ranked chooser picked this project's
           // row (owner + city + discipline). A bare row "Select" clicked after that RE-SELECTS
-          // a jurisdiction and wipes the services panel: live on Marineau's structural learn,
+          // a jurisdiction and wipes the services panel: live on Placeholder's structural learn,
           // the city's 7 services (Residential - Structural among them) were on screen when
           // the planner clicked a "Select" and replaced them with the county's electrical-only
           // list. The grid belongs to the chooser; the planner never re-picks it.
@@ -7417,7 +7417,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     }
     // A VISIBLE LOADING MASK MEANS THE PAGE IS STILL BECOMING WHAT IT WILL BE. ACA's ASP.NET
     // postbacks paint a "Please wait..." overlay while the partial render is in flight, and it
-    // outlives networkidle. Live on Marineau's structural learn: the city row's services —
+    // outlives networkidle. Live on Placeholder's structural learn: the city row's services —
     // "City of Coos Bay (7 services found)", Residential - Structural among them — were mid-
     // render behind that overlay when extraction ran, so the record-type pass saw none of
     // them and the planner was handed a page without its own answer on it. Extraction must
@@ -7698,7 +7698,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // portal-agnostic — no policy profile gate, because it is a form convention, not NEM policy.
   // A REQUIRED "Email" BOX IS ANSWERED BY THE SECTION IT SITS IN, NOT BY ITS LABEL.
   //
-  // Live on Marineau's PacifiCorp interconnection: page 3 "Customer Information" and page 5
+  // Live on Placeholder's PacifiCorp interconnection: page 3 "Customer Information" and page 5
   // "Installer Information" each render a bare, required `Email *`, and the planner left both
   // blank — the same failure shape as PowerClerk's bare "Manufacturer"/"Model", where the role
   // comes from the SECTION and four characters of label cannot carry it. Page 4 "Property
@@ -8267,11 +8267,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
     // DETERMINISTIC GUARD: WHICH PERMIT WE APPLY FOR IS NOT A PLANNER CHOICE.
     //
-    // Live on Ann Marineau's STRUCTURAL learn at Coos Bay: the planner ticked a record-type
+    // Live on Emery Placeholder's STRUCTURAL learn at Coos Bay: the planner ticked a record-type
     // box and the step went into the recipe as label "Residential - Electrical" over control
     // cbListServices_1. The city's list has no Electrical — that discipline files with the
     // county — and index 1 there is Residential - Mechanical. A Residential MECHANICAL permit
-    // was filed on a solar job at 1780 Ocean Blvd and issued, fees paid. The run's own audit
+    // was filed on a solar job at 5050 Placeholder Blvd and issued, fees paid. The run's own audit
     // caught it only afterwards, in a note: "Fee schedule is Residential Mechanical, but the
     // project is a roof-mounted solar PV system".
     //

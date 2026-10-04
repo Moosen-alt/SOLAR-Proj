@@ -1182,7 +1182,7 @@ export function evaluateDesignCodeFindings(
   // LOAD-SIDE rule. A SUPPLY-SIDE (line-side) tap is 705.11 and is not governed by it at all:
   // the question there is whether the tap conductors and their OCPD are sized to the service.
   //
-  // The old gate matched the bare word "breaker", so Edgar Miner's parsed interconnection
+  // The old gate matched the bare word "breaker", so Harper Fakename's parsed interconnection
   // "Supply Breaker" — corroborated by his own plan set, "POINT OF INTERCONNECT, SUPPLY
   // BREAKER FEED THRU LUG" — was measured against the load-side rule and produced a BLOCKER
   // that the code it cites does not support. 200A main + 50A PV on a 200A bus exceeds 240A
@@ -1260,7 +1260,7 @@ export function evaluateDesignCodeFindings(
     // label, it skipped the only NEC 705.12 calculation in the product.
     //
     // The trigger is not exotic. "Net Metering" is the FIRST example value in the parser's own
-    // prompt (llm.ts), and Daniel Daly's live row carries exactly that string — measured, his
+    // prompt (llm.ts), and Blake Fixture's live row carries exactly that string — measured, his
     // filing has never had its busbar screen run. Six of eight realistic wordings were silent.
     //
     // An unknown method is NOT routed into the load-side branch: demanding a 705.12 busbar calc

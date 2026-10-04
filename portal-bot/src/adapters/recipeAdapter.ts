@@ -2205,8 +2205,8 @@ export class RecipeAdapter extends BasePortalAdapter {
         return applyFormatHint(this.fieldValues[mapped] ?? "", String(step.note ?? ""));
       }
       // RE-GROUP TO THE FORMAT THE PORTAL PRINTED. PacifiCorp labels its account field
-      // "please use this format: xxxxxxxx xxx x"; the bill prints "58103504-001 2" and we
-      // hold "58103504-0012", so the submission came back rejected with that field named.
+      // "please use this format: xxxxxxxx xxx x"; the bill prints "90000000-004 0" and we
+      // hold "90000000-0040", so the submission came back rejected with that field named.
       // The digits were right; only the grouping was wrong, and the portal had already said
       // what it wanted. applyFormatHint only ever re-groups the SAME characters.
       // A KEY NOBODY DEFINED RESOLVES TO NOTHING, AND NOTHING IS WHAT GETS FILLED.
@@ -2961,7 +2961,7 @@ export class RecipeAdapter extends BasePortalAdapter {
   // A recipe learned on a job WITH a battery records the whole storage section — the
   // declaration checkbox, and specs frozen as literals. Live: the PacifiCorp NEM recipe
   // carries 16 battery steps including `Energy Storage Capacity of Battery (kWh) = "13.5"`,
-  // and replaying it onto Christopher Ivy — 8 modules, 4 microinverters, hasBattery "No" —
+  // and replaying it onto Drew Example — 8 modules, 4 microinverters, hasBattery "No" —
   // declared a battery he does not own and gave the utility a Powerwall's capacity as fact.
   // Every later job under that profile would have inherited it.
   //
@@ -3204,10 +3204,10 @@ export class RecipeAdapter extends BasePortalAdapter {
   // data-al-row IS A LEARN-TIME TAG, NOT A SELECTOR. chooseProjectAddressRow stamps it while
   // ranking the address grid, so the recipe records [data-al-row="ar1"] — an attribute that
   // exists only in the run that wrote it. On replay nothing stamps it and the click waits 30s
-  // for an element that will never appear (measured on Marineau's structural). The recorded
+  // for an element that will never appear (measured on Placeholder's structural). The recorded
   // step is still meaningful, though: it says "pick this project's version of the address".
   // So re-run the ranking against the live grid, which is the right answer anyway — the row
-  // order and the parcels differ per address, and ar1 on Ivy means nothing at Marineau's.
+  // order and the parcels differ per address, and ar1 on Ivy means nothing at Placeholder's.
   private async pickAddressVersionLive(step: RecipeStep): Promise<boolean> {
     if (!this.page || typeof this.page.evaluate !== "function") return false;
     // SCAN THE FRAME THE STEP LIVES IN. Accela serves its work-location panel inside a child
@@ -3321,9 +3321,9 @@ export class RecipeAdapter extends BasePortalAdapter {
   //
   // The record-type checkbox is recorded with the label AND a positional fallback
   // (cbListServices_1). The offered list differs per jurisdiction: Coos Bay's CITY record has
-  // no "Residential - Electrical" at all, so on Marineau the label matched nothing, the
+  // no "Residential - Electrical" at all, so on Placeholder the label matched nothing, the
   // positional fallback fired, and index 1 on that list is "Residential - Mechanical". A
-  // MECHANICAL permit was filed and issued on a solar job at 1780 Ocean Blvd, fees paid.
+  // MECHANICAL permit was filed and issued on a solar job at 5050 Placeholder Blvd, fees paid.
   //
   // The label is the only thing that identifies a permit type. If the recorded type is not on
   // offer, that is a real answer — this jurisdiction files this discipline somewhere else —
@@ -7305,7 +7305,7 @@ export class RecipeAdapter extends BasePortalAdapter {
   // A SELECTOR LEVEL WHOSE EVERY MATCH IS INVISIBLE HAS NOT FOUND THE CONTROL.
   //
   // The recorded primary is routinely a per-render id, and on a fresh project that id can
-  // belong to a HIDDEN twin whose label reads the same. Live on Marineau's NEM replay: the
+  // belong to a HIDDEN twin whose label reads the same. Live on Placeholder's NEM replay: the
   // inverter Model step's primary #pcInputBase55 uniquely matched the invisible combobox
   // whose option list is the ENERGY SOURCE values, resolveLocator settled for it because
   // count() > 0, the label fallback that resolves to the real visible Model box was never
