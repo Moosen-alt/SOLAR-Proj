@@ -1,6 +1,7 @@
 import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, ReviewerFindingEvidence, StructureTypeFact } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
 import { FIRE_PATHWAY_PATTERNS, packageShowsSld } from "./projectEvidence";
+import { evaluateElectricalSizingFindings } from "./electricalSizing";
 import { pathWordingScope, resolvePermitPath, usStateCode } from "./permitPath";
 import { classifyRoofCovering, statedRoofDeadLoads, tileAttachmentFromText, tileAttachmentMethodOf, TILE_MIN_ROOF_DEAD_LOAD_PSF } from "./roofCovering";
 import {
@@ -1196,6 +1197,9 @@ export function evaluateDesignCodeFindings(
   // measured against 120%.
   const saysSupplySide = /supply.?side|supply breaker|line.?side|705\.11|ahead of (?:the )?main|feed.?thr(?:u|ough) lug|service.entrance tap/i.test(intercoText);
   const saysLoadSide = /load.?side|back.?fed|back.?feed|705\.12/i.test(intercoText);
+  // The chain's third branch: reached only when nothing says supply side. Named once so the
+  // electrical sizing recompute below asks the same question rather than a copy that can drift.
+  const loadSideBranch = !saysSupplySide && /load.side|breaker|back.?feed|bus/i.test(intercoText);
 
   if (saysSupplySide && !saysLoadSide) {
     out.push(finding({
@@ -1225,7 +1229,7 @@ export function evaluateDesignCodeFindings(
       // governs, so both are cited — matching the message's own "705.11 versus 705.12".
       codeReferences: [supplySideRef, loadSideRef],
     }));
-  } else if (/load.side|breaker|back.?feed|bus/i.test(intercoText)) {
+  } else if (loadSideBranch) {
     if (bus != null && mainBreaker != null && pvBreaker != null && mainBreaker + pvBreaker > bus * 1.2) {
       out.push(finding({
         id: "city.elec.load-side-over-120",
@@ -1301,6 +1305,17 @@ export function evaluateDesignCodeFindings(
       codeReferences: [supplySideRef, electricalRef],
     }));
   }
+
+  // RECOMPUTE THE SIZING (#144): the busbar screen with the inverter's real output current, the
+  // output circuit's OCPD and conductor, the cold-weather string voltage, and voltage drop. The
+  // busbar part runs only on a LOAD-side classification (the chain above), and not when the
+  // breaker-rating screen already reported the same busbar as a blocker.
+  out.push(...evaluateElectricalSizingFindings(project, {
+    documentTexts,
+    loadSide: loadSideBranch,
+    skipBusbar: out.some((f) => f.id === "city.elec.load-side-over-120"),
+    cite,
+  }));
 
   const moduleFields = [str(project, "moduleMake"), str(project, "moduleModel"), str(project, "moduleWattage"), str(project, "moduleQty")].filter(Boolean);
   const inverterFields = [str(project, "invModel"), str(project, "pvMicroModel"), str(project, "inverterModel"), str(project, "invQty"), str(project, "pvMicroQty")].filter(Boolean);

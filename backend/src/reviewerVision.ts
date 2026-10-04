@@ -114,6 +114,16 @@ export const MEASURED_FINDING_IDS: ReadonlySet<string> = new Set([
   // The listings check reads the whole package text (cut sheets included). An image showing a
   // UL mark on one sheet is not the module AND racking listing it asks for.
   "city.plan.ul-listings-missing",
+  // Electrical sizing recomputed from the SLD's own values (electricalSizing.ts, #144): busbar,
+  // OCPD vs 1.25 x output current and vs the corrected conductor ampacity, 690.7 string voltage,
+  // voltage drop. A picture of the SLD shows the calc is there, never that it passes — and the
+  // inputs-missing callout is answered by values in the recompute, not by a sheet being visible.
+  "city.elec.sizing-busbar-120",
+  "city.elec.sizing-ocpd-under-125",
+  "city.elec.sizing-ocpd-over-ampacity",
+  "city.elec.sizing-string-voc",
+  "city.elec.sizing-voltage-drop",
+  "city.elec.sizing-inputs-missing",
   // A stated (or vision-measured) pathway width / ridge setback against the required one is
   // arithmetic (issue #142). A sheet showing a pathway does not make it wide enough.
   FIRE_PATHWAY_BELOW_ID,

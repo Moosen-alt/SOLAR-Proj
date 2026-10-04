@@ -3936,6 +3936,9 @@ const LLM_SNAPSHOT_KEYS = new Set([
   // Iowa SFM PV worksheet (iowaPvWorksheet.ts): 690.7 max voltage needs the module datasheet's
   // Voc / Isc / temperature coefficient and the site's design low; 690.8 needs the string length.
   'moduleVoc','moduleIsc','moduleVocTempCoeff','pvMicroMaxDcInputV','modulesPerString','siteLowTempC','dwellingUnits','constructionCategory',
+  // Electrical sizing recompute (electricalSizing.ts): 690.7 vs the string inverter's input limit,
+  // 310.15 conductor ampacity and voltage drop on the inverter output circuit.
+  'invMaxDcInputV','siteHighTempC','acConductor','acConductorCount','acRunLengthFt',
   'batteryMake','batteryModel','batteryQty',
   'roofMaterial','roofMaterialSubtype','tileAttachmentMethod','mounting',
   'busRating','mainBreaker','pvBreaker','acDiscReq',
