@@ -65,6 +65,7 @@ import { listCodeProfiles, listRowlessDesignLookups, getCodeProfile, saveResearc
 import { applyCorrectionApproval } from "./correctionAgent";
 import { runStandaloneReview, getReviewSubmission, listReviewSubmissions, reviewSubjectToProject } from "./reviewSubject";
 import { renderReviewerReportHtml } from "./reviewerEngine";
+import { readCorrectionNotice, renderCorrectionNoticeText } from "./correctionNotice";
 import { REVIEW_PACKS } from "./reviewPacks";
 import { getAutopilotState, maybeResumeAutopilot, runAutopilotApproval } from "./autopilot";
 import { computeNextStep } from "./nextStep";
@@ -80,7 +81,7 @@ import {
 } from "./crm";
 import { clientPortalPayload, clientPortalUrl, ensureClientPortalToken, publicProjectStatusPayload, trackLabel } from "./clientPortal";
 import { scanStaleStatusClassifications } from "./permitMonitor";
-import { getKpiReport } from "./kpi";
+import { getKpiReport, requestNoticedAt } from "./kpi";
 import {
   ahjFormRegistry,
   buildFilledFormsForProject,
@@ -1489,6 +1490,19 @@ app.get("/api/projects/:id/reviewer-report", asyncHandler(async (req, res) => {
   res.json(getReviewerReport(db, String(req.params.id)));
 }));
 
+// The reviewer gate's findings as the AHJ's correction letter (#148), before submittal. A read:
+// writes nothing and calls no model. ?format=text is the letter as plain text; the JSON carries both.
+app.get("/api/projects/:id/correction-notice", asyncHandler(async (req, res) => {
+  const notice = readCorrectionNotice(db, String(req.params.id));
+  const text = renderCorrectionNoticeText(notice);
+  if (req.query.format === "text") {
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.send(text);
+    return;
+  }
+  res.json({ notice, text });
+}));
+
 // Renders the source plan-set page behind a reviewer-gate evidence topic so the
 // report's "screenshot crop slot" shows the actual sheet. 404 (handled as a soft
 // fallback by the report's <img onerror>) when no plan-set PDF is stored.
@@ -1528,11 +1542,12 @@ app.patch("/api/corrections/:id/sla", (req, res) => {
 app.post("/api/projects/:id/corrections", asyncHandler(async (req, res) => {
   const correctionText = String(req.body?.correctionText || "").trim();
   if (!correctionText) throw new HttpError(400, "correctionText is required.");
+  const noticedAt = requestNoticedAt(req.body?.noticedAt); // an unparseable date is a 400, not null (#58, #137)
   // The filing it answers and the notice it belongs to (#47); a submissionId off this project is a 404.
   addManualCorrection(db, String(req.params.id), correctionText, req.body?.source || "manual", {
     submissionId: typeof req.body?.submissionId === "string" ? req.body.submissionId : null,
     noticeId: typeof req.body?.noticeId === "string" ? req.body.noticeId : null,
-    noticedAt: typeof req.body?.noticedAt === "string" ? req.body.noticedAt : null,
+    noticedAt,
   });
   // Generate the advisory AI draft reply (human reviews before sending). The
   // correction-handling agent (data-update proposals + richer bucket) runs
@@ -2037,7 +2052,11 @@ app.post("/api/projects/:id/research-ahj", asyncHandler(async (req, res) => {
 // item, never a status. (A re-check offered by the stale panel below is exactly the trusted shape:
 // targetId + source public_url / manual.)
 app.post("/api/projects/:id/permit-checks", asyncHandler(async (req, res) => {
-  res.status(201).json(await recordPermitStatusCheck(db, String(req.params.id), req.body || {}));
+  // The notice date through the same gate as the corrections route (#137): an unparseable one is a
+  // 400 — passed through, a garbage value would silently become no date at all — and an accepted
+  // one reaches the stamp in one shape (ISO), whatever form the caller wrote it in.
+  const body = req.body || {};
+  res.status(201).json(await recordPermitStatusCheck(db, String(req.params.id), { ...body, noticedAt: requestNoticedAt(body.noticedAt) }));
 }));
 
 // WHICH OF THIS PROJECT'S STORED READINGS TODAY'S RULES WOULD CHANGE — and how to get a real one.

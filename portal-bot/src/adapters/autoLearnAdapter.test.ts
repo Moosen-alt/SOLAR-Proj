@@ -1504,11 +1504,11 @@ async function testAcaWorkLocationAndRecordTypeDeterministic() {
 
 // RECORD TYPE IS NOT A PLANNER CHOICE.
 //
-// Live on Ann Marineau's STRUCTURAL learn at Coos Bay: the planner ticked a record-type box
+// Live on Emery Placeholder's STRUCTURAL learn at Coos Bay: the planner ticked a record-type box
 // and it went into the recipe as "Residential - Electrical" over control cbListServices_1.
 // The city's list has no Electrical — that discipline files with the COUNTY — and index 1
 // there is Residential - Mechanical. A Residential MECHANICAL permit was filed on a solar job
-// at 1780 Ocean Blvd and issued, fees paid. The run's own audit caught it only after the
+// at 5050 Placeholder Blvd and issued, fees paid. The run's own audit caught it only after the
 // fact: "Fee schedule is Residential Mechanical, but the project is a roof-mounted solar PV
 // system". The discipline is on the request, so a planner pick that contradicts it is refused
 // outright: nothing checked, nothing recorded, nothing for a recipe to inherit.
@@ -1523,7 +1523,7 @@ async function testRecordTypeNotAPlannerChoice() {
   };
   const adapter = new AutoLearnAdapter("Oregon ePermitting", planner);
   // A STRUCTURAL filing. The city offers no electrical type at all.
-  const project = { permitType: "structural", projectAddress: "1780 Ocean Blvd SE, Coos Bay, OR, 97420", city: "Coos Bay" } as ProjectRecord;
+  const project = { permitType: "structural", projectAddress: "5050 Placeholder Blvd SE, Coos Bay, OR, 97420", city: "Coos Bay" } as ProjectRecord;
   withFakePage(
     adapter,
     makeFakePage(
@@ -1543,7 +1543,7 @@ async function testRecordTypeNotAPlannerChoice() {
             title: "Review",
             body: "Step 3: Review. Please review all information.",
             rawFields: [{ label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" }],
-            reviewPairs: [{ label: "Address", value: "1780 Ocean Blvd" }],
+            reviewPairs: [{ label: "Address", value: "5050 Placeholder Blvd" }],
           },
         ],
       },
@@ -1570,7 +1570,7 @@ async function testRecordTypeMatchingDisciplineIsAllowed() {
     return { fills: [], atReview: true };
   };
   const adapter = new AutoLearnAdapter("Oregon ePermitting", planner);
-  const project = { permitType: "structural", projectAddress: "1780 Ocean Blvd SE, Coos Bay, OR, 97420", city: "Coos Bay" } as ProjectRecord;
+  const project = { permitType: "structural", projectAddress: "5050 Placeholder Blvd SE, Coos Bay, OR, 97420", city: "Coos Bay" } as ProjectRecord;
   withFakePage(
     adapter,
     makeFakePage(
@@ -1590,7 +1590,7 @@ async function testRecordTypeMatchingDisciplineIsAllowed() {
             title: "Review",
             body: "Step 3: Review. Please review all information.",
             rawFields: [{ label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" }],
-            reviewPairs: [{ label: "Address", value: "1780 Ocean Blvd" }],
+            reviewPairs: [{ label: "Address", value: "5050 Placeholder Blvd" }],
           },
         ],
       },

@@ -4,7 +4,7 @@
 // the issuing agency's curated seed, a cited agency PDF, the AHJ's own curated seed / the Oregon
 // BCD 5952, and paid research when the 24h cooldown is open), fills them, and only THEN counts the
 // required documents for its 409. The pre-Stage readers (the submit gate, the Stage button, the
-// banner) counted before that acquisition: Michael Sheridan's Marion County B-01S / E-01 — curated,
+// banner) counted before that acquisition: Jules Testperson's Marion County B-01S / E-01 — curated,
 // hash-locked seeds Stage downloads in 1.5 s — held staging as "Attach or split out the missing
 // document(s)", and the operator bypassed the gate to stage.
 //

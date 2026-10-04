@@ -104,7 +104,7 @@ async function fetchAccelaStatus(portalUrl: string, applicationNumbers: string[]
   // A SEARCH PAGE'S OWN CHROME IS NOT A STATUS. CapHome/GlobalSearch responses are
   // full ACA pages ("Create a New Portfolio... General Search...") that sail past a
   // bare length check and reach the classifier as if they were status text (live
-  // Simmons check, 2026-09-21). A page that never mentions the number we asked
+  // Mockdata check, 2026-09-21). A page that never mentions the number we asked
   // about answered a different question — reject it and fall through to the honest
   // "no status text" default.
   const mentionsAnyNumber = (text: string): boolean => {

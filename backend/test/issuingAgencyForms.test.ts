@@ -1,4 +1,4 @@
-// ISSUING-AGENCY FORMS (operator finding 2026-09-27, Michael Sheridan — City of Jefferson / Marion
+// ISSUING-AGENCY FORMS (operator finding 2026-09-27, Jules Testperson — City of Jefferson / Marion
 // County / Pacific Power: "still only just pulling that one doc"). The per-job lookup said Marion
 // County ISSUES both permits and cited the county's B-01S; the packet held only the BCD 5952.
 //
@@ -95,7 +95,7 @@ const jefferson = {
   homeownerName: "Fixture Owner", projectAddress: "1 Fixture Rd SE, Jefferson, OR, 97352", systemSizeDcKw: 15.91, systemSizeAcKw: 12.9,
   parserSnapshot: { permitPathOverride: "prescriptive", homeownerPhone: "4580000000", mounting: "Roof Mount", structureDescription: "Single-family dwelling",
     snow: 20, wind: "C", windSpeed: "110", deadLoad: 1.28, lightFrame: "yes", roofRafterSpacing: "24", framingType: "truss", moduleQuantity: "37", moduleModel: "Q.TRON BLK M-G2.C1+/AC",
-    // Michael Sheridan's stated facts (the .backup copy), which answer every 5952 row but height.
+    // Jules Testperson's stated facts (the .backup copy), which answer every 5952 row but height.
     gravityWindDesign: "yes", manufacturerInstallation: "yes", roofMaterial: "Composition Shingle", roofLayers: "1",
     attachmentToFraming: "yes", attachmentSpacingIn: 48, attachmentsOutsideEdgeZone: "yes" },
 } as never;
@@ -248,7 +248,7 @@ try {
     && JSON.stringify(buildApplicationDocumentPackage(plain).profile.requiredDocuments) === JSON.stringify(findApplicationProfile(plain).requiredDocuments));
   check("C4 and today's required rows (no agency named)", !reqDocs.documentInventory(db, plain).presence.some((p) => /County/.test(p.label)));
 
-  // ── D. THE BCD 5952 ON AN AGENCY-ISSUED JOB (Michael Sheridan's "janky" checklist) ─────────
+  // ── D. THE BCD 5952 ON AN AGENCY-ISSUED JOB (Jules Testperson's "janky" checklist) ─────────
   // A checklist row stored BEFORE this change (unverified): the AHJ on "Building department:",
   // the parser's bare phone digits, no value size (the blank's auto-size set 14-pt values).
   const stored5952 = forms.loadStoredTemplates(db, "City of Jefferson", "OR").find((t) => t.formType === "solar_checklist")!;

@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // THE PORTAL'S OWN FEE, READ AUTOMATICALLY OFF THE FILED RECORD (operator 2026-09-27).
 //
-// Ann Marineau's permit line read "$360.00 (provisional)" — our research — while her City of
+// Emery Placeholder's permit line read "$360.00 (provisional)" — our research — while her City of
 // Coos Bay record 187-26-000309-STR sat on the portal with a Fees section the monitor never
 // opened. The monitor already visits that record for its STATUS; this module has it read the
 // FEES too, and keeps what it read with its provenance:

@@ -1,6 +1,6 @@
 // A STRUCTURAL PERMIT LABELLED "ELECTRICAL" IS A WRONG FACT ON A CLIENT'S PAGE.
 //
-// Spotted by the operator on the live portal. 1780 Ocean Blvd has two permit tracks and the page
+// Spotted by the operator on the live portal. 5050 Placeholder Blvd has two permit tracks and the page
 // showed them like this:
 //
 //   Building/electrical permit   Application 187-26-000309-STR   In review
@@ -73,7 +73,7 @@ check("MUST NOT GUESS: an unknown discipline says 'Permit', not 'Building/electr
 // ── the live shape, and the backfill ─────────────────────────────────────────────────────
 const client = createClient(db, { companyName: "Discipline Solar", ccbLicenseNumber: "616161" });
 const { project } = createProject(db, {
-  clientId: client.id, owner: "Two Track Owner", street: "1780 Ocean Blvd SE", city: "Coos Bay",
+  clientId: client.id, owner: "Two Track Owner", street: "5050 Placeholder Blvd SE", city: "Coos Bay",
   state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power", dcKw: "8", acKw: "6.4",
 });
 const other = createClient(db, { companyName: "Elsewhere Solar", ccbLicenseNumber: "626262" });

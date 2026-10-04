@@ -807,7 +807,7 @@ export interface ProjectRecord {
    *  purpose, because hiding work from the people doing it is how a cleanup
    *  becomes a second problem. What they must not do is answer IDENTICALLY, and
    *  that is what they did for as long as this column could not reach a record:
-   *  the superseded Daly pass (cf1c56aa) priced out at $274.43 and raised blocking
+   *  the superseded Fixture pass (cf1c56aa) priced out at $274.43 and raised blocking
    *  demands with nothing anywhere saying its live twin is the real job. */
   archivedAt?: string;
   /** Why it was archived — the sentence that explains, six months later, why a job
@@ -2028,6 +2028,51 @@ export interface ReviewerReport {
   finalSubmitGate: FinalSubmitGate;
 }
 
+/** The pre-submittal correction notice (#148): the reviewer report re-read as the AHJ's own
+ *  correction letter. A VIEW — built from ReviewerReport findings, never a second judgement:
+ *  each item's weight is the gate's severity (blocker → hold, warning → comment,
+ *  callout → info), so rule 3's "verified + document-stated ⇒ blocker" shape carries over as is. */
+export type CorrectionNoticeGroup = "Structural" | "Electrical" | "Fire" | "Plan completeness" | "Local requirements";
+export type CorrectionNoticeWeight = "hold" | "comment" | "info";
+
+export interface CorrectionNoticeItem {
+  /** 1-based, numbered through the whole letter in print order. */
+  number: number;
+  group: CorrectionNoticeGroup;
+  weight: CorrectionNoticeWeight;
+  findingId: string;
+  title: string;
+  /** The comment as the plan checker would word it (the finding's cityFeedback). */
+  comment: string;
+  /** "2021 IRC R324.6 — Roof access and pathways", from the finding's code references (adopted edition). */
+  citations: string[];
+  /** What the submitted documents say, from the finding's evidence; "" when the gate found nothing stated. */
+  planStates: string;
+  required: string;
+  /** The sheet / page the evidence was read from; "" when unknown. */
+  sheet: string;
+}
+
+export interface CorrectionNoticePriorCorrection {
+  title: string;
+  /** How many of this org's past corrections matched this project. */
+  count: number;
+  requiredAction: string;
+}
+
+export interface CorrectionNotice {
+  projectId: string;
+  generatedAt: string;
+  ahj: string;
+  state: string;
+  /** Which layer the code basis came from, and the line that says so. */
+  provenance: "verified" | "seeded" | "defaults";
+  provenanceLine: string;
+  counts: { hold: number; comment: number; info: number };
+  items: CorrectionNoticeItem[];
+  priorCorrections: CorrectionNoticePriorCorrection[];
+}
+
 export interface KnowledgeSource {
   label: string;
   url: string;
@@ -2721,7 +2766,7 @@ export interface ProjectDetail {
  *
  * The third value exists because the boolean did not have room for it. `needsRecheck:false` used
  * to mean BOTH "we checked and it is current" AND "our check blew up", and the pages rendered the
- * reassuring reading of that: Christopher Ivy's building permit — stalled at Coos Bay's counter on
+ * reassuring reading of that: Drew Example's building permit — stalled at Coos Bay's counter on
  * "Intake Requirements Needed" since Sep 3 — went on telling the homeowner "In review by the
  * jurisdiction" with no caveat at all, in a payload BYTE-IDENTICAL to a confirmed-fresh one. A
  * failed check that looks exactly like a passed check is worse than no check, because it is the

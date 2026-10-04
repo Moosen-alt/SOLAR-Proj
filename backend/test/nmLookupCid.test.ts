@@ -107,6 +107,12 @@ await check("a cited-'state' village's issuer (CID) gets its own lookup queued, 
     // Retire them synchronously, before enqueueJob's deferred kick could start one.
     db.run("UPDATE job_queue SET status = 'failed' WHERE job_type = 'permit_process_lookup' AND status IN ('pending','running')");
     assert.ok(queued.some((a) => CID.test(a)), JSON.stringify(queued));
+    // Each track's issuer is the agency whose lookup was queued (#127: the title promised this).
+    const p = project("Village of Example Pueblo", "Example Pueblo");
+    for (const t of ["building", "electrical"]) {
+      const name = pp.trackIssuer(p, t).name;
+      assert.ok(queued.includes(name), `${t}: ${name} not among ${JSON.stringify(queued)}`);
+    }
   } finally { delete process.env.ANTHROPIC_API_KEY; }
 });
 await check("the lookup's zoning step is recorded as a cited prerequisite", async () => {
@@ -199,6 +205,22 @@ await check("the lookup's cited county office answers when the seed has none", a
   const step = permitStructureAnswer(project("Village of Example Vado", "Example Vado", { incorporatedStatus: UNINC })).prerequisites[0].step;
   assert.match(step, /Example County Planning and Zoning/, step);
   assert.equal(pp.unincorporatedZoningFor(project("Village of Example Vado", "Example Vado"))?.county, "Example County");
+});
+// #127: a village whose county row names no office or citation (Tyrone, Grant County) — the
+// lookup's cited VILLAGE zoning page is the village's evidence, not the county's: re-routed to the
+// county, the step must not keep it (inside the limits it still does).
+await check("unincorporated, county row uncited: the county-routed step does not carry the village's cited zoning page", async () => {
+  await run("Tyrone", answer({
+    buildingProgram: { value: "state", sourceUrl: CID_PAGE, quote: "CID is the building official for Tyrone, which has no building program of its own" },
+    prerequisites: [{ value: "Zoning compliance review at the Tyrone Planning office", sourceUrl: TOWN_PAGE, quote: "A zoning compliance review by the Planning office is required before a CID permit" }],
+  }));
+  const inside = permitStructureAnswer(project("Tyrone", "Tyrone", { incorporatedStatus: "Inside the incorporated limits of Tyrone" })).prerequisites[0];
+  assert.equal(inside.sourceUrl, TOWN_PAGE, "precondition: inside the limits the village's cited page is the step's evidence");
+  const out = permitStructureAnswer(project("Tyrone", "Tyrone", { incorporatedStatus: UNINC }));
+  const step = out.prerequisites[0];
+  assert.match(step.step, /Grant County/, step.step);
+  assert.notEqual(step.sourceUrl, TOWN_PAGE, JSON.stringify(step));
+  assert.ok(!out.prerequisites.some((x) => x.sourceUrl === TOWN_PAGE), JSON.stringify(out.prerequisites));
 });
 await check("Albuquerque control: no state issuer, no zoning step, whatever the answer", () => {
   const a = permitStructureAnswer(project("Albuquerque", "Albuquerque", { incorporatedStatus: UNINC }));

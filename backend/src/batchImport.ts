@@ -142,7 +142,7 @@ function quickExtractCorrections(text: string): Partial<CorrectionFields> {
 // ---------------------------------------------------------------------------
 //
 // In real-world export dumps the useful signal lives in the *names*, not the PDF
-// text: files are named "Abby Johnson - Happy Valley, OR.pdf" and grouped in a
+// text: files are named "Casey Testcase - Happy Valley, OR.pdf" and grouped in a
 // per-customer folder. We parse "Name - City, ST" to recover the jurisdiction
 // (city -> AHJ) and state for each customer folder. We do NOT create projects or
 // store any homeowner PII — only the jurisdiction/utility/requirement signals are

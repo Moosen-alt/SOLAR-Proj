@@ -2122,6 +2122,7 @@ async function selectProject(projectId) {
   state.applicationDocs = null;
   state.filledForms = null;
   state.reviewerReport = null;
+  state.correctionNotice = null;
   state.historicalReport = null;
   state.opsPlan = null;
   state.opsBrief = null;
@@ -2159,7 +2160,7 @@ async function selectProject(projectId) {
     loadCommunicationDrafts(), loadLiveReadiness(), loadProjectTimeline(),
     loadProcessMap(), loadInstallerPacket(), loadProjectDocuments(),
     loadSubmittalTracks(), loadPaymentQuotes(), loadFeeSheet(), loadPortalQuestions(),
-    loadStageResults(),
+    loadStageResults(), loadCorrectionNotice(),
     loadStaleReadings(),
     loadNextStep(projectId),
   ]);
@@ -2340,6 +2341,34 @@ async function loadStageResults() {
   if (!state.applicationDocs && res.applicationDocs) state.applicationDocs = res.applicationDocs;
   if (!state.reviewerReport && res.reviewerReport) state.reviewerReport = res.reviewerReport;
   if (!state.historicalReport && res.historicalReport) state.historicalReport = res.historicalReport;
+}
+
+// The gate's findings as the AHJ's correction letter (#148) — a read; frontend/correction-notice.js
+// draws it. `text` is the same letter as plain text, for "Copy as text".
+async function loadCorrectionNotice() {
+  const id = state.selectedProjectId;
+  const res = await api(`/api/projects/${id}/correction-notice`);
+  if (state.selectedProjectId !== id) return;
+  state.correctionNotice = res;
+}
+
+function renderCorrectionNoticePanel() {
+  const notice = state.correctionNotice?.notice || null;
+  const counts = notice?.counts;
+  $("correctionNoticeCounts").textContent = counts ? `${counts.hold} hold / ${counts.comment} comment` : "not built";
+  $("copyCorrectionNoticeBtn").disabled = !state.correctionNotice?.text;
+  $("correctionNotice").innerHTML = window.CorrectionNotice
+    ? window.CorrectionNotice.renderCorrectionNotice(notice)
+    : `<p class="muted">Correction notice view failed to load.</p>`;
+}
+
+async function copyCorrectionNotice() {
+  const text = state.correctionNotice?.text || "";
+  if (!text) {
+    showMessage("No correction notice built yet.", "warning");
+    return;
+  }
+  await writeClipboardText(text, "Correction notice copied.");
 }
 
 // --- Fee sheet: what this job costs, and where each number came from ---------
@@ -4184,6 +4213,7 @@ function renderDetail() {
   safeRender("liveReadiness", renderLiveTestReadiness);
   safeRender("historical", renderHistoricalFailures);
   safeRender("reviewerGate", renderReviewerGate);
+  safeRender("correctionNotice", renderCorrectionNoticePanel);
   safeRender("qc", renderQc);
   safeRender("review", renderReview);
   safeRender("appDocs", renderApplicationDocs);
@@ -8113,6 +8143,8 @@ async function runReviewerGate(refresh = false) {
   showMessage(`Reviewer gate complete: ${blockers} blocker(s), ${warnings} warning(s).`);
   renderSubmitGate();
   renderReviewerGate();
+  try { await loadCorrectionNotice(); } catch { /* the notice is a view; the gate result stands */ }
+  safeRender("correctionNotice", renderCorrectionNoticePanel);
   renderLiveTestReadiness();
   if (window.lucide) window.lucide.createIcons();
 }
@@ -8326,6 +8358,7 @@ async function deleteSelectedProject() {
   state.applicationDocs = null;
   state.filledForms = null;
   state.reviewerReport = null;
+  state.correctionNotice = null;
   state.historicalReport = null;
   state.opsPlan = null;
   state.opsBrief = null;
@@ -8402,6 +8435,7 @@ $("shareStatusLinkBtn")?.addEventListener("click", async () => {
   }
 });
 $("copySubmitGateBtn").addEventListener("click", copySubmitGate);
+$("copyCorrectionNoticeBtn").addEventListener("click", copyCorrectionNotice);
 $("copyOpsReportBtn").addEventListener("click", copyOpsReport);
 $("copyLiveReadinessBtn").addEventListener("click", copyLiveReadiness);
 $("copyProcessMapBtn").addEventListener("click", copyProcessMap);
