@@ -32,6 +32,7 @@ const R = await import("../src/repository");
 const kb = await import("../src/knowledgeBase");
 const { touchProjectMetrics, getKpiReport, requestNoticedAt, utilityDeficiencyCureDays } = await import("../src/kpi");
 const { extractStatusDate } = await import("../src/permitMonitor");
+const U = await import("../src/users");
 let db = await openDatabase();
 
 let failures = 0;
@@ -190,11 +191,19 @@ const unstamped = (cid: string, noticedAt: string | null, createdAt: string) => 
 );
 unstamped("corr-old-notice", iso(10), iso(0)); // noticed 10 days ago, typed today: overdue
 unstamped("corr-new-notice", iso(1), iso(10)); // typed 10 days ago, noticed yesterday: not yet
+unstamped("corr-old-notice-2", iso(9), iso(0)); // a second late-typed old notice: the two clocks now count 2 vs 1
 const overdueIds = R.listOverdueCorrections(db).map((c) => c.id);
 check("listOverdueCorrections starts an unstamped row's clock at noticed_at (overdue)", overdueIds.includes("corr-old-notice"), overdueIds.join(","));
 check("…and not at created_at (a fresh notice typed late is not overdue)", !overdueIds.includes("corr-new-notice"), overdueIds.join(","));
 const mapped = (cid: string) => R.mapCorrection(db.get<Row>("SELECT * FROM corrections WHERE id = ?", [cid])!).isOverdue;
 check("mapCorrection agrees on both rows", mapped("corr-old-notice") === true && mapped("corr-new-notice") === false);
+// The team-workload badge (users.getUserWorkload) is the third reader: same clock, same rows.
+const owner = U.createUser(db, { name: "Synthetic Operator", email: "synthetic.operator@example.test" });
+U.assignProjectToUser(db, o, owner.id);
+const workload = U.getUserWorkload(db).find((w) => w.user.id === owner.id);
+const overdueOnO = R.listOverdueCorrections(db).filter((c) => c.projectId === o).length;
+check("getUserWorkload's overdue count agrees with listOverdueCorrections for the same rows",
+  workload?.overdueCorrections === overdueOnO && overdueOnO === 2, `${workload?.overdueCorrections} vs ${overdueOnO}`);
 const report = getKpiReport(db);
 check("the KPI report's overdue count is the same clock as listOverdueCorrections",
   report.overdueCorrections === overdueIds.length, `${report.overdueCorrections} vs ${overdueIds.length}`);
