@@ -71,6 +71,24 @@ Return ONLY JSON (no prose):
    "portalUrl": {"value": "<url>"|null, "sourceUrl": "", "quote": "", "notFound": ""},
    "recordType": {"value": "<type>"|null, "sourceUrl": "", "quote": "", "notFound": ""}}]}`;
 
+/** PROCESS_LOOKUP_SYSTEM, plus — where a state rule names a state issuer (New Mexico CID, issue #44)
+ *  — whether THIS jurisdiction runs its own building program or is served by that agency, and where
+ *  an unincorporated address's zoning goes. This is how a state-served AHJ the seeded list does not
+ *  name gets found (permitProcess.stateTradeIssuerFor reads the cited answer). */
+export function processLookupSystemFor(state: string): string {
+  const st = stateRulesFor(state).stateTradeIssuer;
+  if (!st) return PROCESS_LOOKUP_SYSTEM;
+  return `${PROCESS_LOOKUP_SYSTEM}
+
+THIS STATE HAS A STATE BUILDING AGENCY, ${st.value}: it is the building official wherever a jurisdiction has not taken on its own building program. Also answer, cited the same way (sourceUrl + quote), in the same JSON object:
+5. buildingProgram — "own" when this jurisdiction runs its OWN building program (its own building official issues building permits); "state" when ${st.value} issues its building and electrical permits and the jurisdiction only reviews zoning / the site plan. The quote must say which (the state agency's jurisdiction list, or the jurisdiction's own permit page).
+6. When "state": record the jurisdiction's zoning compliance / site-development review as a prerequisites entry naming its office. The state agency's information pages are sources, never a portalUrl.
+7. unincorporatedZoning — for a city, town or village: the COUNTY office that reviews zoning for an address in the unincorporated county outside its limits, as a page names it; null when none does.
+Add to the JSON:
+ "buildingProgram": {"value": "own"|"state"|null, "sourceUrl": "", "quote": "", "notFound": ""},
+ "unincorporatedZoning": {"value": "<county office>"|null, "sourceUrl": "", "quote": "", "notFound": ""}`;
+}
+
 export const DOCS_FEES_LOOKUP_SYSTEM = `You look up, for ONE issuing agency, what a RESIDENTIAL ROOFTOP SOLAR PV permit application must include and what each permit costs.
 
 For each permit named in the request (structural and/or electrical, or one combo permit):
@@ -153,7 +171,8 @@ const supportsName = (value: string, quote: string) => {
 // sign-off — does not state that the value ISSUES the permit. A name AFTER the marker (the county it
 // then goes to) is the destination and still counts.
 const PREREQ_MARKER = /\bfirst\b[^.;]{0,40}?\b(?:before|then|prior to)\b|\bbefore (?:going|submitting|applying|being (?:sent|submitted)|it goes|they go) to\b|\bprior to (?:submitting|applying|going)\b/i;
-const ZONING_SIGNOFF = /\b(?:zoning|land[- ]use|planning)\s+(?:approval|sign[- ]?off|clearance|review|verification)\b/i;
+// "zoning compliance review" is New Mexico's wording for the local step before a CID permit (#44).
+const ZONING_SIGNOFF = /\b(?:zoning|land[- ]use|planning)\s+(?:compliance\s+)?(?:approval|sign[- ]?off|clearance|review|verification)\b/i;
 export function namesOnlyAsPrerequisite(value: string, quote: string): boolean {
   const need = words(value).filter((x) => !GENERIC_ORG_WORDS.has(x));
   const w = need.length ? need : words(value);
@@ -443,6 +462,7 @@ const asDiscipline = (v: unknown): PermitProcessDiscipline | null => {
 
 export function parseProcessPart(text: string, seenUrls: string[], stopReason: string | null, platformPages: string[] = [], entity: PortalEntity | null = null): {
   issuingAgency: CitedFact<string>; permitStructure: CitedFact<"separate" | "combo">; permits: PermitProcessPermitAnswer[]; prerequisites: CitedFact<string>[]; problem: string;
+  buildingProgram?: CitedFact<"own" | "state">; unincorporatedZoning?: CitedFact<string>;
 } {
   const truncated = stopReason === "max_tokens" || stopReason === "pause_turn";
   const json = parseJsonLoose(text);
@@ -469,7 +489,16 @@ export function parseProcessPart(text: string, seenUrls: string[], stopReason: s
       fee: { value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: "not looked up yet" },
     });
   }
-  return { issuingAgency, permitStructure, permits, prerequisites: parsePrerequisites(json.prerequisites, seenUrls), problem: truncated ? "answer was cut off (kept only fully parsed, cited values)" : "" };
+  // The state-issuer questions (processLookupSystemFor): kept only cited, and only when the quote says
+  // which — a state-served answer names the state agency, an own-program answer the local building office.
+  const buildingProgram = acceptCited<"own" | "state">(json.buildingProgram as RawFact, {
+    seenUrls, what: "building program", coerce: (v) => (/^state\b/i.test(str(v)) ? "state" : /^own\b/i.test(str(v)) ? "own" : null),
+    supports: (v, q) => (v === "state" ? /\bcid\b|construction industries|\bstate\b/i.test(q) : /\bown\b[^.;]{0,30}\bbuilding\b|\bbuilding (?:official|department|division|program)\b/i.test(q)),
+  });
+  const unincorporatedZoning = acceptCited<string>(json.unincorporatedZoning as RawFact, {
+    seenUrls, what: "unincorporated zoning office", coerce: (v) => (/\bcounty\b/i.test(str(v)) ? str(v) : null), supports: supportsName,
+  });
+  return { issuingAgency, permitStructure, permits, buildingProgram, unincorporatedZoning, prerequisites: parsePrerequisites(json.prerequisites, seenUrls), problem: truncated ? "answer was cut off (kept only fully parsed, cited values)" : "" };
 }
 
 /** The portal step's answer: per discipline, the cited portal and record type (the same doors as
@@ -898,7 +927,7 @@ export async function runPermitProcessLookup(
   const where = `Jurisdiction: ${input.ahj}\nState: ${input.state}`;
   // Part one decides WHICH agency the later parts ask about, so an abort here is retried ONCE (an
   // abort is transient; an answer that ran and found nothing is not retried).
-  const askProcess = () => ask({ label: "permitProcessLookup.process", system: PROCESS_LOOKUP_SYSTEM, user: where, maxTokens: 8000, maxSearches: 8, readPages: false, timeoutMs: partBudgetMs() });
+  const askProcess = () => ask({ label: "permitProcessLookup.process", system: processLookupSystemFor(input.state), user: where, maxTokens: 8000, maxSearches: 8, readPages: false, timeoutMs: partBudgetMs() });
   let p1 = await askProcess();
   logCall("process", p1, { readPages: false });
   if (p1.error && ABORTED.test(p1.error)) {
@@ -973,7 +1002,7 @@ export async function runPermitProcessLookup(
   const platformPages = ev?.platformPages ?? [];
   const part1 = first
     ? (ev ? parseProcessPart(p1.text, [...seenOf(p1), ...ev.seen], p1.stopReason, platformPages, entity) : first)
-    : { issuingAgency: ungrounded(p1.error ? `lookup failed: ${p1.error.slice(0, 120)}` : "no web search returned results — nothing kept from memory"), permitStructure: ungrounded("no grounded search"), permits: [] as PermitProcessPermitAnswer[], prerequisites: [] as CitedFact<string>[], problem: p1.error ?? "ungrounded" };
+    : { issuingAgency: ungrounded(p1.error ? `lookup failed: ${p1.error.slice(0, 120)}` : "no web search returned results — nothing kept from memory"), permitStructure: ungrounded("no grounded search"), permits: [] as PermitProcessPermitAnswer[], prerequisites: [] as CitedFact<string>[], problem: p1.error ?? "ungrounded", buildingProgram: undefined, unincorporatedZoning: undefined };
 
   // ASK THE AGENCY THAT ISSUES EACH PERMIT. Lift an agency every permit agrees on; then group.
   const issuer = issuerOf(part1.permits, part1.issuingAgency);
@@ -1313,6 +1342,11 @@ export async function runPermitProcessLookup(
     state: input.state, ahj: input.ahj, lookedUpAt: new Date().toISOString(),
     issuingAgency: merged.issuingAgency, permitStructure: merged.permitStructure, permits: merged.permits, notes,
     prerequisites: uniquePrereqs.length ? uniquePrereqs : existing?.prerequisites,
+    // A re-run that could not establish an answer keeps the earlier cited one (as mergeWithEarlier does).
+    ...(stateRulesFor(input.state).stateTradeIssuer ? {
+      buildingProgram: part1.buildingProgram?.value ? part1.buildingProgram : existing?.buildingProgram ?? part1.buildingProgram,
+      unincorporatedZoning: part1.unincorporatedZoning?.value ? part1.unincorporatedZoning : existing?.unincorporatedZoning ?? part1.unincorporatedZoning,
+    } : {}),
     ...(ev?.codes ? { codes: ev.codes } : existing?.codes ? { codes: existing.codes } : {}),
     ...(reader ? { pagesRead: reader.log.map((l) => ({ url: l.url, ok: l.ok, reason: l.reason.slice(0, 160) })) } : {}),
   });
