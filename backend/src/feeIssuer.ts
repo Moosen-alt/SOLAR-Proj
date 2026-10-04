@@ -9,8 +9,10 @@
 // and the card read a valuation guess under the village's name. The village's own charge is a
 // separate, small zoning / site-development review fee.
 //
-// SCOPE, ON PURPOSE: only the cited STATE rule re-keys the fee here. An operator's or a lookup's
-// split issuer (permitProcess.trackIssuer layers a/b) keeps the fee path it has today — those
+// SCOPE, ON PURPOSE: only a state-issuer answer re-keys the fee here — the cited STATE rule, or (since
+// #103) a per-job lookup's cited `buildingProgram: "state"` answer, which trackIssuer reports with
+// source "state_rule" so its fees key on CID too. An operator's split issuer, or a lookup's per-track
+// issuing agency (permitProcess.trackIssuer layers a/b), keeps the fee path it has today — those
 // projects reach the issuing agency's fee through sourced delegation rows (collectedByProfileKey,
 // Marion County for the City of Jefferson), and moving them is a separate decision.
 import { projectForTrack, stateTradeIssuerFor } from "./permitProcess";
