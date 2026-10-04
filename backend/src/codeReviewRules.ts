@@ -2,6 +2,7 @@ import type { AhjProcessProfile, CodeReference, NecEditionRequirements, ProjectR
 import type { EffectiveCodeContext } from "./codeProfiles";
 import { FIRE_PATHWAY_PATTERNS, packageShowsSld } from "./projectEvidence";
 import { evaluateElectricalSizingFindings } from "./electricalSizing";
+import { evaluateAmendmentFindings } from "./amendmentChecks";
 import { pathWordingScope, resolvePermitPath, usStateCode } from "./permitPath";
 import { classifyRoofCovering, statedRoofDeadLoads, tileAttachmentFromText, tileAttachmentMethodOf, TILE_MIN_ROOF_DEAD_LOAD_PSF } from "./roofCovering";
 import {
@@ -1046,6 +1047,9 @@ export function evaluateDesignCodeFindings(
   // operator override decides first, as it does for the path itself (permitPath.resolvePermitPath).
   const designPath = pathWordingScope(str(project, "permitPathOverride")) || pathWordingScope(str(project, "permitPath"));
   if (ctx) out.push(...evaluateDesignCriteriaFindings(project, ctx, { roofMounted, extraTexts: documentTexts, permitPath: designPath }));
+  // The jurisdiction's LOCAL AMENDMENTS, compared with the plan where research classified them, and
+  // listed for a person where it could not (amendmentChecks.ts, #145).
+  if (ctx) out.push(...evaluateAmendmentFindings(project, ctx, { extraTexts: documentTexts }));
 
   // What the package itself states (parser commentary excluded — see packageTextSources).
   const packageTexts = packageTextSources(project, documentTexts);

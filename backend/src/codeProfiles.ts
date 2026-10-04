@@ -45,6 +45,7 @@ import { knowledgeProfileKey, knowledgeNameMatchScore, isLearningExcluded } from
 import { extractPermitPrecedents, listAhjCorrectionPatterns } from "./permitPrecedents";
 import { addAuditLog } from "./audit";
 import { extractStatedDesignCriteria, normCodeToken } from "./designCriteria";
+import { amendmentSourceKey } from "./amendmentChecks";
 import {
   CODE_FAMILIES, codeFamilyOf, editionLabel, editionsInEffect, familyAdoptionModel, isAdoptionModel,
   isCodeFamily, isFamilyAdoptionModel, locallyAdoptedFamilies, modelBaseOf, upcomingDue,
@@ -570,6 +571,10 @@ export function getCodeProfile(db: AppDb, input: { state?: string; ahj?: string 
   // verified: a seeded city row's rules must not read as verified under a verified state row.
   const setbackLayer = exact.fireSetbacks.length ? exact : base.fireSetbacks.length ? base : null;
   if (setbackLayer) fieldSources.fireSetbacks = sourceOf(setbackLayer);
+  // Amendments are concatenated state-then-AHJ: each records its own row, so the amendment check
+  // (amendmentChecks.ts, #145) blocks only on an amendment a person verified.
+  // Keyed by the amendment itself (amendmentSourceKey), not its position: the AHJ's row wins a tie.
+  for (const layer of [base, exact]) for (const a of layer.amendments) fieldSources[amendmentSourceKey(a)] = sourceOf(layer);
   return {
     ...exact,
     fieldSources,
@@ -860,7 +865,15 @@ export function mergeResearchIntoRow(existing: JurisdictionCodeProfile, incoming
   return {
     ...existing,
     adoptedCodes: [...keptImports, ...keptResearch, ...added],
-    amendments: [...existing.amendments, ...(incoming.amendments ?? []).filter((a) => !haveAmend.has(amendKey(a)))],
+    // An amendment already on the row keeps its check; one recorded before classification existed
+    // takes the research's (a blank filled, like designCriteria below). Verified rows never get here.
+    amendments: [
+      ...existing.amendments.map((a) => {
+        const found = a.check ? undefined : (incoming.amendments ?? []).find((n) => n.check && amendKey(n) === amendKey(a));
+        return found ? { ...a, check: found.check, ...(a.sourceUrl ? {} : found.sourceUrl ? { sourceUrl: found.sourceUrl } : {}) } : a;
+      }),
+      ...(incoming.amendments ?? []).filter((a) => !haveAmend.has(amendKey(a))),
+    ],
     designCriteria: fillBlanks(existing.designCriteria ?? {}, incoming.designCriteria ?? {}),
     prescriptive: fillBlanks(existing.prescriptive ?? {}, incoming.prescriptive ?? {}),
     fireSetbacks: existing.fireSetbacks.length ? existing.fireSetbacks : incoming.fireSetbacks ?? [],

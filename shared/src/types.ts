@@ -1913,11 +1913,37 @@ export interface ElectricalSizingInput {
   documentStated: boolean;
 }
 
+/** What a classified amendment compares (#145). The numeric fields reuse the design-criteria,
+ *  roof-plan and attachment extractors; "planText" is the package's own sheet wording. */
+export type AmendmentCheckField =
+  | "groundSnowPsf"
+  | "windSpeedMph"
+  | "pvDeadLoadPsf"
+  | "pathwayWidthIn"
+  | "ridgeSetbackIn"
+  | "attachmentSpacingIn"
+  | "planText";
+
+/** A local amendment made machine-checkable at research time (#145):
+ *  min_value / max_value — the plan's stated `field` must be ≥ / ≤ `value` (in `unit`);
+ *  required_text — the sheets must carry the wording `value` (a placard, a note);
+ *  prohibited — the sheets must NOT carry `value` (a prohibited roof-mounted disconnect).
+ *  Only a CITED amendment from a web-grounded research carries one; the rest stay informational. */
+export interface JurisdictionAmendmentCheck {
+  kind: "min_value" | "max_value" | "required_text" | "prohibited";
+  field: AmendmentCheckField;
+  value: number | string;
+  /** "psf" | "mph" | "in" for the numeric fields; absent for planText. */
+  unit?: string;
+}
+
 export interface JurisdictionCodeAmendment {
   code: string;
   section?: string;
   summary: string;
   sourceUrl?: string;
+  /** Absent: informational — listed for a person to check by hand, never compared. */
+  check?: JurisdictionAmendmentCheck;
 }
 
 export interface JurisdictionCodeProfile {

@@ -41,6 +41,8 @@ const MEASURED = [
   "city.elec.sizing-voltage-drop",
   "city.elec.sizing-inputs-missing",
   "city.fire.pathway-below-required",
+  // A classified local amendment compared with the plan (amendmentChecks.ts, #145).
+  "city.code.amendment-not-met",
 ];
 
 const PLAN = "GROUND SNOW LOAD = 20 PSF WIND SPEED = 110 MPH EXPOSURE CATEGORY = C GOVERNING CODES: 2023 ORSC 2023 OESC (NEC 2020) NEW PV ATTACHMENTS AT 4'-0\" O.C.";
@@ -69,6 +71,8 @@ const produced: ReviewerFinding[] = [
   ...buildReviewerReport({ ...project, parserSnapshot: { ...project.parserSnapshot, pvMicroMake: "Enphase", pvMicroModel: "IQ8M", pvMicroQty: "20", pvMicroOutputW: "1.21", pvBreaker: "25", acConductor: "#14 AWG THWN-2 CU", acRunLengthFt: "150" } } as unknown as ProjectRecord).findings,
   // An 18" pathway against the jurisdiction's 36" (issue #142).
   ...buildReviewerReport(project, { codeContext: buildCodeContext("OR", "City of Testport", profile({ fireSetbacks: [{ id: "fire-1", description: "Minimum 36-inch fire access pathways." }] })), documentTexts: [{ label: "Plan set", text: '18" FIRE ACCESS PATHWAY' }] }).findings,
+  // The plan's Pg 20 against a local amendment's 30 psf minimum (#145).
+  ...buildReviewerReport(project, { codeContext: buildCodeContext("OR", "City of Testport", profile({ amendments: [{ code: "IRC", summary: "Ground snow minimum 30 psf", sourceUrl: "https://codes.testport.example.gov/a", check: { kind: "min_value", field: "groundSnowPsf", value: 30, unit: "psf" } }] })), documentTexts: docs }).findings,
 ];
 
 for (const id of MEASURED) {
