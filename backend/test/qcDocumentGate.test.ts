@@ -243,6 +243,9 @@ check("A TITLED SLD WITHOUT 705.12 TEXT: docs.sld passes presence, docs.sld.cont
   assert.equal(content[0].severity, "info", "advisory only — the city.* rules decide blockers");
   assert.match(content[0].message, /705\.12/);
   assert.match(content[0].message, /interconnection/i);
+  // Said by what was searched: the uploaded text was read here, so the row must not say only the
+  // summary was — and the summary-only wording must never claim the sheets were read.
+  assert.match(content[0].message, /plan set's searchable text/i, content[0].message);
   assert.doesNotMatch(content[0].message, /rapid shutdown \(|690\.12 rapid shutdown/i,
     `rapid shutdown IS shown and must not be named missing: ${content[0].message}`);
   assert.equal(rules.filter((r) => r.qc_status === "fail").length, 0, "a content gap must never fail QC");
@@ -267,6 +270,14 @@ check("THE TITLE CANNOT VOUCH FOR ITSELF: sheet-title maps are not read as conte
   } } as never, presence, []);
   assert.equal(gaps.length, 1);
   assert.match(gaps[0].missing.join(" "), /705\.12/);
+});
+
+check("NO PDF TEXT LAYER: the advisory says only the parser's summary was searched, not the sheets", () => {
+  const rules = titledSld("", "Parser review flags: rapid shutdown per 690.12 noted.");
+  const content = rules.filter((r) => r.rule_id === "docs.sld.content");
+  assert.equal(content.length, 1, `expected one docs.sld.content advisory: ${JSON.stringify(rules.map((r) => r.rule_id))}`);
+  assert.match(content[0].message, /parser's summary of the plan set only/i, content[0].message);
+  assert.doesNotMatch(content[0].message, /searchable text plus/i, content[0].message);
 });
 
 check("EDITION-AWARE: the adopted NEC decides how the missing element is named", () => {

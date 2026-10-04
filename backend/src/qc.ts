@@ -444,13 +444,18 @@ export function runQcForProject(db: AppDb, projectId: string, options: QcRunOpti
       // title; sheetContentGaps reads the plan-set text for the elements the row's `why` names
       // (705.12 interconnection, R324.6 pathways, UL 1741 …) and says which it could not find.
       // ADVISORY ONLY — an info-severity warning row; the city.* reviewer rules decide blockers.
+      // WHAT WAS SEARCHED, SAID PLAINLY: the uploaded plan set's text layer when there is one, else
+      // only the parser's summary — never "the sheets were read" when they were not.
+      const searched = (qcProject as { parserSnapshot: ParserPayload }).parserSnapshot.planSetExtractedText
+        ? "the plan set's searchable text plus the parser's summary (pages that are scanned images have no text)"
+        : "the parser's summary of the plan set only (no searchable text from the uploaded PDF was available)";
       for (const g of sheetContentGaps(qcProject, inv.presence, codeCtx.adoptedCodes)) {
         warningCount += 1;
         db.run(
           `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
            VALUES (?, ?, 'warning', ?, 'Required document content', ?, 'info', ?)`,
           [id(), projectId, `docs.${g.docType}.content`,
-            `${g.label} present (${g.via || "on file"}); no ${g.missing.join(" or ")} text found in the extracted package text (uploaded plan-set text where a text layer exists, plus the parser's summary fields — image-only pages are not read). Advisory — confirm the sheet shows it; the code-review findings decide what blocks.`,
+            `${g.label} present (${g.via || "on file"}); no ${g.missing.join(" or ")} text found in ${searched}. Advisory — confirm the sheet shows it; the code-review findings decide what blocks.`,
             createdAt],
         );
       }

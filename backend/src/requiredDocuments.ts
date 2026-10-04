@@ -245,7 +245,9 @@ const PLAN_SHEET_HINTS: Record<string, RegExp> = PLAN_SHEET_HINT_TABLE;
 // present sheet, the elements its `why` names, and the patterns that count as showing them.
 //
 // THE PATTERNS ARE THE city.* REVIEWER RULES' OWN (codeReviewRules / projectEvidence), imported,
-// never restated: an advisory here and a reviewer finding there must agree about the same words.
+// never restated. NOT a mirror of those rules, though: SLD / labels also accept PV_HAZARD_CONTROL
+// and POINT_OF_INTERCONNECTION (no city.* rule has them), and the title maps are not read here, so
+// an advisory here and a reviewer finding there can disagree about the same project.
 // ADVISORY ONLY. The city.* rules remain the authority on blockers; this layer only says, on the
 // QC screen, which promised element the readable text does not show.
 //
