@@ -629,6 +629,16 @@
             </section>
             <section class="panel">
               <div class="section-head">
+                <h3>Correction notice (pre-submittal)</h3>
+                <div class="actions">
+                  <span id="correctionNoticeCounts" class="badge">not built</span>
+                  <button id="copyCorrectionNoticeBtn" class="secondary" disabled><i data-lucide="clipboard-copy"></i><span>Copy as text</span></button>
+                </div>
+              </div>
+              <div id="correctionNotice" class="stack"></div>
+            </section>
+            <section class="panel">
+              <div class="section-head">
                 <h3>Historical Failure Check</h3>
                 <span id="historicalCounts" class="badge">not run</span>
               </div>
@@ -1474,6 +1484,7 @@
 
   <!-- Classic script before the module: the KPI panel's filing rows (window.KpiFilings, #74). -->
   <script src="/kpi-filings.js"></script>
+  <script src="/correction-notice.js"></script>
   <script src="/parser-review.js?v=10"></script>
   <script type="module" src="/dashboard.js"></script>
 </body>
