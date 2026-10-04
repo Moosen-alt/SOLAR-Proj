@@ -5,7 +5,7 @@ import { id } from "./ids";
 import { parseJson } from "./json";
 import { fieldAliases, parserField } from "./normalize";
 import { logger } from "./logger";
-import { documentInventory, owedMissingDocuments, requiredListCheck } from "./requiredDocuments";
+import { documentInventory, owedMissingDocuments, requiredListCheck, sheetContentGaps } from "./requiredDocuments";
 import { startedAtLabel } from "./formAcquisitionPlan";
 import { nowIso } from "./time";
 import { addAuditLog } from "./audit";
@@ -425,6 +425,22 @@ export function runQcForProject(db: AppDb, projectId: string, options: QcRunOpti
       for (const d of inv.missingAdvisory) {
         warningCount += 1;
         say("warning", "warning", d.docType, d.label, String(d.why || ""));
+      }
+      // PRESENT IS NOT THE SAME AS SHOWING WHAT IT PROMISES. A sheet counts as present from its
+      // title; sheetContentGaps reads the plan-set text for the elements the row's `why` names
+      // (705.12 interconnection, R324.6 pathways, UL 1741 …) and says which it could not find.
+      // ADVISORY ONLY — an info-severity warning row; the city.* reviewer rules decide blockers.
+      let adoptedCodes: ReturnType<typeof resolveEffectiveCodeContext>["adoptedCodes"] = [];
+      try { adoptedCodes = resolveEffectiveCodeContext(db, ctx.state, ctx.ahj).adoptedCodes; } catch { /* no profile: edition-neutral wording */ }
+      for (const g of sheetContentGaps(qcProject, inv.presence, adoptedCodes)) {
+        warningCount += 1;
+        db.run(
+          `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
+           VALUES (?, ?, 'warning', ?, 'Required document content', ?, 'info', ?)`,
+          [id(), projectId, `docs.${g.docType}.content`,
+            `${g.label} present (${g.via || "on file"}); no ${g.missing.join(" or ")} text found in the plan-set text that could be read (pages that are images are not read). Advisory — confirm the sheet shows it; the code-review findings decide what blocks.`,
+            createdAt],
+        );
       }
       // THE JOB'S OWN REQUIRED LIST, NOT THE UNIVERSAL SET (MF6, e2e-gap close 2026-09-26). This
       // row passed with "Every document this filing needs for Waltham City is attached" while the

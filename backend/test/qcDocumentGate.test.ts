@@ -204,6 +204,96 @@ check("MUST EXCLUDE: unknown mounting still asks — silence is not proof nothin
   assert.equal(locatesAsked({}), true);
 });
 
+// ---------------------------------------------------------------------------
+// A TITLE IS NOT CONTENT (#114). Presence of a plan-set sheet is decided from its title
+// (PLAN_SHEET_HINTS), so a sheet titled "Single Line Diagram" with no interconnection detail
+// passed docs.sld while the row's `why` promised "rapid shutdown + NEC 705.12". The content
+// layer reads the plan-set text for those elements and says, as an ADVISORY, what it could not
+// find — never a failure, and never a second opinion that contradicts the city.* rules.
+// ---------------------------------------------------------------------------
+const { sheetContentGaps, adoptedNecEdition } = await import("../src/requiredDocuments");
+
+const titledSld = (body: string) => {
+  const p = createProject(db, {
+    clientId: client.id, owner: `SLD Owner ${++n}`, street: `${n} SLD St`, city: "Coos Bay",
+    state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power", dcKw: "8", acKw: "6.4",
+    packetReadinessText: "READY - SLD",
+    splitPagesText: "02 SLD Single Line Diagram: page 3",
+    planSetExtractedText: body,
+  } as never).project;
+  attach(p.id, "plan_set");
+  return docRules(p.id);
+};
+
+check("A TITLED SLD WITHOUT 705.12 TEXT: docs.sld passes presence, docs.sld.content is an advisory naming the interconnection", () => {
+  const rules = titledSld("SINGLE LINE DIAGRAM. (20) 400W MODULES. MICROINVERTERS WITH RAPID SHUTDOWN PER 690.12.");
+  const sld = rules.filter((r) => r.rule_id === "docs.sld");
+  assert.equal(sld.filter((r) => r.qc_status !== "pass").length, 0,
+    `the titled SLD must count as present: ${JSON.stringify(sld)}`);
+  const content = rules.filter((r) => r.rule_id === "docs.sld.content");
+  assert.equal(content.length, 1, `expected one docs.sld.content advisory: ${JSON.stringify(rules.map((r) => r.rule_id))}`);
+  assert.equal(content[0].qc_status, "warning");
+  assert.equal(content[0].severity, "info", "advisory only — the city.* rules decide blockers");
+  assert.match(content[0].message, /705\.12/);
+  assert.match(content[0].message, /interconnection/i);
+  assert.doesNotMatch(content[0].message, /rapid shutdown \(|690\.12 rapid shutdown/i,
+    `rapid shutdown IS shown and must not be named missing: ${content[0].message}`);
+  assert.equal(rules.filter((r) => r.qc_status === "fail").length, 0, "a content gap must never fail QC");
+});
+
+check("...WITH the interconnection text: no docs.sld.content advisory", () => {
+  const rules = titledSld("SINGLE LINE DIAGRAM. RAPID SHUTDOWN PER 690.12. LOAD SIDE CONNECTION PER NEC 705.12: 200A BUSBAR, 200A MAIN, 40A PV BREAKER, 120% RULE.");
+  assert.equal(rules.filter((r) => r.rule_id === "docs.sld.content").length, 0,
+    `a fully shown SLD raised a content advisory: ${JSON.stringify(rules.filter((r) => r.rule_id === "docs.sld.content"))}`);
+});
+
+check("THE TITLE CANNOT VOUCH FOR ITSELF: sheet-title maps are not read as content, and no readable body says nothing", () => {
+  // Only the title maps carry text: nothing was read, which is not evidence of absence.
+  const rules = titledSld("");
+  assert.equal(rules.filter((r) => /\.content$/.test(r.rule_id)).length, 0,
+    `no body text was read, yet a content advisory fired: ${JSON.stringify(rules.filter((r) => /\.content$/.test(r.rule_id)))}`);
+  // A title mentioning 705.12 does not count as the SLD showing it.
+  const presence = [{ docType: "sld", label: "SLD", why: "", lane: "permit" as const, blocking: true, present: true, via: "in plan set" }];
+  const gaps = sheetContentGaps({ parserSnapshot: {
+    splitPagesText: "02 SLD 705.12 interconnection: page 3", packetReadinessText: "READY - SLD 705.12",
+    planSetExtractedText: "RAPID SHUTDOWN COMPLIANT",
+  } } as never, presence, []);
+  assert.equal(gaps.length, 1);
+  assert.match(gaps[0].missing.join(" "), /705\.12/);
+});
+
+check("EDITION-AWARE: the adopted NEC decides how the missing element is named", () => {
+  const presence = [{ docType: "sld", label: "SLD", why: "", lane: "permit" as const, blocking: true, present: true, via: "in plan set" }];
+  const project = { parserSnapshot: { planSetExtractedText: "MODULES AND INVERTER ONLY" } } as never;
+  const nec2017 = [{ code: "NEC", edition: "2017", title: "National Electrical Code" }];
+  const oesc2023 = [{ code: "OESC", edition: "2023", basedOn: "2023 NEC", title: "Oregon Electrical Specialty Code" }];
+  assert.equal(adoptedNecEdition(nec2017 as never), 2017);
+  assert.equal(adoptedNecEdition(oesc2023 as never), 2023);
+  assert.equal(adoptedNecEdition([]), null);
+  const old = sheetContentGaps(project, presence, nec2017 as never)[0].missing.join(" | ");
+  const cur = sheetContentGaps(project, presence, oesc2023 as never)[0].missing.join(" | ");
+  assert.match(old, /NEC 2017 705\.12 interconnection point \(supply side 705\.12\(A\)/, old);
+  assert.match(cur, /NEC 2023 705\.11 supply-side \/ 705\.12 load-side/, cur);
+  assert.match(cur, /PV hazard control/, cur);
+  // 2017+ accepts the PV hazard control wording as rapid-shutdown evidence.
+  const phc = sheetContentGaps({ parserSnapshot: { planSetExtractedText: "PV HAZARD CONTROL SYSTEM. POINT OF INTERCONNECTION AT MSP." } } as never, presence, oesc2023 as never);
+  assert.equal(phc.length, 0, JSON.stringify(phc));
+});
+
+check("SITE PLAN, SPEC SHEETS, LABELS: each present sheet is checked for what its row promises", () => {
+  const presence = ["site_plan", "module_spec", "inverter_spec", "labels", "structural"].map((docType) =>
+    ({ docType, label: docType, why: "", lane: "permit" as const, blocking: true, present: true, via: "attached file" }));
+  const bare = sheetContentGaps({ parserSnapshot: { planSetExtractedText: "ROOF PLAN. ARRAY LAYOUT." } } as never, presence, []);
+  assert.deepEqual(bare.map((g) => g.docType).sort(), ["inverter_spec", "labels", "module_spec", "site_plan"],
+    "structural has no content row in this issue; the other four do");
+  const shown = sheetContentGaps({ parserSnapshot: { planSetExtractedText:
+    "36 IN FIRE ACCESS PATHWAY PER R324.6. MODULE LISTED UL 61730. INVERTER LISTED UL 1741-SB. POWER SOURCE DIRECTORY PER 705.10. RAPID SHUTDOWN LABEL." } } as never, presence, []);
+  assert.equal(shown.length, 0, JSON.stringify(shown));
+  // A sheet that is NOT present is the presence row's business, not this one's.
+  assert.equal(sheetContentGaps({ parserSnapshot: { planSetExtractedText: "x" } } as never,
+    presence.map((p) => ({ ...p, present: false })), []).length, 0);
+});
+
 db.close();
 fs.rmSync(tmpDir, { recursive: true, force: true });
 console.log(failures === 0

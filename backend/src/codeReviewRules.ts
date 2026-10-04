@@ -163,7 +163,7 @@ function num(project: ProjectRecord, keys: string[]): number | null {
   return null;
 }
 
-function designText(project: ProjectRecord): string {
+export function designText(project: ProjectRecord): string {
   const keys = [
     // Text extracted from the uploaded plan-set-family PDFs (overlaid on the snapshot
     // by getProjectDetail) — so rules check the ACTUAL sheets, not only parser output.
@@ -502,6 +502,28 @@ export const MODULE_LISTING_PATTERNS: RegExp[] = [
   /\bUL\s*-?\s*1703\b/i,
 ];
 export const RACKING_LISTING_PATTERNS: RegExp[] = [/\bUL\s*-?\s*2703\b/i];
+export const INVERTER_LISTING_PATTERNS: RegExp[] = [/\bUL\s*1741\b/i];
+
+// THE TEXT EACH ELECTRICAL RULE READS AS "SHOWN". Exported so requiredDocuments' sheet-content
+// layer (SHEET_CONTENT_ELEMENTS) reads the same words these rules do — a second copy of any of
+// them is how the advisory and the reviewer finding end up disagreeing about the same plan set.
+/** city.elec.rapid-shutdown-missing: a rapid shutdown callout or equipment evidence. */
+export const RAPID_SHUTDOWN_PATTERNS: RegExp[] = [/rapid shutdown/i, /\bRSD\b/i, /690\.12/i];
+/** The NEC 705.10 power-source directory, by itself. */
+export const POWER_SOURCE_DIRECTORY_PATTERNS: RegExp[] = [/directory/i, /705\.10/i];
+/** city.elec.labels-missing: a PV label / placard schedule. */
+export const LABEL_SCHEDULE_PATTERNS: RegExp[] = [/label/i, /placard/i, ...POWER_SOURCE_DIRECTORY_PATTERNS, /690\.12/i];
+/** city.elec.load-side-calc-missing: the 705.12 busbar screen. */
+export const LOAD_SIDE_CALC_PATTERNS: RegExp[] = [/705\.12/i, /120%|120 percent/i, /busbar/i, /bus bar/i];
+/** city.elec.supply-side-detail-missing: what a tap detail actually contains. */
+export const SUPPLY_SIDE_DETAIL_PATTERNS: RegExp[] = [
+  /705\.11/i,
+  /tap\s*(?:point|detail|conductor)/i,
+  /service\s*(?:entrance\s*)?conductor/i,
+  /fused\s*disconnect/i,
+  /line.?side\s*(?:tap|connection)\s*detail/i,
+  /supply.?side\s*(?:tap|connection)\s*detail/i,
+];
 
 const engineeredDesign: CodeReference = {
   code: "IRC / ORSC",
@@ -1104,7 +1126,7 @@ export function evaluateDesignCodeFindings(
     }
   }
 
-  if (rsdApplies && !hasAny(all, [/rapid shutdown/i, /\bRSD\b/i, /690\.12/i])) {
+  if (rsdApplies && !hasAny(all, RAPID_SHUTDOWN_PATTERNS)) {
     const mlpe = isMlpeDesign(project, all);
     out.push(finding({
       id: "city.elec.rapid-shutdown-missing",
@@ -1130,7 +1152,7 @@ export function evaluateDesignCodeFindings(
     }));
   }
 
-  if (!hasAny(all, [/label/i, /placard/i, /directory/i, /705\.10/i, /690\.12/i])) {
+  if (!hasAny(all, LABEL_SCHEDULE_PATTERNS)) {
     out.push(finding({
       id: "city.elec.labels-missing",
       severity: "warning",
@@ -1209,7 +1231,7 @@ export function evaluateDesignCodeFindings(
         evidenceNeeded: ["MSP bus rating", "Main breaker rating", "PV breaker/OCPD rating", "705.12 calculation or alternate basis"],
         codeReferences: [loadSideRef],
       }));
-    } else if (!hasAny(all, [/705\.12/i, /120%|120 percent/i, /busbar/i, /bus bar/i]) || bus == null || mainBreaker == null || pvBreaker == null) {
+    } else if (!hasAny(all, LOAD_SIDE_CALC_PATTERNS) || bus == null || mainBreaker == null || pvBreaker == null) {
       out.push(finding({
         id: "city.elec.load-side-calc-missing",
         severity: bus == null || mainBreaker == null || pvBreaker == null ? "blocker" : "warning",
@@ -1259,14 +1281,7 @@ export function evaluateDesignCodeFindings(
   // "tape", and /supply.side/i was very nearly circular: a plan set that says "supply side"
   // once counted as having SHOWN the detail. What a tap detail actually contains is the tap
   // point, the service conductor sizing, and the disconnect — so ask for those.
-  if (saysSupplySide && !hasAny(all, [
-    /705\.11/i,
-    /tap\s*(?:point|detail|conductor)/i,
-    /service\s*(?:entrance\s*)?conductor/i,
-    /fused\s*disconnect/i,
-    /line.?side\s*(?:tap|connection)\s*detail/i,
-    /supply.?side\s*(?:tap|connection)\s*detail/i,
-  ])) {
+  if (saysSupplySide && !hasAny(all, SUPPLY_SIDE_DETAIL_PATTERNS)) {
     out.push(finding({
       id: "city.elec.supply-side-detail-missing",
       severity: "blocker",
@@ -1283,7 +1298,7 @@ export function evaluateDesignCodeFindings(
   const moduleFields = [str(project, "moduleMake"), str(project, "moduleModel"), str(project, "moduleWattage"), str(project, "moduleQty")].filter(Boolean);
   const inverterFields = [str(project, "invModel"), str(project, "pvMicroModel"), str(project, "inverterModel"), str(project, "invQty"), str(project, "pvMicroQty")].filter(Boolean);
   const hasModuleSpec = hasAny(all, [/module spec/i, /module data/i, ...MODULE_LISTING_PATTERNS]);
-  const hasInverterSpec = hasAny(all, [/inverter spec/i, /microinverter spec/i, /\bUL\s*1741\b/i, /PCS/i]);
+  const hasInverterSpec = hasAny(all, [/inverter spec/i, /microinverter spec/i, ...INVERTER_LISTING_PATTERNS, /PCS/i]);
   // Core equipment data present = the schedule IS there (make/model/wattage/qty for
   // modules and at least model+qty for the inverter). When that's the case, only a
   // separate SPEC-SHEET is unverified, which is a non-blocking callout the human
