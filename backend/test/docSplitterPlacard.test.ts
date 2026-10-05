@@ -5,7 +5,8 @@
 // the labels part shipped with the LABELS sheet alone. PLACARD now counts toward labels as a
 // `words` hit. What it must not do: pull in the sheet-index cover that lists "PV-9 PLACARD", an SLD
 // or site plan whose notes mention a placard (they tie at best; the tie goes to the earlier
-// category), or an electrical NOTES sheet (E 1.2) that says "PROVIDE PLACARD" (#33 rule).
+// category), or a NOTES sheet that says "PROVIDE PLACARD" (E 1.2 by the #33 rule; PV-2 GENERAL
+// NOTES and E-2 NOTES by `wordsSkipNotes`).
 // Synthetic plan set, browser-free. Run: tsx backend/test/docSplitterPlacard.test.ts
 import "./_isolate"; // FIRST: runs in a temp cwd so filled/ docs/ page-images never land in the repo's backend/data
 import fs from "node:fs";
@@ -47,8 +48,12 @@ const SHEETS: string[][] = [
     "PER NEC 690.56(B) AND 705.10"],
   // 6: an electrical notes sheet that says to provide a placard.
   ["E 1.2 Sheet Name NOTES", "1. PROVIDE PLACARD AT POINT OF INTERCONNECTION PER NEC 705.10."],
+  // 7: a PV-numbered general notes sheet that says to provide a placard (#67 review probe).
+  ["PV-2 Sheet Name GENERAL NOTES", "1. PROVIDE PLACARD PER NEC 705.10"],
+  // 8: an E-numbered notes sheet with no decimal, so the #33 E x.x rule does not see it (#67 review probe).
+  ["E-2 Sheet Name NOTES", "PROVIDE PLACARD AT MAIN SERVICE"],
 ];
-const COVER = 1, SITE = 2, SLD = 3, LABELS = 4, PLACARD = 5, NOTES = 6;
+const COVER = 1, SITE = 2, SLD = 3, LABELS = 4, PLACARD = 5, NOTES = 6, PV_NOTES = 7, E_NOTES = 8;
 
 const pdf = await PDFDocument.create();
 const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -77,6 +82,8 @@ run("the sheet-index cover listing PV-9 PLACARD stays unclassified", result.uncl
 run("a site plan whose notes mention a placard stays the site plan", pages("site_plan").includes(SITE) && !pages("labels").includes(SITE), parts);
 run("an SLD whose notes mention a placard / directory plaque stays the SLD", pages("sld").includes(SLD) && !pages("labels").includes(SLD), parts);
 run("an E 1.2 NOTES sheet that says PROVIDE PLACARD stays unclassified", result.unclassifiedPages.includes(NOTES), JSON.stringify(result.unclassifiedPages));
+run("a PV-2 GENERAL NOTES sheet that says PROVIDE PLACARD stays unclassified", result.unclassifiedPages.includes(PV_NOTES), JSON.stringify(result.unclassifiedPages));
+run("an E-2 NOTES sheet (no decimal) that says PROVIDE PLACARD stays unclassified", result.unclassifiedPages.includes(E_NOTES), JSON.stringify(result.unclassifiedPages));
 
 // Close before deleting the scratch DB - Windows holds the open handle as a file lock (EBUSY).
 db.close();

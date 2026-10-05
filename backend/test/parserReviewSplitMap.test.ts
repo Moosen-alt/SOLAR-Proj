@@ -139,6 +139,10 @@ if (typeof PR?.scoreSplitPage === "function") {
   check("3e. a site plan whose notes mention a placard stays the site plan", cat(SITE) === '["site_plan"]', cat(SITE));
   check("3f. an SLD whose notes mention a placard stays the SLD", cat(SLD1) === '["sld"]', cat(SLD1));
   check("3g. an E 1.2 NOTES sheet that says PROVIDE PLACARD is unclassified", cat(NOTES) === "[]", cat(NOTES));
+  const PV_NOTES = "PV-2 Sheet Name GENERAL NOTES 1. PROVIDE PLACARD PER NEC 705.10";
+  const E_NOTES = "E-2 Sheet Name NOTES PROVIDE PLACARD AT MAIN SERVICE";
+  check("3h. a PV-2 GENERAL NOTES sheet that says PROVIDE PLACARD is unclassified", cat(PV_NOTES) === "[]", cat(PV_NOTES));
+  check("3i. an E-2 NOTES sheet (no decimal) that says PROVIDE PLACARD is unclassified", cat(E_NOTES) === "[]", cat(E_NOTES));
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
