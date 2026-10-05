@@ -15,7 +15,7 @@
 // are re-exported from there for backwards compatibility. Keeping them beside the
 // resolver avoids a circular import (repository imports this module, not vice versa).
 // (utilityIdentity is a leaf: it imports only permitPath's state parse.)
-import { foreignKnownTenant } from "./utilityIdentity";
+import { foreignPowerClerkTenant } from "./utilityIdentity";
 
 export type PortalChannel =
   | "api" // reserved — never selected in this build
@@ -487,7 +487,20 @@ export function isSelfHostedPermitPortalUrl(url: string | null | undefined): boo
  *  matched by samePortal — the host, and its first path segment when both name one). */
 export function isPermitPortalUrl(url: string | null | undefined, permitPortals: string[] = []): boolean {
   if (!portalHostOf(url)) return false;
-  return isPermitPlatformUrl(url) || isSelfHostedPermitPortalUrl(url) || permitPortals.some((p) => samePortal(p, url));
+  return isPermitPlatformUrl(url) || isSelfHostedPermitPortalUrl(url) || permitPortals.some((p) => namesPermitPortal(p, url));
+}
+/** Does the portal an AHJ row names (`named`) cover `url`? samePortal — except that a row naming
+ *  only a city's BARE web domain (provo.gov, www.examplecity.gov — the organisation's own site, the
+ *  same host a municipal utility's interconnection pages live on) covers that bare host's root and
+ *  pages, never every path on it (#165: a seeded bare-host row made the whole city site a permit
+ *  portal on the NEM track). A bare DEDICATED host (permits.examplecity.gov, cvportal.provo.gov)
+ *  is the permit system's own and stays host-wide. */
+function namesPermitPortal(named: string, url: string | null | undefined): boolean {
+  if (!samePortal(named, url)) return false;
+  if (portalTenantOf(named)) return true;
+  const host = portalHostOf(named);
+  if (host !== registrableDomain(host)) return true;
+  return !portalTenantOf(url);
 }
 /** The portal URLs a KB row's free text names ("Provo Online Portal (CityView,
  *  cvportal.provo.gov/CityViewPortal): apply …" — reference imports file the link in portal_name,
@@ -625,11 +638,15 @@ export function isVendorDomain(host: string | null | undefined): boolean {
 //     Oregon state agency and many counties publish on; application portals are not built on it.
 // A known permit/interconnection PLATFORM host is never an information page (its help pages are
 // still on the platform that files), and a bare host is never one.
-const INFO_PATH_SEGMENT = /^(?:help|faqs?|guides?|guidance|brochures?|handouts?|formslibrary|forms-library|news|newsroom|blog|press-releases?|how-to|library|libraries|references?|resources)$/i;
+// Marketing words too (#165): a city's "/permit-solutions" page, a "/solutions" / "/products" /
+// "/pricing" / "/about-us" page sells or describes a service — nothing is filed on it. Any host:
+// application portals do not live under these words (a platform's own host is exempt above anyway).
+const INFO_PATH_SEGMENT = /^(?:help|faqs?|guides?|guidance|brochures?|handouts?|formslibrary|forms-library|news|newsroom|blog|press-releases?|how-to|library|libraries|references?|resources|solutions?|products?|pricing|features|about|about-us|overview|case-stud(?:y|ies)|testimonials?|webinars?)$/i;
 // Compound segments: anything ending in "library" ("solarreferencelibrary", "documentlibrary"), or a
-// hyphen/underscore-joined "…-resources" / "…-reference". Not a bare "…reference" suffix: that would
+// hyphen/underscore-joined "…-resources" / "…-reference" / "…-solutions" / "…-software" /
+// "…-products" ("permit-solutions", "permitting-software"). Not a bare "…reference" suffix: that would
 // read "/preferences" or "/user-preference" pages as libraries.
-const INFO_PATH_COMPOUND = /(?:library|libraries|[-_](?:resources|references?))$/i;
+const INFO_PATH_COMPOUND = /(?:library|libraries|[-_](?:resources|references?|solutions?|software|products?))$/i;
 const DOCUMENT_EXT = /\.(?:pdf|docx?|xlsx?|rtf|txt|pptx?)$/i;
 export function isInformationalPageUrl(url: string | null | undefined): boolean {
   const raw = String(url ?? "").trim();
@@ -980,13 +997,23 @@ export function hostFitsTrackAndEntity(
   //     row claims. A bare-name regex once wrote PacifiCorp's tenant as Pacific Gas & Electric's
   //     "own portal" and this step then accepted it. Refused unless a PERSON verified it for this
   //     utility (rule 3: step 2 above already let a verified record through).
+  //     #165: not only the exact known host — a PowerClerk tenant whose LABEL names a known utility
+  //     (rockymountainpower.powerclerk.com) is that utility's, and a known utility's only portal is
+  //     its own known tenant (foreignPowerClerkTenant).
   if (entity.scope === "utility" && !matches(entity.verifiedPortals)) {
-    const owner = foreignKnownTenant(host, { state: entity.state, utility: entity.name });
-    if (owner) {
+    const foreign = foreignPowerClerkTenant(host, { state: entity.state, utility: entity.name });
+    if (foreign && "owner" in foreign) {
       return {
         fits: false,
         code: "foreign_entity",
-        reason: `${host} is ${owner}'s interconnection portal — ${who}${entity.state ? ` (${entity.state})` : ""} is not ${owner}`,
+        reason: `${host} is ${foreign.owner}'s interconnection portal — ${who}${entity.state ? ` (${entity.state})` : ""} is not ${foreign.owner}`,
+      };
+    }
+    if (foreign) {
+      return {
+        fits: false,
+        code: "foreign_entity",
+        reason: `${host} is not ${foreign.ownOwner}'s PowerClerk tenant (${foreign.ownHost}) — nothing a person verified says ${who} files there`,
       };
     }
   }

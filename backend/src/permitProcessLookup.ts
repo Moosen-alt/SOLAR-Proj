@@ -285,7 +285,10 @@ export function acceptPortalForPermit(raw: RawFact, source: PortalCandidateSourc
     // caller reads a refused tenant's pages for nothing (close-5 MF1).
     // (a) RULE 5, with this AHJ's verified evidence when the caller has it.
     const fit = hostFitsTrackAndEntity("building", ctx.entity ?? null, url, "research");
-    if (!fit.fits) {
+    // A vendor's marketing page ("…/solutions/…", #165) is also an information page; the refusal is
+    // the same, and the reason names the more specific answer (a'') below.
+    const vendorSite = isVendorDomain(host) && isVendorRootOrMarketing(url);
+    if (!fit.fits && !(fit.code === "not_a_portal" && vendorSite)) {
       return refused("rule5", fit.code === "not_a_portal" ? `${url} is an information page, not an application portal — not kept` : `${fit.reason} — not kept`);
     }
     // (a'') THE VENDOR'S OWN SITE (lookup-close-6 MF4): a permit-software vendor's marketing page
@@ -293,7 +296,7 @@ export function acceptPortalForPermit(raw: RawFact, source: PortalCandidateSourc
     // permit portal") or a shared instance naming no tenant is nobody's application portal, whoever
     // cites it — the same predicate the page-read resolver asks (isVendorRootOrMarketing). A platform
     // host was exempt from the information-page rule, so nothing else asked this at the door.
-    if (isVendorDomain(host) && isVendorRootOrMarketing(url)) {
+    if (vendorSite) {
       return refused("vendor", `${url} is the permit-software vendor's own site (its marketing / root page, or a shared instance naming no tenant), not an agency's application portal — not kept`);
     }
     // (a') A DEEP LINK INTO ANOTHER MODULE of the tenant (module=Licenses / Enforcement …, close-2
