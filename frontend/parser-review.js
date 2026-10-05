@@ -1186,41 +1186,67 @@
   // claimed (a title-only "EQUIPMENT SPECIFICATION" cut-sheet: module? combiner? racking?) is
   // undecided — never guessed into the module spec, never dropped silently.
   const SPEC_SHEET_NAME = /(?:MICRO-?)?(?:INVERTERS?|MODULES?|EQUIPMENT)\s+SPEC(?:IFICATION)?S?\b/i;
-  const MODULE_SPEC_PATTERNS = [
-    /PV MODULE SPECIFICATION SHEET/i,
-    /PV MODULE\s*\/\s*INV SPECIFICATION SHEET/i,
-    /Q\.TRON AC/i,
-    /ZXM7-SH108/i,
-    /ZNSHINESOLAR/i,
-    /MODULE SPECIFICATION/i,
+  // The backend's CATEGORY_PATTERNS sheet-NAME patterns, sheet numbers and words (docSplitter.ts),
+  // and its winner-take-all. The bare /MICROINVERTER/ and /INVERTER SPECIFICATION/ (plus model
+  // strings: Q.TRON, Q.MI, DS3) matched a dense SLD whose callout cites "INVERTER SPECIFICATIONS"
+  // and says MICROINVERTER, so the page mapped it as the inverter spec while the splitter files it
+  // as the SLD on its own sheet name (#149, the #90 failure again). A spec category now matches by
+  // title-block sheet name only, and a page another category wins is not a spec page.
+  const ELECTRICAL_SHEET = /\bE\s*-?\s*\d+\.\d+\b/i;
+  const COMBINED_SPEC = /MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i;
+  const SPLIT_CATEGORIES = [
+    { docType: 'sld', patterns: [/\b3-?LINE DIAGRAM\b/i, /\bONE-?LINE\b/i, /\bSINGLE-?LINE\b/i, /\bELECTRICAL\s+LINE\s+DIAGRAM\b/i], sheetNumbers: [/\bE\s*1\.1\b/i] },
+    { docType: 'site_plan', patterns: [/\bSITE PLAN\b/i, /\bPLOT PLAN\b/i, /\bFIRE\s+(?:PATHWAYS?|SETBACKS?|ACCESS)\b/i], sheetNumbers: [/\bPV\s*1\.[01]\b/i] },
+    { docType: 'structural', patterns: [/\bMOUNT DETAIL\b/i, /\bATTACHMENT DETAIL\b/i], sheetNumbers: [/\bS\s*1\.\d\b/i], words: [/STRUCTURAL/i], vocabulary: [/\bROOF SECTION\b/i, /\bRAFTER\b/i, /\bTRUSS\b/i] },
+    { docType: 'module_spec', patterns: [COMBINED_SPEC, /MODULE\s+SPECIFICATION\s+SHEET/i, /PV MODULE SPEC/i] },
+    { docType: 'inverter_spec', patterns: [COMBINED_SPEC, /MICRO-?INVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bINVERTER\s+SPEC(?:IFICATION)?S?\b/i] },
+    { docType: 'labels', patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i], sheetNumbers: [/\bE\s*1\.3\b/i] },
   ];
-  const INVERTER_SPEC_PATTERNS = [
-    /MICROINVERTER SPECIFICATION SHEET/i,
-    /PV MODULE\s*\/\s*INV SPECIFICATION SHEET/i,
-    /DS3 Series/i,
-    /Q\.TRON AC/i,
-    /Q\.MI/i,
-    /MICROINVERTER/i,
-    /INVERTER SPECIFICATION/i,
-  ];
+  const isIndexOrNotesPage = (t) => /SHEET INDEX/i.test(t) || /GENERAL NOTES AND PROJECT DATA/i.test(t);
   // Written into the page's split-map text. The gate trusts a spec line only from a map that
   // carries it: a snapshot written before this rule may have mapped the calcs sheet (#90).
   const SPEC_MAP_RULE = 'Spec rule: title-block sheet names; calculation sheets excluded (#90)';
 
+  /** docSplitter.ts scorePage: the page's single winning category (ties go to the earlier one),
+   *  plus the combined MODULE / INV sheet as both specs; `byPattern` when the winner hit a sheet NAME. */
+  function scoreSplitPage(t) {
+    if (isIndexOrNotesPage(t)) return { docTypes: [], byPattern: false };
+    const electrical = ELECTRICAL_SHEET.test(t);
+    const calcs = isCalcsSheet(t);
+    const hits = (res) => (res || []).reduce((n, re) => (re.test(t) ? n + 1 : n), 0);
+    let best = null;
+    for (const cat of SPLIT_CATEGORIES) {
+      if (calcs && /_spec$/.test(cat.docType)) continue;
+      const patternHits = hits(cat.patterns);
+      const score = patternHits + hits(cat.sheetNumbers)
+        + (electrical ? 0 : hits(cat.words) + ((cat.vocabulary || []).some((re) => re.test(t)) ? 1 : 0));
+      if (score > 0 && (!best || score > best.score)) best = { docType: cat.docType, score, patternHits };
+    }
+    if (!best) return { docTypes: [], byPattern: false };
+    const docTypes = [best.docType];
+    if (!calcs && COMBINED_SPEC.test(t)) {
+      for (const d of ['module_spec', 'inverter_spec']) if (!docTypes.includes(d)) docTypes.push(d);
+    }
+    return { docTypes, byPattern: best.patternHits > 0 };
+  }
+
   /** The module / inverter spec pages among `pages` ([{page, text}], text already normalized),
-   *  plus the spec-NAMED pages neither claimed (undecided). */
+   *  plus the spec-NAMED pages neither claimed (undecided) — the splitter's undecidedSpecPages. */
   function specSheetPages(pages) {
     const moduleSpecs = [];
     let inverterSpecs = [];
     const undecidedSpecs = [];
     for (const p of pages || []) {
       const t = String(p.text || '');
-      if (isCalcsSheet(t)) continue;
-      const isModule = MODULE_SPEC_PATTERNS.some((re) => re.test(t));
-      const isInverter = INVERTER_SPEC_PATTERNS.some((re) => re.test(t));
+      const { docTypes, byPattern } = scoreSplitPage(t);
+      const isModule = docTypes.includes('module_spec');
+      const isInverter = docTypes.includes('inverter_spec');
       if (isModule) moduleSpecs.push(p.page);
       if (isInverter) inverterSpecs.push(p.page);
-      if (!isModule && !isInverter && SPEC_SHEET_NAME.test(t)) undecidedSpecs.push(p.page);
+      // A page another category won on its own sheet name (a dense SLD citing "INVERTER
+      // SPECIFICATIONS") is filed right; reporting it undecided would be noise (#119).
+      if (!isModule && !isInverter && !byPattern && !isCalcsSheet(t) && !isIndexOrNotesPage(t)
+        && SPEC_SHEET_NAME.test(t)) undecidedSpecs.push(p.page);
     }
     // Combined Q.TRON sheets contain module and inverter info together.
     let modules = moduleSpecs;
