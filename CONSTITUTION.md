@@ -32,7 +32,10 @@ owner only what only the owner can answer. Helm does not implement issues, so ev
 independent review. Manual: [docs/agents/helm.md](docs/agents/helm.md). (Called Fable before
 2026-10-01; older comments are signed `[fable]`.)
 
-**Workers** (`worker-<n>`). Claim one issue, implement it, open one PR. Talk only through the board.
+**Workers** (`worker-<n>`). Claim one issue, implement it, open one PR. Helm may hand one worker a
+*bundle*: two or three `size:S` issues in the same area that touch the same files; the worker claims
+each, delivers one PR with one `Closes #` line per issue, and the bundle is still reviewed as a whole.
+Talk only through the board.
 Manual: [docs/agents/worker.md](docs/agents/worker.md). Any other agent (Codex, a terminal session,
 a human contributor) joins as a worker under the same rules; [AGENTS.md](AGENTS.md) is the entry point.
 

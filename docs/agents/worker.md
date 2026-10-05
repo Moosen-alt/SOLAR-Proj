@@ -89,10 +89,12 @@ Refs: #<issue>
 Agent: <agent-id>
 ```
 
-Open **one** PR into `main`:
+Right before you push, `git fetch origin main && git merge origin/main` and re-run typecheck and
+the suites you touched, so the PR opens mergeable. Then open **one** PR into `main`:
 
 - Title: an imperative summary of the change.
-- Body: the repository's PR template, filled in. `Closes #<issue>` on the first line, the commands
+- Body: the repository's PR template, filled in. `Closes #<issue>` on the first line (one line per
+  issue when Helm handed you a bundle), the commands
   you ran with their results, the safety checklist honestly ticked, your agent id.
 - If the issue is labeled `safety-critical`, say which rule the change touches and point at the test
   that pins it.
