@@ -1971,7 +1971,10 @@ export interface ElectricalSizingParserFields {
   acRunLengthFt?: string | number;
   serviceVoltage?: string | number;
 }
-export type ElectricalSizingInputKey = keyof ElectricalSizingParserFields;
+/** `essOutputA` is not a snapshot key: it is the AC-coupled ESS inverter's rated continuous output
+ *  current that iowaPvWorksheet.essOutputCurrent derives (operator answer, or ONE battery's rated
+ *  kW / 240 V), added to the 120 % busbar screen when the ESS sits on the same bus (#159). */
+export type ElectricalSizingInputKey = keyof ElectricalSizingParserFields | "essOutputA";
 
 /** One input of a sizing check and where it came from: `documentStated` when the package's own
  *  sheet text states this value under its label, false when only the parser read it. */

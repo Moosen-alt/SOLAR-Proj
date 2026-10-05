@@ -24,7 +24,7 @@
 // never that it passes.
 import type { CodeReference, ElectricalSizingInput, ElectricalSizingInputKey, ProjectRecord, ReviewerFinding } from "../../shared/src/types";
 import { sheetTextSources, type DesignTextSource } from "./designCriteria";
-import { dcDcConverterEvidence, nextStandardOcpd, table6907AFactor } from "./iowaPvWorksheet";
+import { dcDcConverterEvidence, essOutputCurrent, nextStandardOcpd, table6907AFactor } from "./iowaPvWorksheet";
 
 export const SIZING_FINDING_IDS = [
   "city.elec.sizing-busbar-120",
@@ -300,6 +300,52 @@ function outputCurrent(project: ProjectRecord, sheetText: string, micro: boolean
   return { amps, inputs, calc };
 }
 
+// --- the AC-coupled ESS on the same bus (#159) ----------------------------------------------------
+//
+// 705.12(B)(3)(2) sums "the power source output circuit current" of EVERY source on the busbar. An
+// AC-coupled battery is its own inverter, so on a micro system with a Powerwall-class battery the
+// micros' current alone undercounts: 20 x 1.21 A micros + a 48 A ESS on a 200 A bus / 200 A main is
+// 1.25 x (24.2 + 48) + 200 = 290.25 A against 240 A. A DC-coupled battery shares the PV inverter, whose
+// output current already carries it; a battery landed on another bus (supply side, a separate panel)
+// is not on this busbar at all. Neither adds.
+const ESS_WORDS = String.raw`\bBATTER(?:Y|IES)\b|\bESS\b|ENERGY\s+STORAGE|STORAGE\s+SYSTEM|POWERWALL`;
+const ESS_SEGMENT = new RegExp(ESS_WORDS, "i");
+const ESS_ELSEWHERE = /\b(?:SUPPLY|LINE)[-\s]+SIDE\b|\b(?:SEPARATE|DIFFERENT|DEDICATED|OWN)\s+(?:PANEL|SUB-?PANEL|BUS(?:\s*BAR)?|BUSBAR|LOAD\s+CENTER)\b|\bNOT\s+ON\s+THE\s+(?:SAME|MAIN)\s+(?:PANEL|BUS(?:\s*BAR)?|BUSBAR)\b/i;
+const ESS_AMPS = new RegExp(String.raw`(?:${ESS_WORDS})[^.;\n]{0,40}?(?:MAX(?:IMUM|\.)?\s+)?(?:CONT(?:INUOUS|\.)?\s+)?(?:AC\s+)?OUTPUT\s+CURRENT\s*[:=]?\s*${NUM}\s*(?:${AMPS})`, "gi");
+const ESS_KW = new RegExp(String.raw`(?:${ESS_WORDS})[^.;\n]{0,60}?${NUM}\s*KW\b`, "gi");
+
+type EssOnBus =
+  | { kind: "none"; why: string }
+  | { kind: "unknown" }
+  | { kind: "added"; input: ElectricalSizingInput; source: string };
+
+/** Does an AC-coupled ESS add its output current to THIS busbar, and with what provenance? */
+function essOnBus(project: ProjectRecord, sheetText: string, micro: boolean): EssOnBus {
+  const s = (project.parserSnapshot ?? {}) as Record<string, unknown>;
+  const str = (k: string) => String(s[k] ?? "").trim();
+  const battery = Boolean(str("batteryMake") || str("batteryModel") || (snapshotNumber(project, "batteryQty") ?? 0) > 0);
+  if (!battery) return { kind: "none", why: "no battery" };
+  // Coupling: the sheets' own word wins; otherwise a micro system's battery can only be AC-coupled
+  // (micros put out AC — what iowaPvWorksheet assumes). A string/hybrid inverter's battery with no
+  // stated coupling is not added: the common hybrid is DC-coupled and its output current is the
+  // inverter's own, already in the screen.
+  const ac = /\bAC[-\s]?COUPLED\b/i.test(sheetText);
+  const dc = /\bDC[-\s]?COUPLED\b/i.test(sheetText);
+  if (dc && !ac) return { kind: "none", why: "DC-coupled" };
+  if (!ac && !micro) return { kind: "none", why: "coupling not stated on a string-inverter system" };
+  // Same bus: a sheet line that names the battery and lands it elsewhere takes it off this busbar.
+  const segments = sheetText.split(/[\n;]|\.(?=\s|$)/);
+  if (segments.some((seg) => ESS_SEGMENT.test(seg) && ESS_ELSEWHERE.test(seg))) return { kind: "none", why: "separate bus" };
+  const ess = essOutputCurrent(s);
+  if (!ess || !(ess.amps > 0) || ess.amps >= 100) return { kind: "unknown" };
+  // Document-stated when the sheets print that current under an ESS output-current label, or (the
+  // kW source) print that kW against the battery. An operator answer alone is not the plan's own number.
+  const kw = snapshotNumber(project, "batteryOutputKw");
+  const statedAmps = [...sheetText.matchAll(ESS_AMPS)].some((m) => same(Number(m[1]), ess.amps));
+  const statedKw = !str("iaPvEssOutputA") && kw != null && [...sheetText.matchAll(ESS_KW)].some((m) => same(Number(m[1]), kw));
+  return { kind: "added", input: { key: "essOutputA", value: ess.amps, documentStated: statedAmps || statedKw }, source: ess.source };
+}
+
 export function evaluateElectricalSizingFindings(project: ProjectRecord, opts: ElectricalSizingOptions = {}): ReviewerFinding[] {
   const out: ReviewerFinding[] = [];
   const cite = opts.cite ?? ((_code: string, fallback: CodeReference) => fallback);
@@ -335,8 +381,21 @@ export function evaluateElectricalSizingFindings(project: ProjectRecord, opts: E
     const parentSec = sec.replace(/\([^()]*\)$/, "");
     const bus = input("busRating");
     const main = input("mainBreaker");
+    // An AC-coupled ESS on this bus is a second power source: its output current joins the sum
+    // (#159). Unknown, the screen cannot be completed honestly, so the SLD is asked for it.
+    const ess = !preNec2017 && current ? essOnBus(project, sheetText, micro) : null;
+    if (ess?.kind === "unknown") missing.push(`Busbar 120 percent screen (${opts.busbarSection || busbarRef.section}): the AC-coupled ESS (battery) inverter's rated continuous output current`);
+    const essAdded = ess?.kind === "added" ? ess : null;
+    const sourceAmps = current ? current.amps + (essAdded?.input.value ?? 0) : 0;
     const source = !preNec2017 && current
-      ? { amps: current.amps * 1.25, inputs: current.inputs, text: `inverter output current ${current.calc}; 1.25 x ${fmt(current.amps)} A = ${fmt(current.amps * 1.25)} A`, onBreaker: false }
+      ? {
+        amps: sourceAmps * 1.25,
+        inputs: essAdded ? [...current.inputs, essAdded.input] : current.inputs,
+        text: essAdded
+          ? `inverter output current ${current.calc} + AC-coupled ESS output current ${fmt(essAdded.input.value)} A${tag(essAdded.input)} (${essAdded.source}) = ${fmt(sourceAmps)} A; 1.25 x ${fmt(sourceAmps)} A = ${fmt(sourceAmps * 1.25)} A`
+          : `inverter output current ${current.calc}; 1.25 x ${fmt(current.amps)} A = ${fmt(current.amps * 1.25)} A`,
+        onBreaker: false,
+      }
       : breaker && breaker.value > 0
         ? { amps: breaker.value, inputs: [breaker], text: `PV breaker ${fmt(breaker.value)} A${tag(breaker)}`, onBreaker: true }
         : null;
@@ -366,7 +425,7 @@ export function evaluateElectricalSizingFindings(project: ProjectRecord, opts: E
             : `Correct the interconnection and show the ${sec} calculation on the SLD.`,
           evidenceNeeded: source.onBreaker
             ? ["Busbar rating", "Main breaker rating", "PV breaker / OCPD rating", ...(preNec2017 ? [] : ["Inverter maximum continuous output current and quantity"]), `${parentSec} calculation`]
-            : ["Busbar rating", "Main breaker rating", "Inverter maximum continuous output current and quantity", `${parentSec} calculation`],
+            : ["Busbar rating", "Main breaker rating", "Inverter maximum continuous output current and quantity", ...(essAdded ? ["AC-coupled ESS (battery) inverter maximum continuous output current"] : []), `${parentSec} calculation`],
           codeReferences: [cite("NEC", { ...busbarRef, section: sec })],
         }));
       }
