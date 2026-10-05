@@ -2094,6 +2094,7 @@ kind — exactly one of:
   other          anything else
   blank          blank or near-blank page
 Pages may be scanned sideways or upside down; read them as they are (orientation is settled separately).
+An AC MODULE datasheet (a PV module with a factory-integrated microinverter) is module_spec; when that same datasheet also lists the microinverter's AC output ratings AND a UL 1741 listing, add "integratedInverter":true to its entry. Never add it to any other page.
 
 Return ONLY JSON of this shape, no prose:
 {"pages":[{"page":<page number as labelled>,"sheet":"<sheet number as printed, or \\"\\">","title":"<sheet name as printed, max 60 characters, or \\"\\">","kind":"<kind>"}],"sheetIndex":[{"sheet":"<number>","title":"<name>"}]}

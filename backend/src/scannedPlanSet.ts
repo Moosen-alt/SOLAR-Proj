@@ -120,7 +120,9 @@ export function normalizePageIndex(raw: unknown, shownPages: number[]): PlanPage
     const deg = ((Number(o.rotate) % 360) + 360) % 360;
     const rotate = (Number.isFinite(deg) && [0, 90, 180, 270].includes(deg) ? deg : 0) as PlanPageClass["rotate"];
     const sheet = str(o.sheet), title = str(o.title);
-    pages.push({ page, kind, rotate, ...(sheet ? { sheet } : {}), ...(title ? { title } : {}) });
+    // Only a module datasheet can be the inverter's too (#79), and only on an explicit true.
+    const both = kind === "module_spec" && o.integratedInverter === true;
+    pages.push({ page, kind, rotate, ...(sheet ? { sheet } : {}), ...(title ? { title } : {}), ...(both ? { integratedInverter: true as const } : {}) });
   }
   pages.sort((a, b) => a.page - b.page);
   const sheetIndex = (Array.isArray(r.sheetIndex) ? r.sheetIndex : [])
@@ -304,12 +306,16 @@ async function renderChosen(renderer: Renderer, chosen: PlanPageClass[], labelle
   return { images, skipped, bytes: total };
 }
 
-/** Small images of `pages` for the page-index read. */
-async function renderThumbs(renderer: Renderer, pages: number[]): Promise<PageImage[]> {
+/** Small images of `pages` for the page-index read. A `byteBudget` (the per-read image budget)
+ *  stops adding pages once their images would go over it. */
+async function renderThumbs(renderer: Renderer, pages: number[], byteBudget = Number.POSITIVE_INFINITY): Promise<PageImage[]> {
   const out: PageImage[] = [];
+  let total = 0;
   for (const page of pages) {
     try {
       const img = await renderer.render(page, page <= 2 ? INDEX_THUMB_FIRST : INDEX_THUMB);
+      if (total + img.bytes.length > byteBudget) continue;
+      total += img.bytes.length;
       out.push({ page, base64: img.bytes.toString("base64"), mimeType: img.mimeType });
     } catch { /* an unrenderable page is simply not indexed */ }
   }
@@ -318,17 +324,89 @@ async function renderThumbs(renderer: Renderer, pages: number[]): Promise<PageIm
 
 /** Run the page-index read over `pages`; null when there is none or it failed. */
 async function readPageIndex(
-  llm: Pick<LLMProvider, "classifyPlanPages">, renderer: Renderer, pages: number[],
+  llm: Pick<LLMProvider, "classifyPlanPages">, renderer: Renderer, pages: number[], byteBudget?: number,
 ): Promise<{ index: PlanPageIndex | null; failure?: string }> {
   if (typeof llm.classifyPlanPages !== "function") return { index: null, failure: "no page index was available" };
   const shown = pages.slice(0, MAX_INDEX_PAGES);
-  const thumbs = await renderThumbs(renderer, shown);
+  const thumbs = await renderThumbs(renderer, shown, byteBudget);
   if (!thumbs.length) return { index: null, failure: "no page could be rendered for the index" };
   try {
     const raw = await llm.classifyPlanPages({ pageImages: thumbs });
     return { index: normalizePageIndex(raw, thumbs.map((t) => t.page)) };
   } catch (err) {
     return { index: null, failure: `the page-index read failed (${String((err as Error)?.message ?? err).slice(0, 80)})` };
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Undecided EQUIPMENT SPECIFICATION pages (#79): the same page-index read, on those pages only
+// ---------------------------------------------------------------------------------------------
+
+/** A page whose text says it is a utility bill or a meter record. Rule 2 (CLAUDE.md): only page
+ *  images of EQUIPMENT DATASHEETS go to the page-index read, so a page that reads as a bill or a
+ *  meter (an account/meter number label, the bill's money words) is withheld BEFORE anything is
+ *  rendered — whatever spec-sheet title it also carries. Broad on purpose: a datasheet withheld by
+ *  mistake only stays undecided (a person decides, as before #79); a bill sent by mistake is a breach. */
+const BILL_OR_METER_PAGE = new RegExp([
+  String.raw`\b(?:ACCOUNT|ACCT|METER|SERVICE\s+AGREEMENT|SA|ESI)\s*(?:NUMBER|NO\b|NO\.|#|ID\b)`,
+  String.raw`\bESI\s*-?\s*ID\b`, String.raw`\bMETER\s+(?:READ(?:ING)?S?|PHOTO)\b`, String.raw`\bUTILITY\s+BILL\b`,
+  String.raw`\bAMOUNT\s+DUE\b`, String.raw`\bBILLING\s+PERIOD\b`, String.raw`\bPREVIOUS\s+BALANCE\b`,
+  String.raw`\bCURRENT\s+CHARGES\b`, String.raw`\bSTATEMENT\s+DATE\b`, String.raw`\bkWh\s+USED\b`,
+].join("|"), "i");
+export function looksLikeBillOrMeterPage(text: string): boolean {
+  return BILL_OR_METER_PAGE.test(String(text ?? ""));
+}
+
+/** Datasheet kinds that DECIDE an undecided spec page: module / inverter go into those parts; the
+ *  rest (combiner, racking, battery…) are datasheets that belong in neither. */
+const DATASHEET_KINDS = new Set<PlanSheetKind>(["module_spec", "inverter_spec", "battery_spec", "racking_spec", "other_spec"]);
+
+export interface UndecidedSpecRead {
+  /** 1-based page → the datasheet kind the page-index read gave it (datasheet kinds only). */
+  decided: Record<string, PlanSheetKind>;
+  /** module_spec pages that are AC modules carrying the integrated micro's ratings and UL 1741
+   *  listing: the inverter datasheet too. */
+  integratedInverter: number[];
+  /** Pages never rendered or sent because their text reads as a bill or meter record (rule 2). */
+  withheld: number[];
+  /** Why no read ran, or why it named nothing ("" when it ran). */
+  failure?: string;
+}
+
+/** Label a text plan set's undecided EQUIPMENT SPECIFICATION pages (docSplitter's
+ *  `undecidedSpecPages`, title-only cut-sheets) with the EXISTING page-index read: their small
+ *  images, under the existing page cap (MAX_INDEX_PAGES) and per-read image budget
+ *  (MAX_VISION_BYTES, which a caller may only tighten). No pages → no render and no call. */
+export async function readUndecidedSpecPages(
+  llm: Pick<LLMProvider, "classifyPlanPages">,
+  pdfBytes: Uint8Array,
+  pages: number[],
+  pageTexts: string[],
+  opts: { maxBytes?: number } = {},
+): Promise<UndecidedSpecRead> {
+  const out: UndecidedSpecRead = { decided: {}, integratedInverter: [], withheld: [] };
+  if (!pages.length) return out;
+  const send = pages.filter((p) => {
+    if (!looksLikeBillOrMeterPage(pageTexts[p - 1] ?? "")) return true;
+    out.withheld.push(p);
+    return false;
+  });
+  if (!send.length) return { ...out, failure: "every undecided page reads as a bill or meter record" };
+  if (typeof llm.classifyPlanPages !== "function") return { ...out, failure: "no page index was available" };
+  const byteBudget = Math.max(1, Math.min(MAX_VISION_BYTES, Math.floor(opts.maxBytes ?? MAX_VISION_BYTES)));
+  const { openPdfForVisionRender } = await import("./pageImages");
+  const renderer = await openPdfForVisionRender(pdfBytes);
+  try {
+    const { index, failure } = await readPageIndex(llm, renderer, send, byteBudget);
+    if (!index) return { ...out, failure };
+    for (const p of index.pages) {
+      if (!DATASHEET_KINDS.has(p.kind)) continue;
+      out.decided[String(p.page)] = p.kind;
+      if (p.integratedInverter) out.integratedInverter.push(p.page);
+    }
+    return out;
+  } finally {
+    await renderer.close();
   }
 }
 

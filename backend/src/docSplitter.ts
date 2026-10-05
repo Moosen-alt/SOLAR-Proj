@@ -5,6 +5,7 @@ import { PDFDocument } from "pdf-lib";
 import { extractPdfPages } from "./batchImport";
 import { portalUploadCapBytes } from "../../portal-bot/src/uploadCap";
 import type { AppDb } from "./db";
+import type { LLMProvider, PlanSheetKind } from "../../shared/src/types";
 import { HttpError } from "./httpError";
 import { saveProjectDocument, listProjectDocuments, projectDocsByType, documentTypesDeletedSince, withdrawSplitPart } from "./projectDocuments";
 
@@ -209,7 +210,20 @@ export interface UtilityPackageResult {
   /** For an undecided spec page a NON-spec category took on a stray hit (#91): 1-based page →
    *  the doc type it was filed into. Absent for a page no category claimed. */
   undecidedSpecFiledAs: Record<string, string>;
+  /** Undecided spec pages the page-index read labelled (#79): 1-based page → its datasheet kind.
+   *  A module_spec / inverter_spec page went into that part; any other kind (combiner, racking…)
+   *  into neither. Such a page is no longer in `undecidedSpecPages`. Absent when no read ran. */
+  specPagesByVision?: Record<string, PlanSheetKind>;
+  /** Undecided spec pages never sent to the read because their text reads as a bill or meter
+   *  record (rule 2). They stay undecided. */
+  specPagesWithheld?: number[];
 }
+
+// A split part that holds a page the page-index read decided (#79) says so in its filename. The
+// text classifier never puts an undecided page in a spec part, so without this mark the next
+// reconcile pass (#77) would take the part for a stale pre-#66 cut and withdraw it. A splitter
+// row only: reconcile never touches a person's upload whatever its name.
+const VISION_PART_MARK = " (page-index read)";
 
 /** The undecided spec pages for a log line: "4,5,6(structural)" — each page, and the category that
  *  took it when one did (#91). No spaces, so it stays one `key=value` field. */
@@ -232,15 +246,53 @@ function findPlanSet(db: AppDb, projectId: string): { id: string; path: string; 
 // the requested submission TYPE (nem | permit | all) — pulling split sheets AND separately
 // uploaded docs (meter photo, utility bill). Backend equivalent of the parser's splitter,
 // run in the submission slot; the bot then attaches these by doc_type.
-export async function buildUtilityPackage(db: AppDb, projectId: string, target = "all"): Promise<UtilityPackageResult> {
+//
+// UNDECIDED SPEC PAGES BY VISION (#79). With an `llm`, the title-only EQUIPMENT SPECIFICATION pages
+// the text could not place are labelled by the existing page-index read (scannedPlanSet
+// readUndecidedSpecPages): a module datasheet goes into module_spec, an inverter datasheet into
+// inverter_spec, an AC module carrying its integrated micro's ratings and UL 1741 listing into
+// both, and a combiner / racking / other datasheet into neither. No undecided page → no call.
+// Only those pages' images are sent, never a page that reads as a bill or meter (rule 2).
+export async function buildUtilityPackage(
+  db: AppDb, projectId: string, target = "all", opts: { llm?: Pick<LLMProvider, "classifyPlanPages"> } = {},
+): Promise<UtilityPackageResult> {
   const project = db.get<{ id: string }>("SELECT id FROM projects WHERE id = ?", [projectId]);
   if (!project) throw new HttpError(404, "Project not found.");
   const wanted = PACKAGE_SETS[target] ?? PACKAGE_SETS.all;
   const planSet = findPlanSet(db, projectId);
 
-  const source = await PDFDocument.load(fs.readFileSync(planSet.path));
+  const planBytes = fs.readFileSync(planSet.path);
+  const source = await PDFDocument.load(planBytes);
   const total = source.getPageCount();
-  const { byCategory, unclassified, undecidedSpec, undecidedSpecFiledAs } = await classifyPlanSetPages(planSet.path, total);
+  const classified = await classifyPlanSetPages(planSet.path, total);
+  const { byCategory, unclassified, pageTexts } = classified;
+  let { undecidedSpec, undecidedSpecFiledAs } = classified;
+  const visionTypes = new Set<string>();
+  let specPagesByVision: Record<string, PlanSheetKind> | undefined;
+  let specPagesWithheld: number[] | undefined;
+  if (opts.llm && undecidedSpec.length) {
+    const { readUndecidedSpecPages } = await import("./scannedPlanSet");
+    // A read that cannot run (the renderer failed) leaves every page undecided, as before #79 —
+    // never a failed split.
+    const read = await readUndecidedSpecPages(opts.llm, planBytes, undecidedSpec, pageTexts)
+      .catch(() => ({ decided: {} as Record<string, PlanSheetKind>, integratedInverter: [] as number[], withheld: [] as number[] }));
+    specPagesByVision = read.decided;
+    if (read.withheld.length) specPagesWithheld = read.withheld;
+    for (const [pageKey, kind] of Object.entries(read.decided)) {
+      const page = Number(pageKey);
+      const into = kind === "module_spec"
+        ? (read.integratedInverter.includes(page) ? ["module_spec", "inverter_spec"] : ["module_spec"])
+        : kind === "inverter_spec" ? ["inverter_spec"] : [];
+      for (const docType of into) {
+        const arr = byCategory.get(docType) ?? [];
+        if (!arr.includes(page - 1)) arr.push(page - 1);
+        byCategory.set(docType, arr.sort((a, b) => a - b));
+        visionTypes.add(docType);
+      }
+    }
+    undecidedSpec = undecidedSpec.filter((p) => !read.decided[String(p)]);
+    undecidedSpecFiledAs = Object.fromEntries(Object.entries(undecidedSpecFiledAs).filter(([p]) => undecidedSpec.includes(Number(p))));
+  }
 
   const baseName = planSet.name.replace(/\.pdf$/i, "");
   const parts: UtilityPackageResult["parts"] = [];
@@ -272,7 +324,7 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
     }
     const saved = saveProjectDocument(db, projectId, {
       docType: cat.docType,
-      filename: `${baseName} - ${cat.label}.pdf`,
+      filename: `${baseName} - ${cat.label}${visionTypes.has(cat.docType) ? VISION_PART_MARK : ""}.pdf`,
       contentType: "application/pdf",
       buffer: bytes,
       source: "split",
@@ -311,7 +363,8 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
   const missingSheetTypes = CATEGORY_PATTERNS
     .map((c) => c.docType)
     .filter((t) => wanted.includes(t) && !parts.some((p) => p.docType === t));
-  return { target, planSetDocId: planSet.id, pages: total, parts, packagedDocTypes: packaged, missingDocTypes: missing, zipDocumentId: zipDoc.id, unclassifiedPages: unclassified, missingSheetTypes, undecidedSpecPages: undecidedSpec, undecidedSpecFiledAs };
+  return { target, planSetDocId: planSet.id, pages: total, parts, packagedDocTypes: packaged, missingDocTypes: missing, zipDocumentId: zipDoc.id, unclassifiedPages: unclassified, missingSheetTypes, undecidedSpecPages: undecidedSpec, undecidedSpecFiledAs,
+    ...(specPagesByVision ? { specPagesByVision } : {}), ...(specPagesWithheld ? { specPagesWithheld } : {}) };
 }
 
 // Assign each page of the plan set to its categories (scorePage). 1-based unclassified pages;
@@ -391,8 +444,8 @@ export async function reconcileSplitParts(db: AppDb, projectId: string): Promise
   const none: ReconcileResult = { withdrawn: [], gaps: [], undecidedSpecPages: [], undecidedSpecFiledAs: {} };
   if (!latest?.stored_path || !fs.existsSync(latest.stored_path)) return none;
   const sheetTypes = CATEGORY_PATTERNS.map((c) => c.docType);
-  const splitParts = db.query<{ id: string; doc_type: string; stored_path: string; uploaded_at: string }>(
-    `SELECT id, doc_type, stored_path, uploaded_at FROM project_documents
+  const splitParts = db.query<{ id: string; doc_type: string; stored_path: string; uploaded_at: string; original_filename: string }>(
+    `SELECT id, doc_type, stored_path, uploaded_at, original_filename FROM project_documents
       WHERE project_id = ? AND source = 'split' AND doc_type IN (${sheetTypes.map(() => "?").join(", ")})`,
     [projectId, ...sheetTypes],
   );
@@ -409,6 +462,10 @@ export async function reconcileSplitParts(db: AppDb, projectId: string): Promise
       let partPages: string[];
       try { partPages = await extractPdfPages(part.stored_path, 80); } catch { continue; }
       const allowed = new Set((byCategory.get(part.doc_type) ?? []).map((i) => pageKey(pageTexts[i] ?? "")));
+      // A spec part the page-index read cut (#79) may also hold the undecided pages it placed.
+      if (SPEC_DOC_TYPES.has(part.doc_type) && String(part.original_filename ?? "").includes(VISION_PART_MARK)) {
+        for (const p of undecidedSpec) allowed.add(pageKey(pageTexts[p - 1] ?? ""));
+      }
       if (partPages.some((t) => !allowed.has(pageKey(t))) && withdrawSplitPart(db, projectId, part.id)) withdrawn.add(part.doc_type);
     }
     // A package ZIP the splitter built bundles the withdrawn part (the bot's last-resort upload
