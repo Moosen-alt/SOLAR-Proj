@@ -1387,10 +1387,12 @@ export function dismissEditionProposal(db: AppDb, fingerprint: string, actor: st
 }
 
 /** Where a RECORDED edition finding for this row stands (#172): the proposal that carries it is
- *  "dismissed" when a person dismissed it, else "pending". Null when no such finding was recorded.
- *  The finding is matched by fingerprint first; failing that (the save narrowed the answer before
- *  proposing), the row's newest editions proposal is the one the check repeated. */
-export function editionProposalState(db: AppDb, key: string, rowCodes: CodeEdition[], foundCodes: CodeEdition[]): { state: EditionProposalState; fingerprint: string; dismissedBy?: string; dismissedAt?: string } | null {
+ *  "dismissed" when a person dismissed it, else "pending". Null when no editions proposal was ever
+ *  recorded for the row. The finding is matched by fingerprint ONLY: when it matches none of the
+ *  row's recorded proposals (the save narrowed the answer before proposing, or the row holds
+ *  another finding), the state is "unknown" and no proposal is named (#182) — guessing the row's
+ *  newest proposal would report ANOTHER finding's pending/dismissed state as this one's. */
+export function editionProposalState(db: AppDb, key: string, rowCodes: CodeEdition[], foundCodes: CodeEdition[]): { state: EditionProposalState; fingerprint?: string; dismissedBy?: string; dismissedAt?: string } | null {
   const recorded = db.query<Row>(
     "SELECT details FROM audit_logs WHERE action = ? AND details LIKE ? ESCAPE '\\' ORDER BY created_at DESC LIMIT 200",
     [PROPOSAL_ACTION, `%"profileKey":"${likeLiteral(key)}"%`],
@@ -1398,8 +1400,8 @@ export function editionProposalState(db: AppDb, key: string, rowCodes: CodeEditi
     try { const p = JSON.parse(text(r.details)) as JurisdictionEditionProposal; return p.profileKey === key && (p.kind ?? "editions") === "editions" ? [p.fingerprint] : []; } catch { return []; }
   });
   if (!recorded.length) return null;
-  const exact = fingerprintOf(key, editionChanges(rowCodes, foundCodes));
-  const fingerprint = recorded.includes(exact) ? exact : recorded[0];
+  const fingerprint = fingerprintOf(key, editionChanges(rowCodes, foundCodes));
+  if (!recorded.includes(fingerprint)) return { state: "unknown" };
   const d = db.get<Row>("SELECT actor_name, created_at FROM audit_logs WHERE action = ? AND details LIKE ? ESCAPE '\\' ORDER BY created_at DESC LIMIT 1", [PROPOSAL_DISMISSED, `%"fingerprint":"${likeLiteral(fingerprint)}"%`]);
   return d ? { state: "dismissed", fingerprint, dismissedBy: text(d.actor_name), dismissedAt: text(d.created_at) } : { state: "pending", fingerprint };
 }
@@ -1697,12 +1699,26 @@ export async function runCodeResearch(db: AppDb, payload: Partial<CodeResearchJo
  *   "agrees"             the verified row already states every edition found;
  *   "nothing_to_compare" the answer named no edition, so there is nothing to propose.
  */
-function verifyCheckOutcome(db: AppDb, key: string, row: Row | null | undefined, found: JurisdictionCodeProfile, families?: CodeFamily[]): Record<string, unknown> {
+interface VerifyCheckOutcome {
+  saved: false;
+  verified: true;
+  modelCalled: true;
+  outcome: "proposed" | "already_proposed" | "agrees" | "nothing_to_compare";
+  proposals: number;
+  newProposal: boolean;
+  /** The proposal this check stored, or (already_proposed) the recorded one it repeated — absent
+   *  when that one is not known (proposalState "unknown"). */
+  proposal?: string;
+  proposalState?: EditionProposalState;
+  dismissedBy?: string;
+  dismissedAt?: string;
+}
+function verifyCheckOutcome(db: AppDb, key: string, row: Row | null | undefined, found: JurisdictionCodeProfile, families?: CodeFamily[]): VerifyCheckOutcome {
   const before = new Set(listEditionProposals(db, key).map((p) => p.fingerprint));
   saveResearchedCodeProfile(db, found, { ...(families?.length ? { families } : {}) });
   const after = listEditionProposals(db, key);
   const added = after.filter((p) => !before.has(p.fingerprint));
-  const outcome = added.length ? "proposed"
+  const outcome: VerifyCheckOutcome["outcome"] = added.length ? "proposed"
     : !found.adoptedCodes.length ? "nothing_to_compare"
     : row && editionChanges(mapRow(row).adoptedCodes, found.adoptedCodes).length ? "already_proposed"
     : "agrees";
@@ -1712,7 +1728,7 @@ function verifyCheckOutcome(db: AppDb, key: string, row: Row | null | undefined,
   return {
     saved: false, verified: true, modelCalled: true, outcome, proposals: after.length, newProposal: added.length > 0,
     ...(added.length ? { proposal: added[0].fingerprint } : {}),
-    ...(prior ? { proposal: prior.fingerprint, proposalState: prior.state, ...(prior.dismissedBy ? { dismissedBy: prior.dismissedBy, dismissedAt: prior.dismissedAt } : {}) } : {}),
+    ...(prior ? { ...(prior.fingerprint ? { proposal: prior.fingerprint } : {}), proposalState: prior.state, ...(prior.dismissedBy ? { dismissedBy: prior.dismissedBy, dismissedAt: prior.dismissedAt } : {}) } : {}),
   };
 }
 
