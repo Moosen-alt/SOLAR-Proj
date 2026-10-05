@@ -131,6 +131,18 @@ await check("#72 rule: a plain ADDRESS cell with its own CITY / STATE / ZIP cell
   assert.equal(out.has("n"), false, "a City cell on ANOTHER page is not this row's");
 });
 
+await check("#72 rule: an owner address whose City/State/Zip prints on the line right BELOW stays a street line (mailing parts below); a truly lone one reads the whole mailing address", () => {
+  const block = [
+    { key: "a", caption: "Property Owner - Address:", source: "project.projectAddress", page: 0, rect: placementRect(P("x", 89, 432, "")) },
+    { key: "c", caption: "Property Owner - City/State/Zip:", source: "computed.cityStateZip", page: 0, rect: placementRect(P("x", 91, 417, "")) },
+    { key: "lone", caption: "Owner mailing address", source: "project.projectAddress", page: 1, rect: placementRect(P("x", 89, 432, "")) },
+  ];
+  const out = addressRowRebinds(block);
+  assert.equal(out.get("a")?.source, "computed.homeownerMailingStreet");
+  assert.equal(out.get("c")?.source, "computed.homeownerMailingCityStateZip");
+  assert.equal(out.get("lone")?.source, "computed.homeownerMailingFullAddress");
+});
+
 await check("#72 mappers: a fresh vision map passes the same rule (sanitizePlacements → sanitizeAcroMap) and names what it rebound", () => {
   const checked = sanitizePlacements({ widgets: [], items: [], state: "NM", textFields: {}, checkboxes: {}, placements: PLACEMENTS });
   assert.deepEqual(checked.placements.map((p) => p.source), [

@@ -284,6 +284,15 @@ export function addressRowRebinds(cells: AddressCell[]): Map<string, { source: s
     const tolerance = Math.max(4, Math.min(a.rect.height, b.rect.height) / 2);
     return Math.abs((a.rect.y + a.rect.height / 2) - (b.rect.y + b.rect.height / 2)) <= tolerance;
   };
+  // An owner's address block often prints its City / State / ZIP on the line right BELOW the street
+  // (Yamhill's "Property Owner - Address:" over "City/State/Zip:", ABQ's OWNER: ADDRESS over ZIP):
+  // those are the mailing cell's own too — it is a street line, not a lone one-line address.
+  const lineBelow = (a: AddressCell, b: AddressCell): boolean => {
+    if (!a.rect || !b.rect || (a.page ?? 0) !== (b.page ?? 0)) return false;
+    const drop = (a.rect.y + a.rect.height / 2) - (b.rect.y + b.rect.height / 2);
+    const overlaps = b.rect.x < a.rect.x + a.rect.width && a.rect.x < b.rect.x + b.rect.width;
+    return overlaps && drop > Math.max(4, Math.min(a.rect.height, b.rect.height) / 2) && drop <= 2.5 * Math.max(a.rect.height, b.rect.height);
+  };
   const isCityStateZipCell = (c: AddressCell): boolean =>
     CITY_STATE_ZIP_CELL.test(ownCaption(c.caption)) || CITY_STATE_ZIP_SOURCES.has(String(c.source ?? "").trim());
   for (const cell of cells) {
@@ -292,9 +301,10 @@ export function addressRowRebinds(cells: AddressCell[]): Map<string, { source: s
     if (!STREET_LINE_SOURCES.has(src) || !ADDRESS_CELL.test(caption) || EMAIL_CELL.test(caption)) continue;
     const neighbours = cells.filter((o) => o !== cell && sameRow(cell, o) && isCityStateZipCell(o));
     if (MAILING_CELL.test(caption)) {
-      const to = neighbours.length || src === "computed.streetAddress" ? "computed.homeownerMailingStreet" : "computed.homeownerMailingFullAddress";
+      const own = [...neighbours, ...cells.filter((o) => o !== cell && lineBelow(cell, o) && isCityStateZipCell(o))];
+      const to = own.length || src === "computed.streetAddress" ? "computed.homeownerMailingStreet" : "computed.homeownerMailingFullAddress";
       out.set(cell.key, { source: to, why: "an owner / mailing address takes the owner's mailing address, not the site's" });
-      for (const n of neighbours) {
+      for (const n of own) {
         const part = MAILING_PART_FOR[String(n.source ?? "").trim()];
         if (part) out.set(n.key, { source: part, why: "a City / State / ZIP cell on the owner's mailing-address row takes the mailing address's part" });
       }
