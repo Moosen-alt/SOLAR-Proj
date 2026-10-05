@@ -74,7 +74,14 @@ const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegEx
   // inverter_spec split and bloated it past PowerClerk's 5 MB upload limit. Match the dedicated
   // SPEC SHEET by its title-block name only, per this file's stated discipline.
   { docType: "inverter_spec", label: "Inverter spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MICRO-?INVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bINVERTER\s+SPEC(?:IFICATION)?S?\b/i] },
-  { docType: "labels", label: "Labels / placards", patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i], sheetNumbers: [/\bE\s*1\.3\b/i] },
+  // PLACARD is the sheet name of the service / PV directory plaque sheet (NEC 690.56, 705.10). It
+  // scored 0 everywhere and was left out of the labels part (#67). It is a `words` hit, not a sheet
+  // name: an electrical NOTES sheet (E 1.2) says "PROVIDE PLACARD …" too, and on an E sheet it does
+  // not count (the #33 rule). An SLD or site plan whose notes mention a placard ties at best, and the
+  // tie goes to the earlier category, so labels stays last. "DIRECTORY" / "PLAQUE" are deliberately
+  // not patterns: the 705.10 directory note is common on SLDs and site plans, and a second hit would
+  // out-score the sheet's own name.
+  { docType: "labels", label: "Labels / placards", patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i], sheetNumbers: [/\bE\s*1\.3\b/i], words: [/\bPLACARDS?\b/i] },
 ];
 
 // A calculations sheet (WIRING CALCULATIONS, ELECTRICAL CALCULATIONS). Its body tabulates the

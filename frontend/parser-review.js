@@ -1200,7 +1200,8 @@
     { docType: 'structural', patterns: [/\bMOUNT DETAIL\b/i, /\bATTACHMENT DETAIL\b/i], sheetNumbers: [/\bS\s*1\.\d\b/i], words: [/STRUCTURAL/i], vocabulary: [/\bROOF SECTION\b/i, /\bRAFTER\b/i, /\bTRUSS\b/i] },
     { docType: 'module_spec', patterns: [COMBINED_SPEC, /MODULE\s+SPECIFICATION\s+SHEET/i, /PV MODULE SPEC/i] },
     { docType: 'inverter_spec', patterns: [COMBINED_SPEC, /MICRO-?INVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bINVERTER\s+SPEC(?:IFICATION)?S?\b/i] },
-    { docType: 'labels', patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i], sheetNumbers: [/\bE\s*1\.3\b/i] },
+    // PLACARD (the directory plaque sheet) as a `words` hit, as in the backend (#67).
+    { docType: 'labels', patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i], sheetNumbers: [/\bE\s*1\.3\b/i], words: [/\bPLACARDS?\b/i] },
   ];
   const isIndexOrNotesPage = (t) => /SHEET INDEX/i.test(t) || /GENERAL NOTES AND PROJECT DATA/i.test(t);
   // Written into the page's split-map text. The gate trusts a spec line only from a map that
@@ -1301,6 +1302,6 @@
     locatesDecision, EXCAVATION_TYPES,
     filterTapEvidence, isNoteMention,
     formatReviewList,
-    isCalcsSheet, specSheetPages, specMapValue, SPEC_MAP_RULE,
+    isCalcsSheet, specSheetPages, specMapValue, SPEC_MAP_RULE, scoreSplitPage,
   };
 });

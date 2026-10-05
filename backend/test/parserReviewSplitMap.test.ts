@@ -121,6 +121,26 @@ console.log("\n2. THE GATE (requiredDocuments.sheetInPlanSet) READS THE MAP");
   check("2h. no plan-set file → never in plan set", !sheetInPlanSet(project(map("4", "5")), "inverter_spec", {}));
 }
 
+// #67: the page's copy of the splitter's categories files the PLACARD (directory plaque) sheet as
+// labels, like docSplitter.ts — the same synthetic sheets as docSplitterPlacard.test.ts.
+console.log("\n3. THE SPLIT MAP'S LABELS RULE (#67)");
+check("3a. parser-review.js exposes scoreSplitPage", typeof PR?.scoreSplitPage === "function");
+if (typeof PR?.scoreSplitPage === "function") {
+  const cat = (text: string) => json(PR.scoreSplitPage(text).docTypes);
+  const LABELS = "PV-8 Sheet Name LABELS WARNING LABELS LABEL LOCATION: MAIN SERVICE PANEL";
+  const PLACARD = "PV-9 Sheet Name PLACARD LABELING NOTES DIRECTORY PERMANENT PLAQUE OR DIRECTORY PROVIDING THE LOCATION OF THE SERVICE DISCONNECTING MEANS PER NEC 690.56(B) AND 705.10";
+  const COVER = "PV-0 Sheet Name COVER SHEET SHEET INDEX: PV-1 SITE PLAN, PV-4 ONE-LINE DIAGRAM, PV-8 LABELS, PV-9 PLACARD";
+  const SITE = "PV-1 Sheet Name SITE PLAN NOTE: PROVIDE PLACARD AT MAIN SERVICE PER NEC 705.10";
+  const SLD1 = "PV-4 Sheet Name ONE-LINE DIAGRAM PLACARD NOTE: PERMANENT PLAQUE OR DIRECTORY PER NEC 690.56";
+  const NOTES = "E 1.2 Sheet Name NOTES 1. PROVIDE PLACARD AT POINT OF INTERCONNECTION PER NEC 705.10.";
+  check("3b. THE POINT: a PLACARD sheet with a DIRECTORY … PLAQUE body is labels", cat(PLACARD) === '["labels"]', cat(PLACARD));
+  check("3c. the LABELS sheet is labels", cat(LABELS) === '["labels"]', cat(LABELS));
+  check("3d. the sheet-index cover listing PV-9 PLACARD is unclassified", cat(COVER) === "[]", cat(COVER));
+  check("3e. a site plan whose notes mention a placard stays the site plan", cat(SITE) === '["site_plan"]', cat(SITE));
+  check("3f. an SLD whose notes mention a placard stays the SLD", cat(SLD1) === '["sld"]', cat(SLD1));
+  check("3g. an E 1.2 NOTES sheet that says PROVIDE PLACARD is unclassified", cat(NOTES) === "[]", cat(NOTES));
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
 console.log("\nall parser split-map checks passed");
