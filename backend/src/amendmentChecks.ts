@@ -74,6 +74,9 @@ const FIELD_LABEL: Record<AmendmentCheckField, string> = {
   planText: "Plan wording",
 };
 
+/** "Ground snow load", "Plan wording" — how a finding names what a check compares. */
+export const checkFieldLabel = (field: AmendmentCheckField): string => FIELD_LABEL[field];
+
 /** A unit as research may write it, normalized to the field's, with the factor to get there. */
 function unitFactor(raw: string, want: "psf" | "mph" | "in"): number | null {
   const u = raw.trim().toLowerCase().replace(/\s+/g, "").replace(/\.$/, "");
@@ -257,6 +260,76 @@ function evidenceOf(v: PlanValue, label: string): ReviewerFindingEvidence {
   };
 }
 
+/** One check compared with the plan (compareCheckWithPlan) — the outcome, never a severity: the
+ *  caller decides that from whose rule it is (rule 3). */
+export type CheckComparison =
+  | { outcome: "met" }
+  /** A stated value outside the bound, or prohibited wording the package carries. `shown` is the
+   *  failing values ("25 psf (Sheet S-1)") or the sources carrying the wording. */
+  | { outcome: "not_met"; documentStated: boolean; shown: string; evidence: ReviewerFindingEvidence[] }
+  /** Required wording no text read carries affirmed. `docsRead`: any of the package's own sheets was read. */
+  | { outcome: "wording_missing"; docsRead: boolean }
+  /** Nothing to compare: the plan does not state the quantity, or no text was read. */
+  | { outcome: "not_stated"; why: string };
+
+/** "at least 36 in" / "at most 3 psf" / "the wording "…"" — what the check requires, in words. */
+export function describeCheckRequirement(check: JurisdictionAmendmentCheck): string {
+  if (check.field !== "planText" && (check.kind === "min_value" || check.kind === "max_value")) {
+    return `${FIELD_LABEL[check.field].toLowerCase()} ${check.kind === "min_value" ? "at least" : "at most"} ${fmt(Number(check.value))} ${FIELD_UNIT[check.field]}`;
+  }
+  return `${check.kind === "prohibited" ? "no" : "the"} wording "${String(check.value)}"`;
+}
+
+/**
+ * ONE machine-checkable check against what the package states, through the same readers every
+ * rule uses. Pure. `cache` lets a caller comparing several checks read the package text once.
+ */
+export function compareCheckWithPlan(
+  project: ProjectRecord,
+  check: JurisdictionAmendmentCheck,
+  extraTexts: DesignTextSource[] = [],
+  cache: { sources?: ReturnType<typeof packageReadSources> } = {},
+): CheckComparison {
+  if (check.field !== "planText" && (check.kind === "min_value" || check.kind === "max_value")) {
+    const required = Number(check.value);
+    const unit = FIELD_UNIT[check.field];
+    const values = planValues(project, check.field, extraTexts);
+    if (!values.length) {
+      const other = incomparableForms(project, check.field, extraTexts);
+      const what = FIELD_LABEL[check.field].toLowerCase();
+      return { outcome: "not_stated", why: other.length
+        ? `the plan states only ${other.join(", ")}, not comparable with its ${what}`
+        : `the plan does not state its ${what}` };
+    }
+    const bad = values.filter((v) => (check.kind === "min_value" ? v.value < required : v.value > required));
+    if (!bad.length) return { outcome: "met" };
+    return {
+      outcome: "not_met",
+      documentStated: bad.some((v) => v.documentStated),
+      shown: [...new Set(bad.map((v) => `${fmt(v.value)} ${unit} (${v.source}${v.documentStated ? "" : ", parser"})`))].join(", "),
+      evidence: bad.slice(0, 4).map((v) => evidenceOf(v, FIELD_LABEL[check.field])),
+    };
+  }
+  // Wording, on the package's own text.
+  const sources = (cache.sources ??= packageReadSources(project, extraTexts));
+  if (!sources.length) return { outcome: "not_stated", why: "no plan text was read to compare its wording with" };
+  const phrase = String(check.value);
+  if (check.kind === "required_text") {
+    // Found AFFIRMED anywhere (a parser summary quoting it included) passes; a negated mention
+    // ("NO RAPID SHUTDOWN REQUIRED") does not carry the required wording.
+    if (sources.some((s) => wordingAt(s.text, phrase) === "affirmed")) return { outcome: "met" };
+    return { outcome: "wording_missing", docsRead: sources.some((s) => s.sheet && !s.derived) };
+  }
+  const hits = sources.filter((s) => wordingAt(s.text, phrase) === "affirmed");
+  if (!hits.length) return { outcome: "met" };
+  return {
+    outcome: "not_met",
+    documentStated: hits.some((s) => s.sheet && !s.derived),
+    shown: [...new Set(hits.map((s) => s.label))].join(", "),
+    evidence: hits.slice(0, 4).map((s) => evidenceOf({ value: 0, source: s.label, excerpt: phrase, documentStated: s.sheet && !s.derived }, "Prohibited wording")),
+  };
+}
+
 /**
  * Compare every classified local amendment with what the package states; list the rest for a
  * person. Pure: the jurisdiction context carries the amendments (merged state-then-AHJ).
@@ -268,58 +341,25 @@ export function evaluateAmendmentFindings(project: ProjectRecord, ctx: Effective
   const failed: FailedLine[] = [];
   const missingWording: Array<{ amendment: JurisdictionCodeAmendment; phrase: string; verified: boolean; docsRead: boolean }> = [];
   const byHand: Array<{ amendment: JurisdictionCodeAmendment; why: string; verified: boolean }> = [];
-  let sources: ReturnType<typeof packageReadSources> | null = null;
+  const cache: { sources?: ReturnType<typeof packageReadSources> } = {};
 
   amendments.forEach((a) => {
     const verified = amendmentVerified(ctx, a);
     const check = a.check;
     if (!check) { byHand.push({ amendment: a, why: "", verified }); return; }
     const label = amendmentLabel(a);
-    if (check.field !== "planText" && (check.kind === "min_value" || check.kind === "max_value")) {
-      const required = Number(check.value);
-      const unit = FIELD_UNIT[check.field];
-      const values = planValues(project, check.field, extraTexts);
-      if (!values.length) {
-        const other = incomparableForms(project, check.field, extraTexts);
-        const what = FIELD_LABEL[check.field].toLowerCase();
-        byHand.push({ amendment: a, verified, why: other.length
-          ? `the plan states only ${other.join(", ")}, not comparable with its ${what}`
-          : `the plan does not state its ${what}` });
-        return;
-      }
-      const bad = values.filter((v) => (check.kind === "min_value" ? v.value < required : v.value > required));
-      if (!bad.length) return;
-      const documentStated = bad.some((v) => v.documentStated);
-      const shown = [...new Set(bad.map((v) => `${fmt(v.value)} ${unit} (${v.source}${v.documentStated ? "" : ", parser"})`))].join(", ");
-      failed.push({
-        amendment: a,
-        verified,
-        blocker: verified && documentStated,
-        evidence: bad.slice(0, 4).map((v) => evidenceOf(v, FIELD_LABEL[check.field])),
-        line: `${FIELD_LABEL[check.field]}: the plan states ${shown}; ${label} requires ${check.kind === "min_value" ? "at least" : "at most"} ${fmt(required)} ${unit} ("${a.summary}")`,
-      });
-      return;
-    }
-    // Wording, on the package's own text.
-    sources ??= packageReadSources(project, extraTexts);
-    if (!sources.length) { byHand.push({ amendment: a, why: "no plan text was read to compare its wording with", verified }); return; }
-    const phrase = String(check.value);
-    if (check.kind === "required_text") {
-      // Found AFFIRMED anywhere (a parser summary quoting it included) passes; a negated mention
-      // ("NO RAPID SHUTDOWN REQUIRED") does not carry the required wording.
-      if (sources.some((s) => wordingAt(s.text, phrase) === "affirmed")) return;
-      missingWording.push({ amendment: a, phrase, verified, docsRead: sources.some((s) => s.sheet && !s.derived) });
-      return;
-    }
-    const hits = sources.filter((s) => wordingAt(s.text, phrase) === "affirmed");
-    if (!hits.length) return;
-    const documentStated = hits.some((s) => s.sheet && !s.derived);
+    const r = compareCheckWithPlan(project, check, extraTexts, cache);
+    if (r.outcome === "met") return;
+    if (r.outcome === "not_stated") { byHand.push({ amendment: a, why: r.why, verified }); return; }
+    if (r.outcome === "wording_missing") { missingWording.push({ amendment: a, phrase: String(check.value), verified, docsRead: r.docsRead }); return; }
     failed.push({
       amendment: a,
       verified,
-      blocker: verified && documentStated,
-      evidence: hits.slice(0, 4).map((s) => evidenceOf({ value: 0, source: s.label, excerpt: phrase, documentStated: s.sheet && !s.derived }, "Prohibited wording")),
-      line: `Prohibited by ${label}: the plan shows "${phrase}" (${[...new Set(hits.map((s) => s.label))].join(", ")}) ("${a.summary}")`,
+      blocker: verified && r.documentStated,
+      evidence: r.evidence,
+      line: check.kind === "prohibited"
+        ? `Prohibited by ${label}: the plan shows "${String(check.value)}" (${r.shown}) ("${a.summary}")`
+        : `${FIELD_LABEL[check.field]}: the plan states ${r.shown}; ${label} requires ${check.kind === "min_value" ? "at least" : "at most"} ${fmt(Number(check.value))} ${FIELD_UNIT[check.field as keyof typeof FIELD_UNIT]} ("${a.summary}")`,
     });
   });
 

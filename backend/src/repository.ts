@@ -5488,7 +5488,8 @@ export function applyCorrectionProposals(
   // While any is still open the item stays pending with its project half recorded as done (the
   // applied project proposals move to appliedProposals), so the next click applies only them and
   // never re-runs these project updates or the designer wait.
-  const stillProposed = (parsed?.jurisdictionProposals ?? []).some((p) => p.status === "proposed");
+  const stillProposed = (parsed?.jurisdictionProposals ?? []).some((p) => p.status === "proposed")
+    || (parsed?.reviewRuleProposals ?? []).some((p) => p.status === "proposed");
   if (item && stillProposed) {
     let stored: Record<string, unknown> = {};
     try { stored = JSON.parse(text(item.notes).slice("agent-triage:".length)) as Record<string, unknown>; } catch { stored = {}; }
