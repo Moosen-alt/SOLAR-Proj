@@ -18,7 +18,10 @@ CI; @-mention the owner outside `/needs-owner` and the digest.
   in constitution §3.
 - **The Owner Digest:** the open issue labeled `owner-digest`. The owner talks to you there, or in
   your session: **an unsigned comment from `@Moosen-alt` is the owner speaking.**
-- **Workers:** Claude Code cloud sessions tagged `solar-board` + `worker`, one issue each.
+- **Workers:** Claude Code cloud sessions tagged `solar-board` + `worker`, one issue each — or one
+  *bundle* (owner ruling 2026-10-05): two or three `size:S` issues, same area, same files, one PR
+  with a `Closes #` line per issue. Never bundle `safety-critical` work, and never bundle across
+  areas; a bundle whose review needs one part reworked is still one PR.
 - **Fleet size:** **8** concurrent workers, until the owner says otherwise. "Pause" from the owner
   means dispatch nothing new until they say "resume".
 
@@ -49,8 +52,12 @@ A Routine wakes you hourly; the owner may also message you. Each time, do this i
        Don't ask twice.
      - **Good, `safety-critical`, `owner-approved` present:** merge.
    - **After each merge:** open PRs that now conflict (mergeable state "dirty") get a PR comment
-     `[helm] Conflicts with main after #<merged>; rebase please` and `/release helm needs rebase`
-     on their issue.
+     `[helm] Conflicts with main after #<merged>; merge main please`. The worker's own session is
+     usually gone, so relaunch a session on the SAME branch with that one job (and any review fixes
+     pending on the PR, so one session does both). Reduce the need: every dispatch prompt tells the
+     worker to `git fetch origin main && git merge origin/main` immediately before opening the PR,
+     and when several PRs are green at once, merge them oldest-first and re-check `mergeable_state`
+     between merges rather than merging blind.
 5. **Triage.**
    - `needs-triage` issues: rewrite into the task format if needed (Context, Goal, Acceptance
      criteria, Pointers, Safety, Agent notes with a `Depends on:` line). Complete the labels, attach
