@@ -43,7 +43,7 @@ const ELECTRICAL_SHEET = /\bE\s*-?\s*\d+\.\d+\b/i;
 // `wordsSkipNotes`: the category's `words` do not count on a NOTES sheet either (NOTES_SHEET below).
 // The #33 rule only knows an E x.x number, and a "PV-2 GENERAL NOTES" or "E-2 NOTES" sheet that says
 // "PROVIDE PLACARD" is a notes sheet, not a placard (#67 review).
-const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegExp[]; sheetNumbers?: RegExp[]; words?: RegExp[]; vocabulary?: RegExp[]; wordsSkipNotes?: boolean }> = [
+export const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegExp[]; sheetNumbers?: RegExp[]; words?: RegExp[]; vocabulary?: RegExp[]; wordsSkipNotes?: boolean }> = [
   // "ELECTRICAL LINE DIAGRAM" is how the Synthetic-style sets title their SLD (sheet PV-6) —
   // neither "one-line" nor "3-line" appears anywhere on the sheet, so the whole electrical
   // diagram went unsplit and the submit gate reported the SLD missing from a plan set that
@@ -133,7 +133,10 @@ function isIndexOrNotesPage(text: string): boolean {
 // `byPattern` says whether the winning category scored at least one title-block sheet-NAME
 // (`patterns`) hit, as opposed to only a sheet number or `words` / `vocabulary` — the undecided-spec
 // report reads it (#119). Filing never does: the score is the same sum it always was.
-function scorePage(text: string): { docTypes: string[]; byPattern: boolean } {
+//
+// Exported for docSplitterMirror.test.ts, which pins frontend/parser-review.js scoreSplitPage /
+// specSheetPages (the parser page's split map, read by the submit gate) to this answer (#193).
+export function scorePage(text: string): { docTypes: string[]; byPattern: boolean } {
   if (isIndexOrNotesPage(text)) return { docTypes: [], byPattern: false };
   const electricalSheet = ELECTRICAL_SHEET.test(text);
   const calcsSheet = CALCS_SHEET.test(text);
@@ -334,13 +337,19 @@ async function classifyPlanSetPages(planSetPath: string, total: number): Promise
     // SPECIFICATIONS" in a callout, won by its own sheet name) is filed right, so reporting it is
     // noise (#119). A stray `words`-only winner (#91's STRUCTURAL racking brochure), a winner on a
     // cited sheet number only ("SEE E 1.1"), or no winner at all leaves the page undecided.
-    if (SPEC_SHEET_NAME.test(text) && !CALCS_SHEET.test(text) && !isIndexOrNotesPage(text)
-      && !docTypes.some((t) => SPEC_DOC_TYPES.has(t)) && !byPattern) {
+    if (isUndecidedSpecPage(text, { docTypes, byPattern })) {
       undecidedSpec.push(i + 1);
       if (docTypes.length) undecidedSpecFiledAs[String(i + 1)] = docTypes[0];
     }
   }
   return { byCategory, unclassified, undecidedSpec, undecidedSpecFiledAs, pageTexts };
+}
+
+// A page that names a spec sheet, is not a calculations or index page, landed in no spec part, and
+// whose winning category (if any) did not hit a title-block sheet name: undecided (#66, #91, #119).
+export function isUndecidedSpecPage(text: string, scored: { docTypes: string[]; byPattern: boolean }): boolean {
+  return SPEC_SHEET_NAME.test(text) && !CALCS_SHEET.test(text) && !isIndexOrNotesPage(text)
+    && !scored.docTypes.some((t) => SPEC_DOC_TYPES.has(t)) && !scored.byPattern;
 }
 
 // A page's identity for comparing a split part against the plan set: its text with whitespace

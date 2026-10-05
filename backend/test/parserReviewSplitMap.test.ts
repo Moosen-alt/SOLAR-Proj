@@ -87,6 +87,14 @@ if (typeof PR?.specSheetPages === "function") {
   const modelOnly = PR.specSheetPages([{ page: 3, text: "DS 3.5 Q.TRON AC Q.MI MICROINVERTER DS3 Series datasheet" }]);
   check("1q. model strings alone (no spec sheet name) do not make a spec page",
     json(modelOnly.inverterSpecs) === "[]" && json(modelOnly.moduleSpecs) === "[]", json(modelOnly));
+
+  // #193: the inverter pages were copied into an empty module side (and vice versa). The splitter
+  // has no such fallback, so the gate said "in plan set" for a module spec it reports missing.
+  const microOnly = PR.specSheetPages([{ page: 5, text: MICRO }, { page: 9, text: SLD }]);
+  check("1r. THE POINT (#193): only a MICROINVERTER SPECIFICATION SHEET → module spec missing",
+    json(microOnly.moduleSpecs) === "[]" && PR.specMapValue(microOnly.moduleSpecs, microOnly.undecidedSpecs) === "missing"
+      && json(microOnly.inverterSpecs) === "[5]", json(microOnly));
+  check("1s. …and only a module spec sheet → inverter spec missing", json(mod.inverterSpecs) === "[]", json(mod));
 }
 
 // The page must actually use the shared rule, and bust the browser cache for it.
