@@ -7,7 +7,8 @@
 // them on the KB card so a person can answer: what changed (per code family, the row's edition →
 // the proposed one), the cited source and its quoted sentence, when the research found it, and
 // Approve / Dismiss buttons. dashboard.js wires the buttons to POST /api/code-profiles/proposals/
-// approve | dismiss (the server names the decider).
+// approve | dismiss (the server names the decider). A STATE-default row has no KB card, so its
+// proposals render in the "State code profiles" block above the cards (renderStateProposals, #182).
 //
 // dashboard.html loads this as a classic script (window.EditionProposals) ahead of the dashboard
 // module, and backend/test/editionProposalsPanel.test.ts loads the same file through node:vm. Keep
@@ -89,5 +90,31 @@
       </div>`;
   }
 
-  return { renderEditionProposals, describeProposal, esc, httpUrl };
+  // STATE CODE PROFILES (#182): the KB cards are per AHJ, so a proposal on a STATE-default row
+  // (empty `ahj`) — every adoption_model proposal lands there — had no card to sit on. This block
+  // lists every state row that carries a pending proposal, each rendered by the same panel (same
+  // escaping, same data-edition-approve / -dismiss buttons, so dashboard.js binds them the same way).
+  // AHJ rows are left to their own KB card. Nothing pending → ''.
+  function renderStateProposals(codeProfiles) {
+    const rows = (Array.isArray(codeProfiles) ? codeProfiles : [])
+      .filter((c) => c && !String(c.ahj ?? '').trim() && Array.isArray(c.editionProposals) && c.editionProposals.length)
+      .sort((a, b) => String(a.state || '').localeCompare(String(b.state || '')));
+    const cards = rows.map((c) => {
+      const panel = renderEditionProposals(c);
+      if (!panel) return '';
+      return `
+        <article class="item warning" style="margin-bottom:8px" data-state-code-profile="${esc(c.key || c.state)}">
+          <strong>${esc(String(c.state || '').toUpperCase() || '(no state)')}</strong> <span class="muted">— state code profile (the default every AHJ in the state falls back to)</span>
+          ${panel}
+        </article>`;
+    }).filter(Boolean);
+    if (!cards.length) return '';
+    return `
+      <div class="state-code-profiles" style="margin-bottom:8px">
+        <strong style="font-size:13px">State code profiles (${cards.length})</strong>
+        ${cards.join('')}
+      </div>`;
+  }
+
+  return { renderEditionProposals, renderStateProposals, describeProposal, esc, httpUrl };
 });

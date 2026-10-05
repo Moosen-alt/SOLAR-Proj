@@ -8,8 +8,9 @@
 //     verified_at; the proposal leaves GET /api/code-profiles.
 //   - Dismiss leaves the row untouched, marks the proposal dismissed (it leaves the listing), and is
 //     recorded under the decider's name.
-//   - A stale click (already applied / dismissed / unknown) is a 409 that changes nothing; no
-//     fingerprint is a 400; signed out is a 401.
+//   - A stale click (already applied / dismissed / superseded by a newer proposal on the row /
+//     unknown) is a 409 that changes nothing; no fingerprint is a 400; signed out, or an org API key
+//     with no session, is a 401.
 //   - With auth OFF, a decision with no name is a 400 ("operator" is not a person) and the typed
 //     name is the one stamped.
 // Both routes sit under the existing /api/code-profiles prefix (rule 6: no new top-level path —
@@ -64,6 +65,38 @@ async function seedVerifiedWithProposal(dbPath: string, rows: Array<{ state: str
   }
   db.close();
   return out;
+}
+
+/** #182: a NEWER finding on the same row (fire IFC 2021, recorded after the fixture's IFC 2024) —
+ *  it supersedes the older proposal, which leaves the listing. Returns the newer fingerprint. */
+async function supersede(dbPath: string, row: { state: string; ahj: string }): Promise<string> {
+  process.env.AUTOPILOT_DB_PATH = dbPath;
+  const { openDatabase } = await import("../src/db");
+  const CP = await import("../src/codeProfiles");
+  const db = await openDatabase();
+  try {
+    await new Promise((r) => setTimeout(r, 5)); // a later created_at than the fixture's proposal
+    const current = CP.listCodeProfiles(db).find((p) => p.state === row.state && p.ahj === row.ahj);
+    assert.ok(current, `fixture: no row for ${row.ahj}`);
+    const p = CP.proposeEditionUpdate(db, current!, blank(row.state, row.ahj, {
+      adoptedCodes: [{ family: "fire", code: "IFC", edition: "2021", sourceUrl: "https://codes.example.gov/fire-2021", quote: "The 2021 IFC is adopted." }],
+    }), "research");
+    assert.ok(p?.isNew, "fixture: the newer finding was not proposed");
+    return p!.fingerprint;
+  } finally { db.close(); }
+}
+
+/** An org API key (programmatic, no session) for the default org. */
+async function apiKeyFor(dbPath: string): Promise<string> {
+  process.env.AUTOPILOT_DB_PATH = dbPath;
+  const { openDatabase } = await import("../src/db");
+  const { createApiKey } = await import("../src/auth");
+  const db = await openDatabase();
+  try {
+    const org = db.get<{ id: string }>("SELECT id FROM orgs ORDER BY created_at LIMIT 1");
+    assert.ok(org, "fixture: no org");
+    return createApiKey(db, org!.id, "proposal-test key").key;
+  } finally { db.close(); }
 }
 
 function stop(server: ChildProcess): void {
@@ -121,7 +154,9 @@ const codesOf = (payloadJson: string): string[] => (JSON.parse(payloadJson).adop
 // ── 1. auth ON: the decider is the signed-in user ──────────────────────────────────────────
 {
   const dbPath = path.join(tmpDir, "auth-on.sqlite");
-  const [approveMe, dismissMe] = await seedVerifiedWithProposal(dbPath, [{ state: "ZA", ahj: "City of Approveton" }, { state: "ZB", ahj: "City of Dismissville" }]);
+  const [approveMe, dismissMe, older] = await seedVerifiedWithProposal(dbPath, [{ state: "ZA", ahj: "City of Approveton" }, { state: "ZB", ahj: "City of Dismissville" }, { state: "ZD", ahj: "City of Supersedia" }]);
+  const newer = await supersede(dbPath, { state: "ZD", ahj: "City of Supersedia" });
+  const apiKey = await apiKeyFor(dbPath);
   const PORT = 5270 + Math.floor(Math.random() * 15); // never 4173 / 4270
   const BASE = `http://127.0.0.1:${PORT}`;
   const { server } = await boot(dbPath, PORT, true);
@@ -148,6 +183,34 @@ const codesOf = (payloadJson: string): string[] => (JSON.parse(payloadJson).adop
       const res = await post("approve", { fingerprint: approveMe.fingerprint, decidedBy: "Forged Name" }, false);
       assert.equal(res.status, 401, await res.text());
       assert.equal(readRow(dbPath, approveMe.key).verified_at, OLD_VERIFIED_AT);
+    });
+
+    await run("#182 an org API key (no session) is a 401 on both routes, and nothing is written", async () => {
+      for (const action of ["approve", "dismiss"]) {
+        const res = await fetch(`${BASE}/api/code-profiles/proposals/${action}`, {
+          method: "POST", headers: { "content-type": "application/json", "x-api-key": apiKey }, body: JSON.stringify({ fingerprint: approveMe.fingerprint, decidedBy: "Forged Name" }),
+        });
+        assert.equal(res.status, 401, `${action}: ${await res.text()}`);
+      }
+      assert.equal(readRow(dbPath, approveMe.key).verified_at, OLD_VERIFIED_AT);
+      assert.equal(auditCount(dbPath, "code_profile.edition_proposal_applied", approveMe.fingerprint), 0);
+      assert.equal(auditCount(dbPath, "code_profile.edition_proposal_dismissed", approveMe.fingerprint), 0);
+    });
+
+    await run("#182 a newer proposal on the same row supersedes the older: the older fingerprint is a 409 that writes nothing", async () => {
+      assert.equal((await listed(older.key))?.editionProposals?.map((p) => p.fingerprint).join(","), newer, "the listing does not show only the newer proposal");
+      const before = readRow(dbPath, older.key);
+      for (const action of ["approve", "dismiss"]) {
+        const res = await post(action, { fingerprint: older.fingerprint });
+        assert.equal(res.status, 409, `${action}: ${await res.text()}`);
+      }
+      assert.deepEqual(readRow(dbPath, older.key), before, "a superseded proposal wrote the row");
+      assert.equal(auditCount(dbPath, "code_profile.edition_proposal_applied", older.fingerprint), 0);
+      assert.equal(auditCount(dbPath, "code_profile.edition_proposal_dismissed", older.fingerprint), 0);
+      // The newer one is still the live proposal a person can decide.
+      const res = await post("approve", { fingerprint: newer });
+      assert.equal(res.status, 200, await res.text());
+      assert.ok(codesOf(readRow(dbPath, older.key).payload_json).includes("IFC 2021"));
     });
 
     await run("no fingerprint: 400", async () => {

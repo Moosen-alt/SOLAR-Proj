@@ -2097,7 +2097,28 @@ function kbIsMeaningful(p) {
   return p.correctionCount >= 1;
 }
 
+// The Approve / Dismiss buttons edition-proposals.js renders, on a KB card or the state block.
+function bindEditionProposalButtons(root) {
+  root.querySelectorAll("[data-edition-approve]").forEach((btn) => {
+    btn.addEventListener("click", () => decideEditionProposal("approve", btn.getAttribute("data-edition-approve"), btn));
+  });
+  root.querySelectorAll("[data-edition-dismiss]").forEach((btn) => {
+    btn.addEventListener("click", () => decideEditionProposal("dismiss", btn.getAttribute("data-edition-dismiss"), btn));
+  });
+}
+
+// STATE CODE PROFILES (#182): a proposal on a state-default row (empty ahj — every adoption_model
+// proposal) has no KB card, since codeProfileForKb matches AHJ rows only. Drawn whether or not any
+// knowledge profile exists, so a state row's proposal is always decidable from the dashboard.
+function renderStateCodeProposals() {
+  const el = $("kbStateProposals");
+  if (!el) return;
+  el.innerHTML = typeof window !== "undefined" && window.EditionProposals ? window.EditionProposals.renderStateProposals(state.codeProfiles || []) : "";
+  bindEditionProposalButtons(el);
+}
+
 function renderKnowledgeBase() {
+  renderStateCodeProposals();
   const container = $("knowledgeBase");
   if (!container) return;
   const profiles = state.knowledgeProfiles || [];
@@ -2146,12 +2167,7 @@ function renderKnowledgeBase() {
   container.querySelectorAll("[data-kb-delete]").forEach((btn) => {
     btn.addEventListener("click", () => deleteKnowledgeEntry(btn.getAttribute("data-kb-delete"), btn.getAttribute("data-kb-verified") === "1"));
   });
-  container.querySelectorAll("[data-edition-approve]").forEach((btn) => {
-    btn.addEventListener("click", () => decideEditionProposal("approve", btn.getAttribute("data-edition-approve"), btn));
-  });
-  container.querySelectorAll("[data-edition-dismiss]").forEach((btn) => {
-    btn.addEventListener("click", () => decideEditionProposal("dismiss", btn.getAttribute("data-edition-dismiss"), btn));
-  });
+  bindEditionProposalButtons(container);
 
   const moreBtn = $("kbShowMore");
   if (moreBtn) {

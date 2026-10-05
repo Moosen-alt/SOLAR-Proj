@@ -1569,8 +1569,10 @@ export interface EditionProposalDecisionResult {
 }
 
 /** Where a recorded proposal stands: still awaiting a person, or dismissed by one. A due verify
- *  check whose finding was already recorded says which (`already_proposed` + this). */
-export type EditionProposalState = "pending" | "dismissed";
+ *  check whose finding was already recorded says which (`already_proposed` + this); "unknown" when
+ *  the finding matches none of the row's recorded proposals by fingerprint (#182) — never another
+ *  finding's state. */
+export type EditionProposalState = "pending" | "dismissed" | "unknown";
 
 export interface JurisdictionDesignCriteria {
   /** Strength-level ground snow load Pg — what every rule compares with a plan's Pg. */

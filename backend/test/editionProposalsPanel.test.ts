@@ -111,5 +111,83 @@ check("no proposals (or no profile) renders nothing", () => {
   assert.equal(EP.renderEditionProposals(profile([{ ...editions, fingerprint: "" }])), "", "a proposal with no id rendered buttons nothing can act on");
 });
 
+// ── #182: STATE-default rows (empty ahj) have no KB card — the "State code profiles" block ─────
+const stateRow = (state: string, proposals: JurisdictionEditionProposal[] | undefined, ahj = ""): JurisdictionCodeProfile => ({
+  ...profile(proposals), key: `${state.toLowerCase()}|${ahj.toLowerCase() || "unknown"}|unknown`, state, ahj,
+});
+const stateEditions: JurisdictionEditionProposal = { ...editions, profileKey: "zy|unknown|unknown", state: "ZY", ahj: "", fingerprint: "zy|unknown|unknown#5e5e" };
+const stateBlock: string = EP.renderStateProposals([
+  stateRow("ZZ", [adoption]),
+  stateRow("ZY", [stateEditions]),
+  stateRow("ZX", undefined),
+  stateRow("ZZ", [editions], "City of Sample"),
+]);
+
+check("#182 a state row's edition proposal and every adoption_model proposal render, with Approve / Dismiss", () => {
+  assert.match(stateBlock, /State code profiles \(2\)/);
+  for (const fp of [stateEditions.fingerprint, adoption.fingerprint]) {
+    assert.ok(stateBlock.includes(`data-edition-approve="${fp}"`), `no Approve for ${fp}`);
+    assert.ok(stateBlock.includes(`data-edition-dismiss="${fp}"`), `no Dismiss for ${fp}`);
+  }
+  assert.match(stateBlock, /Adoption model differs from research/);
+  assert.ok(stateBlock.indexOf(">ZY<") < stateBlock.indexOf(">ZZ<"), "state rows are not ordered by state");
+});
+check("#182 an AHJ row stays on its own KB card, never in the state block", () => {
+  assert.ok(!stateBlock.includes(`data-edition-approve="${editions.fingerprint}"`), "an AHJ row's proposal landed in the state block");
+});
+check("#182 no state row with a proposal → the block renders nothing", () => {
+  assert.equal(EP.renderStateProposals([stateRow("ZX", undefined), stateRow("ZZ", [editions], "City of Sample")]), "");
+  assert.equal(EP.renderStateProposals([]), "");
+  assert.equal(EP.renderStateProposals(undefined), "");
+});
+check("#182 the state block escapes the state and key it prints", () => {
+  const h: string = EP.renderStateProposals([{ ...stateRow("ZY", [stateEditions]), state: "<img src=x>", key: '"><svg onload=1>' }]);
+  assert.ok(!h.includes("<img") && !h.includes("<svg"), "a state or key reached innerHTML raw");
+});
+
+// The dashboard draws the block into #kbStateProposals and binds its buttons to the same
+// decideEditionProposal the KB cards use — lifted from the shipped dashboard.js and run here.
+const dashboard = fs.readFileSync(path.join(REPO, "frontend", "dashboard.js"), "utf8").replace(/\r\n/g, "\n");
+const cut = (name: string): string => {
+  const m = new RegExp(`^(?:async )?function ${name}\\(`, "m").exec(dashboard);
+  if (!m) throw new Error(`dashboard.js: could not find function ${name}`);
+  let depth = 0, end = -1;
+  for (let j = dashboard.indexOf("{", m.index); j < dashboard.length; j++) {
+    if (dashboard[j] === "{") depth++;
+    else if (dashboard[j] === "}") { depth--; if (depth === 0) { end = j + 1; break; } }
+  }
+  return dashboard.slice(m.index, end);
+};
+check("#182 dashboard.js renders the state block into #kbStateProposals and wires Approve / Dismiss", () => {
+  const decided: Array<[string, string]> = [];
+  const buttons: Array<{ attr: string; value: string; click?: () => void }> = [];
+  const el = {
+    innerHTML: "",
+    querySelectorAll(sel: string) {
+      const attr = /\[([a-z-]+)\]/.exec(sel)![1];
+      const re = new RegExp(`${attr}="([^"]*)"`, "g");
+      return [...el.innerHTML.matchAll(re)].map((m) => {
+        const b = { attr, value: m[1], getAttribute: (a: string) => (a === attr ? m[1] : null), addEventListener: (_e: string, fn: () => void) => { (b as { click?: () => void }).click = fn; } };
+        buttons.push(b);
+        return b;
+      });
+    },
+  };
+  const ctx: Record<string, unknown> = {
+    window: sandbox.window,
+    state: { codeProfiles: [stateRow("ZZ", [adoption]), stateRow("ZZ", [editions], "City of Sample")] },
+    $: (id: string) => (id === "kbStateProposals" ? el : null),
+    decideEditionProposal: (action: string, fp: string) => { decided.push([action, fp]); },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(["bindEditionProposalButtons", "renderStateCodeProposals"].map(cut).join("\n\n") + "\nrenderStateCodeProposals();", ctx);
+  assert.match(el.innerHTML, /State code profiles \(1\)/);
+  for (const b of buttons) b.click?.();
+  assert.deepEqual(decided, [["approve", adoption.fingerprint], ["dismiss", adoption.fingerprint]]);
+  assert.match(cut("renderKnowledgeBase"), /renderStateCodeProposals\(\);[^]*if \(!profiles\.length\)/, "the state block is not drawn before the no-profiles early return");
+  const html = fs.readFileSync(path.join(REPO, "frontend", "dashboard.html"), "utf8");
+  assert.match(html, /<div id="kbStateProposals"><\/div>/, "dashboard.html has no #kbStateProposals container");
+});
+
 console.log(failures === 0 ? "\neditionProposalsPanel: all checks passed." : `\neditionProposalsPanel: ${failures} check(s) FAILED.`);
 process.exit(failures === 0 ? 0 : 1);
