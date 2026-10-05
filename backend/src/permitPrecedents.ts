@@ -47,9 +47,11 @@ const DIMENSION_LABEL: Record<PermitPrecedentDimension, string> = {
 // here pins an unrelated correction on a product the office has never seen. "Panel" alone is the
 // ELECTRICAL panel in most AHJ corrections ("service panel", "main panel", "sub panel", "panel
 // schedule"), so only a PV/solar panel counts; a battery/ESS/storage module is the battery's; a
-// "roof mount" / "ground mount" is the system type, not the attachment hardware.
+// "roof mount" / "ground mount" is the system type, not the attachment hardware. A
+// "microinverter module" is the inverter's (the lookbehind's \b alone misses inside the word,
+// #183); a "monitoring module" / "comm module" is the gateway's, not the PV module.
 const DIMENSION_CORRECTED: Record<PermitPrecedentDimension, RegExp> = {
-  module: /\b(?:(?:pv|solar)\s+(?:modules?|panels?)|(?<!\b(?:battery|batteries|ess|storage|inverter|power|control|communications?)[\s-])modules?)\b/i,
+  module: /\b(?:(?:pv|solar)\s+(?:modules?|panels?)|(?<!\b(?:battery|batteries|ess|storage|(?:micro-?)?inverters?|power|control|monitoring|comms?|communications?)[\s-])modules?)\b/i,
   inverter: /\b(?:micro-?)?inverters?\b/i,
   battery: /\b(?:batter(?:y|ies)|ess|energy storage)\b/i,
   racking: /\b(?:racking|(?<!\b(?:guard|hand)[\s-]?)rails?)\b/i,
@@ -110,6 +112,11 @@ function roofDetailParts(value: string): { roof: string; framing: string } {
  * parse, not a design change. Two stated, different framings still depart.
  */
 function roofDetailPrecedent(value: string, byKey: Map<string, PrecedentTally>): PrecedentTally | undefined {
+  // The exact value first (#183): a precedent written before #180 closed up slashes inside a part
+  // ("Comp / Asphalt Shingle", no framing) would split at its last " / " into roof "Comp" + framing
+  // "Asphalt Shingle" and never match the identical plan, raising a spurious departure.
+  const exact = byKey.get(precedentKey(value));
+  if (exact) return exact;
   const plan = roofDetailParts(value);
   let best: PrecedentTally | undefined;
   for (const t of byKey.values()) {
