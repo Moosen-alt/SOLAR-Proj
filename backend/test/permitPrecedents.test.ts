@@ -31,6 +31,7 @@ const CP = await import("../src/codeProfiles");
 const { buildReviewerReport } = await import("../src/reviewerEngine");
 const { visionMayRelax, MEASURED_FINDING_IDS } = await import("../src/reviewerVision");
 const P = await import("../src/permitPrecedents");
+const { sharedCorrectionPatterns } = await import("../src/knowledgeBase");
 
 const db = await openDatabase();
 let failures = 0;
@@ -123,6 +124,9 @@ for (const [phrase, over, rootCause] of [
   ["sub panel", NEW_MODULE, "Show the sub panel feeder conductor size"],
   ["panel schedule", NEW_MODULE, "Provide an updated panel schedule with the PV breaker"],
   ["battery module", NEW_MODULE, "Battery module clearance to the water heater not shown"],
+  ["microinverter module", NEW_MODULE, "Microinverter module grounding not shown on the line diagram"],
+  ["monitoring module", NEW_MODULE, "Monitoring module location missing from the site plan"],
+  ["comm module", NEW_MODULE, "Comm module conduit run not shown"],
   ["roof mount", NEW_ATTACH, "Roof mount system requires a fire pathway on the site plan"],
 ] as const) {
   await check(`MUST EXCLUDE: a "${phrase}" correction does not make the ${over === NEW_MODULE ? "module" : "attachment"} a corrected dimension`, () => {
@@ -157,6 +161,26 @@ await check("both sides state a DIFFERENT framing -> still a departure (a real d
 await check("a different roof covering departs whatever the framing says", () => {
   const out = P.evaluatePermitPrecedentFindings(mkPlan({ roofMaterial: "Concrete Tile", framingType: "" }), ctxWith(PRIOR, [ROOF_CORRECTED]));
   assert.match(find(out, P.PRECEDENT_DEPARTURE_ID)[0]?.message ?? "", /roof attachment detail "Concrete Tile" matches none/);
+});
+
+await check("MUST EXCLUDE (#183): a legacy precedent with a slash in the roof covering and no framing matches the identical plan", () => {
+  // Written before #180 closed up slashes inside a part: the stored value's only " / " is INSIDE
+  // the roof covering, not the roof/framing separator.
+  const legacy: ApprovedDesignObservation[] = [{ projectId: "p-legacy", recordNumber: "REC-p-legacy", issuedAt: "2026-02-01T00:00:00Z", criteria: [],
+    precedents: [{ dimension: "roofDetail", value: "Comp / Asphalt Shingle" }] }];
+  const out = P.evaluatePermitPrecedentFindings(mkPlan({ roofMaterial: "Comp / Asphalt Shingle", framingType: "" }), ctxWith(legacy, [ROOF_CORRECTED]));
+  assert.deepEqual(find(out, P.PRECEDENT_DEPARTURE_ID).map((f) => f.message), []);
+  assert.match(find(out, P.PRECEDENT_MATCH_ID)[0]?.message ?? "", /roof attachment detail "Comp \/ Asphalt Shingle" \(1 issued permit/);
+});
+
+console.log("\n2d. A NON-NUMERIC CORRECTION COUNT IS 0, NEVER NaN (#183)");
+await check("sharedCorrectionPatterns reads a non-numeric count as 0 and keeps a numeric string", () => {
+  const rows = sharedCorrectionPatterns([
+    { ...ATTACH_CORRECTED, count: "several" as unknown as number },
+    { ...ATTACH_CORRECTED, count: undefined as unknown as number },
+    { ...ATTACH_CORRECTED, count: "3" as unknown as number },
+  ]);
+  assert.deepEqual(rows.map((r) => r.count), [0, 0, 3]);
 });
 
 console.log("\n3. NEVER A BLOCKER, NEVER RELAXED BY VISION");

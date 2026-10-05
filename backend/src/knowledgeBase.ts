@@ -607,7 +607,9 @@ export function sharedCorrectionPatterns(items: CommonCorrectionPattern[]): Comm
     bucket: item?.bucket,
     rootCause: text(item?.rootCause),
     requiredAction: text(item?.requiredAction),
-    count: Number(item?.count ?? 0),
+    // A non-numeric count (a hand-edited or legacy row) is 0, never NaN: NaN fails every `> 0`
+    // filter silently and poisons a `b.count - a.count` sort (#183).
+    count: Number.isFinite(Number(item?.count)) ? Number(item?.count) : 0,
     lastSeenAt: text(item?.lastSeenAt),
   }));
 }
