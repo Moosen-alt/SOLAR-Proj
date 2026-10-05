@@ -1203,6 +1203,9 @@
     // PLACARD (the directory plaque sheet) as a `words` hit that a NOTES sheet does not get, as in the backend (#67).
     { docType: 'labels', patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i], sheetNumbers: [/\bE\s*1\.3\b/i], words: [/\bPLACARDS?\b/i], wordsSkipNotes: true },
   ];
+  // The backend's SPEC_DOC_TYPES: the categories a calculations sheet never scores for (#66). An
+  // explicit set, as there, not a /_spec$/ name test (#193).
+  const SPEC_DOC_TYPES = new Set(['module_spec', 'inverter_spec']);
   // The backend's NOTES_SHEET: NOTES on the page, except the placard sheet's own LABELING / PLACARD NOTES.
   const NOTES_SHEET = /(?<!\b(?:LABEL(?:ING|S)?|PLACARDS?)\s+)\bNOTES\b/i;
   const isIndexOrNotesPage = (t) => /SHEET INDEX/i.test(t) || /GENERAL NOTES AND PROJECT DATA/i.test(t);
@@ -1220,7 +1223,7 @@
     const hits = (res) => (res || []).reduce((n, re) => (re.test(t) ? n + 1 : n), 0);
     let best = null;
     for (const cat of SPLIT_CATEGORIES) {
-      if (calcs && /_spec$/.test(cat.docType)) continue;
+      if (calcs && SPEC_DOC_TYPES.has(cat.docType)) continue;
       const patternHits = hits(cat.patterns);
       const score = patternHits + hits(cat.sheetNumbers)
         + (electrical ? 0 : (cat.wordsSkipNotes && notes ? 0 : hits(cat.words)) + ((cat.vocabulary || []).some((re) => re.test(t)) ? 1 : 0));
@@ -1238,7 +1241,7 @@
    *  plus the spec-NAMED pages neither claimed (undecided) — the splitter's undecidedSpecPages. */
   function specSheetPages(pages) {
     const moduleSpecs = [];
-    let inverterSpecs = [];
+    const inverterSpecs = [];
     const undecidedSpecs = [];
     for (const p of pages || []) {
       const t = String(p.text || '');
@@ -1252,11 +1255,10 @@
       if (!isModule && !isInverter && !byPattern && !isCalcsSheet(t) && !isIndexOrNotesPage(t)
         && SPEC_SHEET_NAME.test(t)) undecidedSpecs.push(p.page);
     }
-    // Combined Q.TRON sheets contain module and inverter info together.
-    let modules = moduleSpecs;
-    if (!modules.length && inverterSpecs.length) modules = [...inverterSpecs];
-    if (!inverterSpecs.length && modules.length) inverterSpecs = [...modules];
-    return { moduleSpecs: modules, inverterSpecs, undecidedSpecs };
+    // No one-side-empty copy (#193): a set with only a MICROINVERTER SPECIFICATION SHEET has no
+    // module spec, as the splitter reports. A combined MODULE / INV sheet is already on both sides
+    // (scoreSplitPage's fan-out), the only case where one page is both specs.
+    return { moduleSpecs, inverterSpecs, undecidedSpecs };
   }
 
   /** A split-map row's value: the pages, else "undecided (…)" when spec-named pages exist that
@@ -1305,6 +1307,6 @@
     locatesDecision, EXCAVATION_TYPES,
     filterTapEvidence, isNoteMention,
     formatReviewList,
-    isCalcsSheet, specSheetPages, specMapValue, SPEC_MAP_RULE, scoreSplitPage,
+    isCalcsSheet, specSheetPages, specMapValue, SPEC_MAP_RULE, scoreSplitPage, SPLIT_CATEGORIES,
   };
 });
