@@ -61,7 +61,7 @@ import { requestScope, orgFilter, orgClause, reqOrgFilter, assertInScope, auditC
 import type { RequestScope } from "./scope";
 import { DEFAULT_ORG_ID } from "./db";
 import { ensureStatusShareToken, statusShareUrl } from "./clientNotifier";
-import { listCodeProfiles, listRowlessDesignLookups, getCodeProfile, saveResearchedCodeProfile, saveVerifiedCodeProfile, codeProfileKey } from "./codeProfiles";
+import { listCodeProfiles, listRowlessDesignLookups, getCodeProfile, saveResearchedCodeProfile, saveVerifiedCodeProfile, codeProfileKey, applyEditionProposal, dismissEditionProposal } from "./codeProfiles";
 import { applyCorrectionApproval } from "./correctionAgent";
 import { runStandaloneReview, getReviewSubmission, listReviewSubmissions, reviewSubjectToProject } from "./reviewSubject";
 import { renderReviewerReportHtml } from "./reviewerEngine";
@@ -160,7 +160,7 @@ import { getSubmittalTracks, markTrackSubmitted } from "./submittalTracks";
 import { projectForTrack } from "./permitProcess";
 import { ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
 import { enqueueStageSteps } from "./autoStageSteps";
-import type { ClientResolution, ParserExtractionResponse, SubmittalTrackType } from "../../shared/src/types";
+import type { ClientResolution, EditionProposalDecisionResult, ParserExtractionResponse, SubmittalTrackType } from "../../shared/src/types";
 import { FINAL_SUBMIT_GATE_SENTENCE } from "../../shared/src/portalSafety";
 import { resolveListenHost } from "./listenHost";
 
@@ -947,6 +947,49 @@ app.put("/api/code-profiles/verify", (req, res) => {
     fireSetbacks: b.fireSetbacks.map((f) => ({ ...f })), citations: b.citations,
   }, currentUser(db, req)?.email || "operator");
   res.json({ profile: saved });
+});
+
+// EDITION PROPOSALS (#172): a due verify check on a HUMAN-VERIFIED row stores a proposal, never a
+// write (rule 3); these are the person's two answers, under the existing code-profiles path (rule 6:
+// shared knowledge, no new top-level route). Approve re-verifies the row through
+// applyEditionProposal, stamping verified_by/verified_at with the decider; Dismiss marks it so it
+// leaves the pending list and a repeat finding reports "dismissed", not "pending".
+// THE DECIDER IS A NAMED PERSON: the signed-in user when auth is on (a body name is ignored — it
+// would let a caller put someone else's name on a verification); with auth off, the name the
+// dashboard sends, and no name is a 400 — "operator" is not a person.
+const editionProposalDecider = (req: Request): string => {
+  if (AUTH_ENABLED) {
+    const user = currentUser(db, req);
+    if (!user) throw new HttpError(401, "Sign in to decide an edition proposal.");
+    return String(user.name || user.email || "").trim() || "authenticated user";
+  }
+  const named = String(req.body?.decidedBy || "").trim().slice(0, 120);
+  if (!named) throw new HttpError(400, "Name the person deciding: an edition proposal is approved or dismissed by a named person.");
+  return named;
+};
+const editionProposalFingerprint = (req: Request): string => {
+  const fp = String(req.body?.fingerprint || "").trim();
+  if (!fp || fp.length > 400) throw new HttpError(400, "fingerprint is required.");
+  return fp;
+};
+
+app.post("/api/code-profiles/proposals/approve", (req, res) => {
+  const fingerprint = editionProposalFingerprint(req);
+  const decidedBy = editionProposalDecider(req);
+  const r = applyEditionProposal(db, fingerprint, decidedBy);
+  // A stale click (applied, dismissed or superseded since the card was drawn) changes nothing.
+  if (r.status !== "applied") throw new HttpError(409, r.note);
+  const out: EditionProposalDecisionResult = { status: "applied", note: r.note, fingerprint, decidedBy, ...(r.profile ? { profile: r.profile } : {}) };
+  res.json(out);
+});
+
+app.post("/api/code-profiles/proposals/dismiss", (req, res) => {
+  const fingerprint = editionProposalFingerprint(req);
+  const decidedBy = editionProposalDecider(req);
+  const r = dismissEditionProposal(db, fingerprint, decidedBy, String(req.body?.reason || ""));
+  if (r.status !== "dismissed") throw new HttpError(409, r.note);
+  const out: EditionProposalDecisionResult = { status: "dismissed", note: r.note, fingerprint, decidedBy };
+  res.json(out);
 });
 
 // ---------------------------------------------------------------------------

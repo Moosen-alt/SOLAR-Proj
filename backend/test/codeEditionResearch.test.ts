@@ -574,6 +574,9 @@ await check("#164 MUST-PASS: a DUE verify check on a verified row makes one mode
   // The same finding 30 days later: still one row, and the result says it is already pending.
   const again = await CP.runCodeResearch(db, { state: "ZW", ahj: "", profileKey: ZW_KEY, mode: "verify_check" }, stale.provider);
   assert.equal(again.outcome, "already_proposed", JSON.stringify(again));
+  // #172: already_proposed says WHICH — this finding is still awaiting a person.
+  assert.equal(again.proposalState, "pending", JSON.stringify(again));
+  assert.equal(again.proposal, r.proposal, "already_proposed does not name the recorded proposal");
   assert.equal(proposalRows(ZW_KEY), 1, "a repeated finding stored a second proposal");
   // An answer that names no edition: nothing to propose, and the log says exactly that.
   const empty = fakeResearcher([], true);
@@ -582,6 +585,18 @@ await check("#164 MUST-PASS: a DUE verify check on a verified row makes one mode
   assert.ok(eLines.some((l) => /named no edition to compare, so nothing is proposed/.test(l)), `log: ${eLines.join(" | ")}`);
   assert.ok(!eLines.some((l) => /research skipped/.test(l)), `a research answer was logged as skipped: ${eLines.join(" | ")}`);
   assert.equal(proposalRows(ZW_KEY), 1);
+  assert.equal(JSON.stringify(payloadOf(ZW_KEY)), before, "the verify check wrote the verified row");
+  // #172: a person DISMISSES it. The same finding again is still already_proposed (no second row,
+  // nothing back on the listing) — but now says it was dismissed, and by whom.
+  assert.equal(CP.dismissEditionProposal(db, String(r.proposal), "Pat Synthetic", "not adopted yet").status, "dismissed");
+  assert.equal(CP.listEditionProposals(db, ZW_KEY).length, 0, "the dismissed proposal is still pending");
+  const afterDismiss = await CP.runCodeResearch(db, { state: "ZW", ahj: "", profileKey: ZW_KEY, mode: "verify_check" }, stale.provider);
+  assert.equal(afterDismiss.outcome, "already_proposed", JSON.stringify(afterDismiss));
+  assert.equal(afterDismiss.proposalState, "dismissed", JSON.stringify(afterDismiss));
+  assert.equal(afterDismiss.dismissedBy, "Pat Synthetic");
+  assert.equal(proposalRows(ZW_KEY), 1, "a dismissed finding was proposed again");
+  assert.equal(CP.listEditionProposals(db, ZW_KEY).length, 0, "a dismissed finding came back on the listing");
+  assert.equal(CP.dismissEditionProposal(db, String(r.proposal), "Pat Synthetic").status, "refused", "a proposal was dismissed twice");
   assert.equal(JSON.stringify(payloadOf(ZW_KEY)), before, "the verify check wrote the verified row");
 });
 

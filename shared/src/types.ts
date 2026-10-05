@@ -1546,6 +1546,32 @@ export interface JurisdictionEditionProposal {
   upcoming?: UpcomingCodeEdition[];
 }
 
+/** A person's decision on a pending edition proposal (#172): POST /api/code-profiles/proposals/
+ *  approve | dismiss. The decider is the signed-in user when auth is on (a body name is ignored
+ *  then); with auth off it is `decidedBy`, and no name is a 400 — rule 3: only a NAMED person
+ *  re-verifies a row. */
+export interface EditionProposalDecisionRequest {
+  fingerprint: string;
+  decidedBy?: string;
+  /** Dismiss only: why (kept in the audit trail, 400 chars). */
+  reason?: string;
+}
+
+/** A refused decision (no such PENDING proposal: applied, dismissed or superseded since the card
+ *  was drawn) is a 409 that changes nothing. */
+export interface EditionProposalDecisionResult {
+  status: "applied" | "dismissed";
+  note: string;
+  fingerprint: string;
+  decidedBy?: string;
+  /** Approve: the re-verified row (verified_by / verified_at stamped). */
+  profile?: JurisdictionCodeProfile;
+}
+
+/** Where a recorded proposal stands: still awaiting a person, or dismissed by one. A due verify
+ *  check whose finding was already recorded says which (`already_proposed` + this). */
+export type EditionProposalState = "pending" | "dismissed";
+
 export interface JurisdictionDesignCriteria {
   /** Strength-level ground snow load Pg — what every rule compares with a plan's Pg. */
   groundSnowLoadPsf?: number;
