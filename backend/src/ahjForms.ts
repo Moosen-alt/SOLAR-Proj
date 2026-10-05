@@ -1289,15 +1289,15 @@ async function trimSignatureMargins(bytes: Uint8Array, mime: string): Promise<{ 
  * rule 1): a line with no signature on file for its role stays empty — no image, no date — and this
  * names it, so it reads as work owed, not as done.
  *  - a licence holder's signature is the job's company's (signatures.ts): named with that company;
- *  - the property owner's line is never auto-signed (drawSignatures), so it is always named;
  *  - any other role (applicant, other) is named when no signature of that role is on file.
  * One entry per role, whose words say where to fix it; its date line, when the map placed one, too.
+ * The property owner's line is not here: nothing an operator files can clear it (ownerSignedLines).
  */
 export function unsignedSignatureLines(def: AhjFormDefinition, ctx: FillContext): string[] {
   const sigs = ctx.signatures ?? {};
   const company = String(ctx.client.installerCompanyName || ctx.client.companyName || "").trim() || "this job's company";
   const placements = def.signatureFields ?? [];
-  const roles = Array.from(new Set(placements.map((pl) => String(pl.role || "").trim()).filter((r) => r && (r === "owner" || !sigs[r]))));
+  const roles = Array.from(new Set(placements.map((pl) => String(pl.role || "").trim()).filter((r) => r && r !== "owner" && !sigs[r])));
   return roles.map((role) => {
     const mine = placements.filter((pl) => String(pl.role || "").trim() === role);
     const dated = mine.some((pl) => pl.dateX != null && pl.dateY != null) ? "; its date line is left blank too" : "";
@@ -1305,9 +1305,18 @@ export function unsignedSignatureLines(def: AhjFormDefinition, ctx: FillContext)
       return `${role === "electrician" ? "Electrician" : "Contractor"} signature — no ${role} signature on file for ${company}; the line is left unsigned (sign it by hand, or add ${company}'s ${role} signature under Signatures and rebuild)${dated}`;
     }
     const label = String(mine.find((pl) => String(pl.label ?? "").trim())?.label ?? "").trim() || "Signature";
-    if (role === "owner") return `${label} (owner) — the property owner signs this line by hand; it is never signed automatically${dated}`;
     return `${label} (${role}) — no ${role} signature on file; the line is left unsigned (sign it by hand, or add ${/^[aeiou]/i.test(role) ? "an" : "a"} ${role} signature under Signatures and rebuild)${dated}`;
   });
+}
+
+/**
+ * THE PROPERTY OWNER'S LINES, said in the card message only. drawSignatures never signs them (the
+ * homeowner signs in person), and no signature an operator stores could change that — so they are
+ * never a "needs details" blank the operator could clear (Helm ruling on #73), just named.
+ */
+export function ownerSignedLines(def: AhjFormDefinition): string[] {
+  const owner = (def.signatureFields ?? []).filter((pl) => String(pl.role || "").trim() === "owner");
+  return Array.from(new Set(owner.map((pl) => String(pl.label ?? "").trim() || "Owner signature")));
 }
 
 async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: FillContext): Promise<number> {
@@ -1718,14 +1727,16 @@ export async function fillLoadedForm(
     ? (def.notes ?? []).map((n) => n.split(CURATED_SAVED_FEE_NOTE).map((s) => s.trim()).filter(Boolean).join(" "))
     : (def.notes ?? []);
   // A signature line left unsigned (no signature on file for its role — a licence holder's for THIS
-  // job's company — or the owner's, never auto-signed) is named as the operator's item (listed with
-  // the blanks, so the form reads "needs details").
+  // job's company) is named as the operator's item (listed with the blanks, so the form reads "needs
+  // details"). The owner's line is said in the message only: the homeowner signs it in person.
   const unsignedLines = unsignedSignatureLines(def, ctx);
   missingRequired.push(...unsignedLines);
+  const ownerLines = ownerSignedLines(def);
   // A structure answer the PLAN SET gave (no person did) is said with the words that decided it.
   const structureNote = structureFillNote(def, ctx);
   const completionMessage = [checklistMessage, structureNote, operatorMissing.length ? `Still needs: ${operatorMissing.join("; ")}.` : "",
     unsignedLines.length ? `Left unsigned: ${unsignedLines.join("; ")}.` : "",
+    ownerLines.length ? `For the property owner to sign by hand: ${ownerLines.join("; ")}.` : "",
     officeMissing.length ? `From the planning / land-use office (when it applies): ${officeMissing.join("; ")}.` : "",
     agencyMissing.length ? `Left for the agency to compute: ${agencyMissing.join("; ")}.` : "",
     printedFeeNote, ...notes].filter(Boolean).join(" ") || undefined;

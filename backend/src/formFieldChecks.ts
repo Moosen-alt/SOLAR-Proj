@@ -252,9 +252,6 @@ const MAILING_PART_FOR: Record<string, string> = {
   "computed.cityStateZip": "computed.homeownerMailingCityStateZip",
 };
 const CITY_STATE_ZIP_SOURCES = new Set([...Object.keys(MAILING_PART_FOR), ...Object.values(MAILING_PART_FOR), "snapshot.homeownerMailingCityStateZip"]);
-/** The caption's own words, past a "SECTION - " prefix the flat mapper writes ("PROPERTY OWNER - City:"). */
-const ownCaption = (caption: string): string => printedWords(caption).split(/\s+-\s+/).pop() ?? "";
-const CITY_STATE_ZIP_CELL = /^\W*(?:city|state|zip|postal)\b/i;
 const ADDRESS_CELL = /\baddress\b|\bstreet\b/i;
 const EMAIL_CELL = /\be-?\s?mail\b|\bweb\s*site\b/i;
 const MAILING_CELL = /\bmail(?:ing)?\b|\bowner'?s?\b/i;
@@ -279,29 +276,51 @@ export interface AddressCell { key: string; caption: string; source: string; pag
  */
 export function addressRowRebinds(cells: AddressCell[]): Map<string, { source: string; why: string }> {
   const out = new Map<string, { source: string; why: string }>();
-  const sameRow = (a: AddressCell, b: AddressCell): boolean => {
-    if (!a.rect || !b.rect || (a.page ?? 0) !== (b.page ?? 0)) return false;
-    const tolerance = Math.max(4, Math.min(a.rect.height, b.rect.height) / 2);
-    return Math.abs((a.rect.y + a.rect.height / 2) - (b.rect.y + b.rect.height / 2)) <= tolerance;
+  // A neighbour is the address cell's own City / State / ZIP by its SOURCE only — a site or owner-
+  // mailing part. A caption alone ("City") is not enough: the contractor's "Address | City | Zip" row
+  // under a lone owner address, or a contractor column beside a site address, prints the same words.
+  const isCityStateZipCell = (c: AddressCell): boolean => CITY_STATE_ZIP_SOURCES.has(String(c.source ?? "").trim());
+  const centre = (c: AddressCell): number => c.rect!.y + c.rect!.height / 2;
+  const onPage = (a: AddressCell, b: AddressCell): boolean => Boolean(a.rect && b.rect) && (a.page ?? 0) === (b.page ?? 0);
+  const sameRow = (a: AddressCell, b: AddressCell): boolean =>
+    onPage(a, b) && Math.abs(centre(a) - centre(b)) <= Math.max(4, Math.min(a.rect!.height, b.rect!.height) / 2);
+  // THE ROW'S OWN CELLS: City / State / ZIP cells running RIGHT from the address cell, each starting
+  // within ROW_GAP of the one before, with no other cell between — a second column's cells on the same
+  // baseline are not this address's.
+  const ROW_GAP = 240;
+  const rowParts = (cell: AddressCell): AddressCell[] => {
+    const right = cells.filter((o) => o !== cell && sameRow(cell, o) && o.rect!.x > cell.rect!.x).sort((p, q) => p.rect!.x - q.rect!.x);
+    const parts: AddressCell[] = [];
+    let edge = cell.rect!.x + cell.rect!.width;
+    for (const o of right) {
+      if (!isCityStateZipCell(o) || o.rect!.x - edge > ROW_GAP) break;
+      parts.push(o);
+      edge = Math.max(edge, o.rect!.x + o.rect!.width);
+    }
+    return parts;
   };
   // An owner's address block often prints its City / State / ZIP on the line right BELOW the street
   // (Yamhill's "Property Owner - Address:" over "City/State/Zip:", ABQ's OWNER: ADDRESS over ZIP):
-  // those are the mailing cell's own too — it is a street line, not a lone one-line address.
-  const lineBelow = (a: AddressCell, b: AddressCell): boolean => {
-    if (!a.rect || !b.rect || (a.page ?? 0) !== (b.page ?? 0)) return false;
-    const drop = (a.rect.y + a.rect.height / 2) - (b.rect.y + b.rect.height / 2);
-    const overlaps = b.rect.x < a.rect.x + a.rect.width && a.rect.x < b.rect.x + b.rect.width;
-    return overlaps && drop > Math.max(4, Math.min(a.rect.height, b.rect.height) / 2) && drop <= 2.5 * Math.max(a.rect.height, b.rect.height);
+  // the NEAREST cell under the street, starting where it starts, is the mailing cell's own too.
+  const lineBelow = (cell: AddressCell): AddressCell[] => {
+    if (!cell.rect) return [];
+    const under = cells.filter((o) => o !== cell && onPage(cell, o)
+      && centre(cell) - centre(o) > Math.max(4, Math.min(cell.rect!.height, o.rect!.height) / 2)
+      && centre(cell) - centre(o) <= 2 * Math.max(cell.rect!.height, o.rect!.height)
+      && o.rect!.x < cell.rect!.x + cell.rect!.width && cell.rect!.x < o.rect!.x + o.rect!.width);
+    if (!under.length) return [];
+    const nearest = Math.max(...under.map(centre));
+    const row = under.filter((o) => Math.abs(centre(o) - nearest) < 2).sort((p, q) => p.rect!.x - q.rect!.x);
+    const first = row[0];
+    return first && isCityStateZipCell(first) && Math.abs(first.rect!.x - cell.rect!.x) <= 40 ? [first, ...rowParts(first)] : [];
   };
-  const isCityStateZipCell = (c: AddressCell): boolean =>
-    CITY_STATE_ZIP_CELL.test(ownCaption(c.caption)) || CITY_STATE_ZIP_SOURCES.has(String(c.source ?? "").trim());
   for (const cell of cells) {
     const src = String(cell.source ?? "").trim();
     const caption = printedWords(cell.caption);
     if (!STREET_LINE_SOURCES.has(src) || !ADDRESS_CELL.test(caption) || EMAIL_CELL.test(caption)) continue;
-    const neighbours = cells.filter((o) => o !== cell && sameRow(cell, o) && isCityStateZipCell(o));
+    const neighbours = cell.rect ? rowParts(cell) : [];
     if (MAILING_CELL.test(caption)) {
-      const own = [...neighbours, ...cells.filter((o) => o !== cell && lineBelow(cell, o) && isCityStateZipCell(o))];
+      const own = [...neighbours, ...(neighbours.length ? [] : lineBelow(cell))];
       const to = own.length || src === "computed.streetAddress" ? "computed.homeownerMailingStreet" : "computed.homeownerMailingFullAddress";
       out.set(cell.key, { source: to, why: "an owner / mailing address takes the owner's mailing address, not the site's" });
       for (const n of own) {

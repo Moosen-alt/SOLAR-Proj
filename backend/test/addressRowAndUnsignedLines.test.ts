@@ -143,6 +143,39 @@ await check("#72 rule: an owner address whose City/State/Zip prints on the line 
   assert.equal(out.get("lone")?.source, "computed.homeownerMailingFullAddress");
 });
 
+await check("#72 MUST-EXCLUDE (A): a lone owner address with the CONTRACTOR's Address | City | Zip row just below stays a whole mailing address", () => {
+  const cells = [
+    { key: "owner", caption: "Owner Address", source: "project.projectAddress", page: 0, rect: placementRect(P("x", 89, 450, "", 257)) },
+    { key: "kAddr", caption: "Contractor Address", source: "client.installerStreet", page: 0, rect: placementRect(P("x", 89, 432, "", 150)) },
+    { key: "kCity", caption: "City", source: "client.installerCityStateZip", page: 0, rect: placementRect(P("x", 260, 432, "", 100)) },
+    { key: "kZip", caption: "Zip", source: "lit:97000", page: 0, rect: placementRect(P("x", 380, 432, "", 60)) },
+  ];
+  const out = addressRowRebinds(cells);
+  assert.equal(out.get("owner")?.source, "computed.homeownerMailingFullAddress", "the owner's city/state/zip would print nowhere");
+  for (const k of ["kAddr", "kCity", "kZip"]) assert.equal(out.has(k), false, `${k}: the contractor's row was rebound`);
+});
+
+await check("#72 MUST-EXCLUDE (B): a two-column row — Site Address at left, the CONTRACTOR's City on the right — keeps the full site address", () => {
+  const cells = [
+    { key: "site", caption: "Site Address", source: "project.projectAddress", page: 0, rect: placementRect(P("x", 22, 600, "", 250)) },
+    { key: "kCity", caption: "CONTRACTOR - City", source: "client.installerCityStateZip", page: 0, rect: placementRect(P("x", 320, 600, "", 120)) },
+  ];
+  assert.equal(addressRowRebinds(cells).size, 0);
+  // Even a site City source far across the page (a mis-bound second column) is not this row's.
+  const far = [
+    { key: "site", caption: "Site Address", source: "project.projectAddress", page: 0, rect: placementRect(P("x", 22, 600, "", 120)) },
+    { key: "kCity", caption: "CONTRACTOR - City", source: "project.city", page: 0, rect: placementRect(P("x", 520, 600, "", 60)) },
+  ];
+  assert.equal(addressRowRebinds(far).size, 0, "a cell 378pt past the address cell's edge was read as its own");
+  // …nor one with another cell between them.
+  const between = [
+    { key: "site", caption: "Site Address", source: "project.projectAddress", page: 0, rect: placementRect(P("x", 22, 600, "", 200)) },
+    { key: "kName", caption: "CONTRACTOR - Name", source: "client.installerCompanyName", page: 0, rect: placementRect(P("x", 240, 600, "", 100)) },
+    { key: "kCity", caption: "City", source: "project.city", page: 0, rect: placementRect(P("x", 360, 600, "", 80)) },
+  ];
+  assert.equal(addressRowRebinds(between).size, 0, "a City cell past another column's cell was read as the address's own");
+});
+
 await check("#72 mappers: a fresh vision map passes the same rule (sanitizePlacements → sanitizeAcroMap) and names what it rebound", () => {
   const checked = sanitizePlacements({ widgets: [], items: [], state: "NM", textFields: {}, checkboxes: {}, placements: PLACEMENTS });
   assert.deepEqual(checked.placements.map((p) => p.source), [
@@ -202,11 +235,12 @@ await check("#73: an APPLICANT line with no signature on file is left unsigned A
   assert.ok(!values.some((v) => Math.abs(v.y - 200) < 2 && v.x > 300), "hard rule 1: a date was written on an unsigned line");
 });
 
-await check("#73: an OWNER line is never signed automatically — and is named, even with an applicant signature on file", async () => {
+await check("#73: an OWNER line is never signed automatically — named in the card MESSAGE only, never a \"needs details\" blank (Helm ruling)", async () => {
   const sigs = { applicant: { bytes: inkPng(), mime: "image/png", widthPx: 160, heightPx: 48, name: "Ada Submitter" } } as Ctx["signatures"];
   const { result } = await fill(defOf(false, [APPLICANT, OWNER]), ctxOf({}, sigs), "owner-named");
   const items = result.unmappedRequested ?? [];
-  assert.ok(items.some((l) => /^Owner Signature \(owner\) — the property owner signs this line by hand/.test(l)), JSON.stringify(items));
+  assert.match(String(result.message), /For the property owner to sign by hand: Owner Signature\./);
+  assert.ok(!items.some((l) => /owner/i.test(l)), `the owner line is a blank the operator cannot clear: ${JSON.stringify(items)}`);
   assert.ok(!items.some((l) => /\(applicant\)/.test(l)), "MUST-PASS: the applicant signed — nothing owed on that line");
 });
 
