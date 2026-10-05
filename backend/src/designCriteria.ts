@@ -2216,9 +2216,14 @@ export const UPCOMING_SOFTEN_DAYS_AFTER = 30;
  *  insensitive substring; helm's decision on #124). A missing status, "proposed", "in rulemaking"
  *  or "draft" is speculative and never softens. */
 export const UPCOMING_SOFTENING_STATUSES = ["adopted", "filed", "effective"] as const;
+/** A NEGATED status contains a softening word too: "not adopted", "unfiled", "not yet effective",
+ *  "ineffective" all substring-match. A status that negates is not one that softens; erring this
+ *  way only keeps a verified blocker a blocker. */
+const UPCOMING_STATUS_NEGATED = /\b(?:not|no|never)\b|\bun-?(?:adopted|filed)\b|\bin-?effective\b|\bnon-?(?:adopted|filed|effective)\b/;
 
 function upcomingStatusSoftens(status: string | undefined): boolean {
   const s = String(status ?? "").toLowerCase();
+  if (UPCOMING_STATUS_NEGATED.test(s)) return false;
   return UPCOMING_SOFTENING_STATUSES.some((w) => s.includes(w));
 }
 
