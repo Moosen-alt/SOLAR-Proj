@@ -108,9 +108,10 @@ export async function processStageStep(db: AppDb, projectId: string, opts: Stage
   // she had already provided, until a human clicked split. Operator ruling (2026-09-21): "have
   // it auto split everything… once it splits its good, just have it auto do it then check
   // again." Deduped on recency: split rows newer than the newest plan set mean this plan set
-  // is already split; a NEWLY uploaded plan set re-splits. Pure-local (pdf-lib page routing,
-  // no browser, no LLM), and a failure is logged and stepped past — the doc gates downstream
-  // still rule honestly on whatever exists.
+  // is already split; a NEWLY uploaded plan set re-splits. Local pdf-lib page routing, no
+  // browser; the one model call is the page-index read of title-only EQUIPMENT SPECIFICATION
+  // pages the text could not place (#79), made only when there are such pages. A failure is
+  // logged and stepped past — the doc gates downstream still rule honestly on whatever exists.
   const chainOwned = ["parsed", "qc_failed", "qc_passed", "ready_to_stage"].includes(status());
   if (chainOwned) {
     const planSet = db.get<{ uploaded_at: string }>(
@@ -153,7 +154,8 @@ export async function processStageStep(db: AppDb, projectId: string, opts: Stage
       step("split");
       try {
         const { buildUtilityPackage, undecidedSpecSummary } = await import("./docSplitter");
-        const pkg = await buildUtilityPackage(db, projectId, "all");
+        const { createLLMProvider } = await import("./llm");
+        const pkg = await buildUtilityPackage(db, projectId, "all", { llm: createLLMProvider() });
         ran.push(`split(${(pkg.parts || []).length})`);
         // Name what the split did NOT produce: "parts=5" alone hid that the site plan was never
         // cut out, and the gate's "missing site plan" then looked unrelated to the split.
@@ -165,6 +167,10 @@ export async function processStageStep(db: AppDb, projectId: string, opts: Stage
           // Title-only EQUIPMENT SPECIFICATION cut-sheets the splitter could not tell apart (#66):
           // why module_spec / inverter_spec may be "missing" from a set that has cut-sheets.
           ...(pkg.undecidedSpecPages?.length ? { undecidedSpecPages: undecidedSpecSummary(pkg.undecidedSpecPages, pkg.undecidedSpecFiledAs ?? {}) } : {}),
+          // What the page-index read made of them (#79), and any page withheld from it as a bill/meter.
+          ...(pkg.specPagesByVision && Object.keys(pkg.specPagesByVision).length
+            ? { specPagesByVision: Object.entries(pkg.specPagesByVision).map(([p, k]) => `${p}(${k})`).join(",") } : {}),
+          ...(pkg.specPagesWithheld?.length ? { specPagesWithheld: pkg.specPagesWithheld.join(",") } : {}),
           ...(gaps.length ? { resplitFor: gaps.join(",") } : {}),
         });
       } catch (err) {

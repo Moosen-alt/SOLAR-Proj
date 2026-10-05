@@ -3099,6 +3099,9 @@ export interface PlanPageClass {
   kind: PlanSheetKind;
   /** Clockwise degrees that turn the sheet's drawing upright (set by the orientation read). */
   rotate: 0 | 90 | 180 | 270;
+  /** module_spec only: an AC-MODULE datasheet that also carries its integrated microinverter's
+   *  ratings and UL 1741 listing — it is the inverter datasheet too (#79). Never set otherwise. */
+  integratedInverter?: true;
 }
 
 /** The page-index read of a plan set: one entry per page image it was shown. */
