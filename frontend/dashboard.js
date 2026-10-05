@@ -1861,6 +1861,7 @@ function renderKnowledgeProfile(profile) {
       ${corrections.length ? `<div style="margin-top:4px;font-size:12px"><strong>Common corrections:</strong> <ul style="margin:2px 0 0 16px;padding:0">${corrections.map((c) => `<li>${esc(c.rootCause)}${c.count > 1 ? ` (×${c.count})` : ""}</li>`).join("")}</ul></div>` : ""}
       ${profile.notes ? kbNotesHtml(profile.notes) : ""}
       ${kbDesignCriteriaHtml(codeProfileForKb(profile, state.codeProfiles || [], state.designLookups || []))}
+      ${window.EditionProposals ? window.EditionProposals.renderEditionProposals(codeProfileForKb(profile, state.codeProfiles || [], state.designLookups || [])) : ""}
       ${kbDeleteButtonHtml(profile)}
     </article>
   `;
@@ -1891,6 +1892,53 @@ async function deleteKnowledgeEntry(profileKey, verified) {
   renderKnowledgeBase();
   showMessage(`Deleted knowledge-base entry ${profileKey}.`);
   return true;
+}
+
+// EDITION PROPOSALS (#172): a person approves (re-verifies the row with the proposed editions under
+// their name — rule 3) or dismisses a proposal a verify check stored. With sign-in on, the server
+// records the signed-in user and ignores any name sent; with it off, the person types their name
+// (a re-verification is a named person vouching for it). The list is re-read afterwards, so the card
+// shows what now stands (the row re-verified, or the proposal gone).
+async function decideEditionProposal(action, fingerprint, btn) {
+  if (!fingerprint) return;
+  let auth = state.authMe;
+  if (!auth) {
+    try { auth = await api("/api/auth/me"); state.authMe = auth; } catch { auth = { enabled: false, user: null }; }
+  }
+  const lede = action === "approve"
+    ? "Approve this edition proposal? The code profile is RE-VERIFIED with the proposed editions under your name — check them against the cited source first."
+    : "Dismiss this edition proposal? The row stays as it is, and the same finding is not proposed again.";
+  let decidedBy = "";
+  let reason = "";
+  if (auth && auth.enabled) {
+    if (!confirm(`${lede}\n\nRecorded as: ${(auth.user && (auth.user.name || auth.user.email)) || "you"}`)) return;
+  } else {
+    let last = "";
+    try { last = localStorage.getItem("feeConfirmName") || ""; } catch { last = ""; }
+    const typed = window.prompt(`${lede}\n\nYour name (recorded as the person who decided):`, last);
+    if (typed == null) return;
+    decidedBy = String(typed).trim();
+    if (!decidedBy) { showMessage("Enter your name — an edition proposal is decided by a named person.", "warning"); return; }
+    try { localStorage.setItem("feeConfirmName", decidedBy); } catch { /* per-viewer convenience only */ }
+  }
+  if (action === "dismiss") {
+    const why = window.prompt("Why dismiss it? (optional, kept in the audit trail)", "");
+    if (why == null) return;
+    reason = String(why).trim();
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api(`/api/code-profiles/proposals/${action}`, { method: "POST", body: JSON.stringify({ fingerprint, decidedBy, reason }) });
+    showMessage(res.note || (action === "approve" ? "Proposal approved." : "Proposal dismissed."));
+  } catch (err) {
+    showMessage(`${action === "approve" ? "Approve" : "Dismiss"} failed: ${err.message}`, "error");
+  }
+  try {
+    const cp = await api("/api/code-profiles");
+    state.codeProfiles = cp.profiles || [];
+    state.designLookups = cp.designLookups || [];
+  } catch { /* the card keeps what it had; the message above says what happened */ }
+  renderKnowledgeBase();
 }
 
 // THE JURISDICTION'S CODE PROFILE ON ITS KB CARD. Knowledge rows are keyed state|ahj|utility and
@@ -2097,6 +2145,12 @@ function renderKnowledgeBase() {
 
   container.querySelectorAll("[data-kb-delete]").forEach((btn) => {
     btn.addEventListener("click", () => deleteKnowledgeEntry(btn.getAttribute("data-kb-delete"), btn.getAttribute("data-kb-verified") === "1"));
+  });
+  container.querySelectorAll("[data-edition-approve]").forEach((btn) => {
+    btn.addEventListener("click", () => decideEditionProposal("approve", btn.getAttribute("data-edition-approve"), btn));
+  });
+  container.querySelectorAll("[data-edition-dismiss]").forEach((btn) => {
+    btn.addEventListener("click", () => decideEditionProposal("dismiss", btn.getAttribute("data-edition-dismiss"), btn));
   });
 
   const moreBtn = $("kbShowMore");

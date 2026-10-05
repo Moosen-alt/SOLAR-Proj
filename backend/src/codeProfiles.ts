@@ -34,6 +34,7 @@ import type {
   JurisdictionCriteriaProposal,
   JurisdictionDesignCriteria,
   JurisdictionEditionProposal,
+  EditionProposalState,
   JurisdictionReviewRule,
   LLMProvider,
   PermitPrecedentItem,
@@ -1374,8 +1375,33 @@ export function applyEditionProposal(db: AppDb, fingerprint: string, actor: stri
   return { status: "applied", note: `Re-verified ${p.profileKey} with ${p.changes.length} edition change(s).`, profile: saved };
 }
 
-export function dismissEditionProposal(db: AppDb, fingerprint: string, actor: string, reason = ""): void {
-  addAuditLog(db, null, "human", actor || "operator", PROPOSAL_DISMISSED, { fingerprint, reason: String(reason).slice(0, 400) });
+/** A PERSON dismissed the proposal: it leaves the pending list and the same finding is never
+ *  proposed again (a later verify check reports it as already_proposed + "dismissed"). Only a
+ *  pending proposal can be dismissed — a stale click on one already applied, dismissed or
+ *  superseded records nothing. */
+export function dismissEditionProposal(db: AppDb, fingerprint: string, actor: string, reason = ""): { status: "dismissed" | "refused"; note: string } {
+  const p = listEditionProposals(db).find((x) => x.fingerprint === fingerprint);
+  if (!p) return { status: "refused", note: "No pending proposal with that id (applied, dismissed, superseded, or the row is no longer verified)." };
+  addAuditLog(db, null, "human", actor || "operator", PROPOSAL_DISMISSED, { fingerprint, profileKey: p.profileKey, reason: String(reason).slice(0, 400) });
+  return { status: "dismissed", note: `Dismissed proposal for ${p.profileKey} (${p.changes.map((c) => `${c.family}: ${c.proposed ?? "(none)"}`).join(", ")}); the row is unchanged.` };
+}
+
+/** Where a RECORDED edition finding for this row stands (#172): the proposal that carries it is
+ *  "dismissed" when a person dismissed it, else "pending". Null when no such finding was recorded.
+ *  The finding is matched by fingerprint first; failing that (the save narrowed the answer before
+ *  proposing), the row's newest editions proposal is the one the check repeated. */
+export function editionProposalState(db: AppDb, key: string, rowCodes: CodeEdition[], foundCodes: CodeEdition[]): { state: EditionProposalState; fingerprint: string; dismissedBy?: string; dismissedAt?: string } | null {
+  const recorded = db.query<Row>(
+    "SELECT details FROM audit_logs WHERE action = ? AND details LIKE ? ESCAPE '\\' ORDER BY created_at DESC LIMIT 200",
+    [PROPOSAL_ACTION, `%"profileKey":"${likeLiteral(key)}"%`],
+  ).flatMap((r) => {
+    try { const p = JSON.parse(text(r.details)) as JurisdictionEditionProposal; return p.profileKey === key && (p.kind ?? "editions") === "editions" ? [p.fingerprint] : []; } catch { return []; }
+  });
+  if (!recorded.length) return null;
+  const exact = fingerprintOf(key, editionChanges(rowCodes, foundCodes));
+  const fingerprint = recorded.includes(exact) ? exact : recorded[0];
+  const d = db.get<Row>("SELECT actor_name, created_at FROM audit_logs WHERE action = ? AND details LIKE ? ESCAPE '\\' ORDER BY created_at DESC LIMIT 1", [PROPOSAL_DISMISSED, `%"fingerprint":"${likeLiteral(fingerprint)}"%`]);
+  return d ? { state: "dismissed", fingerprint, dismissedBy: text(d.actor_name), dismissedAt: text(d.created_at) } : { state: "pending", fingerprint };
 }
 
 /** Is this "AHJ" really a hostname / portal address? The learn benchmark created projects
@@ -1680,9 +1706,13 @@ function verifyCheckOutcome(db: AppDb, key: string, row: Row | null | undefined,
     : !found.adoptedCodes.length ? "nothing_to_compare"
     : row && editionChanges(mapRow(row).adoptedCodes, found.adoptedCodes).length ? "already_proposed"
     : "agrees";
+  // already_proposed: say WHICH — still awaiting a person, or a person already dismissed this very
+  // finding (it is never proposed again, so the check's answer stops here on purpose).
+  const prior = outcome === "already_proposed" && row ? editionProposalState(db, key, mapRow(row).adoptedCodes, found.adoptedCodes) : null;
   return {
     saved: false, verified: true, modelCalled: true, outcome, proposals: after.length, newProposal: added.length > 0,
     ...(added.length ? { proposal: added[0].fingerprint } : {}),
+    ...(prior ? { proposal: prior.fingerprint, proposalState: prior.state, ...(prior.dismissedBy ? { dismissedBy: prior.dismissedBy, dismissedAt: prior.dismissedAt } : {}) } : {}),
   };
 }
 
