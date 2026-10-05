@@ -12,8 +12,8 @@ import { requiredTracks } from "./submittalTracks";
 import { planSetLicenceWarning, planSetPrintedLicences } from "./clientMatch";
 import type { CaptionSide, LabelItem, WidgetCaptions, WidgetRect } from "./formTextLayer";
 import {
-  attestsAttachedDocument, captionSourceRule, contactShapeRefusal, isLicenceHolderSlot, isTotalRow, isValuationSlot, licenceSourceRef, operatorItemLabels,
-  OREGON_CCB_SOURCE, signerNameConflicts, slotLicenceRef, STATE_LICENCE_SOURCE, TYPED_LICENCE_PREFIX, widgetContactKind, widgetLabel,
+  addressRowRebinds, attestsAttachedDocument, captionSourceRule, contactShapeRefusal, isLicenceHolderSlot, isTotalRow, isValuationSlot, licenceSourceRef, operatorItemLabels,
+  OREGON_CCB_SOURCE, placementRect, signerNameConflicts, slotLicenceRef, STATE_LICENCE_SOURCE, TYPED_LICENCE_PREFIX, widgetContactKind, widgetLabel,
   type LicenceSourceRef, type OperatorItem, type PlacedWidget,
 } from "./formFieldChecks";
 import { namesWorkersComp, workersCompAffidavitItem } from "./formFieldChecks";
@@ -900,10 +900,30 @@ function computed(name: string, ctx: FillContext): string {
     // contractor phone the client record already formats. Anything else is left as written.
     case "homeownerPhone":
       return formatUsPhone(str(ctx.snapshot.homeownerPhone));
+    // THE OWNER'S MAILING ADDRESS, by part. It is the install address unless the project records
+    // another (the 2026-09-27 ruling — buildContext writes that default into the snapshot when the
+    // site is complete). With NO mailing address on file at all these read the site's own parts, so an
+    // auto-mapped owner row (#72) never goes blank where it printed the site before; a recorded one —
+    // even a partial one — is never mixed with the site's.
+    case "homeownerMailingStreet":
+    case "homeownerMailingFullAddress":
+    case "homeownerMailingCityStateZip":
     case "homeownerMailingCity":
     case "homeownerMailingState":
     case "homeownerMailingZip": {
-      const m = /^\s*(.+?),?\s+([A-Za-z]{2})\.?,?\s+(\d{5}(?:-\d{4})?)\s*$/.exec(str(ctx.snapshot.homeownerMailingCityStateZip));
+      const street = str(ctx.snapshot.homeownerMailingAddress);
+      const cityStateZip = str(ctx.snapshot.homeownerMailingCityStateZip);
+      if (!street && !cityStateZip) {
+        const site: Record<string, string> = {
+          homeownerMailingStreet: "streetAddress", homeownerMailingFullAddress: "fullAddress", homeownerMailingCityStateZip: "cityStateZip",
+        };
+        if (site[name]) return computed(site[name], ctx);
+        return str(name === "homeownerMailingCity" ? ctx.project.city : name === "homeownerMailingState" ? ctx.project.state : ctx.project.zip);
+      }
+      if (name === "homeownerMailingStreet") return street;
+      if (name === "homeownerMailingCityStateZip") return cityStateZip;
+      if (name === "homeownerMailingFullAddress") return [street, cityStateZip].filter(Boolean).join(", ");
+      const m = /^\s*(.+?),?\s+([A-Za-z]{2})\.?,?\s+(\d{5}(?:-\d{4})?)\s*$/.exec(cityStateZip);
       if (!m) return "";
       return name === "homeownerMailingCity" ? m[1].replace(/,\s*$/, "").trim() : name === "homeownerMailingState" ? m[2].toUpperCase() : m[3];
     }
@@ -1263,16 +1283,40 @@ async function trimSignatureMargins(bytes: Uint8Array, mime: string): Promise<{ 
 }
 
 /**
- * THE LICENCE-HOLDER LINES THIS FORM LEAVES UNSIGNED, NAMED FOR THE OPERATOR. A licence holder's
- * signature is the job's company's (signatures.ts); when that company has none on file, the line is
- * left empty — no image, no date — and this names it, so it reads as work owed, not as done.
- * One entry per role, whose words say where to fix it.
+ * THE SIGNATURE LINES THIS FORM LEAVES UNSIGNED, NAMED FOR THE OPERATOR — whatever the role, so no
+ * blank on the form is silent (an applicant line on the Valencia County application, #73, was left
+ * blank with no signature on file and named nowhere). Automation never invents a signature (hard
+ * rule 1): a line with no signature on file for its role stays empty — no image, no date — and this
+ * names it, so it reads as work owed, not as done.
+ *  - a licence holder's signature is the job's company's (signatures.ts): named with that company;
+ *  - any other role (applicant, other) is named when no signature of that role is on file.
+ * One entry per role, whose words say where to fix it; its date line, when the map placed one, too.
+ * The property owner's line is not here: nothing an operator files can clear it (ownerSignedLines).
  */
-export function unsignedLicenceHolderLines(def: AhjFormDefinition, ctx: FillContext): string[] {
+export function unsignedSignatureLines(def: AhjFormDefinition, ctx: FillContext): string[] {
   const sigs = ctx.signatures ?? {};
   const company = String(ctx.client.installerCompanyName || ctx.client.companyName || "").trim() || "this job's company";
-  const roles = Array.from(new Set((def.signatureFields ?? []).map((pl) => pl.role).filter((r) => isLicenceHolderRole(r) && !sigs[r])));
-  return roles.map((role) => `${role === "electrician" ? "Electrician" : "Contractor"} signature — no ${role} signature on file for ${company}; the line is left unsigned (sign it by hand, or add ${company}'s ${role} signature under Signatures and rebuild)`);
+  const placements = def.signatureFields ?? [];
+  const roles = Array.from(new Set(placements.map((pl) => String(pl.role || "").trim()).filter((r) => r && r !== "owner" && !sigs[r])));
+  return roles.map((role) => {
+    const mine = placements.filter((pl) => String(pl.role || "").trim() === role);
+    const dated = mine.some((pl) => pl.dateX != null && pl.dateY != null) ? "; its date line is left blank too" : "";
+    if (isLicenceHolderRole(role)) {
+      return `${role === "electrician" ? "Electrician" : "Contractor"} signature — no ${role} signature on file for ${company}; the line is left unsigned (sign it by hand, or add ${company}'s ${role} signature under Signatures and rebuild)${dated}`;
+    }
+    const label = String(mine.find((pl) => String(pl.label ?? "").trim())?.label ?? "").trim() || "Signature";
+    return `${label} (${role}) — no ${role} signature on file; the line is left unsigned (sign it by hand, or add ${/^[aeiou]/i.test(role) ? "an" : "a"} ${role} signature under Signatures and rebuild)${dated}`;
+  });
+}
+
+/**
+ * THE PROPERTY OWNER'S LINES, said in the card message only. drawSignatures never signs them (the
+ * homeowner signs in person), and no signature an operator stores could change that — so they are
+ * never a "needs details" blank the operator could clear (Helm ruling on #73), just named.
+ */
+export function ownerSignedLines(def: AhjFormDefinition): string[] {
+  const owner = (def.signatureFields ?? []).filter((pl) => String(pl.role || "").trim() === "owner");
+  return Array.from(new Set(owner.map((pl) => String(pl.label ?? "").trim() || "Owner signature")));
 }
 
 async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: FillContext): Promise<number> {
@@ -1682,14 +1726,17 @@ export async function fillLoadedForm(
   const notes = printedFeeNote
     ? (def.notes ?? []).map((n) => n.split(CURATED_SAVED_FEE_NOTE).map((s) => s.trim()).filter(Boolean).join(" "))
     : (def.notes ?? []);
-  // A licence-holder line with no signature on file for THIS job's company stays unsigned, and is
-  // named as the operator's item (listed with the blanks, so the form reads "needs details").
-  const unsignedLines = unsignedLicenceHolderLines(def, ctx);
+  // A signature line left unsigned (no signature on file for its role — a licence holder's for THIS
+  // job's company) is named as the operator's item (listed with the blanks, so the form reads "needs
+  // details"). The owner's line is said in the message only: the homeowner signs it in person.
+  const unsignedLines = unsignedSignatureLines(def, ctx);
   missingRequired.push(...unsignedLines);
+  const ownerLines = ownerSignedLines(def);
   // A structure answer the PLAN SET gave (no person did) is said with the words that decided it.
   const structureNote = structureFillNote(def, ctx);
   const completionMessage = [checklistMessage, structureNote, operatorMissing.length ? `Still needs: ${operatorMissing.join("; ")}.` : "",
     unsignedLines.length ? `Left unsigned: ${unsignedLines.join("; ")}.` : "",
+    ownerLines.length ? `For the property owner to sign by hand: ${ownerLines.join("; ")}.` : "",
     officeMissing.length ? `From the planning / land-use office (when it applies): ${officeMissing.join("; ")}.` : "",
     agencyMissing.length ? `Left for the agency to compute: ${agencyMissing.join("; ")}.` : "",
     printedFeeNote, ...notes].filter(Boolean).join(" ") || undefined;
@@ -1843,6 +1890,12 @@ export async function fillLoadedForm(
         }
       }
     };
+    // The address rule reads the whole row, so it is asked once over every labelled placement.
+    const overlayAddressRebinds = def.unverifiedMap
+      ? addressRowRebinds((def.overlayFields ?? []).map((field, index) => ({
+        key: String(index), caption: String(field.label ?? "").trim(), source: field.source, page: field.page, rect: placementRect(field),
+      })))
+      : new Map<string, { source: string; why: string }>();
     // Each placement's value, resolved once before anything is drawn, so the one-number-one-slot
     // check below sees every licence placement on the form (as the AcroForm path does).
     const resolveOverlay = (index: number, field: OverlayField): { skip: boolean; overlaySource: string; text: string; printed: string; overlayRef: LicenceSourceRef | null } => {
@@ -1853,6 +1906,10 @@ export async function fillLoadedForm(
       // A recognized checklist may repair a stored placement's SOURCE (never its map).
       let overlaySource = checklist.overlaySourceOverrides?.[index] ?? field.source;
       const printed = String(field.label ?? "").trim();
+      // THE STREET LINE AND THE OWNER'S MAILING ADDRESS (formFieldChecks.addressRowRebinds): on a map
+      // nobody verified, a street cell with its own City / State / ZIP cells takes the street only.
+      const addressBound = overlayAddressRebinds.get(String(index));
+      if (addressBound && overlaySource === field.source) overlaySource = addressBound.source;
       // THE PARCEL BOX AND THE DESCRIPTION OF WORK (formFieldChecks.captionSourceRule): on a map nobody
       // verified, the printed label decides — a parcel box never takes the description of work.
       if (def.unverifiedMap && printed) {

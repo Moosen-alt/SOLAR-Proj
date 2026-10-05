@@ -127,7 +127,9 @@ export const AVAILABLE_FIELD_SOURCES: string[] = [
   "project.systemSizeAcKw",
   "project.interconnectionMethod",
   "snapshot.homeownerEmail",
-  "snapshot.homeownerPhone",
+  // The owner's phone FORMATTED ("(555) 010-0100"): the raw snapshot value drew 10 bare digits on
+  // the Valencia County application (#72).
+  'computed.homeownerPhone  (the property owner\'s phone, formatted)',
   "snapshot.moduleMake",
   "snapshot.moduleModel",
   "snapshot.moduleWattage",
@@ -158,7 +160,18 @@ export const AVAILABLE_FIELD_SOURCES: string[] = [
   // table and parcel blank stayed empty.
   'computed.estimatedJobValue  (estimated construction cost / job valuation in whole dollars — for "Estimated cost", "Cost of construction", "Valuation", "Job value"; in a cost table the TOTAL row only)',
   'snapshot.parcelNumber  (assessor parcel number / APN, as printed on the plan set — write it as printed)',
-  "computed.fullAddress",
+  'computed.fullAddress  (the site address on ONE line: street, city, state, ZIP — for a lone address blank with no City / State / ZIP blanks of its own)',
+  // A STREET CELL WITH ITS OWN CITY / STATE / ZIP CELLS takes the street only (#72: Valencia County's
+  // "MAILING ADDRESS | CITY | STATE | ZIP" row printed city, state and ZIP twice), and an owner
+  // MAILING address reads the owner-mailing source — the install address unless the project records
+  // another (the 2026-09-27 ruling, buildContext). These resolvers existed but were never offered.
+  'computed.streetAddress  (the site\'s STREET line only — for an address blank whose row has its own City / State / ZIP blanks)',
+  'computed.homeownerMailingStreet  (the property owner\'s MAILING street line — for an owner / mailing address blank whose row has its own City / State / ZIP blanks)',
+  'computed.homeownerMailingCityStateZip  (the owner\'s mailing City, State ZIP on one line)',
+  'computed.homeownerMailingCity  (the owner\'s mailing city)',
+  'computed.homeownerMailingState  (the owner\'s mailing state)',
+  'computed.homeownerMailingZip  (the owner\'s mailing ZIP)',
+  'computed.homeownerMailingFullAddress  (the owner\'s mailing address on ONE line — for a lone mailing-address blank with no City / State / ZIP blanks of its own)',
   "computed.cityStateZip",
   "computed.systemSize",
   "computed.systemSizeDcKw",

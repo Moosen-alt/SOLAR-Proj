@@ -239,6 +239,109 @@ export function captionSourceRule(caption: string | undefined, source: string): 
   return null;
 }
 
+// ---- Addresses: a street cell with its own City / State / ZIP cells takes the street only ------------
+
+/** Site-address sources that already carry city, state and ZIP. */
+const FULL_SITE_ADDRESS_SOURCES = new Set(["project.projectAddress", "computed.fullAddress"]);
+const STREET_LINE_SOURCES = new Set([...FULL_SITE_ADDRESS_SOURCES, "computed.streetAddress"]);
+/** A site City / State / ZIP source, and the owner-mailing source that replaces it on a mailing row. */
+const MAILING_PART_FOR: Record<string, string> = {
+  "project.city": "computed.homeownerMailingCity",
+  "project.state": "computed.homeownerMailingState",
+  "project.zip": "computed.homeownerMailingZip",
+  "computed.cityStateZip": "computed.homeownerMailingCityStateZip",
+};
+const CITY_STATE_ZIP_SOURCES = new Set([...Object.keys(MAILING_PART_FOR), ...Object.values(MAILING_PART_FOR), "snapshot.homeownerMailingCityStateZip"]);
+const ADDRESS_CELL = /\baddress\b|\bstreet\b/i;
+const EMAIL_CELL = /\be-?\s?mail\b|\bweb\s*site\b/i;
+const MAILING_CELL = /\bmail(?:ing)?\b|\bowner'?s?\b/i;
+
+/** A cell the address rule reads: its printed caption, its source and where it sits. */
+export interface AddressCell { key: string; caption: string; source: string; page?: number; rect?: WidgetRect }
+
+/**
+ * THE STREET LINE AND THE OWNER'S MAILING ADDRESS, BY THE ROW THE CELL SITS ON (#72: Valencia County's
+ * printed row "MAILING ADDRESS | CITY | STATE | ZIP" took the full one-line site address in its
+ * MAILING ADDRESS cell, so city, state and ZIP printed twice). One rule for both mappers' output
+ * (sanitizeAcroMap, placements included) and the flat fill (unverified maps only — a person's
+ * verified binding stands, hard rule 3):
+ *  - an address cell whose ROW has its own CITY / STATE / ZIP cells takes the street line only
+ *    (computed.streetAddress); a lone one (SITE ADDRESS, PROJECT LOCATION) keeps the full address;
+ *  - an OWNER / MAILING address cell bound to the site reads the owner-mailing source instead (the
+ *    install address unless the project records another — buildContext, the 2026-09-27 ruling), and
+ *    the City / State / ZIP cells on its row read the mailing parts, so a recorded mailing address
+ *    is never split across two addresses.
+ * Only a cell bound to a site-address source is touched (a contractor's address stays the
+ * contractor's). Returns key → the rebound source and why; a cell not in the map stands.
+ */
+export function addressRowRebinds(cells: AddressCell[]): Map<string, { source: string; why: string }> {
+  const out = new Map<string, { source: string; why: string }>();
+  // A neighbour is the address cell's own City / State / ZIP by its SOURCE only — a site or owner-
+  // mailing part. A caption alone ("City") is not enough: the contractor's "Address | City | Zip" row
+  // under a lone owner address, or a contractor column beside a site address, prints the same words.
+  const isCityStateZipCell = (c: AddressCell): boolean => CITY_STATE_ZIP_SOURCES.has(String(c.source ?? "").trim());
+  const centre = (c: AddressCell): number => c.rect!.y + c.rect!.height / 2;
+  const onPage = (a: AddressCell, b: AddressCell): boolean => Boolean(a.rect && b.rect) && (a.page ?? 0) === (b.page ?? 0);
+  const sameRow = (a: AddressCell, b: AddressCell): boolean =>
+    onPage(a, b) && Math.abs(centre(a) - centre(b)) <= Math.max(4, Math.min(a.rect!.height, b.rect!.height) / 2);
+  // THE ROW'S OWN CELLS: City / State / ZIP cells running RIGHT from the address cell, each starting
+  // within ROW_GAP of the one before, with no other cell between — a second column's cells on the same
+  // baseline are not this address's.
+  const ROW_GAP = 240;
+  const rowParts = (cell: AddressCell): AddressCell[] => {
+    const right = cells.filter((o) => o !== cell && sameRow(cell, o) && o.rect!.x > cell.rect!.x).sort((p, q) => p.rect!.x - q.rect!.x);
+    const parts: AddressCell[] = [];
+    let edge = cell.rect!.x + cell.rect!.width;
+    for (const o of right) {
+      if (!isCityStateZipCell(o) || o.rect!.x - edge > ROW_GAP) break;
+      parts.push(o);
+      edge = Math.max(edge, o.rect!.x + o.rect!.width);
+    }
+    return parts;
+  };
+  // An owner's address block often prints its City / State / ZIP on the line right BELOW the street
+  // (Yamhill's "Property Owner - Address:" over "City/State/Zip:", ABQ's OWNER: ADDRESS over ZIP):
+  // the NEAREST cell under the street, starting where it starts, is the mailing cell's own too.
+  const lineBelow = (cell: AddressCell): AddressCell[] => {
+    if (!cell.rect) return [];
+    const under = cells.filter((o) => o !== cell && onPage(cell, o)
+      && centre(cell) - centre(o) > Math.max(4, Math.min(cell.rect!.height, o.rect!.height) / 2)
+      && centre(cell) - centre(o) <= 2 * Math.max(cell.rect!.height, o.rect!.height)
+      && o.rect!.x < cell.rect!.x + cell.rect!.width && cell.rect!.x < o.rect!.x + o.rect!.width);
+    if (!under.length) return [];
+    const nearest = Math.max(...under.map(centre));
+    const row = under.filter((o) => Math.abs(centre(o) - nearest) < 2).sort((p, q) => p.rect!.x - q.rect!.x);
+    const first = row[0];
+    return first && isCityStateZipCell(first) && Math.abs(first.rect!.x - cell.rect!.x) <= 40 ? [first, ...rowParts(first)] : [];
+  };
+  for (const cell of cells) {
+    const src = String(cell.source ?? "").trim();
+    const caption = printedWords(cell.caption);
+    if (!STREET_LINE_SOURCES.has(src) || !ADDRESS_CELL.test(caption) || EMAIL_CELL.test(caption)) continue;
+    const neighbours = cell.rect ? rowParts(cell) : [];
+    if (MAILING_CELL.test(caption)) {
+      const own = [...neighbours, ...(neighbours.length ? [] : lineBelow(cell))];
+      const to = own.length || src === "computed.streetAddress" ? "computed.homeownerMailingStreet" : "computed.homeownerMailingFullAddress";
+      out.set(cell.key, { source: to, why: "an owner / mailing address takes the owner's mailing address, not the site's" });
+      for (const n of own) {
+        const part = MAILING_PART_FOR[String(n.source ?? "").trim()];
+        if (part) out.set(n.key, { source: part, why: "a City / State / ZIP cell on the owner's mailing-address row takes the mailing address's part" });
+      }
+      continue;
+    }
+    if (neighbours.length && FULL_SITE_ADDRESS_SOURCES.has(src)) {
+      out.set(cell.key, { source: "computed.streetAddress", why: "an address cell with its own City / State / ZIP cells takes the street line only" });
+    }
+  }
+  return out;
+}
+
+/** A vision placement's box as the checks read it: its baseline and width, one line tall. */
+export function placementRect(p: PlacementLike): WidgetRect {
+  const size = p.size && p.size > 0 ? p.size : 9;
+  return { x: p.x, y: p.y - 3, width: p.maxWidth && p.maxWidth > 0 ? p.maxWidth : 150, height: size + 5 };
+}
+
 // ---- B4: one signer, one name ---------------------------------------------------------------------
 
 const PRINT_NAME = /\bprint(?:ed)?\s*name\b|\bname\s*\(?\s*print/i;
@@ -423,12 +526,11 @@ export function sanitizePlacements<P extends PlacementLike>(input: {
   input.placements.forEach((p, i) => {
     const label = String(p.label ?? "").trim();
     if (!label || !p.source || p.source.startsWith("operator:")) return;
-    const size = p.size && p.size > 0 ? p.size : 9;
     const declarant = /^i\s*,/i.test(label);
     const tail = declarant ? label.replace(/^i\s*,/i, "").replace(/_{2,}/g, " ").trim() : "";
     stand.push({
       name: `${KEY}${i}`, type: "PDFTextField", page: p.page,
-      rect: { x: p.x, y: p.y - 3, width: p.maxWidth && p.maxWidth > 0 ? p.maxWidth : 150, height: size + 5 },
+      rect: placementRect(p),
       caption: declarant ? "" : label,
       ...(declarant ? { captions: { left: "I,", ...(tail ? { right: tail } : {}) } } : {}),
     });
@@ -540,6 +642,16 @@ export function sanitizeAcroMap(input: {
       textFields[name] = STATE_LICENCE_SOURCE;
       notes.push(`"${name}" was bound to the Oregon CCB number on a ${st} form; rebound to the ${st} contractor licence on file.`);
     }
+  }
+
+  // THE STREET LINE AND THE OWNER'S MAILING ADDRESS (addressRowRebinds): the row the cell sits on decides.
+  const addressCells = Object.entries(textFields).map(([name, source]) => {
+    const w = widgetOf(name);
+    return { key: name, caption: String(w.caption || "").trim() || name, source, page: w.page, rect: w.rect };
+  });
+  for (const [name, bound] of addressRowRebinds(addressCells)) {
+    notes.push(`"${name}" prints "${widgetLabel(widgetOf(name))}" — ${bound.why}; its source ${textFields[name]} was rebound to ${bound.source}.`);
+    textFields[name] = bound.source;
   }
 
   // Cost table: a Total-captioned valuation slot exists on the form.
