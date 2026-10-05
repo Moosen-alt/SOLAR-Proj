@@ -29,6 +29,18 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DesignCriteriaResearchResult, LLMProvider } from "../../shared/src/types";
 
+// Every request bound off this machine, recorded on its way to _isolate's refusal (#115). The SDK
+// reads globalThis.fetch when a client is constructed, so a real ClaudeLLMProvider call lands here.
+const outbound: string[] = [];
+const isolatedFetch = globalThis.fetch;
+globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+  const url = input instanceof Request ? input.url : String(input);
+  let host = "";
+  try { host = new URL(url).hostname; } catch { /* not a URL */ }
+  if (host && !["127.0.0.1", "localhost", "[::1]", "::1", "0.0.0.0"].includes(host)) outbound.push(url);
+  return isolatedFetch(input, init);
+}) as typeof fetch;
+
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "design-lookup-gate-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmp, "t.sqlite");
 process.env.SEED_TEST_INSTALLER = "false";
@@ -92,9 +104,18 @@ const pendingDesignLookup = (ahj: string): string => {
   return pending[0].id;
 };
 
-// Enqueue WITHOUT running (the real path kicks the worker at once, which would reach the network).
-CP.setCodeResearchEnqueuerForTests((d, payload) => { enqueueJob(d, "code_research", payload as unknown as Record<string, unknown>, { priority: 3, maxRetries: 2 }); });
-CP.setDesignResearchEnqueuerForTests((d, payload) => { enqueueJob(d, "design_criteria_research", payload, { priority: 3, maxRetries: 2 }); });
+// Enqueue WITHOUT running. enqueueJob kicks a drain on a setTimeout(0) unless the job carries a
+// scheduledAt, and that drain ran the real ClaudeLLMProvider with whatever key a check had set —
+// a live request to api.anthropic.com, refused with a 401 (#115). So every job is HELD (due in a
+// far future no worker reaches) and is released only where a check runs it itself, key unset.
+const HELD = "9999-12-31T00:00:00.000Z";
+CP.setCodeResearchEnqueuerForTests((d, payload) => { enqueueJob(d, "code_research", payload as unknown as Record<string, unknown>, { priority: 3, maxRetries: 2, scheduledAt: HELD }); });
+CP.setDesignResearchEnqueuerForTests((d, payload) => { enqueueJob(d, "design_criteria_research", payload, { priority: 3, maxRetries: 2, scheduledAt: HELD }); });
+/** Make the held pending jobs due, for a check that is about to run one with processNextJob. */
+const releaseHeld = (): void => {
+  assert.equal(process.env.ANTHROPIC_API_KEY, undefined, "releasing held jobs while the fake key is set");
+  db.run("UPDATE job_queue SET scheduled_at = NULL WHERE status = 'pending' AND scheduled_at = ?", [HELD]);
+};
 
 // ─── AC1: in progress, not "not on file" ─────────────────────────────────────────────────────────
 const P1 = mkProject("Testvale County");
@@ -171,6 +192,7 @@ await check("AC2: the WORKER re-judges after the job leaves 'running' (stub LLM,
   pendingDesignLookup("Workerton County");
   const before = gateRuns(P4);
   delete process.env.ANTHROPIC_API_KEY; // the worker builds the stub provider
+  releaseHeld();
   assert.equal(await processNextJob(db), true);
   assert.equal(designJobs("Workerton County")[0].status, "done");
   assert.equal(gateRuns(P4), before + 1, "the worker did not re-judge the AHJ's project");
@@ -323,7 +345,7 @@ await check("AC7: a state-layer code_research landing re-judges the state's proj
   // enqueuers those would land via enqueueJob's instant-kick drain and re-judge PK concurrently.
   CP.setCodeResearchEnqueuerForTests(() => {});
   CP.setDesignResearchEnqueuerForTests(() => {});
-  enqueueJob(db, "code_research", { state: ST2, ahj: "", profileKey: CP.codeProfileKey({ state: ST2, ahj: "" }) }, { priority: 3, maxRetries: 2 });
+  enqueueJob(db, "code_research", { state: ST2, ahj: "", profileKey: CP.codeProfileKey({ state: ST2, ahj: "" }) }, { priority: 3, maxRetries: 2, scheduledAt: HELD });
   // The research's landing: its editions are stored (seeded, cited) before its row leaves 'running'.
   CP.saveResearchedCodeProfile(db, {
     key: "", state: ST2, ahj: "", confidence: "seeded", amendments: [], designCriteria: {}, prescriptive: {}, fireSetbacks: [], citations: [], updatedAt: "",
@@ -334,6 +356,7 @@ await check("AC7: a state-layer code_research landing re-judges the state's proj
   const llmCalls = () => Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM llm_calls WHERE label LIKE '%vision%'")?.n ?? 0);
   const visionPasses = () => Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'reviewer_report.vision_pass'")?.n ?? 0);
   const before = { pk: gateRuns(PK), other: gateRuns(P1), llm: llmCalls(), vision: visionPasses() };
+  releaseHeld();
   assert.equal(await processNextJob(db), true);
   const stateKey = CP.codeProfileKey({ state: ST2, ahj: "" });
   assert.equal(db.get<{ status: string }>("SELECT status FROM job_queue WHERE job_type = 'code_research' AND payload LIKE ?", [`%"profileKey":"${stateKey}"%`])?.status, "done");
@@ -358,6 +381,15 @@ await check("AC7: a state-layer code_research landing re-judges the state's proj
   assert.deepEqual(await R.rejudgeReviewerGatesAfterLookup(db, { state: ST2, ahj: "", scope: "state" }, "code_research_landed", { landedMark: R.lookupLandingMark() }), [PK]);
   // The AHJ arm is unchanged: an empty AHJ without the state scope re-judges nothing.
   assert.deepEqual(await R.rejudgeReviewerGatesAfterLookup(db, { state: ST2, ahj: "" }, "design_criteria_research_landed"), []);
+});
+
+// ─── #115: no check made an outbound model call ──────────────────────────────────────────────────
+await check("#115: nothing reached the network and no model call failed (no background drain ran a real provider)", async () => {
+  // Give any drain an enqueue kicked a chance to run before judging: a leak shows up here.
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.deepEqual(outbound, [], "a check sent a request off the machine");
+  const errored = db.query<{ label: string; error: string }>("SELECT label, error FROM llm_calls WHERE error IS NOT NULL AND error != ''");
+  assert.deepEqual(errored, [], "a model call failed (a real provider ran with the fake key)");
 });
 
 CP.setCodeResearchEnqueuerForTests(null);

@@ -9,7 +9,8 @@
 //   3. a fee with no source quote is refused, not stored;
 //   4. "this utility charges nothing" (sourced flat $0) stays distinguishable
 //      from "we could not find out" (found:false).
-// No network: the researcher is injected.
+// No network: the researcher is injected, and _isolate refuses anything that would leave the machine.
+import "./_isolate"; // FIRST: temp cwd, and an offline fetch (the timeout probe below must never reach the API)
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -281,7 +282,8 @@ async function main(): Promise<void> {
   process.env.FEE_RESEARCH_TIMEOUT_MS = "45000";
   check("an operator's override still wins", feeResearchTimeoutMs() === 45000, `${feeResearchTimeoutMs()}`);
 
-  // No network: a 1ms ceiling aborts before the request is ever made.
+  // No network: a 1ms ceiling aborts the run, and the request it may already have started (the
+  // default researcher in researchFeeSchedule does) is refused by _isolate, never sent (#132).
   process.env.FEE_RESEARCH_TIMEOUT_MS = "1";
   process.env.ANTHROPIC_API_KEY = "sk-ant-not-a-real-key-this-call-is-aborted-first";
   const timedOut = await claudeFeeScheduleResearcher({ state: "OR", ahj: "Timeout Probe City", track: "permit" });
