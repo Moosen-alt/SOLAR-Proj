@@ -1861,7 +1861,7 @@ function renderKnowledgeProfile(profile) {
       ${corrections.length ? `<div style="margin-top:4px;font-size:12px"><strong>Common corrections:</strong> <ul style="margin:2px 0 0 16px;padding:0">${corrections.map((c) => `<li>${esc(c.rootCause)}${c.count > 1 ? ` (×${c.count})` : ""}</li>`).join("")}</ul></div>` : ""}
       ${profile.notes ? kbNotesHtml(profile.notes) : ""}
       ${kbDesignCriteriaHtml(codeProfileForKb(profile, state.codeProfiles || [], state.designLookups || []))}
-      ${window.EditionProposals ? window.EditionProposals.renderEditionProposals(codeProfileForKb(profile, state.codeProfiles || [], state.designLookups || [])) : ""}
+      ${typeof window !== "undefined" && window.EditionProposals ? window.EditionProposals.renderEditionProposals(codeProfileForKb(profile, state.codeProfiles || [], state.designLookups || [])) : ""}
       ${kbDeleteButtonHtml(profile)}
     </article>
   `;
