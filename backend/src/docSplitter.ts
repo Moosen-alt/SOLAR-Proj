@@ -39,7 +39,11 @@ const ELECTRICAL_SHEET = /\bE\s*-?\s*\d+\.\d+\b/i;
 // sheet-number regexes (E 1.1, PV 1.0…). Both score the same — filing sums them — but a number is
 // also how other sheets CITE a sheet ("SEE E 1.1 FOR WIRING"), so only a `patterns` hit counts as
 // the page's own title-block name for the undecided-spec report (#119).
-const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegExp[]; sheetNumbers?: RegExp[]; words?: RegExp[]; vocabulary?: RegExp[] }> = [
+//
+// `wordsSkipNotes`: the category's `words` do not count on a NOTES sheet either (NOTES_SHEET below).
+// The #33 rule only knows an E x.x number, and a "PV-2 GENERAL NOTES" or "E-2 NOTES" sheet that says
+// "PROVIDE PLACARD" is a notes sheet, not a placard (#67 review).
+const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegExp[]; sheetNumbers?: RegExp[]; words?: RegExp[]; vocabulary?: RegExp[]; wordsSkipNotes?: boolean }> = [
   // "ELECTRICAL LINE DIAGRAM" is how the Synthetic-style sets title their SLD (sheet PV-6) —
   // neither "one-line" nor "3-line" appears anywhere on the sheet, so the whole electrical
   // diagram went unsplit and the submit gate reported the SLD missing from a plan set that
@@ -74,7 +78,14 @@ const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegEx
   // inverter_spec split and bloated it past PowerClerk's 5 MB upload limit. Match the dedicated
   // SPEC SHEET by its title-block name only, per this file's stated discipline.
   { docType: "inverter_spec", label: "Inverter spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MICRO-?INVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bINVERTER\s+SPEC(?:IFICATION)?S?\b/i] },
-  { docType: "labels", label: "Labels / placards", patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i], sheetNumbers: [/\bE\s*1\.3\b/i] },
+  // PLACARD is the sheet name of the service / PV directory plaque sheet (NEC 690.56, 705.10). It
+  // scored 0 everywhere and was left out of the labels part (#67). It is a `words` hit, not a sheet
+  // name: a NOTES sheet says "PROVIDE PLACARD …" too, and there it does not count (the #33 rule on
+  // an E x.x sheet, `wordsSkipNotes` on any other notes sheet). An SLD or site plan whose notes mention a placard ties at best, and the
+  // tie goes to the earlier category, so labels stays last. "DIRECTORY" / "PLAQUE" are deliberately
+  // not patterns: the 705.10 directory note is common on SLDs and site plans, and a second hit would
+  // out-score the sheet's own name.
+  { docType: "labels", label: "Labels / placards", patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i], sheetNumbers: [/\bE\s*1\.3\b/i], words: [/\bPLACARDS?\b/i], wordsSkipNotes: true },
 ];
 
 // A calculations sheet (WIRING CALCULATIONS, ELECTRICAL CALCULATIONS). Its body tabulates the
@@ -82,6 +93,11 @@ const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegEx
 // MODULE / INV fan-out do not apply to it (#66). Other categories still score as before.
 const CALCS_SHEET = /\b(?:WIR(?:E|ING)|ELECTRICAL)\s+CALC(?:ULATION)?S?\b/i;
 const SPEC_DOC_TYPES = new Set(["module_spec", "inverter_spec"]);
+
+// A notes sheet: NOTES anywhere on the page (GENERAL NOTES, ELECTRICAL NOTES, a bare NOTES sheet
+// name) except the placard sheet's own "LABELING NOTES" / "PLACARD NOTES" heading. Read only for a
+// category with `wordsSkipNotes` (labels): the other categories' words keep their #33 behavior.
+const NOTES_SHEET = /(?<!\b(?:LABEL(?:ING|S)?|PLACARDS?)\s+)\bNOTES\b/i;
 
 // A page that NAMES a spec sheet. One that did not land in a spec part is reported in
 // `undecidedSpecPages`, so a spec-named page is never dropped silently: a title-only
@@ -121,13 +137,14 @@ function scorePage(text: string): { docTypes: string[]; byPattern: boolean } {
   if (isIndexOrNotesPage(text)) return { docTypes: [], byPattern: false };
   const electricalSheet = ELECTRICAL_SHEET.test(text);
   const calcsSheet = CALCS_SHEET.test(text);
+  const notesSheet = NOTES_SHEET.test(text);
   let best: { docType: string; score: number; patternHits: number } | null = null;
   for (const cat of CATEGORY_PATTERNS) {
     if (calcsSheet && SPEC_DOC_TYPES.has(cat.docType)) continue;
     const hits = (res: RegExp[] | undefined) => (res ?? []).reduce((n, re) => (re.test(text) ? n + 1 : n), 0);
     const patternHits = hits(cat.patterns);
     const score = patternHits + hits(cat.sheetNumbers)
-      + (electricalSheet ? 0 : hits(cat.words) + (cat.vocabulary?.some((re) => re.test(text)) ? 1 : 0));
+      + (electricalSheet ? 0 : (cat.wordsSkipNotes && notesSheet ? 0 : hits(cat.words)) + (cat.vocabulary?.some((re) => re.test(text)) ? 1 : 0));
     if (score > 0 && (!best || score > best.score)) best = { docType: cat.docType, score, patternHits };
   }
   if (!best) return { docTypes: [], byPattern: false };

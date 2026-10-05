@@ -1200,8 +1200,11 @@
     { docType: 'structural', patterns: [/\bMOUNT DETAIL\b/i, /\bATTACHMENT DETAIL\b/i], sheetNumbers: [/\bS\s*1\.\d\b/i], words: [/STRUCTURAL/i], vocabulary: [/\bROOF SECTION\b/i, /\bRAFTER\b/i, /\bTRUSS\b/i] },
     { docType: 'module_spec', patterns: [COMBINED_SPEC, /MODULE\s+SPECIFICATION\s+SHEET/i, /PV MODULE SPEC/i] },
     { docType: 'inverter_spec', patterns: [COMBINED_SPEC, /MICRO-?INVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bINVERTER\s+SPEC(?:IFICATION)?S?\b/i] },
-    { docType: 'labels', patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i], sheetNumbers: [/\bE\s*1\.3\b/i] },
+    // PLACARD (the directory plaque sheet) as a `words` hit that a NOTES sheet does not get, as in the backend (#67).
+    { docType: 'labels', patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i], sheetNumbers: [/\bE\s*1\.3\b/i], words: [/\bPLACARDS?\b/i], wordsSkipNotes: true },
   ];
+  // The backend's NOTES_SHEET: NOTES on the page, except the placard sheet's own LABELING / PLACARD NOTES.
+  const NOTES_SHEET = /(?<!\b(?:LABEL(?:ING|S)?|PLACARDS?)\s+)\bNOTES\b/i;
   const isIndexOrNotesPage = (t) => /SHEET INDEX/i.test(t) || /GENERAL NOTES AND PROJECT DATA/i.test(t);
   // Written into the page's split-map text. The gate trusts a spec line only from a map that
   // carries it: a snapshot written before this rule may have mapped the calcs sheet (#90).
@@ -1213,13 +1216,14 @@
     if (isIndexOrNotesPage(t)) return { docTypes: [], byPattern: false };
     const electrical = ELECTRICAL_SHEET.test(t);
     const calcs = isCalcsSheet(t);
+    const notes = NOTES_SHEET.test(t);
     const hits = (res) => (res || []).reduce((n, re) => (re.test(t) ? n + 1 : n), 0);
     let best = null;
     for (const cat of SPLIT_CATEGORIES) {
       if (calcs && /_spec$/.test(cat.docType)) continue;
       const patternHits = hits(cat.patterns);
       const score = patternHits + hits(cat.sheetNumbers)
-        + (electrical ? 0 : hits(cat.words) + ((cat.vocabulary || []).some((re) => re.test(t)) ? 1 : 0));
+        + (electrical ? 0 : (cat.wordsSkipNotes && notes ? 0 : hits(cat.words)) + ((cat.vocabulary || []).some((re) => re.test(t)) ? 1 : 0));
       if (score > 0 && (!best || score > best.score)) best = { docType: cat.docType, score, patternHits };
     }
     if (!best) return { docTypes: [], byPattern: false };
@@ -1301,6 +1305,6 @@
     locatesDecision, EXCAVATION_TYPES,
     filterTapEvidence, isNoteMention,
     formatReviewList,
-    isCalcsSheet, specSheetPages, specMapValue, SPEC_MAP_RULE,
+    isCalcsSheet, specSheetPages, specMapValue, SPEC_MAP_RULE, scoreSplitPage,
   };
 });
