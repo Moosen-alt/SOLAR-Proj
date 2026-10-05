@@ -114,6 +114,51 @@ await check("no issued permit recorded here -> no findings at all", () => {
   assert.deepEqual(P.evaluatePermitPrecedentFindings(mkPlan(), ctxWith([], [ATTACH_CORRECTED])), []);
 });
 
+console.log("\n2b. THE CORRECTION MATCHER IS NARROW (#178): AN ELECTRICAL PANEL, A BATTERY MODULE, A ROOF MOUNT ARE NOT THE MODULE / ATTACHMENT");
+const NEW_MODULE = { moduleMake: "Otherco", moduleModel: "OC-999" };
+const NEW_ATTACH = { attachmentHardware: "Otherco QuickMount Z" };
+for (const [phrase, over, rootCause] of [
+  ["service panel", NEW_MODULE, "Service panel bus rating exceeded by the backfeed breaker"],
+  ["main panel", NEW_MODULE, "Main panel label missing the PV disconnect location"],
+  ["sub panel", NEW_MODULE, "Show the sub panel feeder conductor size"],
+  ["panel schedule", NEW_MODULE, "Provide an updated panel schedule with the PV breaker"],
+  ["battery module", NEW_MODULE, "Battery module clearance to the water heater not shown"],
+  ["roof mount", NEW_ATTACH, "Roof mount system requires a fire pathway on the site plan"],
+] as const) {
+  await check(`MUST EXCLUDE: a "${phrase}" correction does not make the ${over === NEW_MODULE ? "module" : "attachment"} a corrected dimension`, () => {
+    const out = P.evaluatePermitPrecedentFindings(mkPlan({ ...over }), ctxWith(PRIOR, [correction("B_designer_fix", rootCause)]));
+    assert.deepEqual(find(out, P.PRECEDENT_DEPARTURE_ID).map((f) => f.title), []);
+  });
+}
+await check("a PV module / solar panel correction still makes a new module a departure", () => {
+  for (const rootCause of ["PV module not listed to UL 61730", "Solar panels exceed the roof's dead-load allowance", "Module spec sheet missing"]) {
+    const out = P.evaluatePermitPrecedentFindings(mkPlan(NEW_MODULE), ctxWith(PRIOR, [correction("B_designer_fix", rootCause)]));
+    assert.match(find(out, P.PRECEDENT_DEPARTURE_ID)[0]?.title ?? "", /module/, rootCause);
+  }
+});
+
+console.log("\n2c. ROOF DETAIL: FRAMING IS COMPARED ONLY WHEN BOTH SIDES STATE IT (#178)");
+const ROOF_CORRECTED = correction("B_designer_fix", "Roofing assembly detail does not match the shingle manufacturer's install");
+await check("MUST EXCLUDE: the plan's parse lacks framingType -> same roof covering matches the precedent, no departure", () => {
+  const out = P.evaluatePermitPrecedentFindings(mkPlan({ framingType: "" }), ctxWith(PRIOR, [ROOF_CORRECTED]));
+  assert.equal(find(out, P.PRECEDENT_DEPARTURE_ID).length, 0);
+  assert.match(find(out, P.PRECEDENT_MATCH_ID)[0].message, /roof attachment detail "Composition Shingle \/ rafter"/);
+});
+await check("MUST EXCLUDE: the precedent's parse lacked framingType -> a plan stating framing still matches", () => {
+  const noFraming = [issued("p1", "2026-03-01T00:00:00Z", { framingType: "" })];
+  const out = P.evaluatePermitPrecedentFindings(mkPlan({ framingType: "truss" }), ctxWith(noFraming, [ROOF_CORRECTED]));
+  assert.equal(find(out, P.PRECEDENT_DEPARTURE_ID).length, 0);
+  assert.match(find(out, P.PRECEDENT_MATCH_ID)[0].message, /roof attachment detail "Composition Shingle"/);
+});
+await check("both sides state a DIFFERENT framing -> still a departure (a real design change)", () => {
+  const out = P.evaluatePermitPrecedentFindings(mkPlan({ framingType: "truss" }), ctxWith(PRIOR, [ROOF_CORRECTED]));
+  assert.match(find(out, P.PRECEDENT_DEPARTURE_ID)[0]?.message ?? "", /roof attachment detail "Composition Shingle \/ truss" matches none/);
+});
+await check("a different roof covering departs whatever the framing says", () => {
+  const out = P.evaluatePermitPrecedentFindings(mkPlan({ roofMaterial: "Concrete Tile", framingType: "" }), ctxWith(PRIOR, [ROOF_CORRECTED]));
+  assert.match(find(out, P.PRECEDENT_DEPARTURE_ID)[0]?.message ?? "", /roof attachment detail "Concrete Tile" matches none/);
+});
+
 console.log("\n3. NEVER A BLOCKER, NEVER RELAXED BY VISION");
 await check("city.ahj.precedent-departure is in MEASURED_FINDING_IDS; visionMayRelax is false", () => {
   assert.ok(MEASURED_FINDING_IDS.has(P.PRECEDENT_DEPARTURE_ID));
@@ -158,13 +203,16 @@ await check("an issued STRUCTURAL reading records the plan's products (even with
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(profile_key) DO UPDATE SET common_corrections_json = excluded.common_corrections_json`,
     [id, `or|${ahj.toLowerCase()}|test power`, "OR", ahj, "Test Power", JSON.stringify(items), ts, ts, ts]);
-  kb("kb-prec", AHJ, [ATTACH_CORRECTED]);
+  // A legacy row still holding a raw `sample` (pre-scrub): the knowledge base's shared whitelist
+  // (sharedCorrectionPatterns, reused here — #178) keeps it off the context.
+  kb("kb-prec", AHJ, [{ ...ATTACH_CORRECTED, sample: "Synthetic Owner, 1 Test Way" } as CommonCorrectionPattern]);
   // Another AHJ's corrections never count here.
   kb("kb-other", "City of Elsewhere", [correction("B_designer_fix", "Module not listed")]);
 
   const llmBefore = Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM llm_calls")?.n ?? 0);
   const ctx = CP.resolveEffectiveCodeContext(db, "OR", AHJ);
   assert.deepEqual((ctx.ahjCorrections ?? []).map((c) => c.rootCause), [ATTACH_CORRECTED.rootCause]);
+  assert.deepEqual(Object.keys((ctx.ahjCorrections ?? [])[0]).sort(), ["bucket", "count", "lastSeenAt", "requiredAction", "rootCause", "signature"]);
   const report = buildReviewerReport(mkPlan({ attachmentHardware: "Otherco QuickMount Z", moduleModel: "SS-500" }, "next-plan"), { codeContext: ctx });
   const dep = report.findings.filter((f) => f.id === P.PRECEDENT_DEPARTURE_ID);
   assert.equal(dep.length, 1, `expected one departure (attachment), got ${dep.map((f) => f.title).join(" | ")}`);

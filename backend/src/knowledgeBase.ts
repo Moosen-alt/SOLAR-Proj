@@ -601,7 +601,7 @@ function mapKnowledge(row: Row): PermitUtilityKnowledgeProfile {
 // Only the fields a shared rollup may carry. Rows written before the rollup stopped copying
 // raw samples still hold a `sample` key in their JSON until the scrub script runs; this
 // keeps it off every read path (the KB API, the next upsert's merge) in the meantime.
-function sharedCorrectionPatterns(items: CommonCorrectionPattern[]): CommonCorrectionPattern[] {
+export function sharedCorrectionPatterns(items: CommonCorrectionPattern[]): CommonCorrectionPattern[] {
   return (Array.isArray(items) ? items : []).map((item) => ({
     signature: text(item?.signature),
     bucket: item?.bucket,

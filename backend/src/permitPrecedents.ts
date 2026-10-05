@@ -28,7 +28,7 @@ import type {
 } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import type { EffectiveCodeContext } from "./codeProfiles";
-import { knowledgeNameMatchScore } from "./knowledgeBase";
+import { knowledgeNameMatchScore, sharedCorrectionPatterns } from "./knowledgeBase";
 
 export const PRECEDENT_MATCH_ID = "city.ahj.precedent-match";
 export const PRECEDENT_DEPARTURE_ID = "city.ahj.precedent-departure";
@@ -43,13 +43,17 @@ const DIMENSION_LABEL: Record<PermitPrecedentDimension, string> = {
 };
 
 // Which correction wording is ABOUT a dimension. Read over the rollup's rootCause +
-// requiredAction (the shared row carries no raw sample).
+// requiredAction (the shared row carries no raw sample). Narrow on purpose (#178): a false hit
+// here pins an unrelated correction on a product the office has never seen. "Panel" alone is the
+// ELECTRICAL panel in most AHJ corrections ("service panel", "main panel", "sub panel", "panel
+// schedule"), so only a PV/solar panel counts; a battery/ESS/storage module is the battery's; a
+// "roof mount" / "ground mount" is the system type, not the attachment hardware.
 const DIMENSION_CORRECTED: Record<PermitPrecedentDimension, RegExp> = {
-  module: /\b(?:pv\s+)?(?:modules?|panels?)\b/i,
+  module: /\b(?:(?:pv|solar)\s+(?:modules?|panels?)|(?<!\b(?:battery|batteries|ess|storage|inverter|power|control|communications?)[\s-])modules?)\b/i,
   inverter: /\b(?:micro-?)?inverters?\b/i,
   battery: /\b(?:batter(?:y|ies)|ess|energy storage)\b/i,
-  racking: /\b(?:racking|rails?)\b/i,
-  attachment: /\b(?:attachments?|mounts?|standoffs?|flashings?|lags?|lag screws?)\b/i,
+  racking: /\b(?:racking|(?<!\b(?:guard|hand)[\s-]?)rails?)\b/i,
+  attachment: /\b(?:attachments?|mounting\s+(?:hardware|feet|foot|brackets?|clips?)|standoffs?|flashings?|lags?|lag\s+(?:screws?|bolts?))\b/i,
   roofDetail: /\b(?:roof(?:ing)?\s+(?:section|detail|assembly|covering)|attachment detail|tile|shingle)\b/i,
 };
 
@@ -85,10 +89,36 @@ export function extractPermitPrecedents(project: ProjectRecord): PermitPrecedent
   add("racking", snap(project, "rackingSystem"));
   add("attachment", snap(project, "attachmentHardware") || snap(project, "tileAttachmentMethod"));
   // The roof-attachment detail the office reviewed: the roof covering it is drawn for, and the
-  // framing it lands on when stated.
-  const roof = snap(project, "roofMaterial");
-  if (roof) add("roofDetail", [roof, snap(project, "framingType")].filter(Boolean).join(" / "));
+  // framing it lands on when stated. " / " is ONLY the separator (a slash inside either part is
+  // closed up), so roofDetailParts can split it back.
+  const part = (key: string): string => snap(project, key).replace(/\s*\/\s*/g, "/");
+  const roof = part("roofMaterial");
+  if (roof) add("roofDetail", [roof, part("framingType")].filter(Boolean).join(ROOF_DETAIL_SEP));
   return out;
+}
+
+const ROOF_DETAIL_SEP = " / ";
+
+function roofDetailParts(value: string): { roof: string; framing: string } {
+  const at = value.lastIndexOf(ROOF_DETAIL_SEP);
+  return at < 0 ? { roof: value, framing: "" } : { roof: value.slice(0, at), framing: value.slice(at + ROOF_DETAIL_SEP.length) };
+}
+
+/**
+ * A roof detail matches a precedent on the roof covering, and on the framing only when BOTH sides
+ * state it (#178): framingType is an optional parser field, so one side missing it is a gap in the
+ * parse, not a design change. Two stated, different framings still depart.
+ */
+function roofDetailPrecedent(value: string, byKey: Map<string, PrecedentTally>): PrecedentTally | undefined {
+  const plan = roofDetailParts(value);
+  let best: PrecedentTally | undefined;
+  for (const t of byKey.values()) {
+    const prior = roofDetailParts(t.value);
+    if (precedentKey(prior.roof) !== precedentKey(plan.roof)) continue;
+    if (plan.framing && prior.framing && precedentKey(prior.framing) !== precedentKey(plan.framing)) continue;
+    if (!best || t.count > best.count || (t.count === best.count && t.latest > best.latest)) best = t;
+  }
+  return best;
 }
 
 /**
@@ -108,18 +138,8 @@ export function listAhjCorrectionPatterns(db: AppDb, state: string, ahj: string)
     if (String(row.ahj || "").trim().toLowerCase() !== wanted.toLowerCase() && knowledgeNameMatchScore(wanted, String(row.ahj || "")) < 60) continue;
     let items: unknown = [];
     try { items = JSON.parse(String(row.common_corrections_json || "[]")); } catch { items = []; }
-    if (!Array.isArray(items)) continue;
-    for (const c of items as Array<Partial<CommonCorrectionPattern>>) {
-      if (!c || typeof c !== "object") continue;
-      out.push({
-        signature: String(c.signature ?? ""),
-        bucket: String(c.bucket ?? "") as CommonCorrectionPattern["bucket"],
-        rootCause: String(c.rootCause ?? ""),
-        requiredAction: String(c.requiredAction ?? ""),
-        count: Number(c.count ?? 0) || 0,
-        lastSeenAt: String(c.lastSeenAt ?? ""),
-      });
-    }
+    // The knowledge base's own whitelist of what a shared rollup may carry (one place, #178).
+    out.push(...sharedCorrectionPatterns((Array.isArray(items) ? items : []).filter((c) => c && typeof c === "object")));
   }
   return out;
 }
@@ -180,7 +200,7 @@ export function evaluatePermitPrecedentFindings(project: ProjectRecord, ctx: Eff
   for (const item of plan) {
     const byKey = tallies.get(item.dimension);
     if (!byKey?.size) continue;
-    const hit = byKey.get(precedentKey(item.value));
+    const hit = item.dimension === "roofDetail" ? roofDetailPrecedent(item.value, byKey) : byKey.get(precedentKey(item.value));
     if (hit) { matched.push({ item, tally: hit }); continue; }
     const corrected = corrections
       .filter((c) => DIMENSION_CORRECTED[item.dimension].test(`${c.rootCause} ${c.requiredAction}`))
