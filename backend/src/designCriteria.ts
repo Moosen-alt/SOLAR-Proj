@@ -2203,14 +2203,35 @@ function statedEvidence(items: StatedDesignCriterion[], note: string): ReviewerF
   }));
 }
 
-/** The state's upcoming edition of exactly the code and edition a mismatch line compared, when it
- *  takes effect within `days` of `asOf` (or already has: the row has not caught up). Only that
- *  pair: a plan's upcoming base must not soften a mismatch on its state code, or vice versa. */
-function upcomingWithin(ctx: EffectiveCodeContext, asOf: string | undefined, days: number): (stated: { code: string; edition: string }) => UpcomingCodeEdition | null {
+/** How far AHEAD of an upcoming edition's anticipated date a plan printing it softens a verified
+ *  mismatch: a plan drawn to the next cycle a quarter early is ordinary, a year early is not. */
+export const UPCOMING_SOFTEN_DAYS_BEFORE = 90;
+/** How long AFTER the anticipated date the softening still holds. Past the date the edition is
+ *  (or should be) in effect and the profile is expected to have caught up: `upcomingDue`
+ *  (codeFamilies.ts) flags the row for re-research from that day on, and this grace is the time
+ *  that research has to land. After it, a row that never caught up is stale and the mismatch
+ *  blocks again (issue #124) — a past-dated row must not soften forever. */
+export const UPCOMING_SOFTEN_DAYS_AFTER = 30;
+/** `UpcomingCodeEdition.status` words that make an edition certain enough to soften (case-
+ *  insensitive substring; helm's decision on #124). A missing status, "proposed", "in rulemaking"
+ *  or "draft" is speculative and never softens. */
+export const UPCOMING_SOFTENING_STATUSES = ["adopted", "filed", "effective"] as const;
+
+function upcomingStatusSoftens(status: string | undefined): boolean {
+  const s = String(status ?? "").toLowerCase();
+  return UPCOMING_SOFTENING_STATUSES.some((w) => s.includes(w));
+}
+
+/** The state's upcoming edition of exactly the code and edition a mismatch line compared, when its
+ *  status reads as adopted/filed/effective and `asOf` falls in the window from `before` days ahead
+ *  of its anticipated date to `after` days past it. Only that pair: a plan's upcoming base must not
+ *  soften a mismatch on its state code, or vice versa. */
+function upcomingWithin(ctx: EffectiveCodeContext, asOf: string | undefined, before: number, after: number): (stated: { code: string; edition: string }) => UpcomingCodeEdition | null {
   const now = Date.parse(String(asOf || new Date().toISOString()).slice(0, 10));
   const due = (ctx.profile?.upcoming ?? []).filter((u) => {
+    if (!upcomingStatusSoftens(u.status)) return false;
     const when = Date.parse(String(u.anticipatedDate || "").slice(0, 10));
-    return Number.isFinite(when) && Number.isFinite(now) && when - now <= days * 86_400_000;
+    return Number.isFinite(when) && Number.isFinite(now) && when - now <= before * 86_400_000 && now - when <= after * 86_400_000;
   });
   return (stated) => due.find((u) => normCodeToken(u.code) === normCodeToken(stated.code) && String(u.edition).trim() === stated.edition) ?? null;
 }
@@ -2971,7 +2992,8 @@ export function evaluateDesignCriteriaFindings(
   //   · a mismatch against a SEEDED profile -> a warning (hard rule 3: research lands seeded,
   //     and a seeded row never blocks; either side may be the stale one).
   //   · a mismatch against a human-VERIFIED profile -> a blocker, unless the plan prints the
-  //     state's UPCOMING edition and it takes effect within 90 days (a warning naming the date).
+  //     state's UPCOMING edition, its status reads adopted/filed/effective, and its date is
+  //     between 90 days ahead and 30 days past (a warning naming the date; #124).
   //
   // LIKE WITH LIKE. A plan entry is compared with the profile entry of the SAME named code
   // (state code to state code: ORSC with ORSC). Base model codes are compared only when a base
@@ -2987,7 +3009,7 @@ export function evaluateDesignCriteriaFindings(
     // never block, and say the date.
     const softened = new Set<string>();
     const seen = new Set<string>();
-    const upcomingFor = upcomingWithin(ctx, opts.asOf, 90);
+    const upcomingFor = upcomingWithin(ctx, opts.asOf, UPCOMING_SOFTEN_DAYS_BEFORE, UPCOMING_SOFTEN_DAYS_AFTER);
     const report = (key: string, line: string, compared: { code: string; edition: string }): void => {
       if (seen.has(key)) return;
       seen.add(key);
