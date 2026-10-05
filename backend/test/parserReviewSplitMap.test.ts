@@ -70,6 +70,23 @@ if (typeof PR?.specSheetPages === "function") {
     json([PR.specMapValue([4, 5], [11]), PR.specMapValue([], [11, 12]), PR.specMapValue([], [])]));
   check("1j. isCalcsSheet is the backend's CALCS_SHEET",
     PR.isCalcsSheet(CALCS) && PR.isCalcsSheet("WIRE CALCS") && PR.isCalcsSheet(ELEC_CALCS) && !PR.isCalcsSheet(MICRO));
+
+  // #149: a dense SLD whose callout cites "INVERTER SPECIFICATIONS" and says MICROINVERTER. The
+  // splitter files it as sld on its own sheet name (docSplitter.ts classifyPage, #119); the bare
+  // /MICROINVERTER/ and /INVERTER SPECIFICATION/ mapped it as the inverter spec here.
+  const SLD = "DS 5.0 Sheet Name ELECTRICAL LINE DIAGRAM Sheet Number DS 5.0 INVERTER SPECIFICATIONS MAX AC OUTPUT 384 VA (18) MICROINVERTER Q.MI DS3 Series";
+  const MICROS = "DS 2.2 Sheet Name MICROINVERTER SPECIFICATIONS Sheet Number DS 2.2";
+  const sld = PR.specSheetPages([{ page: 9, text: SLD }]);
+  check("1m. THE POINT (#149): a dense SLD citing INVERTER SPECIFICATIONS is not the inverter spec",
+    json(sld.inverterSpecs) === "[]" && json(sld.moduleSpecs) === "[]", json(sld));
+  check("1n. …nor undecided (it won the SLD on its own sheet name)", json(sld.undecidedSpecs) === "[]", json(sld));
+  const withSld = PR.specSheetPages([{ page: 5, text: MICRO }, { page: 9, text: SLD }, { page: 10, text: MICROS }, { page: 11, text: EQUIP }]);
+  check("1o. beside the SLD, named MICROINVERTER SPECIFICATION SHEET / SPECIFICATIONS pages still are the inverter spec",
+    json(withSld.inverterSpecs) === "[5,10]", json(withSld));
+  check("1p. …and a title-only EQUIPMENT SPECIFICATION page is still undecided", json(withSld.undecidedSpecs) === "[11]", json(withSld));
+  const modelOnly = PR.specSheetPages([{ page: 3, text: "DS 3.5 Q.TRON AC Q.MI MICROINVERTER DS3 Series datasheet" }]);
+  check("1q. model strings alone (no spec sheet name) do not make a spec page",
+    json(modelOnly.inverterSpecs) === "[]" && json(modelOnly.moduleSpecs) === "[]", json(modelOnly));
 }
 
 // The page must actually use the shared rule, and bust the browser cache for it.
