@@ -14,12 +14,12 @@ import type { AppDb } from "./db";
 import type { AgentToolDef, CorrectionBucket, CorrectionReadingOrigin, JurisdictionCriteriaProposal, JurisdictionReviewRuleProposal, ProjectDetail, ProjectRecord } from "../../shared/src/types";
 import { createLLMProvider } from "./llm";
 import { getProjectDetail, applyCorrectionProposals } from "./repository";
-import { designNotesDigest } from "./autoLearn";
+import { designNotesDigest, projectSecretValues } from "./autoLearn";
 import { assigneeForBucket, humanizeBucket } from "./corrections";
 import { relearnCorrection, isLearningExcluded, isLearnableCorrectionBucket } from "./knowledgeBase";
 import { extractAhjRequiredCriteria } from "./designCriteria";
 import { ahjLooksLikeHostname, applyCorrectionCriterionToProfile, codeProfileKey, currentCriterionOnFile, nearestOtherCodeProfileRow, sameCriterionValue } from "./codeProfiles";
-import { extractAhjReviewChecks, reviewRuleFromRow, reviewRuleSignature, wordingNamesProject } from "./ahjReviewRules";
+import { extractAhjReviewChecks, reviewRuleFromRow, reviewRuleSignature, sharedClassificationText, wordingNamesProject } from "./ahjReviewRules";
 import { id as newId } from "./ids";
 import { listProjectDocuments } from "./projectDocuments";
 import { addAuditLog } from "./audit";
@@ -441,6 +441,17 @@ export function buildJurisdictionProposals(db: AppDb, correctionId: string, orig
 }
 
 // ---- review-rule proposals (AHJ comment -> a check on the AHJ's next plan, #146) -------------
+
+/** What the SHARED rule row must never carry for this project: its homeowner, its street, and its
+ *  secrets (account / meter / the parser's secret fields — rule 2). */
+function projectPrivacy(db: AppDb, projectId: string): { who: { homeownerName: string; projectAddress: string }; secrets: string[] } {
+  let project: ProjectRecord | null = null;
+  try { project = getProjectDetail(db, projectId).project; } catch { project = null; }
+  return {
+    who: { homeownerName: project?.homeownerName ?? "", projectAddress: project?.projectAddress ?? "" },
+    secrets: project ? projectSecretValues(project) : [],
+  };
+}
 //
 // The same correction, the same jurisdiction (correctionOrigin: a NEM target, a utility, an email
 // reading propose nothing), but a CHECK rather than a profile value: a pathway / ridge setback the
@@ -456,14 +467,18 @@ export function proposeReviewRules(db: AppDb, correctionId: string, origin?: Cor
   // A reviewer's question (C) changed nothing about the package: nothing the next plan can prevent.
   if (!isLearnableCorrectionBucket(txt(c.correction_bucket))) return [];
   const projectId = txt(c.project_id);
-  const project = db.get<Row>("SELECT state, ahj, utility, homeowner_name, project_address FROM projects WHERE id = ?", [projectId]);
+  const project = db.get<Row>("SELECT state, ahj, utility FROM projects WHERE id = ?", [projectId]);
   const state = txt(project?.state).trim();
   if (!state || /utility/i.test(txt(c.source)) || isLearningExcluded(db, projectId)) return [];
-  const checks = extractAhjReviewChecks(txt(c.correction_text))
-    // Wording becomes the SHARED row's value: never one naming this homeowner or address.
-    .filter((x) => x.check.field !== "planText" || !wordingNamesProject(String(x.check.value), {
-      homeownerName: txt(project?.homeowner_name), projectAddress: txt(project?.project_address),
-    }));
+  const extracted = extractAhjReviewChecks(txt(c.correction_text));
+  if (!extracted.length) return [];
+  const privacy = projectPrivacy(db, projectId);
+  // Wording becomes the SHARED row's value: never one naming this homeowner, address or a secret.
+  const checks = extracted.filter((x) => x.check.field !== "planText" || !wordingNamesProject(String(x.check.value), privacy.who, privacy.secrets));
+  if (checks.length < extracted.length) {
+    // Counts only — never the wording (it is what was judged to name the project).
+    logger.warn("correction-agent", `review-rule wording not proposed: it names the project (${extracted.length - checks.length} dropped)`, { correctionId });
+  }
   if (!checks.length) return [];
   const from = correctionOrigin(db, correctionId, { ahj: txt(project?.ahj).trim(), utility: txt(project?.utility) }, origin);
   if (!from || ahjLooksLikeHostname(from.ahj)) return [];
@@ -475,8 +490,11 @@ export function proposeReviewRules(db: AppDb, correctionId: string, origin?: Cor
       `INSERT OR IGNORE INTO jurisdiction_review_rules
          (id, profile_key, state, ahj, check_json, signature, bucket, root_cause, required_action, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?)`,
-      [newId(), profileKey, state, from.ahj, JSON.stringify(check), signature,
-        txt(c.correction_bucket), txt(c.root_cause), txt(c.required_action), ts, ts],
+      [newId(), profileKey, state, from.ahj, JSON.stringify(check), signature, txt(c.correction_bucket),
+        // The triage LLM rewrites these from a prompt carrying the homeowner and address: kept only
+        // when they name nothing of the project.
+        sharedClassificationText(txt(c.root_cause), privacy.who, privacy.secrets),
+        sharedClassificationText(txt(c.required_action), privacy.who, privacy.secrets), ts, ts],
     );
     const row = reviewRuleFromRow(db.get<Row>("SELECT * FROM jurisdiction_review_rules WHERE profile_key = ? AND signature = ?", [profileKey, signature]) ?? {});
     const approved = row?.status === "approved";
@@ -508,9 +526,11 @@ function approveReviewRule(db: AppDb, p: JurisdictionReviewRuleProposal, correct
   if (!row) return { status: "refused", note: "The proposed rule no longer exists." };
   if (row.status === "approved") return { status: "applied", note: "Already approved — the rule is running." };
   const ts = nowIso();
+  const privacy = projectPrivacy(db, projectId);
   db.run(
     "UPDATE jurisdiction_review_rules SET status = 'approved', bucket = ?, root_cause = ?, required_action = ?, approved_at = ?, updated_at = ? WHERE id = ? AND status = 'proposed'",
-    [txt(c.correction_bucket), txt(c.root_cause), txt(c.required_action), ts, ts, p.ruleId],
+    [txt(c.correction_bucket), sharedClassificationText(txt(c.root_cause), privacy.who, privacy.secrets),
+      sharedClassificationText(txt(c.required_action), privacy.who, privacy.secrets), ts, ts, p.ruleId],
   );
   // Who approved it is this org's record (the project's audit log), never a column of the shared row.
   addAuditLog(db, projectId || null, "human", actor || "operator", "correction.review_rule_approved", {

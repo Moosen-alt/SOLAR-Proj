@@ -42,6 +42,7 @@ import type {
 import type { EffectiveCodeContext } from "./codeProfiles";
 import { checkFieldLabel, compareCheckWithPlan, describeCheckRequirement, parseAmendmentCheck } from "./amendmentChecks";
 import type { DesignTextSource } from "./designCriteria";
+import { redactSecretValues } from "../../shared/src/portalSafety";
 
 export const PRIOR_CORRECTION_ID = "city.ahj.prior-correction";
 export const PRIOR_CORRECTION_UNCONFIRMED_ID = "city.ahj.prior-correction-unconfirmed";
@@ -151,20 +152,57 @@ export function extractAhjReviewChecks(text: string): AhjReviewCheck[] {
   return out;
 }
 
+/** Words a name or street shares with ordinary plan / review wording — never evidence on their own. */
+const COMMON_WORDS = new Set([
+  "the", "and", "of", "to", "in", "at", "on", "or", "by", "for", "per", "with", "a", "an", "is", "be", "no", "not",
+  "pv", "ac", "dc", "kw", "in", "ft", "psf", "mph", "nec", "irc", "ifc", "ul",
+  "st", "street", "ave", "avenue", "rd", "road", "dr", "drive", "ln", "lane", "way", "ct", "court", "pl", "place",
+  "blvd", "cir", "circle", "hwy", "n", "s", "e", "w", "ne", "nw", "se", "sw", "llc", "inc", "co", "jr", "sr", "mr", "mrs", "ms",
+]);
+const nameWords = (s: string | undefined): string[] =>
+  String(s || "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 2 && !/^\d+$/.test(w) && !COMMON_WORDS.has(w));
+
 /**
- * Could this wording carry the homeowner's details into the SHARED row? The project's owner name
- * or street, an email, a phone number, or a long digit run (an account / meter / parcel number).
- * A code edition ("2023 NEC") or a voltage is fine.
+ * Could this text carry the homeowner's details into the SHARED table? Checked on anything a rule
+ * row would store or show another tenant (the wording, and the correction's root cause / required
+ * action, which the triage LLM rewrites from a prompt that carries the homeowner and address):
+ *   - an email, or an identifier-shaped number: 5+ digits with separators IGNORED (rule 2's
+ *     convention, redactSecretValues — "/" aside): "APN 123-456-78", "SA# 1234 5678", a phone number;
+ *   - the project's own secrets (account / meter / the parser's secret fields), matched by
+ *     redactSecretValues itself;
+ *   - any word of the homeowner's name, or of the street (number and name) — 2-letter words
+ *     included, words every plan uses ("st", "pv", "nec") excluded.
+ * A code edition ("2023 NEC") or a dimension is fine. False positives only drop a proposal or a
+ * classification sentence, which is the safe direction.
  */
-export function wordingNamesProject(phrase: string, project: { homeownerName?: string; projectAddress?: string }): boolean {
-  const p = ` ${String(phrase || "").toLowerCase().replace(/[^a-z0-9@]+/g, " ").trim()} `;
-  if (/@|\b\d{3}[\s.-]?\d{3}[\s.-]?\d{4}\b|\d{5,}/.test(phrase)) return true;
-  const words = (s: string | undefined): string[] => String(s || "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !/^(?:the|and|street|st|ave|avenue|road|rd|drive|dr|lane|ln|way|court|ct|llc|inc)$/.test(w));
-  const owner = words(project.homeownerName);
-  if (owner.some((w) => p.includes(` ${w} `))) return true;
-  const street = String(project.projectAddress || "").toLowerCase().match(/^\s*(\d+)\s+([a-z0-9]+)/);
-  if (street && (p.includes(` ${street[1]} ${street[2]} `) || (street[2].length >= 4 && p.includes(` ${street[2]} `)))) return true;
+export function wordingNamesProject(
+  phrase: string,
+  project: { homeownerName?: string; projectAddress?: string },
+  secrets: Iterable<string> = [],
+): boolean {
+  const raw = String(phrase || "");
+  // Separators as redactSecretValues reads them, except "/": "120/240 V" is a service voltage.
+  if (/@/.test(raw) || /\d(?:[\s\-\u2013.#]*\d){4,}/.test(raw)) return true;
+  if (redactSecretValues(raw, secrets) !== raw) return true;
+  const p = ` ${raw.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
+  if (nameWords(project.homeownerName).some((w) => p.includes(` ${w} `))) return true;
+  const address = String(project.projectAddress || "").toLowerCase().split(",")[0];
+  const houseNumber = address.match(/^\s*(\d+)\b/)?.[1];
+  const streetWords = nameWords(address);
+  if (streetWords.some((w) => p.includes(` ${w} `))) return true;
+  if (houseNumber && streetWords[0] && p.includes(` ${houseNumber} ${streetWords[0]} `)) return true;
   return false;
+}
+
+/** The correction's root cause / required action as the SHARED row may hold it: verbatim when it
+ *  names nothing of the project (wordingNamesProject), otherwise "" — never a partial scrub. */
+export function sharedClassificationText(
+  text: string,
+  project: { homeownerName?: string; projectAddress?: string },
+  secrets: Iterable<string> = [],
+): string {
+  const t = String(text || "").replace(/\s+/g, " ").trim().slice(0, 300);
+  return t && !wordingNamesProject(t, project, secrets) ? t : "";
 }
 
 // --- the rule -----------------------------------------------------------------------------------
@@ -176,7 +214,9 @@ function ruleRef(ctx: EffectiveCodeContext, rule: JurisdictionReviewRule): CodeR
     title: "Prior correction from this AHJ",
     adoptionScope: "A correction this jurisdiction issued on an earlier plan, approved as a review rule by a person.",
     sourceUrl: "",
-    note: `${ctx.ahj || rule.ahj} has corrected plans for ${describeCheckRequirement(rule.check)}.${rule.requiredAction ? ` Required action then: ${rule.requiredAction}` : ""}`,
+    // The requirement only — never the correction's root cause / required action: this note is
+    // shown to every tenant in the AHJ, and those sentences came from one tenant's correction.
+    note: `${ctx.ahj || rule.ahj} has corrected plans for ${describeCheckRequirement(rule.check)}.`,
   };
 }
 

@@ -42,7 +42,13 @@ const { openDatabase } = await import("../src/db");
 const R = await import("../src/repository");
 const CP = await import("../src/codeProfiles");
 const { evaluateDesignCodeFindings } = await import("../src/codeReviewRules");
-const { extractAhjReviewChecks, wordingNamesProject, PRIOR_CORRECTION_ID, PRIOR_CORRECTION_UNCONFIRMED_ID } = await import("../src/ahjReviewRules");
+// Loaded tolerantly: with the module absent (main before #146) every check below still RUNS and fails
+// on behaviour — no reviewRuleProposals on the item, no finding — rather than the file dying on import.
+const AR = (await import("../src/ahjReviewRules").catch(() => ({}))) as Partial<typeof import("../src/ahjReviewRules")>;
+const extractAhjReviewChecks = (text: string) => AR.extractAhjReviewChecks?.(text) ?? [];
+const wordingNamesProject = (...a: Parameters<NonNullable<typeof AR.wordingNamesProject>>) => AR.wordingNamesProject?.(...a) ?? false;
+const PRIOR_CORRECTION_ID = "city.ahj.prior-correction";
+const PRIOR_CORRECTION_UNCONFIRMED_ID = "city.ahj.prior-correction-unconfirmed";
 const { applyCorrectionApproval, parseCorrectionProposals, persistTriage } = await import("../src/correctionAgent");
 const { visionMayRelax } = await import("../src/reviewerVision");
 
@@ -85,6 +91,16 @@ await check("wording naming the homeowner, the street, or carrying an account/ph
   assert.equal(wordingNamesProject("METER 12345678", p), true);
   assert.equal(wordingNamesProject("PV SYSTEM EQUIPPED WITH RAPID SHUTDOWN", p), false);
   assert.equal(wordingNamesProject("ALL WORK PER 2023 NEC", p), false);
+  // Identifier-shaped numbers with separators IGNORED (rule 2's convention).
+  assert.equal(wordingNamesProject("APN 123-456-78", p), true);
+  assert.equal(wordingNamesProject("SA# 1234 5678", p), true);
+  assert.equal(wordingNamesProject("120/240 V, 36 IN MIN", p), false, "two short numbers are not an identifier");
+  // 2-letter name words and short street names.
+  assert.equal(wordingNamesProject("LI RESIDENCE", { homeownerName: "Jo Li", projectAddress: "7 Elm St" }), true);
+  assert.equal(wordingNamesProject("ELM SIDE DISCONNECT", { homeownerName: "Jo Li", projectAddress: "7 Elm St" }), true);
+  assert.equal(wordingNamesProject("PV DISCONNECT ON ST SIDE", { homeownerName: "Jo Li", projectAddress: "7 Elm St" }), false, "'st' alone is every plan's word");
+  // The project's own secrets, through redactSecretValues itself.
+  assert.equal(wordingNamesProject("METER MX-4821Q", p, ["MX-4821Q"]), true);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -120,6 +136,7 @@ await check("intake PROPOSES (rule 4): a 'proposed' shared row per check, the pr
   const p = itemPayload(srcPid, corrId);
   assert.ok(p, "no linked review item");
   assert.deepEqual(p!.proposals, [], "a review rule leaked into the project-field proposals");
+  assert.ok(Array.isArray(p!.reviewRuleProposals) && p!.reviewRuleProposals.length > 0, "intake attached no review-rule proposals to the correction's review item");
   const got = p!.reviewRuleProposals.map((x) => `${x.check.kind}:${x.check.field}=${x.check.value}`).sort();
   assert.deepEqual(got, ["min_value:pathwayWidthIn=36", "required_text:planText=PV SYSTEM EQUIPPED WITH RAPID SHUTDOWN"]);
   for (const x of p!.reviewRuleProposals) {
@@ -152,11 +169,25 @@ await check("the LLM triage's rewrite of the notes keeps the review-rule proposa
   assert.equal(itemPayload(srcPid, corrId)!.reviewRuleProposals.length, 2);
 });
 
+await check("a triage-shaped root cause / required action naming the project's street NEVER reaches the shared row", () => {
+  // The triage LLM's prompt carries the address; its rewrite can quote it.
+  persistTriage(db, { correctionId: corrId, projectId: srcPid }, {
+    bucket: "B_designer_fix",
+    rootCause: "Roof plan at 1 Testmark Way shows no fire access pathway.",
+    requiredAction: "Designer to revise the Testmark Way roof plan with a 36 inch pathway; call owner at 555-201-3344.",
+    actions: ["Revise the roof plan."], proposals: [],
+  });
+});
+
 await check("APPROVE (the apply route's handler): rows turn 'approved'; the card records it; a second approval does nothing", () => {
   const p = itemPayload(srcPid, corrId)!;
   const out = applyCorrectionApproval(db, corrId, p.reviewRuleProposals.map((x) => x.id), "operator@test");
   assert.equal(out.jurisdictionCriteria?.applied.length, 2, JSON.stringify(out.jurisdictionCriteria));
   assert.ok(rules().every((r) => r.status === "approved" && r.approved_at));
+  // The approval re-reads the (now street-naming) classification and keeps none of it.
+  const blob = JSON.stringify(rules());
+  assert.doesNotMatch(blob, /Testmark|555-201|call owner/i);
+  assert.ok(rules().every((r) => r.root_cause === "" && r.required_action === "" && r.bucket === "B_designer_fix"));
   assert.ok(itemPayload(srcPid, corrId)!.reviewRuleProposals.every((x) => x.status === "applied"));
   const again = applyCorrectionApproval(db, corrId, p.reviewRuleProposals.map((x) => x.id), "operator@test");
   assert.equal(again.jurisdictionCriteria?.attempted ?? 0, 0);
@@ -170,6 +201,8 @@ await check("APPROVED FIRES: the next project in that AHJ — 18 in pathway on i
   assert.match(f!.message, /18 in/);
   assert.match(f!.message, /at least 36 in/);
   assert.equal(visionMayRelax(f!), false, "a measured comparison must not be relaxed by a picture");
+  // Shown to every tenant in the AHJ: the requirement only, never a correction's required action.
+  assert.doesNotMatch(JSON.stringify(f!.codeReferences), /Required action|Designer to revise/);
   const u = get(fs, PRIOR_CORRECTION_UNCONFIRMED_ID);
   assert.equal(u?.severity, "warning");
   assert.match(u!.message, /RAPID SHUTDOWN/);
@@ -239,6 +272,15 @@ const cut = (kind: "function" | "const", name: string): string => {
 };
 const render = new Function(`${[cut("function", "esc"), cut("const", "REVIEW_RULE_FIELD_LABELS"), cut("const", "REVIEW_RULE_STATUS_LABELS"), cut("function", "reviewRuleProposalsHtml")].join("\n\n")}
 return reviewRuleProposalsHtml;`)() as (list: unknown[]) => string;
+const caption = new Function(`${[cut("function", "esc"), cut("function", "reviewTabApplyCaption")].join("\n\n")}
+return reviewTabApplyCaption;`)() as (j: unknown[], r: unknown[]) => string;
+
+await check("CONSENT (rule 4): the Review tab's Apply button says it approves every proposed review rule — and says nothing of rules when none is open", () => {
+  assert.match(caption([], [{ status: "proposed" }]), /EVERY review rule/);
+  assert.match(caption([{ status: "proposed" }], []), /jurisdiction requirements/);
+  assert.doesNotMatch(caption([], [{ status: "applied" }]), /review rule/);
+  assert.match(caption([], []), /proposed project data/);
+});
 
 await check("the card names the rule and the AHJ, says nothing runs until approved, and esc()s the sentence and wording", () => {
   const html = render([{

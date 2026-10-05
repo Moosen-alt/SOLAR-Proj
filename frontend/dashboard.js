@@ -6159,7 +6159,7 @@ function renderReview() {
       ${jurisdictionProposalsHtml(jurisdictionProposals)}
       ${reviewRuleProposalsHtml(reviewRuleProposals)}
       ${Array.isArray(triage?.actions) && triage.actions.length ? `<ol>${triage.actions.map(a => `<li>${esc(a)}</li>`).join("")}</ol>` : ""}
-      ${item.status === "pending" && triage?.correctionId && (proposals.length || jurisdictionProposals.some((p) => p.status === "proposed") || reviewRuleProposals.some((p) => p.status === "proposed")) ? `<button class="primary" data-apply-correction="${esc(triage.correctionId)}">Apply these data updates</button>` : `<p class="muted">Use Corrections in the Submit stage to review the response and record resolution.</p>`}` : "";
+      ${item.status === "pending" && triage?.correctionId && (proposals.length || jurisdictionProposals.some((p) => p.status === "proposed") || reviewRuleProposals.some((p) => p.status === "proposed")) ? `<button class="primary" data-apply-correction="${esc(triage.correctionId)}">Apply these data updates</button>${reviewTabApplyCaption(jurisdictionProposals, reviewRuleProposals)}` : `<p class="muted">Use Corrections in the Submit stage to review the response and record resolution.</p>`}` : "";
     const context = [];
     if (item.llmSuggestedValue) context.push(`<strong>AI suggestion:</strong> ${esc(item.llmSuggestedValue)}`);
     if (item.parserValue && item.parserValue !== item.llmSuggestedValue) context.push(`<strong>Parser read:</strong> ${esc(item.parserValue)}`);
@@ -7236,6 +7236,17 @@ const REVIEW_RULE_STATUS_LABELS = {
   applied: "Approved — running",
   refused: "Not approved",
 };
+
+// WHAT THE REVIEW TAB'S APPLY BUTTON APPROVES (hard rule 4: the click is the consent, so it says
+// everything it does). It posts no field selection, so it applies EVERY proposal still open: the
+// project data, the AHJ's jurisdiction requirements and its review rules. Pure (lifted by
+// ahjRuleProposals.test.ts).
+function reviewTabApplyCaption(jurisdictionProposals, reviewRuleProposals) {
+  const parts = ["the proposed project data"];
+  if ((jurisdictionProposals || []).some((p) => p.status === "proposed")) parts.push("the jurisdiction requirements above (recorded on that AHJ's code profile as seeded)");
+  if ((reviewRuleProposals || []).some((p) => p.status === "proposed")) parts.push("EVERY review rule above as “proposed” (approved for that AHJ's next plans, shared with every project there)");
+  return `<p class="muted" style="font-size:11px;margin-top:4px">This click applies ${esc(parts.join(", and "))}. It does not submit anything.</p>`;
+}
 
 // Pure (lifted by ahjRuleProposals.test.ts).
 function reviewRuleProposalsHtml(list) {
