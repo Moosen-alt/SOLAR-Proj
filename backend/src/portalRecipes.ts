@@ -382,18 +382,25 @@ export function portalEntityEvidence(
   // permit portal is on no vendor list; this is how the NEM track knows it is one. Only hosts that
   // fit the permit track count (a Tigard row mis-keyed to PGE's PowerClerk names no permit portal),
   // and never an information page.
+  // #165: only rows of THIS utility's state — a Utah city's portal says nothing about an Oregon
+  // utility. Fails closed: a row with no readable state, or a utility with none, still counts. (A row
+  // that names only a city's bare web domain is matched narrowly in isPermitPortalUrl, never
+  // host-wide — the predicate's half of the same rule.)
   const permitPortals: string[] = [];
   if (scope === "utility") {
-    const named = (u: string) => {
+    const entityState = usStateCode(state);
+    const named = (u: string, rowState: unknown) => {
+      const st = usStateCode(rowState);
+      if (entityState && st && st !== entityState) return;
       if (portalHostOf(u) && !isInformationalPageUrl(u) && trackSafeUrl("permit", u) && !permitPortals.includes(u)) permitPortals.push(u);
     };
     for (const row of db.query<Row>(
-      "SELECT portal_url FROM portal_recipes WHERE scope_type = 'ahj' AND portal_url IS NOT NULL AND portal_url != ''",
-    )) named(s(row.portal_url).trim());
+      "SELECT state, portal_url FROM portal_recipes WHERE scope_type = 'ahj' AND portal_url IS NOT NULL AND portal_url != ''",
+    )) named(s(row.portal_url).trim(), row.state);
     for (const row of db.query<Row>(
-      `SELECT portal_url, portal_name FROM permit_utility_knowledge WHERE ahj IS NOT NULL AND ahj != ''
+      `SELECT state, portal_url, portal_name FROM permit_utility_knowledge WHERE ahj IS NOT NULL AND ahj != ''
          AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE '%.%')`,
-    )) for (const u of [...portalUrlsInText(s(row.portal_url)), ...portalUrlsInText(s(row.portal_name))]) named(u);
+    )) for (const u of [...portalUrlsInText(s(row.portal_url)), ...portalUrlsInText(s(row.portal_name))]) named(u, row.state);
   }
   const add = (url: unknown, rowState: unknown, rowName: unknown, verified: boolean, fromKbRow = false) => {
     const u = s(url).trim();

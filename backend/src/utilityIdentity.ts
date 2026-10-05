@@ -178,3 +178,55 @@ export function foreignKnownTenant(host: string, entity: { state?: unknown; util
   if (!usStateCode(entity.state) && nameMatchesOwner) return null;
   return KNOWN_POWERCLERK_PORTALS[owner].owner;
 }
+
+// A PowerClerk tenant label that NAMES one of the two known utilities' brands, run together
+// ("rockymountainpower", "pacificpowernem", "rmp-nem", "portlandgeneral…"). PacifiCorp files on ONE
+// tenant (KNOWN_POWERCLERK_PORTALS), so such a label is that utility's — or an impostor of it — and
+// never another utility's portal (#165: a PGE (OR) probe against rockymountainpower.powerclerk.com
+// answered "fits", because only the exact known host was asked about). The bare "pge" label is not
+// read: it is PG&E's spelling in California as much as Portland General's in Oregon.
+const POWERCLERK_DOMAIN = /(?:^|\.)powerclerk\.com$/i;
+const BRANDED_TENANT_LABELS: Array<{ pattern: RegExp; owner: KnownPowerClerkUtility }> = [
+  { pattern: /pacificorp|pacificpower|pacpower|rockymountainpower|rockymtnpower|^rmp(?![a-z])/, owner: "pacificorp" },
+  { pattern: /portlandgeneral/, owner: "portland_general" },
+];
+/** The known utility a PowerClerk tenant's label names, or null (not a PowerClerk host, or a
+ *  label naming neither brand). */
+export function powerClerkTenantBrand(host: string): KnownPowerClerkUtility | null {
+  const h = String(host ?? "").trim().toLowerCase().replace(/^www\./, "");
+  if (!POWERCLERK_DOMAIN.test(h)) return null;
+  const label = (h.split(".")[0] ?? "").replace(/[^a-z0-9]+/g, "-");
+  const run = label.replace(/-/g, "");
+  const hit = BRANDED_TENANT_LABELS.find((b) => b.pattern.test(run) || b.pattern.test(label));
+  return hit ? hit.owner : null;
+}
+
+/**
+ * IS THIS POWERCLERK TENANT PROVABLY NOT THIS UTILITY'S? hostFitsTrackAndEntity step 2b's whole
+ * question (the one predicate asks it; nothing else should). Fails closed, three ways:
+ *   - the host IS a known utility's tenant and the utility is provably someone else
+ *     (foreignKnownTenant, unchanged);
+ *   - the tenant's LABEL names a known utility's brand and this utility is not that one (the same
+ *     state-gated identity; an unknown state whose name matches the brand is not provable);
+ *   - this utility IS a known one, its own tenant is known, and the host is a DIFFERENT PowerClerk
+ *     tenant: PacifiCorp and Portland General each file on exactly one tenant.
+ * A person's verified record for this utility is honoured before this is asked (rule 3).
+ */
+export function foreignPowerClerkTenant(
+  host: string,
+  entity: { state?: unknown; utility?: unknown },
+): { owner: string } | { ownHost: string; ownOwner: string } | null {
+  const known = foreignKnownTenant(host, entity);
+  if (known) return { owner: known };
+  const h = String(host ?? "").trim().toLowerCase().replace(/^www\./, "");
+  const identity = knownPowerClerkUtility(entity);
+  const brand = powerClerkTenantBrand(h);
+  if (brand && brand !== identity) {
+    const nameMatchesBrand = brand === "pacificorp" ? PACIFICORP_NAME.test(String(entity.utility ?? "")) : PORTLAND_GENERAL_NAME.test(String(entity.utility ?? ""));
+    if (!(!usStateCode(entity.state) && nameMatchesBrand)) return { owner: KNOWN_POWERCLERK_PORTALS[brand].owner };
+  }
+  if (identity && POWERCLERK_DOMAIN.test(h) && h !== KNOWN_POWERCLERK_PORTALS[identity].host) {
+    return { ownHost: KNOWN_POWERCLERK_PORTALS[identity].host, ownOwner: KNOWN_POWERCLERK_PORTALS[identity].owner };
+  }
+  return null;
+}
