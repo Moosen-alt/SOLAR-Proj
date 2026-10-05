@@ -228,7 +228,10 @@ export function editionsInEffect(entries: CodeEdition[], family: CodeFamily, dat
 
 /** Announced editions whose anticipated date has passed on `asOf` AND after the row was last
  *  researched (`researchedAt`): the row may be describing a code that has since changed. An upcoming
- *  edition the last research already saw past its date is NOT due again (no re-research loop). */
+ *  edition the last research already saw past its date is NOT due again (no re-research loop).
+ *  Due from the anticipated date itself: the reviewer (designCriteria.ts `upcomingWithin`) keeps
+ *  softening a verified mismatch only UPCOMING_SOFTEN_DAYS_AFTER past that date, so the re-research
+ *  must start the day the date passes, not after the grace has run out (#124). */
 export function upcomingDue(upcoming: UpcomingCodeEdition[] | undefined, researchedAt: string | undefined, asOf: string): UpcomingCodeEdition[] {
   const now = isoDay(asOf) || new Date().toISOString().slice(0, 10);
   const last = isoDay(researchedAt);

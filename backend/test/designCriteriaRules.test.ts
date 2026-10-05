@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import type { JurisdictionCodeProfile, ProjectRecord, ReviewerFinding } from "../../shared/src/types";
 import { buildCodeContext } from "../src/codeProfiles";
 import { evaluateDesignCodeFindings } from "../src/codeReviewRules";
-import { extractStatedDesignCriteria, type DesignTextSource } from "../src/designCriteria";
+import { evaluateDesignCriteriaFindings, extractStatedDesignCriteria, type DesignTextSource, UPCOMING_SOFTEN_DAYS_AFTER, UPCOMING_SOFTEN_DAYS_BEFORE, UPCOMING_SOFTENING_STATUSES } from "../src/designCriteria";
 import { buildReviewerReport, topicForFinding } from "../src/reviewerEngine";
 import { MEASURED_FINDING_IDS, visionMayRelax } from "../src/reviewerVision";
 import { amendmentSourceKey } from "../src/amendmentChecks";
@@ -352,7 +352,7 @@ check("#108 MUST-EXCLUDE: a verified state code naming its model base still matc
 
 const NEXT_PLAN = "GOVERNING CODES: 2021 IRC, 2026 NEC. SYSTEM SIZE: 8 kW DC";
 const nextCycle = project({ planSetExtractedText: NEXT_PLAN }, { state: "UT", ahj: "City of Testvale" } as Partial<ProjectRecord>);
-const withUpcoming = (date: string) => utCtx({ confidence: "verified", upcoming: [{ family: "electrical", code: "NEC", edition: "2026", anticipatedDate: date, status: "adopted" }] });
+const withUpcoming = (date: string, status: string | null = "adopted") => utCtx({ confidence: "verified", upcoming: [{ family: "electrical", code: "NEC", edition: "2026", anticipatedDate: date, ...(status === null ? {} : { status }) }] });
 
 check("#108 MUST-PASS: verified, plan prints the UPCOMING edition due within 90 days -> a warning naming the date", () => {
   const date = inDays(30);
@@ -367,6 +367,61 @@ check("#108 MUST-PASS: the upcoming edition due beyond 90 days does not soften -
   const f = get(run(nextCycle, withUpcoming(inDays(200))), BASIS);
   assert.ok(f);
   assert.equal(f!.severity, "blocker");
+});
+
+check("#124 MUST-PASS: a PROPOSED upcoming edition due within the window does not soften -> blocker", () => {
+  for (const status of ["proposed", "In Rulemaking", "draft", null, "not adopted", "Unadopted", "unfiled", "not yet effective", "ineffective", "non-adopted", "no"]) {
+    const f = get(run(nextCycle, withUpcoming(inDays(30), status)), BASIS);
+    assert.ok(f, String(status));
+    assert.equal(f!.severity, "blocker", `status ${status}`);
+  }
+});
+
+check("#124 MUST-PASS: filed / effective statuses soften like adopted (case-insensitive) -> warning", () => {
+  for (const status of ["Filed with the Secretary of State", "EFFECTIVE"]) {
+    const f = get(run(nextCycle, withUpcoming(inDays(30), status)), BASIS);
+    assert.ok(f, status);
+    assert.equal(f!.severity, "warning", status);
+  }
+});
+
+check("#124 MUST-PASS: an adopted upcoming edition dated within 30 days past still softens -> warning", () => {
+  const date = inDays(-20);
+  const f = get(run(nextCycle, withUpcoming(date)), BASIS);
+  assert.ok(f);
+  assert.equal(f!.severity, "warning");
+  assert.ok(f!.message.includes(date), f!.message);
+});
+
+check("#124 MUST-PASS: an adopted upcoming edition dated beyond 30 days past does not soften -> blocker", () => {
+  const f = get(run(nextCycle, withUpcoming(inDays(-45))), BASIS);
+  assert.ok(f);
+  assert.equal(f!.severity, "blocker");
+});
+
+check("#124 MUST-PASS: the window holds at exactly its bounds and closes one day past each", () => {
+  const sev = (n: number): string | undefined => get(run(nextCycle, withUpcoming(inDays(n))), BASIS)?.severity;
+  assert.equal(sev(UPCOMING_SOFTEN_DAYS_BEFORE), "warning", "exactly 90 days ahead");
+  assert.equal(sev(UPCOMING_SOFTEN_DAYS_BEFORE + 1), "blocker", "91 days ahead");
+  assert.equal(sev(-UPCOMING_SOFTEN_DAYS_AFTER), "warning", "exactly 30 days past");
+  assert.equal(sev(-UPCOMING_SOFTEN_DAYS_AFTER - 1), "blocker", "31 days past");
+});
+
+check("#124 MUST-PASS: the window is measured from an explicit asOf, not today", () => {
+  // A row dated in 2031: years away from today, so only asOf can put it in or out of the window.
+  const ctx = withUpcoming("2031-06-01");
+  const sev = (asOf: string): string | undefined =>
+    get(evaluateDesignCriteriaFindings(nextCycle, ctx, { roofMounted: true, asOf }), BASIS)?.severity;
+  assert.equal(sev("2031-05-01"), "warning", "31 days ahead of asOf");
+  assert.equal(sev("2031-06-20"), "warning", "19 days past asOf");
+  assert.equal(sev("2031-01-01"), "blocker", "151 days ahead of asOf");
+  assert.equal(sev("2031-08-01"), "blocker", "61 days past asOf");
+});
+
+check("#124 MUST-PASS: the softening window and statuses are the named constants", () => {
+  assert.equal(UPCOMING_SOFTEN_DAYS_BEFORE, 90);
+  assert.equal(UPCOMING_SOFTEN_DAYS_AFTER, 30);
+  assert.deepEqual([...UPCOMING_SOFTENING_STATUSES], ["adopted", "filed", "effective"]);
 });
 
 check("#108 MUST-PASS: vision may never relax either code-basis finding", () => {
