@@ -28,7 +28,7 @@ const db = await (await import("../src/db")).openDatabase();
 const cat = await import("../src/permitPlatformCatalog");
 const pp = await import("../src/permitProcess");
 const docs = await import("../src/applicationDocs");
-const { classifyPrerequisites } = await import("../src/permitProcessPrerequisites");
+const { classifyPrerequisites, pageIsOtherPermitType } = await import("../src/permitProcessPrerequisites");
 
 let failed = 0;
 async function check(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -88,6 +88,39 @@ await check("(d1) two equivalent prerequisites from two pages collapse into one 
     fact("Planning Department approval is required before the permit is issued", `${HOST}/b`),
   ]);
   assert.equal(two.length, 2);
+});
+
+const kept = (value: string, url = `${HOST}/201/Building`) => classifyPrerequisites([fact(value, url)]).length === 1;
+
+await check("(r1) review: \"after <another office's> approval, apply\" IS a step before filing; after the permit's own approval it is not", () => {
+  const page = (text: string) => ({ ok: true, finalUrl: `${HOST}/201/Building`, title: "Building", text });
+  assert.equal(cat.extractPrerequisites(page("After plan review approval by the Fire Marshal, apply for the building permit online.")).length, 1, "extractor door");
+  assert.ok(kept("After zoning approval, apply for the building permit."));
+  assert.ok(kept("Once the Planning Department sign-off is received, submit the building permit application."));
+  assert.ok(!kept("After the permit is approved, apply for inspections through the portal."));
+  assert.ok(!kept("Once the permit is issued, file the inspection request online."));
+});
+
+await check("(r2) review: MUST-EXCLUDE \"prior to final inspection, submit / file …\" — a submit verb after issuance is not a filing step", () => {
+  for (const v of [
+    "Prior to final inspection, submit the signed interconnection agreement from the utility.",
+    "Prior to final inspection, submit the as-built drawings to the Engineering Division.",
+    "Prior to the final inspection you must file the completed load calculation with the utility.",
+  ]) assert.ok(!kept(v), v);
+  // "before applying" survives beside a later milestone in the same sentence.
+  assert.ok(kept("Zoning approval is required before applying and again before final inspection."));
+});
+
+await check("(r3) review: another permit this job must obtain FIRST is kept; another permit type's own process is not", () => {
+  assert.ok(kept("An encroachment permit from Public Works is required before the building permit is issued."));
+  assert.ok(kept("Obtain a right-of-way permit from Public Works before applying."));
+  assert.ok(!kept("A basement permit requires a structural plan review before it is issued."));
+  assert.ok(!kept("Fence permits must be submitted to the Zoning Office before construction begins."));
+});
+
+await check("(r4) review: a general building page that only LISTS example permit types is still a source", () => {
+  assert.equal(pageIsOtherPermitType(`${HOST}/201/Building`, "Building Permits: decks, fences, sheds and more"), false);
+  assert.equal(pageIsOtherPermitType(`${HOST}/225/Obtaining-a-Basement-Permit`, "Obtaining a Basement Permit"), true);
 });
 
 // The registry read of a SEEDED row saved before this fix (the stored rows of the issue).

@@ -1,8 +1,8 @@
 // WHAT COUNTS AS A PREREQUISITE (#204) — a deterministic reading of the process lookup's answer, no
 // model call. A prerequisite is a step at ANOTHER office that has to happen BEFORE the application
-// is filed or the permit is issued. Saratoga Springs' "After the permit is approved and building
-// permit is issued we will provide you a digital copy of the approved plans" was stored three times
-// as "Approval before the permit" — one of them from the city's BASEMENT permit page — and the
+// is filed or the permit is issued. A city's "After the permit is approved and building permit is
+// issued we will provide you a digital copy of the approved plans" was stored three times as
+// "Approval before the permit" — one of them from the city's BASEMENT permit page — and the
 // Required document set panel told the operator to go to another office FIRST. So:
 //   1. a sentence about what happens AFTER issuance is never a prerequisite;
 //   2. a step that only has to precede the final inspection / occupancy / PTO is not one either;
@@ -16,11 +16,23 @@ import type { CitedFact } from "../../shared/src/types";
 
 /** "after / once / upon the permit is approved / issued" — the permit ITSELF already granted. "After
  *  zoning approval, apply for the permit" is not this: there the approval is another office's. */
-const POST_ISSUANCE = /\b(?:after|once|upon|when)\b[^.;]{0,30}?\b(?:(?:the|your|a|an|this)\s+)?(?:(?:building|solar|electrical|residential|pv)\s+)*permits?\s+(?:(?:is|are|has|have|was|were|been|being|gets?)\s+)*(?:approved|issued|finali[sz]ed|finaled|granted|picked up)\b|\b(?:after|upon|following)\s+(?:(?:the|permit)\s+)*issuance\b/i;
+const POST_ISSUANCE = /\b(?:after|once|upon|when)\b[^.;]{0,30}?\b(?:(?:the|your|a|an|this)\s+)?(?:(?:building|solar|electrical|residential|pv)\s+)*(?:permits?|plans?)\s+(?:(?:is|are|has|have|was|were|been|being|gets?)\s+)*(?:approved|issued|finali[sz]ed|finaled|granted|picked up)\b|\b(?:after|upon|following)\s+(?:(?:the|permit)\s+)*(?:issuance|approval of the (?:(?:building|solar|electrical)\s+)?permit)\b|\bonce (?:it is |it's )?issued\b/i;
 /** A step that must happen before the application is filed or the permit is issued. */
 const BEFORE_FILING = /\b(?:before|prior to|ahead of)\b[^.;]{0,60}?\b(?:apply\w*|applications?|submi\w*|fil(?:e|es|ed|ing)|issu\w*|pull\w*|obtain\w*\s+(?:(?:a|the|your)\s+)?(?:(?:building|solar|electrical|residential)\s+)?permits?|(?:(?:building|solar|electrical|residential)\s+)?permits?\b(?!\s+(?:final|inspection|closeout|close-out)))|\bfirst\b|\bthen\b[^.;]{0,60}?\b(?:apply|submit|file|permits?)\b|\bin order to (?:apply|submit|file|obtain)|\brequired (?:to|for|with) (?:apply\w*|submi\w*|fil\w*|obtain\w*|(?:the|a|your) (?:(?:building|solar|electrical)\s+)?(?:permits?|applications?))|\bmust (?:be )?(?:accompan\w*|include\w*|attach\w*)\b/i;
-/** A "before" that only reaches a milestone AFTER issuance (the final inspection, occupancy, PTO). */
-const BEFORE_LATER_MILESTONE = /\b(?:before|prior to)\b[^.;]{0,40}?\b(?:final(?:\s+inspection)?|inspections?|occupancy|energi[sz]\w*|permission to operate|pto|close-?out|interconnect\w*)\b/i;
+/** "After / once <ANOTHER office's> approval …, apply / submit / file" — the approval comes first, so
+ *  it IS a before-filing step ("After zoning approval, apply for the building permit"). Never when
+ *  the approval is the permit's own (POST_ISSUANCE) or the filing is for an inspection. */
+const AFTER_OTHER_APPROVAL = /\b(?:after|once|upon|following)\b[^.;]{0,80}?\b(?:approv\w*|sign[\s-]?off|clearance|reviewed)\b[^.;]{0,80}?\b(?:apply|applying|submit\w*|fil(?:e|ing)|pull)\b(?![^.;]{0,30}\b(?:inspections?|final|occupancy)\b)/i;
+/** A "before" that only reaches a milestone AFTER issuance (the final inspection, occupancy, PTO).
+ *  Only plain qualifiers may stand between "before" and the milestone, so "before applying and
+ *  before final inspection" keeps its "before applying". */
+const BEFORE_LATER_MILESTONE = /\b(?:before|prior to|ahead of)(?:\s+(?:the|a|any|your|its|system'?s?|scheduled|requested|city|county|utility|building|electrical|solar|pv))*\s+(?:final(?:\s+inspections?)?|inspections?|occupancy|energi[sz]\w*|permission to operate|pto|close-?out|interconnect\w*)\b/gi;
+/** Does the text state a step BEFORE the application or the permit's issuance? A "prior to final
+ *  inspection, submit …" clause is read out first: its "submit" is after issuance. */
+function statesBeforeFiling(words: string): boolean {
+  const rest = words.replace(BEFORE_LATER_MILESTONE, " ");
+  return BEFORE_FILING.test(rest) || (AFTER_OTHER_APPROVAL.test(rest) && !POST_ISSUANCE.test(rest));
+}
 /** Another permit type, by name. Building / electrical / solar / residential are THIS job's. */
 const OTHER_PERMIT_TYPE = /\b(?:basements?|decks?|fences?|fencing|(?:swimming\s+)?pools?|spas?|hot\s+tubs?|signs?(?![\s-]*off)|signage|demolition|sheds?|accessory\s+(?:dwelling|structures?|buildings?)|adus?|grading|excavation|right[\s-]+of[\s-]+way|encroachments?|driveways?|trees?|sewers?|septic|irrigation|retaining\s+walls?|short[\s-]+term\s+rentals?|business\s+licen[cs]es?|home\s+occupations?|fireworks|special\s+events?|water\s+heaters?|re-?roof\w*|siding|windows?|fireplaces?|chimneys?)\b/i;
 const THIS_PERMIT = /\b(?:solar|photo-?voltaic|pv|electrical)\b/i;
@@ -30,11 +42,27 @@ const THIS_PERMIT = /\b(?:solar|photo-?voltaic|pv|electrical)\b/i;
 function pathWords(url: string): string {
   try { return decodeURIComponent(new URL(url).pathname).replace(/[^A-Za-z0-9]+/g, " ").trim(); } catch { return ""; }
 }
-/** The page is about ANOTHER permit type: its path or title names one and never solar / PV /
- *  electrical. (A generic "Building" page passes; "Obtaining a Basement Permit" does not.) */
+/** The page is about ANOTHER permit type: its path or title names exactly one and never solar /
+ *  PV / electrical. (A generic "Building" page passes; so does a "Building Permits: decks, fences,
+ *  sheds" page that merely lists examples; "Obtaining a Basement Permit" does not.) */
 export function pageIsOtherPermitType(sourceUrl: string, title = ""): boolean {
   const subject = `${pathWords(sourceUrl)} ${String(title ?? "")}`;
-  return OTHER_PERMIT_TYPE.test(subject) && !THIS_PERMIT.test(subject);
+  if (THIS_PERMIT.test(subject)) return false;
+  const named = new Set([...subject.matchAll(new RegExp(OTHER_PERMIT_TYPE.source, "gi"))].map((m) => m[0].toLowerCase().replace(/s$/, "")));
+  return named.size === 1;
+}
+/** "a basement permit", "fence permits": another permit type's permit, named in the sentence. */
+const OTHER_PERMIT_NAMED = new RegExp(`${OTHER_PERMIT_TYPE.source}[^.;]{0,20}?\\bpermits?\\b`, "i");
+/** That other permit is something THIS job must get first (the object, not the subject): "obtain a
+ *  right-of-way permit …", "an encroachment permit FROM Public Works …", or the sentence names this
+ *  job's own permit beside it ("… before the building permit is issued"). */
+function otherPermitIsThisJobsStep(words: string): boolean {
+  const m = OTHER_PERMIT_NAMED.exec(words);
+  if (!m) return false;
+  const before = words.slice(0, m.index), after = words.slice(m.index + m[0].length);
+  return /\b(?:obtain\w*|get|secure|acquire|apply(?:ing)? for|need|requires?|with)\b[^.;]{0,25}$/i.test(before)
+    || /^\s*(?:from|issued by)\b/i.test(after)
+    || /\b(?:building|solar|electrical|residential|pv)\s+permits?\b/i.test(after);
 }
 
 /** A step without the extractor's "Kind (lead): " label (permitPlatformCatalog PREREQ_KINDS). */
@@ -50,11 +78,12 @@ export function prerequisiteRefusal(text: string, sourceUrl = "", opts: { title?
   const words = `${s} ${String(opts.quote ?? "")}`;
   if (!s) return "empty";
   if (pageIsOtherPermitType(sourceUrl, opts.title)) return "the source page is about another permit type";
-  // "a basement permit", "fence permits": a sentence about another permit type's own process.
-  if (new RegExp(`${OTHER_PERMIT_TYPE.source}[^.;]{0,20}?\\bpermits?\\b`, "i").test(words) && !THIS_PERMIT.test(words)) return "the sentence is about another permit type";
-  const beforeFiling = BEFORE_FILING.test(words);
+  const beforeFiling = statesBeforeFiling(words);
+  // "a basement permit requires…", "fence permits must…": another permit type's own process. An
+  // encroachment / right-of-way permit this job must obtain FIRST is a prerequisite, not that.
+  if (OTHER_PERMIT_NAMED.test(words) && !THIS_PERMIT.test(words) && !(beforeFiling && otherPermitIsThisJobsStep(words))) return "the sentence is about another permit type";
   if (POST_ISSUANCE.test(words) && !beforeFiling) return "it says what happens after the permit is approved / issued";
-  if (BEFORE_LATER_MILESTONE.test(words) && !beforeFiling) return "it precedes a milestone after issuance (final inspection / occupancy / PTO), not the filing";
+  if (new RegExp(BEFORE_LATER_MILESTONE.source, "i").test(words) && !beforeFiling) return "it precedes a milestone after issuance (final inspection / occupancy / PTO), not the filing";
   if (opts.kind === "Approval before the permit" && !beforeFiling) return "it does not say the step comes before the application or the permit's issuance";
   return null;
 }
