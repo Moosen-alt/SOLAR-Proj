@@ -302,12 +302,23 @@ const CERTIFYING_CLAUSE = new RegExp(
  *  ASCE 7-16") is the certification, not a pointer. */
 const REFERENCE_CLAUSE = /\b(?:refer(?:\s+to)?|see|per|reference[ds]?)\s+(?:the\s+|separate\s+|attached\s+)?(?:structural|engineering|engineer'?s?)\s+(?:letter|calc\w*|report|sheet|analysis)\b|\bby\s+others\b|\b(?:verify|confirm|contact|check)\b/i;
 /** The person who certified: engineer of record, a licensed/professional/registered engineer, or
- *  the P.E./S.E. credential in a NAME or LICENCE position ("Jane Roe, P.E.", "PE No. 12345") —
- *  never a bare "PE" (polyethylene, "PE stamp"), never "engineered" / "engineering". */
+ *  the DOTTED credential after a name ("Jane Roe, P.E.") or before a licence number ("PE No. 12345").
+ *  Never a bare ", SE" / ", PE" after a comma — that is a compass direction ("AZIMUTH 135, SE") or a
+ *  material grade ("HDPE CONDUIT, PE 3408") — and never "engineered" / "engineering". */
 const ENGINEER_CREDENTIAL = /\bengineer\s+of\s+record\b|\b(?:licensed|professional|registered)\s+(?:structural\s+)?engineer\b/gi;
-const PE_CREDENTIAL = /,\s*(?:P\.\s?E\.?|PE|S\.\s?E\.?|SE)(?![A-Za-z])|\b(?:P\.\s?E\.?|PE)\s*(?:No\.?|#|License|Lic\.?)\s*[#:]?\s*\d/g;
+const PE_CREDENTIAL = /,\s*(?:P\.\s?E\.|S\.\s?E\.)(?![A-Za-z])|\b(?:P\.\s?E\.?|PE)\s*(?:No\.?|#|License|Lic\.?)\s*[#:]?\s*\d/g;
 /** A credential LABEL with nobody after it: "ENGINEER OF RECORD: NONE", ": N/A", ": TBD", ": ____". */
 const PLACEHOLDER_AFTER = /^\s*(?:[:\-–]\s*(?:_{2,}|-{2,})?\s*(?:\n|$)|[:\-–]?\s*(?:none|n\/?a|tbd|to\s+be\s+determined|blank|pending)\b)/i;
+/** A blank signature / stamp block after the label: "SIGNATURE: ____", "STAMP HERE", "(SIGN AND SEAL)".
+ *  The block is where a credential WOULD go; an empty one names nobody. */
+const SIGNATURE_BLOCK = /^\s*\(?\s*(?:(?:signature|stamp|seal|sign(?:ed)?|and|&|here)\b[\s\/]*)+\)?/i;
+function namesNobody(after: string): boolean {
+  if (PLACEHOLDER_AFTER.test(after)) return true;
+  const block = SIGNATURE_BLOCK.exec(after);
+  if (!block || !/[a-z]/i.test(block[0])) return false;
+  // "STAMP HERE" / "(SIGN AND SEAL)" are the empty block itself; otherwise test what follows it.
+  return /\bhere\b|\)/i.test(block[0]) || PLACEHOLDER_AFTER.test(after.slice(block[0].length));
+}
 /** "Near" without page boundaries (pages are joined into one extract): about a page of text. */
 const CREDENTIAL_WINDOW_CHARS = 2000;
 
@@ -316,14 +327,17 @@ export function readsAsEngineerCertification(text: string): boolean {
   if (!body.trim() || body === "[no text layer]") return false;
   // The clauses with their offsets, so a credential is judged in its own clause and "near" is
   // measured in the text.
+  // "No. 12345" is a licence NUMBER: its period must not cut the clause and its "No" must not read as
+  // a negator. Rewritten length-for-length, so offsets into `body` still line up.
+  const clauseText = body.replace(/\bno\.?\s*(?=[#\d])/gi, (m) => "#".padEnd(m.length, " "));
   const breaker = new RegExp(CLAUSE_BREAK.source, "gi");
   let start = 0;
   const clauses: Array<{ clause: string; at: number; end: number }> = [];
-  for (const m of body.matchAll(breaker)) {
-    clauses.push({ clause: body.slice(start, m.index), at: start, end: m.index ?? start });
+  for (const m of clauseText.matchAll(breaker)) {
+    clauses.push({ clause: clauseText.slice(start, m.index), at: start, end: m.index ?? start });
     start = (m.index ?? 0) + m[0].length;
   }
-  clauses.push({ clause: body.slice(start), at: start, end: body.length });
+  clauses.push({ clause: clauseText.slice(start), at: start, end: clauseText.length });
   const clauseAt = (i: number) => clauses.find((c) => i >= c.at && i <= c.end)?.clause.trim() ?? "";
   const speaks = (c: string) => !NEGATOR.test(withoutNumberAbbreviation(c)) && !HEDGED.test(c);
 
@@ -332,7 +346,7 @@ export function readsAsEngineerCertification(text: string): boolean {
     for (const m of body.matchAll(re)) {
       const i = m.index ?? 0;
       if (!speaks(clauseAt(i))) continue;                                  // "NO PE STAMP REQUIRED"
-      if (PLACEHOLDER_AFTER.test(body.slice(i + m[0].length))) continue;   // "ENGINEER OF RECORD: NONE"
+      if (namesNobody(body.slice(i + m[0].length))) continue;              // "ENGINEER OF RECORD: NONE", "STAMP HERE"
       credentialAt.push(i);
     }
   }

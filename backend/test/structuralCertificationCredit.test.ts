@@ -82,6 +82,12 @@ const LETTER_PAGES: string[][] = [
 const letterText = LETTER_PAGES.flat().join("\n");
 check("predicate: an engineering firm's structural certification with calcs reads as a certification",
   readsAsEngineerCertification(letterText));
+// The real credential forms still credit: a licence number, and a signature block that is filled in.
+const LETTER_BODY = LETTER_PAGES.flat().filter((l) => !/Jane Example/.test(l)).join("\n");
+check("predicate: a licence-number credential (\"PE No. 12345\") still credits",
+  readsAsEngineerCertification(`${LETTER_BODY}\nJane Example\nPE No. 12345`));
+check("predicate: a FILLED engineer signature block still credits",
+  readsAsEngineerCertification(`${LETTER_BODY}\nREGISTERED ENGINEER SIGNATURE: Jane Example`));
 check("predicate: a framing sheet's note that the letter is NOT PROVIDED is not a letter",
   !readsAsEngineerCertification(`${"ROOF FRAMING PLAN 2x6 RAFTERS AT 24 IN O.C. ATTACHMENT DETAIL FLASHED LAG. ".repeat(5)}\nSTRUCTURAL LETTER NOT PROVIDED BY ENGINEER`));
 check("predicate: a note that a structural letter is REQUIRED is not a letter",
@@ -120,6 +126,15 @@ const CITING_LINES: Record<string, string> = {
   "racking manufacturer's rating": "EXAMPLE RAIL SYSTEM IS ENGINEERED AND CERTIFIED TO UL 2703. THE RAIL IS ADEQUATE FOR 72 IN SPANS. PE GASKETS.\nLICENSED PROFESSIONAL ENGINEER REVIEWED THE RAIL SPAN TABLES",
   "unsigned title-block template": "I HEREBY CERTIFY THAT THIS PLAN WAS PREPARED BY ME OR UNDER MY DIRECT SUPERVISION AND THAT I AM A DULY LICENSED PROFESSIONAL ENGINEER UNDER THE LAWS OF THIS STATE\nSIGNATURE ________ DATE ________",
   "contractor's statement": "CONTRACTOR CERTIFIES THAT THE EXISTING ROOF FRAMING IS ADEQUATE FOR THE PV LOADS",
+  // Third review on #218: a bare ", SE" / ", PE" after a comma is a compass direction or a material
+  // grade, not an engineer.
+  "azimuth ending in SE": "ROOF 1: TILT 20, AZIMUTH 135, SE\nEXISTING RAFTERS ARE ADEQUATE FOR THE ADDED PV LOAD.",
+  "orientation SOUTH, SE": "MP1 ORIENTATION: SOUTH, SE\nEXISTING ROOF FRAMING IS ADEQUATE.",
+  "HDPE conduit, PE 3408": "HDPE CONDUIT, PE 3408. EXISTING ROOF IS ADEQUATE.",
+  // …and a blank signature / stamp block names nobody.
+  "blank engineer signature": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nREGISTERED ENGINEER SIGNATURE: ______",
+  "engineer stamp here": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nLICENSED PROFESSIONAL ENGINEER STAMP HERE",
+  "engineer (sign and seal)": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nPROFESSIONAL ENGINEER (SIGN AND SEAL)",
 };
 for (const [name, line] of Object.entries(CITING_LINES)) {
   check(`MUST-EXCLUDE predicate: a framing sheet + "${name}" is not a certification`,
