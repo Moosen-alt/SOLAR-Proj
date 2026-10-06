@@ -45,7 +45,7 @@ import {
 // gate reads too (gates-proper C1). Re-exported so every existing caller of this module keeps working.
 export { applicationKindForProject, hasStoredTemplateOfType, type EnsureFormResult } from "./formAcquisitionPlan";
 import { clearFormSearchTimeout, noteFormSearchTimeout, recentFormSearchTimeout, type FormSearchTimeout } from "./formAcquisitionPlan";
-import { formatBudget } from "./llm";
+import { formatBudget, webResearchBudgetMs } from "./llm";
 import { deadLinkSentence } from "./formAcquisitionPlan";
 import { getPermitProcessLookup, lookupPortalOnlyFor, portalOnlyCardSentence } from "./permitProcess";
 import { isRefusal, PAGE_READ_MIN_GAP_MS, type PageReader } from "./agencyPageReader";
@@ -1170,6 +1170,9 @@ export function namesProcessDocument(text: string, url: string, documentNames: s
   });
 }
 
+/** The dead-link retry's search quota: web searches (the first search may use 3). */
+export const DEAD_LINK_RETRY_SEARCHES = 2;
+
 /** Document platforms whose file links sit under a public LISTING page of their own, by the dead
  *  link's URL shape (a platform's shape, never a jurisdiction's): a CivicPlus DocumentCenter file
  *  (/DocumentCenter/View/<id>/<name>) is listed at /DocumentCenter on the same site. */
@@ -1201,6 +1204,8 @@ async function retryAfterDeadLinks(
     tried: string[];
     fp: FormsPageOptions;
     kindDirective: string;
+    /** FALSE after a timed-out search in this pass (#163): the listing page only, no second search. */
+    allowSearch: boolean;
     /** Download these; TRUE once a blank is held. */
     tryCandidates: (list: FormCandidate[]) => Promise<boolean>;
   },
@@ -1267,7 +1272,12 @@ async function retryAfterDeadLinks(
     }
   }
 
-  // (2) ONE SEARCH FOR THE LOOKUP'S DOCUMENTS BY NAME — only when the lookup names any.
+  // (2) ONE SEARCH FOR THE LOOKUP'S DOCUMENTS BY NAME — only when the lookup names any, and never after
+  // a search of this pass timed out (#163).
+  if (!ctx.allowSearch) {
+    notes.push(`The form search of this pass ran out of its budget, so it was not run again.`);
+    return ` Retried once: ${notes.join(" ")}`;
+  }
   if (!documentNames.length) {
     notes.push(`The per-job process lookup names no submittal documents for ${project.ahj}, so the search was not run again.`);
     return ` Retried once: ${notes.join(" ")}`;
@@ -1277,7 +1287,13 @@ async function retryAfterDeadLinks(
     `${project.ahj}'s per-job process lookup names its residential solar submittal documents: ${documentNames.map((n) => `"${n}"`).join(", ")}. Search ${issuerHost ? `${issuerHost} (site:${issuerHost})` : `${project.ahj}'s own site`} for these documents BY NAME and return their CURRENT document links.`,
     ctx.kindDirective,
   ].filter(Boolean).join("\n\n");
-  const again = await llm.findAhjFormUrl({ ahj: project.ahj, state: project.state, formType, knownContext, documentNames, issuerHost });
+  // A SMALLER QUOTA THAN THE FIRST SEARCH (#205: "no new quota beyond the per-run cap"): at most
+  // DEAD_LINK_RETRY_SEARCHES web searches and half the first search's time budget — a narrow, by-name
+  // search on one host, not a second broad one.
+  const again = await llm.findAhjFormUrl({
+    ahj: project.ahj, state: project.state, formType, knownContext, documentNames: documentNames.slice(0, DEAD_LINK_RETRY_SEARCHES), issuerHost,
+    maxSearches: DEAD_LINK_RETRY_SEARCHES, budgetMs: Math.round(webResearchBudgetMs() / 2),
+  });
   const fromSearch: FormCandidate[] = [];
   for (const url of again.candidateUrls ?? []) if (fresh(url) && kindOk("", url)) fromSearch.push({ url, label: "", origin: "research" });
   for (const r of again.searchResults ?? []) {
@@ -1299,7 +1315,7 @@ function slotTrack(formType: string): "building" | "electrical" | null {
   return null;
 }
 /** The lookup says this slot's application is taken in the AHJ's portal and names no PDF blank. */
-function slotPortalOnly(project: ProjectRecord, formType: string): { portalUrl: string } | null {
+function slotPortalOnly(project: ProjectRecord, formType: string): { portalUrl: string; waives: boolean } | null {
   const track = slotTrack(formType);
   if (!track) return null;
   try { return lookupPortalOnlyFor(project, track); } catch { return null; }
@@ -1519,7 +1535,7 @@ export async function ensureAhjFormTemplate(
       // A refused site is not "no form": nothing was downloaded because nothing more was asked of it.
       message: `Permitting type: ${permitType.callout}${research.notes ? ` ${research.notes}` : harvest.refusedDomains.size
         ? ` No form was downloaded for ${project.ahj}: its site refused the read. Retry Find official form later, or upload the official blank.`
-        : ` No downloadable PDF form was found for ${project.ahj} — submit through the method above.`}${harvestNote}${portalNote}${reqNote}${portalOnlyEarly ? ` ${portalOnlyCardSentence(project, portalOnlyEarly.portalUrl)}` : ""}`,
+        : ` No downloadable PDF form was found for ${project.ahj} — submit through the method above.`}${harvestNote}${portalNote}${reqNote}${portalOnlyEarly ? ` ${portalOnlyCardSentence(project, portalOnlyEarly.portalUrl, portalOnlyEarly.waives)}` : ""}`,
     };
   }
 
@@ -1561,7 +1577,10 @@ export async function ensureAhjFormTemplate(
       const got = await fetchPdfOutcome(url);
       noteHostHit(url);
       if (!got.bytes) {
-        if (got.deadLink) deadLinks.push(url);
+        // A 404 counts as "found, dead link" only on the AHJ's OWN forms site (isAhjFormsSite — the one
+        // predicate): a model's off-site or invented URL that 404s proves nothing about the AHJ, so it
+        // is an ordinary failure — it never makes the run dead_link or releases the cooldown.
+        if (got.deadLink && isAhjFormsSite(portalHostOf(url), [project.ahj].filter(Boolean), project.state)) deadLinks.push(url);
         else otherFailures++;
         continue;
       }
@@ -1583,12 +1602,15 @@ export async function ensureAhjFormTemplate(
     if (opts.searchPass) opts.searchPass.deadLinkRetried = true;
     retryNote = await retryAfterDeadLinks(db, llm, project, formType, {
       research, deadLinks, tried: candidateUrls, fp, kindDirective,
+      // A search that ran out of its budget is not run again in the same pass (#163): after a timeout
+      // the retry is the free listing-page read only.
+      allowSearch: !searchTimeout && !opts.searchPass?.timedOut,
       tryCandidates: async (list) => { candidateUrls.push(...list.map((c) => c.url)); await tryCandidates(list); return downloads.length > 0; },
     });
   }
   // THE PORTAL, WHEN THE LOOKUP SAYS THE APPLICATION IS TAKEN THERE (issue #205): no blank is expected.
   const portalOnly = slotPortalOnly(project, formType);
-  const portalOnlyNote = portalOnly ? ` ${portalOnlyCardSentence(project, portalOnly.portalUrl)}` : "";
+  const portalOnlyNote = portalOnly ? ` ${portalOnlyCardSentence(project, portalOnly.portalUrl, portalOnly.waives)}` : "";
   if (!downloads.length) {
     // Every link that failed answered 404 / 410: FOUND, DEAD LINK — not "not found".
     if (deadLinks.length && !otherFailures) {

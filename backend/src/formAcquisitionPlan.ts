@@ -160,7 +160,7 @@ export function formDeadLinks(db: AppDb, project: ProjectRecord): string[] {
 /** The operator's words for found-but-dead links: the file moved, it did not vanish. */
 export function deadLinkSentence(urls: string[]): string {
   const shown = urls.slice(0, 3);
-  return `the form search found ${shown.length > 1 ? "these links" : "a link"} for it, but ${shown.length > 1 ? "they answer" : "it answers"} 404 (dead link — the AHJ has moved the file, not removed it): ${shown.join(", ")}`;
+  return `the form search found ${shown.length > 1 ? "these links" : "a link"} for it, but ${shown.length > 1 ? "they answer" : "it answers"} 404 / 410 (dead link — the file is gone from that address; the AHJ has likely moved or replaced it): ${shown.join(", ")}`;
 }
 
 // ── The form research pass in flight (single flight) ────────────────────────────────────

@@ -3276,7 +3276,7 @@ Notes:
     });
   }
 
-  async findAhjFormUrl(input: { ahj: string; state: string; formType?: string; knownContext?: string; documentNames?: string[]; issuerHost?: string }): Promise<AhjFormUrlResult> {
+  async findAhjFormUrl(input: { ahj: string; state: string; formType?: string; knownContext?: string; documentNames?: string[]; issuerHost?: string; maxSearches?: number; budgetMs?: number }): Promise<AhjFormUrlResult> {
     const formType = input.formType || "permit_application";
     const system = `You are a solar permitting research assistant. Find the OFFICIAL blank ${formType.replace(/_/g, " ")} PDF form that the named Authority Having Jurisdiction (AHJ) uses for residential rooftop solar PV permits.
 
@@ -3325,7 +3325,9 @@ Rules:
     // list was thrown away. Kept as data for the acquisition's own predicate (ahjFormAuto).
     let searchResults: Array<{ url: string; title: string }> = [];
     let searchTimeout: AhjFormUrlResult["searchTimeout"];
-    const budgetMs = webResearchBudgetMs();
+    // A caller may ask for LESS (the dead-link retry, issue #205) — never more than the defaults.
+    const budgetMs = input.budgetMs && input.budgetMs > 0 ? Math.min(input.budgetMs, webResearchBudgetMs()) : webResearchBudgetMs();
+    const maxSearches = input.maxSearches && input.maxSearches > 0 ? Math.min(3, Math.floor(input.maxSearches)) : 3;
     try {
       // A GROUNDED SEARCH NEEDS A GROUNDED BUDGET. This ran on askWithWebSearch's 45-second
       // default while making up to three web searches, and on City of Salem it aborted at
@@ -3341,7 +3343,7 @@ Rules:
       // notes after three searches, so it gets more.
       // Every result the searches returned (not the first 20): the out-of-state ones are discarded
       // below BEFORE the cap, so a page of Monroe MI hits cannot crowd Monroe OR's out of it.
-      const web = await this.askWithWebSearch("findAhjFormUrl", system, userMsg, 4000, 3, budgetMs, [], FORM_SEARCH_RESULTS_SEEN);
+      const web = await this.askWithWebSearch("findAhjFormUrl", system, userMsg, 4000, maxSearches, budgetMs, [], FORM_SEARCH_RESULTS_SEEN);
       const raw = web.text;
       searchResults = (web.resultUrls || []).map((url) => ({ url, title: String(web.resultTitles?.[url] || "") }));
       parsed = this.parseJson(raw, {});

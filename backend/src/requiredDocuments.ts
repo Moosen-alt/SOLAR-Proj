@@ -553,8 +553,9 @@ export function requiredApplicationDocs(
   };
   // THE PER-JOB LOOKUP'S PORTAL ANSWER (issue #205): a track whose permit the lookup cites a portal for,
   // naming no PDF blank among its documents, is taken in that portal — no missing-blank hold.
+  // Only a portal-shaped URL, or a person-verified lookup, waives the hold (lookupPortalOnlyFor.waives).
   const lookupPortal = (track: FormTrack): { portalUrl: string } | null => {
-    try { return lookupPortalOnlyFor(project, track); } catch { return null; }
+    try { const lp = lookupPortalOnlyFor(project, track); return lp?.waives ? lp : null; } catch { return null; }
   };
   const rowPortalOnly = (track: FormTrack): boolean => (issuer(track)?.forms.length ? false : portalOnly || Boolean(lookupPortal(track)));
   const rowPortalNote = (track: FormTrack): string => {

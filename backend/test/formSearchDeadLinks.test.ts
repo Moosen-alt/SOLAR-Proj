@@ -107,8 +107,9 @@ const deps = () => ({ llm, research: true, formsPage: fp() });
 
 const cited = (value: string, sourceUrl: string, quote: string) => ({ value, sourceUrl, quote, origin: "lookup" as const });
 const notFound = (why: string) => ({ value: null, sourceUrl: "", quote: "", origin: "lookup" as const, notFound: why });
-function saveLookup(ahj: string, permits: Array<{ discipline: "structural" | "electrical" | "combo"; portal?: string; docs?: string[]; docsSrc?: string }>, structure: "separate" | "combo") {
+function saveLookup(ahj: string, permits: Array<{ discipline: "structural" | "electrical" | "combo"; portal?: string; docs?: string[]; docsSrc?: string }>, structure: "separate" | "combo", verifiedBy = "") {
   const r = savePermitProcessLookup(db, {
+    ...(verifiedBy ? { confidence: "verified" as const } : {}),
     state: "UT", ahj, lookedUpAt: new Date().toISOString(), issuingAgency: notFound("none"),
     permitStructure: cited(structure, "https://example.gov/structure", structure === "separate" ? "separate building and electrical permits" : "one combined permit"),
     permits: permits.map((p) => ({
@@ -119,7 +120,7 @@ function saveLookup(ahj: string, permits: Array<{ discipline: "structural" | "el
       fee: notFound("none"),
     })),
     notes: [],
-  } as never);
+  } as never, verifiedBy ? { verifiedBy } : {});
   assert.equal(r.saved, true, `lookup for ${ahj}`);
 }
 let n = 0;
@@ -196,6 +197,10 @@ try {
   check("… and the issuer's host", retry?.issuerHost === "lookupton.gov" && /site:lookupton\.gov/.test(retry?.knownContext || ""), JSON.stringify(retry));
   check("… and tells the search the dead URL is dead", (retry?.knownContext || "").includes(deadC));
   check("exactly one retry (two findAhjFormUrl calls in all)", calls.length === 2, String(calls.length));
+  const retryQuota = retry as (Call & { maxSearches?: number; budgetMs?: number }) | undefined;
+  check("the retry asks for a SMALLER quota than the first search (at most 2 searches, a shorter budget)",
+    typeof retryQuota?.maxSearches === "number" && retryQuota.maxSearches <= 2 && typeof retryQuota.budgetMs === "number" && retryQuota.budgetMs < 240_000
+      && (calls[0] as Call & { maxSearches?: number }).maxSearches === undefined, JSON.stringify({ maxSearches: retryQuota?.maxSearches, budgetMs: retryQuota?.budgetMs }));
   check("the retry read the lookup's cited documents page first", requested.includes("https://www.lookupton.gov/150/Solar-Permits"), requested.join(" "));
   check("the blank the retry found on the issuer's host is acquired", outC.status === "acquired" && outC.sourceUrl === liveC, JSON.stringify({ status: outC.status, sourceUrl: outC.sourceUrl, message: outC.message }));
   check("an off-host link from the retry is never requested (scoped to the issuer's host)", !requested.includes(offHost), requested.join(" "));
@@ -224,17 +229,38 @@ try {
   check("second platform: the listing page found it, so no second search ran", calls.length === 1, String(calls.length));
   check("second platform: an unrelated form on the page is never requested", !requested.some((u) => /dog-license/.test(u)), requested.join(" "));
 
+  // ═══ REVIEW (PR #224) — a timed-out first search gets no second search (#163) ═══════════════
+  const T = "City of Timeoutburg";
+  const deadT = "https://www.timeoutburg.gov/DocumentCenter/View/3/Solar-Application";
+  saveLookup(T, [{ discipline: "combo", docs: ["Solar Permit Application"] }], "combo");
+  firstFor.set(T, { candidateUrls: [deadT], lookupFailed: true, lookupError: "search timed out after 4 min; 2 page(s) seen", searchTimeout: { budgetMs: 240_000, pagesSeen: 2 } } as Partial<AhjFormUrlResult>);
+  retryFor.set(T, { candidateUrls: [] });
+  calls = []; requested = [];
+  const outT = await auto.ensureAhjFormTemplate(db, llm, mkJob(T, "Timeoutburg"), "permit_application", { formsPage: fp(), searchPass: {} });
+  check("after a timed-out first search, the dead-link retry runs NO second search (#163)", calls.length === 1, JSON.stringify(calls.map((c) => c.documentNames)));
+  check("… the free listing-page read still happens", requested.includes("https://www.timeoutburg.gov/DocumentCenter"), requested.join(" "));
+  check("… and the result still names the dead link", outT.status === "dead_link" && (outT.deadLinks ?? []).includes(deadT), JSON.stringify({ status: outT.status, d: outT.deadLinks }));
+
+  // ═══ REVIEW — a 404 on a host that is not the AHJ's own site is NOT "found, dead link" ═════════
+  const O = "City of Offsiteton";
+  const offDead = "https://www.someotherplace.gov/forms/Building-Permit-Application.pdf";
+  firstFor.set(O, { candidateUrls: [offDead] });
+  calls = [];
+  const outO = await prepareOfficialDocuments(db, mkJob(O, "Offsiteton"), deps());
+  check("an off-site 404 is an ordinary failure (not_found, not dead_link)", outO.results.length > 0 && outO.results.every((r) => r.status === "not_found"), JSON.stringify(outO.results.map((r) => r.status)));
+  check("… and it keeps the 24h cooldown", Boolean(cooldownRow(O)) && !outO.deadLinkRetryOpen);
+
   // ═══ 4. PORTAL-ONLY AHJ — no missing-blank hold ════════════════════════════════════════════════
   const D = "City of Portalia";
   saveLookup(D, [
-    { discipline: "structural", portal: "https://portalia.cityworks.example/PublicAccess", docs: ["Electrical Permit Application for Roof-Mounted Solar PV", "Site plan"] },
-    { discipline: "electrical", portal: "https://portalia.cityworks.example/PublicAccess", docs: ["Single-line diagram"] },
+    { discipline: "structural", portal: "https://permits.portalia.gov/PublicAccess/", docs: ["Electrical Permit Application for Roof-Mounted Solar PV", "Site plan"] },
+    { discipline: "electrical", portal: "https://permits.portalia.gov/PublicAccess/", docs: ["Single-line diagram"] },
   ], "separate");
   const pD = mkJob(D, "Portalia");
   const rowsD = reqDocs.requiredApplicationDocs(pD, reqDocs.applicationDocContext(pD)).filter((d) => d.docType === "building_application" || d.docType === "electrical_application");
   check("portal-only AHJ (lookup cites a portal, names no PDF): the application rows exist", rowsD.length === 2, JSON.stringify(rowsD.map((d) => d.docType)));
   check("portal-only AHJ: no missing-blank hold (rows do not block)", rowsD.length > 0 && rowsD.every((d) => !d.blocking), JSON.stringify(rowsD.map((d) => [d.docType, d.blocking])));
-  check("portal-only AHJ: the row says the application is taken in the portal, no PDF blank expected", rowsD.every((d) => /no PDF blank expected/.test(d.why) && d.why.includes("portalia.cityworks.example")), rowsD.map((d) => d.why).join(" | "));
+  check("portal-only AHJ: the row says the application is taken in the portal, no PDF blank expected", rowsD.every((d) => /no PDF blank expected/.test(d.why) && d.why.includes("permits.portalia.gov")), rowsD.map((d) => d.why).join(" | "));
   // The same on another portal platform (an Accela-hosted portal).
   const F = "Town of Accelaville";
   saveLookup(F, [
@@ -244,6 +270,27 @@ try {
   const pF = mkJob(F, "Accelaville");
   const rowsF = reqDocs.requiredApplicationDocs(pF, reqDocs.applicationDocContext(pF)).filter((d) => d.docType === "building_application" || d.docType === "electrical_application");
   check("portal-only on a second portal platform: no missing-blank hold", rowsF.length === 2 && rowsF.every((d) => !d.blocking && /no PDF blank expected/.test(d.why)), JSON.stringify(rowsF.map((d) => [d.docType, d.blocking])));
+  // REVIEW: a seeded lookup citing the AHJ's HOMEPAGE or a building INFO page does not waive the hold …
+  const rowsFor = (ahj: string, city: string) => {
+    const pj = mkJob(ahj, city);
+    return reqDocs.requiredApplicationDocs(pj, reqDocs.applicationDocContext(pj)).filter((d) => d.docType === "building_application" || d.docType === "electrical_application");
+  };
+  saveLookup("City of Homepageville", [
+    { discipline: "structural", portal: "https://www.homepageville.gov/" },
+    { discipline: "electrical", portal: "https://www.homepageville.gov/building/permits" },
+  ], "separate");
+  const rowsH = rowsFor("City of Homepageville", "Homepageville");
+  check("a seeded lookup citing the homepage / a building info page keeps the hold", rowsH.length === 2 && rowsH.every((d) => d.blocking), JSON.stringify(rowsH.map((d) => [d.docType, d.blocking])));
+  firstFor.set("City of Homepageville", { candidateUrls: [] });
+  const outH = await auto.ensureAhjFormTemplate(db, llm, mkJob("City of Homepageville", "Homepageville"), "building_application", { formsPage: fp(), searchPass: {} });
+  check("… while the card still names the cited URL (not confirmed as a portal)", outH.message.includes("www.homepageville.gov") && /not confirmed as an application portal/.test(outH.message), outH.message);
+  // … unless a person verified the lookup row.
+  saveLookup("City of Verifiedton", [
+    { discipline: "structural", portal: "https://www.verifiedton.gov/" },
+    { discipline: "electrical", portal: "https://www.verifiedton.gov/" },
+  ], "separate", "fixture-operator");
+  const rowsV = rowsFor("City of Verifiedton", "Verifiedton");
+  check("a human-verified lookup's portal waives the hold", rowsV.length === 2 && rowsV.every((d) => !d.blocking), JSON.stringify(rowsV.map((d) => [d.docType, d.blocking])));
   // … unless the lookup names a PDF blank: the hold stays.
   const E = "City of Pdfton";
   saveLookup(E, [

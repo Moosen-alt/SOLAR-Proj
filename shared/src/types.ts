@@ -3390,6 +3390,10 @@ export interface LLMProvider {
     documentNames?: string[];
     /** The issuer's own host, to scope those queries to (site:<host>). */
     issuerHost?: string;
+    /** A smaller quota for the retry: web searches (capped at the default 3) and the time budget
+     *  (capped at the default). Omitted: the defaults. */
+    maxSearches?: number;
+    budgetMs?: number;
   }): Promise<AhjFormUrlResult>;
 
   /** Map a blank form's AcroForm field names onto project data sources so the
