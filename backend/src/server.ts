@@ -2742,6 +2742,10 @@ app.post("/api/parser/llm-extract", asyncHandler(async (req, res) => {
     const result = await llm.extractProjectFields({ planText, utilityBillText, meterText, structuralLetterText, defaultState });
     const { supplementStructuralIntake } = await import("./structuralIntake");
     let extraction = supplementStructuralIntake(result, planText);
+    // The packet's own permit application / contract page (contract value, homeowner phone) and
+    // the racking callouts, read deterministically with their source page cited (#201).
+    const { supplementPacketApplication } = await import("./packetApplication");
+    extraction = supplementPacketApplication(extraction, planText);
     // HYBRID PLAN SET: the parser page first posted the PDF to /api/parser/plan-scan-extract, which
     // read the set's image-only pages (datasheets pasted in as pictures) by vision; that read rides
     // back here and is merged UNDER this text read — the text wins every field it answered

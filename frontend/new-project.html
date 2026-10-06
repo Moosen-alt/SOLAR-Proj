@@ -203,7 +203,7 @@
     </form>
   </div>
 
-  <script src="/parser-review.js?v=10"></script>
+  <script src="/parser-review.js?v=11"></script>
   <script>
     const form = document.getElementById("npForm");
     const msg = document.getElementById("npMsg");
@@ -264,7 +264,7 @@
       }
       if (email) payload.homeownerEmail = email;
       if (!payload.clientId) {
-        setMsg("Choose the client / contractor this project is filed for — the permit application carries their CCB licence and the portal logs in as them.", "error");
+        setMsg("Choose the client / contractor this project is filed for — the permit application carries their contractor licence and the portal logs in as them.", "error");
         return;
       }
       submitBtn.disabled = true;

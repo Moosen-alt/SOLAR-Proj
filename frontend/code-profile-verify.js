@@ -52,9 +52,17 @@
       `<li><b>${esc(c.code)} ${esc(c.edition)}</b>${c.title ? ` — ${esc(c.title)}` : ''}${c.basedOn ? ` <span class="rv-muted muted">(based on ${esc(c.basedOn)})</span>` : ''}${c.effectiveDate ? ` <span class="rv-muted muted">effective ${esc(c.effectiveDate)}</span>` : ''}${sourceLink(c.sourceUrl)}</li>`));
     section('Amendments', ((p && p.amendments) || []).map((a) =>
       `<li><b>${esc([a.code, a.section].filter(Boolean).join(' '))}</b>${a.summary ? ` — ${esc(a.summary)}` : ''}${sourceLink(a.sourceUrl)}</li>`));
-    const kv = (obj) => Object.entries(obj || {}).filter(([k, v]) => k !== 'sourceUrl' && v !== '' && v != null)
-      .map(([k, v]) => `<li><b>${esc(humanKey(k))}:</b> ${esc(plainValue(v))}</li>`);
-    const dc = kv(p && p.designCriteria);
+    const kv = (obj, labels = {}) => Object.entries(obj || {}).filter(([k, v]) => k !== 'sourceUrl' && v !== '' && v != null)
+      .map(([k, v]) => `<li><b>${esc(labels[k] ? labels[k][0] : humanKey(k))}:</b> ${esc(plainValue(v))}${esc(labels[k] ? labels[k][1] : '')}</li>`);
+    // Fields whose generic label would mislead (a unit glued to the name, a value no rule reads).
+    const dc = kv(p && p.designCriteria, {
+      groundSnowLoadPsf: ['Ground snow load Pg', ' psf'],
+      groundSnowLoadAsdPsf: ['Ground snow load pg(asd)', ' psf'],
+      roofSnowLoadPsf: ['Roof snow load', ' psf'],
+      weathering: ['Weathering (informational)', ''],
+      termite: ['Termite (informational)', ''],
+      soilBearingPsf: ['Soil bearing (informational)', ' psf'],
+    });
     if (dc.length && httpUrl(p.designCriteria && p.designCriteria.sourceUrl)) dc.push(`<li class="rv-muted muted">Design criteria${sourceLink(p.designCriteria.sourceUrl)}</li>`);
     section('Design criteria', dc);
     section('Prescriptive limits', kv(p && p.prescriptive));

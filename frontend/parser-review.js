@@ -987,6 +987,78 @@
   function licenseLabel(state) {
     return LICENSE_LABELS[String(state || '').trim().toUpperCase()] || 'contractor license';
   }
+  // THE CLIENT'S LICENCE, NAMED BY THE CLIENT'S STATE (#202). The parser's note and prompt said
+  // "CCB" for every client. Licences ruling L5 (backend/src/clients.ts): the NAMED ccbLicenseNumber
+  // column is Oregon's CCB, always — it never follows licenseState and is never another state's
+  // licence. Every other state's licence is a TYPED stateLicenses row (form-agent ruling
+  // 2026-09-28). So: the column stays "CCB", shown only for an Oregon (or unplaced) client; the
+  // typed rows for the client's state are named by that state's board through the same
+  // LICENSE_LABELS table (DOPL for Utah, CID for New Mexico — no second table). The client's state
+  // is licenseState, else its business state; anything but a two-letter code is unknown, and an
+  // unknown state names no board: the generic "contractor licence", never Oregon's.
+  function clientLicenceState(client) {
+    const c = client || {};
+    for (const v of [c.licenseState, c.businessState]) {
+      const st = clean(v).toUpperCase();
+      if (/^[A-Z]{2}$/.test(st)) return st;
+    }
+    return '';
+  }
+  /** "CCB licence", "DOPL licence", "CID licence"; "contractor licence" when the state names none. */
+  function licenceWords(state) {
+    const label = LICENSE_LABELS[clean(state).toUpperCase()];
+    if (!label) return 'contractor licence';
+    return /registration|licen[cs]e/i.test(label) ? label : `${label} licence`;
+  }
+  /** One typed licence's label: a contractor licence is the state's board ("DOPL"); any other kind
+   *  is the state + the kind ("UT electrical contractor"), never the board's contractor label. */
+  function typedLicenceLabel(state, kind) {
+    const k = clean(kind).toLowerCase();
+    if (!k || k === 'contractor') return LICENSE_LABELS[state] || `${state} contractor licence`;
+    return `${state} ${k.replace(/_/g, ' ')}`;
+  }
+  /** The client's licences for its own state, labelled: [{label, number}]. business_registration is
+   *  never a contractor licence. The Oregon CCB column only when the client is Oregon's or unplaced. */
+  function clientLicences(client) {
+    const c = client || {};
+    const st = clientLicenceState(c);
+    const out = [];
+    const ccb = clean(c.ccbLicenseNumber);
+    if (ccb && (!st || st === 'OR')) out.push({ label: 'CCB', number: ccb });
+    if (st) {
+      for (const l of Array.isArray(c.stateLicenses) ? c.stateLicenses : []) {
+        const number = clean(l && l.number);
+        if (!number || clean(l.state).toUpperCase() !== st || clean(l.kind).toLowerCase() === 'business_registration') continue;
+        if (out.some((o) => o.number === number)) continue; // an OR typed twin of the CCB column
+        out.push({ label: typedLicenceLabel(st, l.kind), number });
+      }
+    }
+    return out;
+  }
+  /** The "Save to project" client prompt. No client chosen = no client state = the generic words. */
+  function clientGatePrompt(client) {
+    return `Choose the Client / Contractor this project is filed for — the permit application carries that client’s ${licenceWords(clientLicenceState(client))} and the portal logs in as them, so a new project cannot be created without one.`;
+  }
+  /** The "no licence on file" warning for a picked client, or "" when it has one for its state. */
+  function clientLicenceMissing(client) {
+    if (clientLicences(client).length) return '';
+    const c = client || {};
+    return `⚠ ${c.companyName || 'This client'} has no ${licenceWords(clientLicenceState(c))} on file — add it in the Clients tab before submitting.`;
+  }
+  /** The parsed contractor licence note: "<Company> | DOPL 123 | … | <phone>". */
+  function clientLicenceNote(client) {
+    const c = client || {};
+    return [
+      c.companyName || c.legalBusinessName,
+      ...clientLicences(c).map((l) => `${l.label} ${l.number}`),
+      c.electricalLicenseNumber ? `Elec Lic ${c.electricalLicenseNumber}` : '',
+      c.metroCityLicenseNumber ? `Metro/City ${c.metroCityLicenseNumber}` : '',
+      c.electricalSupervisorName ? `Supervisor ${c.electricalSupervisorName}` : '',
+      c.electricianLicenseNumber ? `Electrician Lic ${c.electricianLicenseNumber}` : '',
+      c.businessEmail || c.contactEmail,
+      c.businessPhone || c.phone,
+    ].filter(Boolean).join(' | ');
+  }
   const isNA = (v) => !clean(v) || /^(?:N\/?A|NONE|NULL|NOT\s+SHOWN|NOT\s+AVAILABLE|-+)$/i.test(clean(v));
   function installerLine(s, state) {
     if (!s || isNA(s.contractorCompany)) return '';
@@ -1209,6 +1281,64 @@
   // The backend's NOTES_SHEET: NOTES on the page, except the placard sheet's own LABELING / PLACARD NOTES.
   const NOTES_SHEET = /(?<!\b(?:LABEL(?:ING|S)?|PLACARDS?)\s+)\bNOTES\b/i;
   const isIndexOrNotesPage = (t) => /SHEET INDEX/i.test(t) || /GENERAL NOTES AND PROJECT DATA/i.test(t);
+  // The backend's index reader (docSplitter.ts indexSpecSheets / pageSheetNumber, #199): the sheet
+  // numbers the cover's sheet index names as a spec sheet ("S-1 SPEC SHEET"), so an image-only page
+  // that carries only its title block and "S-1" is a spec-named page. Same regexes, same row /
+  // column reading; docSplitterMirror.test.ts pins the two to the same answers.
+  const INDEX_SHEET_NUMBER = /\b([A-Z]{1,3})\s?-?\s?(\d{1,2}(?:\.\d{1,2})?)\b(?!\.\d)/g;
+  const NOT_A_SHEET_PREFIX = /^(?:OF|REV|QTY|NO|AT|TO|IN|ON|BY|OR|AND|FOR|PER|THE|UL|NEC|IBC|IRC|IFC|AWG|KW|AMP|MIN|MAX|TYP|EA|FT)$/;
+  const INDEX_SPEC_NAME = new RegExp(`${SPEC_SHEET_NAME.source}|\\b(?:SPEC(?:IFICATION)?S?|CUT|DATA)\\s*-?\\s*SHEETS?\\b`, 'gi');
+  const INDEX_CALCS_NAME = /\bCALC(?:ULATION)?S?\b/i;
+  const INDEX_NAME_WORDS = 6;
+  const INDEX_NAMES_END = /\bNOTES?\b\s*(?:[:\-\u2013]|1\b)|(?<!\bGENERAL\s+)\bNOTES?\b|(?:^|\s)1\.\s|\bPROJECT\s+DATA\b/i;
+  const sheetNumbers = (text) => [...text.matchAll(INDEX_SHEET_NUMBER)]
+    .filter((m) => !NOT_A_SHEET_PREFIX.test(m[1]))
+    .map((m) => ({ key: `${m[1]}${m[2]}`, start: m.index, end: m.index + m[0].length }));
+  const indexNames = (text, words) => {
+    const end = INDEX_NAMES_END.exec(text);
+    return (end ? text.slice(0, end.index) : text).trim().split(/\s+/).slice(0, words).join(' ');
+  };
+  const isIndexSpecName = (name) => new RegExp(INDEX_SPEC_NAME.source, 'i').test(name) && !INDEX_CALCS_NAME.test(name);
+
+  /** docSplitter.ts indexSpecSheets: { spec, listed } sheet-number keys from the sheet-index pages. */
+  function indexSpecSheets(pageTexts) {
+    const spec = new Set();
+    const listed = new Set();
+    for (const raw of pageTexts || []) {
+      const text = String(raw || '');
+      if (!isIndexOrNotesPage(text)) continue;
+      const nums = sheetNumbers(text);
+      for (let i = 0; i < nums.length; ) {
+        let j = i;
+        while (j + 1 < nums.length && !/[A-Z0-9]/i.test(text.slice(nums[j].end, nums[j + 1].start))) j++;
+        const after = text.slice(nums[j].end, j + 1 < nums.length ? nums[j + 1].start : text.length);
+        const run = nums.slice(i, j + 1);
+        for (const n of run) listed.add(n.key);
+        if (run.length === 1) {
+          if (isIndexSpecName(indexNames(after, INDEX_NAME_WORDS))) spec.add(run[0].key);
+        } else {
+          const count = [...indexNames(after, run.length * INDEX_NAME_WORDS).matchAll(INDEX_SPEC_NAME)].length;
+          const prefix = (k) => k.replace(/[\d.]+$/, '');
+          const groups = new Map();
+          run.forEach((n, at) => groups.set(prefix(n.key), [...(groups.get(prefix(n.key)) || []), at]));
+          const fits = [...groups.values()].filter((at) => count > 0 && at.length === count && at[at.length - 1] - at[0] === at.length - 1);
+          if (fits.length === 1) for (const at of fits[0]) spec.add(run[at].key);
+        }
+        i = j + 1;
+      }
+    }
+    return { spec, listed };
+  }
+  /** docSplitter.ts pageSheetNumber: the labelled SHEET NUMBER when there is one, else the only index number. */
+  function pageSheetNumber(text, listed) {
+    const labelled = /\bSHEET\s*(?:NUMBER|NO\.?|#)\s*:?\s*([A-Z]{1,3}\s?-?\s?\d{1,2}(?:\.\d{1,2})?)\b/.exec(text);
+    if (labelled) {
+      const key = (sheetNumbers(labelled[1])[0] || {}).key;
+      return key && listed.has(key) ? key : null;
+    }
+    const onPage = new Set(sheetNumbers(text).map((n) => n.key).filter((k) => listed.has(k)));
+    return onPage.size === 1 ? [...onPage][0] : null;
+  }
   // Written into the page's split-map text. The gate trusts a spec line only from a map that
   // carries it: a snapshot written before this rule may have mapped the calcs sheet (#90).
   const SPEC_MAP_RULE = 'Spec rule: title-block sheet names; calculation sheets excluded (#90)';
@@ -1237,23 +1367,34 @@
     return { docTypes, byPattern: best.patternHits > 0 };
   }
 
+  /** docSplitter.ts isUndecidedSpecPage, with the index from indexSpecSheets (#199). */
+  function isUndecidedSpecPage(t, scored, index) {
+    const named = SPEC_SHEET_NAME.test(t) || Boolean(index && index.spec.size && index.spec.has(pageSheetNumber(t, index.listed) || ''));
+    return named && !isCalcsSheet(t) && !isIndexOrNotesPage(t)
+      && !scored.docTypes.some((d) => SPEC_DOC_TYPES.has(d)) && !scored.byPattern;
+  }
+
   /** The module / inverter spec pages among `pages` ([{page, text}], text already normalized),
-   *  plus the spec-NAMED pages neither claimed (undecided) — the splitter's undecidedSpecPages. */
-  function specSheetPages(pages) {
+   *  plus the spec-NAMED pages neither claimed (undecided) — the splitter's undecidedSpecPages.
+   *  `allPages` (optional, same shape) is the whole plan set: the cover's sheet index is read from it,
+   *  and undecided is judged over every page of it, as the splitter does (#199) — the S-1 datasheet
+   *  the index names is not a DS-coded page, and the cover never is. */
+  function specSheetPages(pages, allPages) {
     const moduleSpecs = [];
     const inverterSpecs = [];
     const undecidedSpecs = [];
+    const index = indexSpecSheets((allPages || pages || []).map((p) => String(p.text || '')));
     for (const p of pages || []) {
       const t = String(p.text || '');
-      const { docTypes, byPattern } = scoreSplitPage(t);
-      const isModule = docTypes.includes('module_spec');
-      const isInverter = docTypes.includes('inverter_spec');
-      if (isModule) moduleSpecs.push(p.page);
-      if (isInverter) inverterSpecs.push(p.page);
-      // A page another category won on its own sheet name (a dense SLD citing "INVERTER
-      // SPECIFICATIONS") is filed right; reporting it undecided would be noise (#119).
-      if (!isModule && !isInverter && !byPattern && !isCalcsSheet(t) && !isIndexOrNotesPage(t)
-        && SPEC_SHEET_NAME.test(t)) undecidedSpecs.push(p.page);
+      const { docTypes } = scoreSplitPage(t);
+      if (docTypes.includes('module_spec')) moduleSpecs.push(p.page);
+      if (docTypes.includes('inverter_spec')) inverterSpecs.push(p.page);
+    }
+    // A page another category won on its own sheet name (a dense SLD citing "INVERTER
+    // SPECIFICATIONS") is filed right; reporting it undecided would be noise (#119).
+    for (const p of allPages || pages || []) {
+      const t = String(p.text || '');
+      if (isUndecidedSpecPage(t, scoreSplitPage(t), index)) undecidedSpecs.push(p.page);
     }
     // No one-side-empty copy (#193): a set with only a MICROINVERTER SPECIFICATION SHEET has no
     // module spec, as the splitter reports. A combined MODULE / INV sheet is already on both sides
@@ -1304,9 +1445,11 @@
     structureBasis, structureFromPlan, structureOption, STRUCTURE_OPTIONS,
     otherStructureEvidence, outbuildingBesideWork, otherBuildingWords,
     licenseLabel, installerLine, identifyUtility,
+    clientLicenceState, licenceWords, clientLicences, clientGatePrompt, clientLicenceMissing, clientLicenceNote,
     locatesDecision, EXCAVATION_TYPES,
     filterTapEvidence, isNoteMention,
     formatReviewList,
     isCalcsSheet, specSheetPages, specMapValue, SPEC_MAP_RULE, scoreSplitPage, SPLIT_CATEGORIES,
+    indexSpecSheets, isUndecidedSpecPage,
   };
 });

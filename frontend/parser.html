@@ -299,7 +299,7 @@
   <script src="/vendor/tesseract-5.1.1.min.js"></script>
   <!-- The review-list rules (meter cross-check, notes, resolution, scope callout, locates)
        live in their own DOM-free file so the backend unit test loads the SAME code. -->
-  <script src="parser-review.js?v=10"></script>
+  <script src="parser-review.js?v=11"></script>
 </head>
 
 <body>
@@ -765,7 +765,7 @@
           <button id="saveToSystemBtn" onclick="saveToSystem()" class="primary" style="width:100%;justify-content:center">Save to project</button>
         </div>
       </div>
-      <div id="clientGateHint" class="ps-note" style="display:none">Choose the <strong>Client / Contractor</strong> above before saving a new project &mdash; the permit application carries that client&rsquo;s CCB licence and the portal logs in as them, so a project cannot be created without one.</div>
+      <div id="clientGateHint" class="ps-note" style="display:none">Choose the <strong>Client / Contractor</strong> above before saving a new project &mdash; the permit application carries that client&rsquo;s contractor licence and the portal logs in as them, so a project cannot be created without one.</div>
       <!-- WHICH COMPANY IS THIS? Filled from the plan set's title block by the backend
            resolver (backend/src/clientMatch.ts) on the parse response. An exact CCB match
            selects the client outright; anything weaker fills the picker but leaves the
@@ -1302,6 +1302,18 @@ function pageText(planDoc, pageNums){
   return nums.map(n => (planDoc.pages.find(p => p.page === n) || {}).text || '').join('\n');
 }
 
+// RACKING FROM THE CALLOUT, NEVER THE TITLE BLOCK (#201). The "RACKING:" regex used to run on
+// across a title block ("RACKING HARDWARE … RESIDENCE NEW PHOTOVOLTAIC SYSTEM PROJECT - 9.020 KW
+// DC") and save that as the racking product, which precedent matching (#147) keys on. A capture
+// that reads as a project description is no racking; the text read's rackingSystem (from the
+// racking callouts, backend packetApplication.ts) fills the field instead.
+function parseRackingLine(cover){
+  const raw = matchFirst(cover, [
+    /RACKING\s*:?\s*([A-Z0-9 #\-./+]+?(?:SYSTEM(?: FOR [A-Z ]+)?)?)(?=\s+ARRAY AREA|\s+UTILITY|\s+MSP|\n|$)/i
+  ]);
+  if (/\bPHOTOVOLTAIC\s+SYSTEM\b|\bRESIDENCE\b|\b\d+(?:\.\d+)?\s*KW\s*(?:DC|AC)\b|\bPROJECT\b/i.test(raw)) return '';
+  return title(raw);
+}
 function matchFirst(text, patterns){
   const t = normalizeText(text || '');
   for (const re of patterns){
@@ -2048,9 +2060,7 @@ function parsePlanData(planDoc){
     /ROOF MATERIAL\s*:?\s*([A-Z][A-Z -]*?)(?=\s+ASCE|\s+WIND|\s+ROOF|\n|$)/i,
     /MATERIAL\s*[-:]?\s*((?:CONCRETE |CLAY )?(?:S-|FLAT )?TILE|COMPOSITE SHINGLE|COMP SHINGLE|METAL|TPO|FLAT ROOF)/i
   ]));
-  const racking = title(matchFirst(cover, [
-    /RACKING\s*:?\s*([A-Z0-9 #\-./+]+?(?:SYSTEM(?: FOR [A-Z ]+)?)?)(?=\s+ARRAY AREA|\s+UTILITY|\s+MSP|\n|$)/i
-  ]));
+  const racking = parseRackingLine(cover);
   // The backend screens wind EXPOSURE (letter) and wind SPEED (mph) separately
   // (permitPath evaluatePrescriptiveCriteria), so capture them into their own
   // fields instead of one combined "110 MPH, C" string.
@@ -3586,7 +3596,11 @@ function detectSplitPages(){
   // Module / inverter spec pages by the backend splitter's rule (parser-review.js §8): a
   // calculations sheet is never a spec sheet, and a title-only EQUIPMENT SPECIFICATION page is
   // undecided rather than guessed (#90).
-  const specs = window.ParserReview.specSheetPages(ds.map(p => ({page: p.page, text: normalizeText(p.text || '')})));
+  // The whole plan set as well: undecided spec pages and the cover's sheet index (#199) are judged
+  // over every page, as the splitter does — an index-named S-1 datasheet is not a DS-coded page.
+  const specs = window.ParserReview.specSheetPages(
+    ds.map(p => ({page: p.page, text: normalizeText(p.text || '')})),
+    pages.map(p => ({page: p.page, text: normalizeText(p.text || '')})));
   const moduleSpecs = specs.moduleSpecs;
   const inverterSpecs = specs.inverterSpecs;
 
@@ -3886,6 +3900,9 @@ const LLM_FIELD_TARGETS = {
   invMake: ['invMake'], invModel: ['invModel'], invQty: ['invQty'],
   batteryMake: ['batteryMake'], batteryModel: ['batteryModel'], batteryQty: ['batteryQty'],
   roofMaterial: ['roofMaterial'], mounting: ['mounting'],
+  // The racking product read off the racking callouts fills the visible Racking box (#201), so
+  // the saved racking matches rackingSystem instead of a title-block string the regex caught.
+  rackingSystem: ['racking'],
   // Canonical key -> DOM id where the two differ. Everything else falls back to
   // a same-name input (see applyExtraction).
   roofRafterSpan: ['roofRafterSpanFeet'],
@@ -3958,6 +3975,9 @@ const LLM_SNAPSHOT_KEYS = new Set([
   'combinedDcKw','combinedAcKw',
   'utilitySchedule','serviceVoltage','servicePhase','numberOfCircuits','parcelNumber','jobValue',
   'homeownerEmail','homeownerPhone',
+  // The declared valuation the packet's own permit application states (#201): kept for review
+  // beside the contract-based figure, never a filing input (valuation.ts reads jobValue only).
+  'statedValuation',
   'azimuth','tilt','roofSlope','mainServiceRating','pvArrays',
   'stampRecommendation',
   'electricalCalcText','structuralCalcText','sitePlanNotesText','roofPlanNotesText',
@@ -5314,7 +5334,7 @@ async function loadSystemSelects() {
     // WAS: "You can still parse and save as a new project." That stopped being true the
     // moment a new project required a client — without the clients list there is nothing
     // to pick, so saying "you can still save" would send the operator into a 400.
-    if (s) s.textContent = '⚠ Could not load the projects/clients list — check your connection. Parsing still works, but a NEW project cannot be saved until the client list loads (every filing carries a client’s CCB licence). Reload once the connection is back.';
+    if (s) s.textContent = '⚠ Could not load the projects/clients list — check your connection. Parsing still works, but a NEW project cannot be saved until the client list loads (every filing carries a client’s contractor licence). Reload once the connection is back.';
   }
   refreshClientGate();
 }
@@ -5339,7 +5359,7 @@ function refreshClientGate() {
   btn.title = missing
     ? 'Choose the Client / Contractor this project is filed for — a new project cannot be created without one.'
     : unconfirmed
-      ? 'This client was suggested from the plan set, not matched on a CCB licence number — confirm it before saving.'
+      ? 'This client was suggested from the plan set, not matched on a licence number — confirm it before saving.'
       : '';
   const hint = $('clientGateHint');
   if (hint) hint.style.display = missing ? '' : 'none';
@@ -5741,7 +5761,7 @@ async function saveToSystem() {
   // the backend: the button can be re-enabled from a console, and saveToSystem is called
   // by name elsewhere on this page.
   if (!existingId && !clientId) {
-    if (statusEl) statusEl.textContent = '⚠ Choose the Client / Contractor this project is filed for — the permit application carries that client’s CCB licence and the portal logs in as them, so a new project cannot be created without one.';
+    if (statusEl) statusEl.textContent = '⚠ ' + ParserReview.clientGatePrompt(null);
     refreshClientGate();
     $('clientSelect')?.focus();
     return;
@@ -5750,7 +5770,7 @@ async function saveToSystem() {
   // not bound until a human agrees. Checked here as well as by the button state, for the
   // same reason the rule above is: the button can be re-enabled from a console.
   if (!existingId && pendingClientConfirmation(clientId)) {
-    if (statusEl) statusEl.textContent = '⚠ This client was read off the plan set, not matched on a CCB licence number. Confirm it is the right company before saving — a project filed under the wrong contractor’s licence is the costliest mistake here.';
+    if (statusEl) statusEl.textContent = '⚠ This client was read off the plan set, not matched on a licence number. Confirm it is the right company before saving — a project filed under the wrong contractor’s licence is the costliest mistake here.';
     refreshClientGate();
     $('clientSelect')?.focus();
     return;
@@ -5930,21 +5950,14 @@ async function loadContractorInfo(clientId) {
     setVal('metroCityLicenseNumber', client.metroCityLicenseNumber || '');
     setVal('supervisingElectrician', client.electricalSupervisorName || '');
     setVal('electricianLicenseNumber', client.electricianLicenseNumber || '');
-    // A readable summary of who will be on this submittal — for the coordinator to verify.
-    const notes = [
-      client.companyName || client.legalBusinessName,
-      client.ccbLicenseNumber ? `CCB ${client.ccbLicenseNumber}` : '',
-      client.electricalLicenseNumber ? `Elec Lic ${client.electricalLicenseNumber}` : '',
-      client.metroCityLicenseNumber ? `Metro/City ${client.metroCityLicenseNumber}` : '',
-      client.electricalSupervisorName ? `Supervisor ${client.electricalSupervisorName}` : '',
-      client.electricianLicenseNumber ? `Electrician Lic ${client.electricianLicenseNumber}` : '',
-      client.businessEmail || client.contactEmail,
-      client.businessPhone || client.phone,
-    ].filter(Boolean).join(' | ');
-    setVal('contractorLicenseNotes', notes);
+    // A readable summary of who will be on this submittal — for the coordinator to verify. The
+    // licence is labelled by the client's state (#202): DOPL for a Utah client, never Oregon's CCB.
+    setVal('contractorLicenseNotes', ParserReview.clientLicenceNote(client));
     updateGroupSummaries(); // setVal fires no input event; the installer fold's count would go stale
-    if (!client.ccbLicenseNumber) {
-      const s = $('saveStatus'); if (s) s.textContent = `⚠ ${client.companyName || 'This client'} has no CCB license on file — add it in the Clients tab before submitting.`;
+    // The client's licence for ITS state: a typed DOPL row for a Utah client, the CCB for an Oregon one.
+    const missingLicence = ParserReview.clientLicenceMissing(client);
+    if (missingLicence) {
+      const s = $('saveStatus'); if (s) s.textContent = missingLicence;
     }
   } catch (e) {
     console.warn('Could not load contractor info:', e);

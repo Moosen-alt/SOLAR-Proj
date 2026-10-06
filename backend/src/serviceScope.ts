@@ -18,13 +18,41 @@
 
 /** The snapshot fields the scope is read from — the design's own words, never a
  *  value this system derived (a generated work description would read its own
- *  output back). */
+ *  output back).
+ *
+ *  Every one of these is a parser-written narrative blob that states absences plainly
+ *  ("no MSP upgrade and no main breaker derate", #200), so each is read through the
+ *  per-field negation guard below, never as a bare keyword hit. */
 const MPU_SCOPE_FIELDS = [
   "projectDescriptionText", "description", "scopeText", "electricalCalcText",
   "sitePlanNotesText", "mpu", "serviceUpgrade",
 ] as const;
 
-const MPU_SCOPE = /\bmpu\b|main panel upgrade|main service panel upgrade|service (panel )?upgrade|\bmsp upgrade\b|panel upgrade|meter.?main upgrade/;
+const MPU_SCOPE = /\bmpu\b|main panel upgrade|main service panel upgrade|service (panel )?upgrade|\bmsp upgrade\b|panel upgrade|meter.?main upgrade/g;
+
+// A NEGATED MENTION IS NOT AN UPGRADE (#200). "no MSP upgrade", "without a service panel
+// upgrade", "N/A - no panel upgrade", "MPU: none", "main panel upgrade not required" all
+// name the thing to say it is absent. A mention counts only when no negator stands in
+// its own clause within three words before it ("no batteries, MPU to 200A" and "no
+// derate; main panel upgrade" stay upgrades — the comma / semicolon ends the "no"), with
+// no "and/plus/with/but" between (a "no X and MPU to 200A" list affirms the MPU), and
+// nothing after it says none / not required.
+const NEGATED_BEFORE = /\b(?:no|not|non|without|never|nor|none|n\/a)\b((?:[\s\-–—:]+[^\s.;,|()]+){0,3})[\s\-–—:]*$/;
+const LIST_JOIN = /\b(?:and|plus|with|but|then)\b/;
+const NEGATED_AFTER = /^[\s:=\-–—]*(?:\(?\s*)?(?:none\b|n\/a\b|no\b(?!\s*\.?\s*\d)|(?:is\s+|are\s+|was\s+)?not\s+(?:required|needed|proposed|included|planned|applicable|part)\b)/;
+
+function affirmsMpu(field: string): boolean {
+  for (const m of field.matchAll(MPU_SCOPE)) {
+    const at = m.index ?? 0;
+    const clause = field.slice(0, at).split(/[.;,|()\n]/).pop() ?? "";
+    const before = NEGATED_BEFORE.exec(clause);
+    if (before && !LIST_JOIN.test(before[1])) continue;
+    const after = (field.slice(at + m[0].length).split(/[.;,|\n]/)[0]) ?? "";
+    if (NEGATED_AFTER.test(after)) continue;
+    return true;
+  }
+  return false;
+}
 
 function text(value: unknown): string {
   return value == null ? "" : String(value).trim();
@@ -38,7 +66,9 @@ export function mpuScopeText(snapshot: Record<string, unknown> | null | undefine
 
 /** THE predicate, on a parser snapshot. */
 export function snapshotHasMpuScope(snapshot: Record<string, unknown> | null | undefined): boolean {
-  return MPU_SCOPE.test(mpuScopeText(snapshot));
+  const s = (snapshot ?? {}) as Record<string, unknown>;
+  // Per field: a clause never runs across two fields' text.
+  return MPU_SCOPE_FIELDS.some((k) => affirmsMpu(text(s[k]).toLowerCase()));
 }
 
 /** THE predicate, on a project. */
