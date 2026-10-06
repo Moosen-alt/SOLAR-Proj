@@ -282,29 +282,50 @@ export function hasStampedStructuralEvidence(project: PermitPathInputs): boolean
 // The splitter files an engineering firm's certification bound into the plan set (letterhead,
 // "STRUCTURAL CERTIFICATION", the per-array calcs, a signature line) as doc type `structural` —
 // the same type as a bare framing sheet, which is NOT the sealed letter (stampedEngineering
-// test). What tells them apart is the document's own words: a certification / letter / report /
-// calculation heading that is not negated or hedged, from an engineer. The seal is an IMAGE and
-// the text layer never sees it, so this says nothing about the seal — "no stamp seen" is unknown,
-// not absent, and the consumers word it as "verify the seal", never as a stamp in hand.
-// Saratoga Springs approved exactly such a packet; the gate held it twice for want of the letter
-// it carried.
-const CERTIFICATION_HEADING = /\bstructural\s+(?:engineering\s+)?(?:certification|certificate|letter|report|analysis|calculations?|calcs)\b|\bengineering\s+(?:certification|letter|report|calculations?)\b|\bcertification\s+letter\b|\b(?:hereby|do)\s+certif(?:y|ies)\b|\bthis\s+is\s+to\s+certify\b/i;
-/** An engineer wrote it: the word (any case) or the P.E. credential (case-sensitive — "pe" is not one). */
-const PE_CREDENTIAL = /\bP\.\s?E\.|\bPE\b/;
-/** A one-line reference ("SEE STRUCTURAL LETTER") is not a letter; a certification has a body. */
-const MIN_CERTIFICATION_CHARS = 300;
+// test). A heading is not enough to tell them apart: a framing sheet CITES the letter ("REFER TO
+// STRUCTURAL LETTER BY …", "STRUCTURAL CALCULATIONS BY OTHERS", "SEE ENGINEERING CALCULATIONS
+// SHEET S-3") in the very words a letter is titled with, and crediting that is the engineered-
+// with-no-letter false pass the stamped-engineering hold exists to stop. So the document has to
+// ASSERT that it is the certification — a certifying or adequacy clause in its own voice, not
+// negated, hedged or pointing elsewhere — with an engineer's credential near that clause. The seal
+// is an IMAGE and the text layer never sees it, so this says nothing about the seal: "no stamp
+// seen" is unknown, not absent, and the consumers word it as "verify the seal", never as a stamp in
+// hand.
+const CERTIFYING_CLAUSE = /\b(?:hereby|do)\s+certif(?:y|ies)\b|\bthis\s+is\s+to\s+certify\b|\b(?:structure|framing|roof|trusses|rafters|members?)\b[\w\s/-]{0,40}?\b(?:is|are)\s+(?:structurally\s+)?adequate\b|\badequate\s+to\s+(?:support|carry|resist)\b/i;
+/** A clause that points AT a document, or tells someone to check, is not the document speaking. */
+const REFERENCE_CLAUSE = /\b(?:refer|referenced?|see|per|by\s+others|verify|confirm|contact|check)\b/i;
+/** The person who certified: engineer of record, a licensed/professional/registered engineer, or
+ *  the credential itself (case-sensitive — "pe" is not one). Never "engineered" / "engineering". */
+const ENGINEER_CREDENTIAL = /\bengineer\s+of\s+record\b|\b(?:licensed|professional|registered)\s+(?:structural\s+)?engineer\b/i;
+const PE_CREDENTIAL = /\bP\.\s?E\.?(?![A-Za-z])|\bPE\b|\bS\.\s?E\.(?![A-Za-z])/;
+/** "Near" without page boundaries (pages are joined into one extract): about a page of text. */
+const CREDENTIAL_WINDOW_CHARS = 2000;
 
 export function readsAsEngineerCertification(text: string): boolean {
   const body = String(text || "");
-  if (body.length < MIN_CERTIFICATION_CHARS || body === "[no text layer]") return false;
-  if (!/\bengineer/i.test(body) && !PE_CREDENTIAL.test(body)) return false;
-  // The heading has to stand in a clause of its own words: "structural letter: not provided" and
-  // "a structural letter is required" are a framing sheet's notes ABOUT a letter, not one.
-  return body.split(CLAUSE_BREAK).some((piece) => {
-    const clause = (piece || "").trim();
-    return CERTIFICATION_HEADING.test(clause)
-      && !NEGATOR.test(withoutNumberAbbreviation(clause))
-      && !HEDGED.test(clause);
+  if (!body.trim() || body === "[no text layer]") return false;
+  const credentialAt: number[] = [];
+  for (const re of [ENGINEER_CREDENTIAL, PE_CREDENTIAL]) {
+    const g = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
+    for (const m of body.matchAll(g)) credentialAt.push(m.index ?? 0);
+  }
+  if (!credentialAt.length) return false;
+  // Walk the clauses keeping their offsets, so "near the credential" is measured in the text.
+  const breaker = new RegExp(CLAUSE_BREAK.source, "gi");
+  let start = 0;
+  const clauses: Array<{ clause: string; at: number }> = [];
+  for (const m of body.matchAll(breaker)) {
+    clauses.push({ clause: body.slice(start, m.index), at: start });
+    start = (m.index ?? 0) + m[0].length;
+  }
+  clauses.push({ clause: body.slice(start), at: start });
+  return clauses.some(({ clause, at }) => {
+    const c = clause.trim();
+    return CERTIFYING_CLAUSE.test(c)
+      && !NEGATOR.test(withoutNumberAbbreviation(c))
+      && !HEDGED.test(c)
+      && !REFERENCE_CLAUSE.test(c)
+      && credentialAt.some((i) => Math.abs(i - at) <= CREDENTIAL_WINDOW_CHARS);
   });
 }
 

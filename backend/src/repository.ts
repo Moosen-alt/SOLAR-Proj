@@ -206,7 +206,14 @@ export function buildReviewerReportFor(db: AppDb, project: ProjectRecord): Revie
   // The reviewer's plan-set requirement is about whether the package EXISTS; give it the
   // attached document types so it cannot block a project that has them.
   const uploadedDocTypes = Object.keys(projectDocsByType(db, project.id));
-  return buildReviewerReport(project, { codeContext, uploadedDocTypes, documentTexts: designDocumentTexts(db, project.id), pvWorksheet: filedPvWorksheetInput(db, project), structuralCertification: structuralCertificationOnFile(db, project.id) });
+  // Only read the structural document's text when it can matter (#198): a stamped-letter type
+  // already settles it, a resolved-prescriptive path owes no stamp, and no `structural` doc means
+  // nothing to read.
+  const structuralCertification = uploadedDocTypes.includes("structural")
+    && !uploadedDocTypes.some((t) => ["structural_letter", "stamped_plans", "engineering_letter"].includes(t))
+    && resolvePermitPath(project).path !== "prescriptive"
+    && structuralCertificationOnFile(db, project.id);
+  return buildReviewerReport(project, { codeContext, uploadedDocTypes, documentTexts: designDocumentTexts(db, project.id), pvWorksheet: filedPvWorksheetInput(db, project), structuralCertification });
 }
 
 /** The newest filed PV worksheet read by position (project_documents.form_reading_json, written

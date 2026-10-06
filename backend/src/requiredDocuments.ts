@@ -970,7 +970,7 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
     // same letter decided the job was engineered. Credited from its own text; the seal is an image
     // the text layer cannot see, so the row asks for it to be verified rather than calling it absent.
     if (item.docType === "structural_letter" && !p.present && structuralCertificationOnFile(db, project.id)) {
-      return { ...item, present: true, via: "engineer's structural certification in the plan set (split as structural) — verify the seal on its pages" };
+      return { ...item, present: true, via: "engineer's structural certification on file as the structural document — verify the seal on its pages" };
     }
     // HONESTY CHECK on the sealed letter: presence only proves a FILE is in the
     // slot — a placeholder PDF satisfies the gate identically (live-tested with a

@@ -876,8 +876,8 @@ export function evaluateDesignCodeFindings(
     // THE LETTER IS IN THE PACKAGE; ONLY ITS SEAL IS UNSEEN (#198). The engineer's certification
     // came in bound into the plan set (split as `structural`), so the engineering this design
     // leans on IS attached. The seal is an image — "no stamp seen" in the text layer is unknown,
-    // not absent — so a person verifies it; that is a warning, never a hold. Saratoga Springs
-    // approved exactly this packet. Same id, so the tile rule below does not raise it again.
+    // not absent — so a person verifies it; that is a warning, never a hold. Same id, so the tile
+    // rule below does not raise it again.
     out.push(finding({
       id: "city.struct.stamped-engineering-missing",
       severity: "warning",
@@ -1034,11 +1034,17 @@ export function evaluateDesignCodeFindings(
         // An engineer's certification in the package (#198) leaves only its seal to verify.
         severity: structuralCertification ? "warning" : "blocker",
         category: "structural",
-        title: "Tile roof on the engineered path with no stamped engineering",
-        message: `The roof is ${roofLabel}; ${project.state.toUpperCase() === "OR" ? "Oregon's prescriptive roofing row does not admit tile, so" : "the resolved permit path is engineered, so"} the job files the engineered/structural application and needs a stamped structural calculation — none is in the package.`,
+        title: structuralCertification
+          ? "Tile roof on the engineered path — verify the seal on the structural pages"
+          : "Tile roof on the engineered path with no stamped engineering",
+        message: `The roof is ${roofLabel}; ${project.state.toUpperCase() === "OR" ? "Oregon's prescriptive roofing row does not admit tile, so" : "the resolved permit path is engineered, so"} the job files the engineered/structural application and needs a stamped structural calculation — ${structuralCertification
+          ? "the package carries an engineer's structural certification; the text layer cannot see a seal, so whether it is sealed is unconfirmed, not missing."
+          : "none is in the package."}`,
         cityFeedback: "Provide the stamped/sealed structural calculation or engineer's letter covering the tile roof's dead load, the framing, and the tile attachment point loads.",
-        designTeamAction: "Obtain the sealed engineering from the engineer of record and file the engineered/structural application (not the prescriptive checklist).",
-        evidenceNeeded: ["Stamped/sealed structural calculation or letter", "Roof dead load including tile", "Tile attachment point loads"],
+        designTeamAction: structuralCertification
+          ? "Verify the seal on the structural pages: confirm the engineer's seal and signature are on the certification, and that it covers the tile roof's dead load and attachment point loads."
+          : "Obtain the sealed engineering from the engineer of record and file the engineered/structural application (not the prescriptive checklist).",
+        evidenceNeeded: [structuralCertification ? "PE seal and signature on the engineer's structural certification" : "Stamped/sealed structural calculation or letter", "Roof dead load including tile", "Tile attachment point loads"],
         codeReferences: [...oregonWorksheetRefs, roofLoadsRef],
       }));
     }

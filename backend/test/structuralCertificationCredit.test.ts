@@ -16,7 +16,12 @@
 //   MUST-EXCLUDE a framing sheet split as `structural` (no certification text) is still held —
 //                the doc type alone is not the letter (stampedEngineering.test);
 //   MUST-EXCLUDE a sheet's NOTE about a letter ("STRUCTURAL LETTER: NOT PROVIDED", "required")
-//                is not a letter.
+//                is not a letter;
+//   MUST-EXCLUDE (review on #218) a sheet that CITES a letter or calcs it does not contain ("REFER TO
+//                STRUCTURAL LETTER BY …", "STRUCTURAL CALCULATIONS BY OTHERS", "ATTACHMENTS PER
+//                STRUCTURAL LETTER", "SEE ENGINEERING CALCULATIONS SHEET S-3"), an in-house unsealed
+//                calculation sheet, and a STRUCTURAL ANALYSIS table that says to contact an engineer —
+//                none of them certifies anything, end to end through the splitter and the gate.
 //
 // Synthetic plan sets only (pdf-lib), no real plan set or homeowner data. Browser-free.
 // Run: tsx backend/test/structuralCertificationCredit.test.ts
@@ -48,6 +53,7 @@ const { buildUtilityPackage } = await import("../src/docSplitter");
 const { createProject, getProjectDetail, getSubmitGateReport, buildReviewerReportFor } = await import("../src/repository");
 const { documentInventory } = await import("../src/requiredDocuments");
 const { readsAsEngineerCertification } = await import("../src/permitPath");
+const { evaluateDesignCodeFindings } = await import("../src/codeReviewRules");
 const db = await openDatabase();
 
 // ── The predicate: an engineer's certification, not a note about one ─────────────────────────
@@ -81,6 +87,45 @@ check("predicate: a note that a structural letter is REQUIRED is not a letter",
 check("predicate: a one-line reference is not a letter", !readsAsEngineerCertification("SEE STRUCTURAL LETTER BY ENGINEER"));
 check("predicate: a scan with no text layer says nothing", !readsAsEngineerCertification("[no text layer]"));
 
+// Review probes (#218): a framing sheet plus ONE line that cites a letter / calcs it does not contain.
+// Sheet-length on purpose (well past any "a letter has a body" floor): what tells these apart
+// from a certification has to be what they SAY, not how long they are.
+const FRAMING_NOTES = [
+  "ROOF SECTION: 2x4 MANUFACTURED TRUSS TOP CHORD AT 24 IN O.C., BOTTOM CHORD 2x4, SPAN 26 FT",
+  "ATTACHMENT: FLASHED STANDOFF WITH 5/16 IN LAG, 2.5 IN MIN EMBEDMENT INTO TRUSS TOP CHORD",
+  "RAIL: ALUMINUM RAIL, MAX ATTACHMENT SPACING 48 IN, MAX CANTILEVER 16 IN, STAGGER ATTACHMENTS",
+  "ROOF COVERING: COMPOSITION SHINGLE, ONE LAYER. ROOF SLOPE 5:12. SHEATHING 1/2 IN OSB",
+];
+const FRAMING_TEXT = `S 1.1 Sheet Name ATTACHMENT DETAIL\n${FRAMING_NOTES.join("\n")}\n`;
+const CITING_LINES: Record<string, string> = {
+  "refer to the letter": "REFER TO STRUCTURAL LETTER BY EXAMPLE STRUCTURAL ENGINEERS, PLLC FOR ATTACHMENT DESIGN",
+  "calcs by others": "STRUCTURAL CALCULATIONS BY OTHERS. ENGINEERED RACKING",
+  "attachments per the letter": "ATTACHMENTS PER STRUCTURAL LETTER",
+  "see the calcs sheet": "SEE ENGINEERING CALCULATIONS SHEET S-3",
+  "in-house unsealed calcs": "S-2 STRUCTURAL CALCULATIONS\nPV DEAD LOAD 2.6 PSF. TRUSS STRESS RATIO 0.82 < 1.00 OK. LAG WITHDRAWAL 266 LB > 112 LB OK.",
+  "analysis table, contact engineer": "STRUCTURAL ANALYSIS\nMEMBER 2x4 TRUSS  SPAN 26 FT  RATIO 0.82  OK\nCONTACT ENGINEER IF FIELD CONDITIONS DIFFER",
+  "adequacy without a credential": "S-2 STRUCTURAL CALCULATIONS\nTHE EXISTING ROOF FRAMING IS ADEQUATE TO SUPPORT THE PV LOADS.",
+  "verify-adequacy instruction": "CONTRACTOR TO VERIFY THE EXISTING STRUCTURE IS ADEQUATE. ENGINEER OF RECORD: TBD BY OTHERS",
+};
+for (const [name, line] of Object.entries(CITING_LINES)) {
+  check(`MUST-EXCLUDE predicate: a framing sheet + "${name}" is not a certification`,
+    !readsAsEngineerCertification(`${FRAMING_TEXT}${line}`), line);
+}
+
+// The tile rule (review on #218): with the certification on file its words ask for the seal to be
+// verified — never "none is in the package … obtain the sealed engineering".
+const tileProject = { id: "tile", state: "OR", ahj: "City of Testville", utility: "PGE",
+  parserSnapshot: { roofMaterial: "Concrete Tile", framingType: "truss", roofRafterSpacing: 24, roofRafterSpan: 10, mounting: "Roof mount", snow: 25, deadLoad: 3, wind: "B" } } as never;
+const tileFinding = (cert: boolean) => evaluateDesignCodeFindings(tileProject, null, undefined, ["plan_set", "structural"], [], cert)
+  .find((x) => x.id === "city.struct.tile-stamped-engineering-missing");
+const tileCert = tileFinding(true);
+check("tile: with the certification on file the tile stamp finding is a warning that says to verify the seal",
+  tileCert?.severity === "warning" && /verify the seal/i.test(tileCert.title) && /verify the seal/i.test(tileCert.designTeamAction ?? "")
+  && !/none is in the package/i.test(tileCert.message) && !/^Obtain/i.test(tileCert.designTeamAction ?? ""),
+  JSON.stringify(tileCert && { severity: tileCert.severity, title: tileCert.title, message: tileCert.message, action: tileCert.designTeamAction }));
+check("tile: without it the tile stamp finding stays a blocker asking for the sealed engineering",
+  tileFinding(false)?.severity === "blocker" && /none is in the package/i.test(tileFinding(false)?.message ?? ""), JSON.stringify(tileFinding(false)?.severity));
+
 // ── The gate, through the real splitter ───────────────────────────────────────────────────────
 const client = createClient(db, {
   companyName: "Letter Credit Solar LLC", legalBusinessName: "Letter Credit Solar LLC", ccbLicenseNumber: "240135",
@@ -109,6 +154,8 @@ const SHEETS: string[][] = [
   ["PV-6 Sheet Name INVERTER SPEC SHEET", "IQ8M MICROINVERTER, UL 1741 SB"],
 ];
 const FRAMING: string[] = ["S 1.1 Sheet Name ATTACHMENT DETAIL", "2x4 TRUSS AT 24 IN O.C., FLASHED STANDOFF, 5/16 LAG"];
+// The citing sheet in full (FRAMING_NOTES is declared with the predicate probes above).
+const FRAMING_FULL: string[] = ["S 1.1 Sheet Name ATTACHMENT DETAIL", ...FRAMING_NOTES];
 
 let seq = 0;
 async function mk(extraPages: string[][]): Promise<string> {
@@ -146,7 +193,7 @@ check("fixture: the splitter files the certification pages as a split `structura
 check("fixture: the project resolves to the engineered path and owes the sealed letter", Boolean(letterRow(withLetter)), JSON.stringify(letterRow(withLetter)));
 const row = letterRow(withLetter);
 check("MUST-PASS: the inventory shows the stamped-structural row PRESENT, from the split",
-  row?.present === true && /certification/i.test(row.via) && /split/i.test(row.via), JSON.stringify(row));
+  row?.present === true && /certification/i.test(row.via) && /structural document/i.test(row.via), JSON.stringify(row));
 check("…and its words ask a person to verify the seal (unknown, not absent)", /verify the seal/i.test(row?.via ?? ""), row?.via);
 const docGate = gate(withLetter).find((c) => c.id === "document-inventory");
 check("MUST-PASS: the document-inventory check does not list the stamped-structural row as missing",
@@ -173,6 +220,16 @@ check("fixture: the framing sheet is split as `structural`",
   Boolean(db.get("SELECT id FROM project_documents WHERE project_id = ? AND doc_type = 'structural'", [framingOnly])));
 check("MUST-EXCLUDE: a framing-only structural split leaves the stamped-structural row MISSING", letterRow(framingOnly)?.present === false, JSON.stringify(letterRow(framingOnly)));
 check("MUST-EXCLUDE: …and the stamped-engineering finding stays a BLOCKER", stampFinding(framingOnly)?.severity === "blocker", JSON.stringify(stampFinding(framingOnly)?.severity));
+
+// MUST-EXCLUDE (review on #218): the framing sheet that CITES the letter is held, end to end.
+const citing = await mk([[...FRAMING_FULL, CITING_LINES["refer to the letter"]]]);
+check("fixture: the citing framing sheet is split as `structural`",
+  Boolean(db.get("SELECT id FROM project_documents WHERE project_id = ? AND doc_type = 'structural'", [citing])));
+check("MUST-EXCLUDE: a sheet citing \"REFER TO STRUCTURAL LETTER BY …\" leaves the stamped-structural row MISSING",
+  letterRow(citing)?.present === false, JSON.stringify(letterRow(citing)));
+check("MUST-EXCLUDE: …the stamped-engineering finding stays a BLOCKER", stampFinding(citing)?.severity === "blocker", JSON.stringify(stampFinding(citing)?.severity));
+check("MUST-EXCLUDE: …and permit-requirements still holds on it",
+  holdLabels(citing).some((l) => /stamped calculation/i.test(l)), JSON.stringify(holdLabels(citing)));
 
 db.close();
 if (failures) { console.error(`\nstructuralCertificationCredit: ${failures} FAILED`); process.exit(1); }
