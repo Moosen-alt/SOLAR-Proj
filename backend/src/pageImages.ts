@@ -5,6 +5,7 @@ import type { AppDb } from "./db";
 import type { EvidenceTopic } from "./projectEvidence";
 import { extractPdfPages } from "./batchImport";
 import { text as s } from "./json";
+import { pdfjsDocumentOptions } from "./pdfjsOptions";
 
 // ---------------------------------------------------------------------------
 // Source-page image rendering for the AHJ Reviewer Gate "screenshot crop slot".
@@ -22,7 +23,7 @@ import { text as s } from "./json";
 const CACHE_DIR = path.resolve(process.cwd(), process.env.PAGE_IMAGE_CACHE_DIR || "backend/data/page-images");
 
 type PdfjsRenderModule = {
-  getDocument: (opts: { data: Uint8Array; useSystemFonts?: boolean; disableWorker?: boolean }) => { promise: Promise<PdfjsRenderDoc> };
+  getDocument: (opts: { data: Uint8Array; useSystemFonts?: boolean; disableWorker?: boolean; standardFontDataUrl?: string }) => { promise: Promise<PdfjsRenderDoc> };
   GlobalWorkerOptions: { workerSrc: string };
 };
 type PdfjsRenderDoc = { numPages: number; getPage: (n: number) => Promise<PdfjsRenderPage> };
@@ -250,7 +251,7 @@ export async function renderPdfPageToPng(pdfPath: string, page: number, scale = 
     origWarn.apply(console, args);
   };
   try {
-    const doc = await pdfjs.getDocument({ data, useSystemFonts: true, disableWorker: true }).promise;
+    const doc = await pdfjs.getDocument(pdfjsDocumentOptions({ data, useSystemFonts: true, disableWorker: true })).promise;
     const target = Math.min(Math.max(1, page), doc.numPages);
     const pdfPage = await doc.getPage(target);
     const viewport = pdfPage.getViewport({ scale });
@@ -316,7 +317,7 @@ export async function openPdfForVisionRender(pdfBytes: Uint8Array): Promise<{
     return fn().finally(() => { console.warn = origWarn; });
   };
   // pdfjs may detach the buffer it is given — hand it a copy.
-  const doc = await quiet(() => pdfjs.getDocument({ data: new Uint8Array(pdfBytes), useSystemFonts: true, disableWorker: true }).promise);
+  const doc = await quiet(() => pdfjs.getDocument(pdfjsDocumentOptions({ data: new Uint8Array(pdfBytes), useSystemFonts: true, disableWorker: true })).promise);
   return {
     numPages: doc.numPages,
     render: (page, opts) => quiet(async () => {

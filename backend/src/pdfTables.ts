@@ -40,6 +40,7 @@
 // ---------------------------------------------------------------------------
 
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { pdfjsDocumentOptions } from "./pdfjsOptions";
 
 /** One text item with its position, in PDF points, y measured from the bottom. */
 export interface PdfTextItem {
@@ -95,7 +96,7 @@ export async function extractPdfTextItems(
   bytes: Uint8Array | ArrayBuffer,
   opts: Pick<ExtractPdfRowsOptions, "pages" | "maxPages"> = {},
 ): Promise<PdfTextItem[]> {
-  const doc = await getDocument({ data: asPlainBytes(bytes), useSystemFonts: true }).promise;
+  const doc = await getDocument(pdfjsDocumentOptions({ data: asPlainBytes(bytes), useSystemFonts: true })).promise;
   const wanted = opts.pages?.length
     ? opts.pages.filter((n) => Number.isInteger(n) && n >= 1 && n <= doc.numPages)
     : Array.from({ length: Math.min(doc.numPages, opts.maxPages ?? doc.numPages) }, (_, i) => i + 1);
