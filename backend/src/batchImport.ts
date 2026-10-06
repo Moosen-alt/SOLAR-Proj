@@ -2,13 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AppDb } from "./db";
 import { learnFromHistoricalDocument } from "./knowledgeBase";
+import { pdfjsDocumentOptions } from "./pdfjsOptions";
 
 // ---------------------------------------------------------------------------
 // PDF text extraction (server-side via pdfjs-dist)
 // ---------------------------------------------------------------------------
 
 type PdfjsModule = {
-  getDocument: (opts: { data: Uint8Array; useSystemFonts?: boolean; disableWorker?: boolean }) => { promise: Promise<PdfjsDoc> };
+  getDocument: (opts: { data: Uint8Array; useSystemFonts?: boolean; disableWorker?: boolean; standardFontDataUrl?: string }) => { promise: Promise<PdfjsDoc> };
   GlobalWorkerOptions: { workerSrc: string };
 };
 type PdfjsDoc = { numPages: number; getPage: (n: number) => Promise<PdfjsPage> };
@@ -46,7 +47,7 @@ async function withPdfPages<T>(filePath: string, maxPages: number, perPage: (raw
     origWarn.apply(console, args);
   };
   try {
-    const doc = await pdfjs.getDocument({ data, useSystemFonts: true, disableWorker: true }).promise;
+    const doc = await pdfjs.getDocument(pdfjsDocumentOptions({ data, useSystemFonts: true, disableWorker: true })).promise;
     const pages = Math.min(doc.numPages, maxPages);
     const out: T[] = [];
     for (let i = 1; i <= pages; i++) {
