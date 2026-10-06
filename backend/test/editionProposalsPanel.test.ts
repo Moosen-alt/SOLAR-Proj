@@ -178,6 +178,8 @@ check("#182 dashboard.js renders the state block into #kbStateProposals and wire
     state: { codeProfiles: [stateRow("ZZ", [adoption]), stateRow("ZZ", [editions], "City of Sample")] },
     $: (id: string) => (id === "kbStateProposals" ? el : null),
     decideEditionProposal: (action: string, fp: string) => { decided.push([action, fp]); },
+    // #209: the block also binds the code-profile verify controls; codeProfileVerifyPanel.test.ts pins those.
+    bindCodeProfileVerifyButtons: () => {},
   };
   vm.createContext(ctx);
   vm.runInContext(["bindEditionProposalButtons", "renderStateCodeProposals"].map(cut).join("\n\n") + "\nrenderStateCodeProposals();", ctx);
