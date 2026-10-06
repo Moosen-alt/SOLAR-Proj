@@ -1529,8 +1529,9 @@ app.get("/api/projects/:id/reviewer-report", asyncHandler(async (req, res) => {
     return;
   }
   // ?vision=1 runs the Claude-vision verification pass over weak findings (used
-  // by the "Run Reviewer Gate" button). Default stays text-only so the many
-  // internal callers (workflow, submit gate) don't pay vision cost on every load.
+  // by the "Run Reviewer Gate" button). The default is the gate's severities
+  // (reviewerGateReportFor: the text report plus verdicts already cached), with no
+  // model call, so the many internal callers don't pay vision cost on every load.
   if (String(req.query.vision || "") === "1") {
     // ?refresh=1 clears cached vision verdicts so all pages are re-checked.
     if (String(req.query.refresh || "") === "1") {
