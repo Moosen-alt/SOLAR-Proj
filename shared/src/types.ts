@@ -2196,6 +2196,9 @@ export interface ReviewerFinding {
   evidenceFound?: ReviewerFindingEvidence[];
   /** Optional Claude-vision confirmation of this finding against the rendered sheet. */
   visionVerification?: ReviewerVisionVerdict;
+  /** The text severity a vision verdict relaxed to a callout (reviewerVision.applyVerdict); absent
+   *  when vision relaxed nothing. "blocker" = staging and Approve proceed past it on a vision read. */
+  visionRelaxedFrom?: "warning" | "blocker";
   /** On city.fire.pathway-unmeasured only: what the roof plan must show, so the vision pass can
    *  compare a measured sheet against the same requirement the text rule used. */
   roofPlanRequired?: RoofPlanRequiredDimension[];

@@ -30,12 +30,12 @@ import { HttpError } from "./httpError";
 import { addAuditLog } from "./audit";
 import { logger } from "./logger";
 import { nowIso } from "./time";
-import { getProjectDetail, rerunQc, captureConfirmation, draftDocumentGaps } from "./repository";
+import { auditVisionRelaxedAtStage, getProjectDetail, rerunQc, captureConfirmation, draftDocumentGaps } from "./repository";
 import { parseJson } from "./json";
 import type { NextStep, ProjectRecord, StageDetail, SubmittalTrackType } from "../../shared/src/types";
 import { requiredTracks, SUBMITTAL_TRACK_TYPES, trackPermitTypes } from "./submittalTracks";
 import { stageForStatus } from "./projectStage";
-import { decideNextStep, gateBlockerHoldsTrack, loadFullNextStepFacts, reviewInfoFromResultJson, reviewerBlockerList, reviewerBlockersFor, stagingFailedFor, withoutCodeResearch, type NextStepFacts, type ReviewMismatch } from "./nextStep";
+import { decideNextStep, gateBlockerHoldsTrack, loadFullNextStepFacts, reviewInfoFromResultJson, reviewerBlockerList, reviewerBlockersFor, reviewerGateRead, stagingFailedFor, withoutCodeResearch, type NextStepFacts, type ReviewMismatch } from "./nextStep";
 import { portalAutomationDisabled } from "../../portal-bot/src/browser";
 // STATIC, and the synchrony is load-bearing (see maybeResumeAutopilot). No load-time cycle:
 // jobQueue reaches this module only through the worker's dynamic import() in processNextJob,
@@ -777,7 +777,8 @@ export async function runAutopilotApproval(
   const runPermitType = run ? String(run.permit_type ?? "") : "";
   const runTrack: SubmittalTrackType | null = options.track
     ?? ((SUBMITTAL_TRACK_TYPES as string[]).includes(runPermitType) ? runPermitType as SubmittalTrackType : null);
-  const blockers = reviewerBlockersFor(reviewerBlockerList(db, project), run ? runTrack : null);
+  const gate = reviewerGateRead(db, project);
+  const blockers = reviewerBlockersFor(gate.blockers, run ? runTrack : null);
   if (blockers.length > 0) {
     throw new HttpError(409, "Cannot approve: reviewer gate still has blockers.", { blockers });
   }
@@ -806,6 +807,10 @@ export async function runAutopilotApproval(
   // approver's identity, so the audit trail shows exactly who authorized the filing.
   addAuditLog(db, projectId, "human", options.approverName, "autopilot.approved", {
     portalRunId: runId, approverUserId: options.approverUserId ?? null, track: options.track ?? "permit",
+  });
+  // Approve went past a blocker only a cached vision verdict relaxed: say so in the run history (#226).
+  auditVisionRelaxedAtStage(db, projectId, {
+    via: "approve", runId, track: runTrack, relaxed: reviewerBlockersFor(gate.visionRelaxed, runTrack).map((b) => b.finding),
   });
   logger.info("autopilot", "Segment B — human approval authorized, attempting final submit", { project: projectId, portalRun: runId, approver: options.approverName, track: options.track ?? "permit" });
 
