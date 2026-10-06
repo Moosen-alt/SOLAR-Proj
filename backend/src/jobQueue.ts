@@ -866,38 +866,49 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
       // rows themselves are the re-try backoff marker. saveFeeSchedule owns the
       // hard refusals (human-verified rows, open conflicts, unsourced fees), so
       // nothing in this handler can weaken them.
-      const { researchFeeSchedule } = await import("./feeSchedules");
-      const p = job.payload as { state?: string; ahj?: string; utility?: string; track?: string; discipline?: string; focus?: string };
+      const { researchFeeSchedule, findFeeScheduleForProject } = await import("./feeSchedules");
+      const p = job.payload as { state?: string; ahj?: string; utility?: string; track?: string; discipline?: string; focus?: string; role?: string };
       const discipline = String(p.discipline || "");
-      const outcome = await researchFeeSchedule(db, {
-        state: String(p.state || ""),
-        ahj: String(p.ahj || ""),
-        utility: String(p.utility || ""),
-        track: p.track === "nem" ? "nem" : "permit",
-        discipline,
-        // Public agency wording only (feeResearchTargets): which fee to look for — a state issuer's
-        // schedule, or an AHJ's zoning review — never a project or customer detail.
-        focus: typeof p.focus === "string" ? p.focus.slice(0, 600) : undefined,
-      });
-      result = {
-        saved: outcome.saved, found: outcome.found,
-        profileKey: outcome.profileKey, track: outcome.track, discipline,
-        refusedVerified: outcome.refusedVerified, refusedConflicted: outcome.refusedConflicted,
-        reason: outcome.reason || undefined,
-      };
-      // The attempt is a visible fact either way (the cold-start portal-URL
-      // research does the same): a save says where the fee sheet's new number came
-      // from; a miss says research ran and found nothing, so the project's honest
-      // unknown is a checked unknown, not a gap nobody looked at.
-      try {
-        addAuditLog(db, job.projectId, "system", "fee research",
-          outcome.saved ? "fees.schedule_researched" : "fees.research_no_result", {
-            profileKey: outcome.profileKey, track: outcome.track, discipline: discipline || "(any)",
-            saved: outcome.saved, found: outcome.found,
-            refusedVerified: outcome.refusedVerified || undefined,
-            reason: (outcome.reason || "").slice(0, 400) || undefined,
-          });
-      } catch { /* audit is best-effort — never fail the job over it */ }
+      // ALREADY PRICED SINCE IT WAS QUEUED (#206): the permit-process lookup queues this job as soon as
+      // it knows the issuer, and its documents/fees step may land the same row first. The enqueue's own
+      // "is a row held" check, asked again at run time — a held target costs no model call. (The
+      // local-review line is held by another rule — localReviewScheduleRow — and is not re-checked.)
+      const track = p.track === "nem" ? "nem" : "permit";
+      const heldNow = p.role !== "local_review"
+        && findFeeScheduleForProject(db, { state: String(p.state || ""), ahj: String(p.ahj || ""), utility: String(p.utility || "") }, track, discipline as Parameters<typeof findFeeScheduleForProject>[3]);
+      if (heldNow) {
+        result = { skipped: true, reason: "already priced since it was queued — no research needed", track, discipline };
+      } else {
+        const outcome = await researchFeeSchedule(db, {
+          state: String(p.state || ""),
+          ahj: String(p.ahj || ""),
+          utility: String(p.utility || ""),
+          track,
+          discipline,
+          // Public agency wording only (feeResearchTargets): which fee to look for — a state issuer's
+          // schedule, or an AHJ's zoning review — never a project or customer detail.
+          focus: typeof p.focus === "string" ? p.focus.slice(0, 600) : undefined,
+        });
+        result = {
+          saved: outcome.saved, found: outcome.found,
+          profileKey: outcome.profileKey, track: outcome.track, discipline,
+          refusedVerified: outcome.refusedVerified, refusedConflicted: outcome.refusedConflicted,
+          reason: outcome.reason || undefined,
+        };
+        // The attempt is a visible fact either way (the cold-start portal-URL
+        // research does the same): a save says where the fee sheet's new number came
+        // from; a miss says research ran and found nothing, so the project's honest
+        // unknown is a checked unknown, not a gap nobody looked at.
+        try {
+          addAuditLog(db, job.projectId, "system", "fee research",
+            outcome.saved ? "fees.schedule_researched" : "fees.research_no_result", {
+              profileKey: outcome.profileKey, track: outcome.track, discipline: discipline || "(any)",
+              saved: outcome.saved, found: outcome.found,
+              refusedVerified: outcome.refusedVerified || undefined,
+              reason: (outcome.reason || "").slice(0, 400) || undefined,
+            });
+        } catch { /* audit is best-effort — never fail the job over it */ }
+      }
     } else if (job.jobType === "permit_process_lookup") {
       // Lands 'seeded' through permitProcess.savePermitProcessLookup (a verified row is never
       // overwritten) and its fees through saveFeeSchedule; then asks for fee research on whatever
@@ -905,9 +916,26 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
       const { runPermitProcessLookup } = await import("./permitProcessLookup");
       const { createLLMProvider } = await import("./llm");
       const p = job.payload as Record<string, unknown>;
+      // Fee research for whatever the project still cannot price, against the issuer the lookup named
+      // (its delegation rows). Asked TWICE, deduped by ensureFeeSchedulesResearched (pending/running
+      // job or any attempt inside 24 h): once the moment part one names the issuer (#206 — the
+      // research no longer waits minutes for the portal and documents/fees steps), and again on
+      // landing for anything the landed row changed. A target the lookup prices in between is
+      // skipped by the fee_research job itself, before any model call.
+      const queueFeeResearch = async () => {
+        if (!job.projectId) return;
+        try {
+          const { getProjectDetail } = await import("./repository");
+          const { ensureFeeSchedulesResearched } = await import("./feeSchedules");
+          const { requiredTracks } = await import("./submittalTracks");
+          const project = getProjectDetail(db, job.projectId).project;
+          await ensureFeeSchedulesResearched(db, project, requiredTracks(project));
+        } catch { /* fee research is best-effort */ }
+      };
       const run = await runPermitProcessLookup(db, createLLMProvider(), {
         state: String(p.state || ""), ahj: String(p.ahj || ""), utility: String(p.utility || ""),
         dcKw: String(p.dcKw || ""), acKw: String(p.acKw || ""), permitPath: String(p.permitPath || ""),
+        onIssuerKnown: () => { void queueFeeResearch(); },
       });
       result = { saved: run.saved, reason: run.reason, calls: run.calls };
       try {
@@ -916,15 +944,7 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
           agency: run.lookup?.issuingAgency?.value ?? null, structure: run.lookup?.permitStructure?.value ?? null,
         });
       } catch { /* audit is best-effort */ }
-      if (job.projectId) {
-        try {
-          const { getProjectDetail } = await import("./repository");
-          const { ensureFeeSchedulesResearched } = await import("./feeSchedules");
-          const { requiredTracks } = await import("./submittalTracks");
-          const project = getProjectDetail(db, job.projectId).project;
-          void ensureFeeSchedulesResearched(db, project, requiredTracks(project)).catch(() => null);
-        } catch { /* fee research is best-effort */ }
-      }
+      void queueFeeResearch();
     } else {
       result = { skipped: true, reason: "job type handled externally" };
     }
