@@ -1961,12 +1961,17 @@ function codeProfileForKb(kbProfile, codeProfiles, designLookups) {
 const KB_CRITERIA_LABELS = {
   "designCriteria.groundSnowLoadPsf": ["Ground snow load", " psf"],
   "designCriteria.groundSnowLoadAsdPsf": ["Ground snow load pg(asd) (allowable-stress, not Pg)", " psf"],
+  "designCriteria.roofSnowLoadPsf": ["Roof snow load (AHJ-stated minimum)", " psf"],
   "designCriteria.windSpeedMph": ["Design wind speed (ultimate)", " mph"],
   "designCriteria.windExposure": ["Wind exposure", ""],
   "designCriteria.specialWindRegion": ["Special wind region", ""],
   "designCriteria.seismicDesignCategory": ["Seismic design category", ""],
   "designCriteria.frostDepthIn": ["Frost depth", " in"],
   "designCriteria.riskCategory": ["Risk category", ""],
+  // Informational (IRC Table R301.2): shown for the record, compared by no rule.
+  "designCriteria.weathering": ["Weathering (informational)", ""],
+  "designCriteria.termite": ["Termite (informational)", ""],
+  "designCriteria.soilBearingPsf": ["Soil bearing (informational)", " psf"],
   "prescriptive.maxAttachmentSpacingIn": ["Max attachment spacing", " in o.c."],
   "prescriptive.listingEvidenceRequired": ["Module / racking UL listing evidence required", ""],
 };

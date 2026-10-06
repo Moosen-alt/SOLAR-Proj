@@ -912,6 +912,60 @@ check("#111 not on file: the plan's SDC / frost depth / risk category ride along
   assert.doesNotMatch(String(onFile?.message), /seismic design category —/);
 });
 
+// ---------------------------------------------------------------------------------------
+// Issue #211 — ROOF SNOW against the AHJ's stated roof snow load. Generic rule; the 30 psf / 25 psf
+// values below are a fixture only. Roof snow with roof snow (never Pg); a SLOPED ps is never compared.
+// ---------------------------------------------------------------------------------------
+const ROOF_PLAN = "STRUCTURAL NOTES: GROUND SNOW LOAD = 25 PSF WIND SPEED = 110 MPH EXPOSURE CATEGORY = C";
+const roofDocs = (letter: string): DesignTextSource[] => [
+  { label: "Plan set", text: ROOF_PLAN },
+  { label: "Structural letter", text: `Design loads: ${letter}` },
+];
+const roofCtx = (verified: boolean) => ctxFor({ ...(verified ? VERIFIED : {}), designCriteria: { ...MET, roofSnowLoadPsf: 30 } });
+
+check("#211 roof snow: verified 30 psf, the structural letter states 25 psf -> BLOCKER with the arithmetic", () => {
+  const f = get(run(project({}), roofCtx(true), roofDocs("ROOF SNOW LOAD = 25 PSF")), BELOW);
+  assert.equal(f?.severity, "blocker", f?.message);
+  assert.match(f!.message, /Roof snow load: stated 25 psf .* requires 30 psf/);
+  assert.match(f!.message, /25 psf < 30 psf/);
+  assert.match(f!.cityFeedback, /roof snow 30 psf/);
+  assert.equal(visionMayRelax(f!), false, "below-ahj is measured: vision never relaxes it");
+  assert.ok(MEASURED_FINDING_IDS.has(BELOW));
+});
+
+check("#211 roof snow: the letter states 30 psf (at the AHJ's) -> nothing", () => {
+  assert.ok(!get(run(project({}), roofCtx(true), roofDocs("ROOF SNOW LOAD = 30 PSF")), BELOW));
+  assert.ok(!get(run(project({}), roofCtx(true), roofDocs("Flat roof snow load, pf = 35 psf")), BELOW));
+});
+
+check("#211 roof snow: only the PARSER's reading says 25 psf -> a WARNING, never a blocker", () => {
+  const p = project({ structuralCalcText: "Roof snow load = 25 psf per the letter." });
+  const f = get(run(p, roofCtx(true), [{ label: "Plan set", text: ROOF_PLAN }]), BELOW);
+  assert.equal(f?.severity, "warning", f?.message);
+  assert.match(f!.message, /25 psf < 30 psf/);
+  assert.match(f!.message, /only the parser's reading states it/);
+});
+
+check("#211 roof snow: a SEEDED AHJ value -> a WARNING that says it is not verified", () => {
+  const f = get(run(project({}), roofCtx(false), roofDocs("ROOF SNOW LOAD = 25 PSF")), BELOW);
+  assert.equal(f?.severity, "warning", f?.message);
+  assert.match(f!.message, /25 psf < 30 psf/);
+  assert.match(f!.message, /not human-verified/);
+});
+
+check("#211 roof snow MUST-EXCLUDE: a sloped ps below the flat minimum, or no roof snow value on file, raises nothing", () => {
+  // ps = Cs x pf: a steep roof's sloped snow is legitimately below the flat minimum.
+  assert.ok(!get(run(project({}), roofCtx(true), roofDocs("Total Snow Load, ps = 22 psf")), BELOW));
+  // No roofSnowLoadPsf on the profile: a 25 psf roof snow is not compared with anything (never Pg).
+  assert.ok(!get(run(project({}), ctxFor({ ...VERIFIED, designCriteria: { ...MET } }), roofDocs("ROOF SNOW LOAD = 25 PSF")), BELOW));
+});
+
+check("#211 weathering is informational: a profile with weathering / termite / soil bearing raises no finding", () => {
+  const ctx = ctxFor({ ...VERIFIED, designCriteria: { ...MET, weathering: "severe", termite: "slight to moderate", soilBearingPsf: 1500 } });
+  const fs = run(project({}), ctx, roofDocs("WEATHERING: NEGLIGIBLE SOIL BEARING 1000 PSF"));
+  assert.ok(!get(fs, BELOW), get(fs, BELOW)?.message);
+});
+
 // #142: fire access dimensions ride the same rule-3 policy as the design criteria. Full coverage
 // is in firePathways.test.ts; this pins that the design-code path (the one the gate calls) runs it.
 check("#142 fire pathways: an 18 in pathway against the verified AHJ's 36 in is a BLOCKER; seeded, a WARNING", () => {

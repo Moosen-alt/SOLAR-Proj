@@ -2796,15 +2796,18 @@ export function evaluateDesignCriteriaFindings(
   const ahjFrost = typeof dc.frostDepthIn === "number" && dc.frostDepthIn > 0 ? dc.frostDepthIn : null;
   const ahjRisk = normRiskCategory(dc.riskCategory);
   const ahjSnowAsd = typeof dc.groundSnowLoadAsdPsf === "number" && dc.groundSnowLoadAsdPsf > 0 ? dc.groundSnowLoadAsdPsf : null;
+  const ahjRoofSnow = typeof dc.roofSnowLoadPsf === "number" && dc.roofSnowLoadPsf > 0 ? dc.roofSnowLoadPsf : null;
   let moreBlocks = false;
   const compareMore = (
     label: string, unit: string, required: string, field: keyof JurisdictionDesignCriteria,
     same: (c: StatedDesignCriterion) => boolean, isBelow: (c: StatedDesignCriterion) => boolean,
+    arithmetic?: (hits: StatedDesignCriterion[]) => string,
   ): void => {
     const before = belowLines.length;
     collect(field, label, unit, required, (c) => same(c) && isBelow(c));
     if (belowLines.length === before) return;
     const hits = stated.criteria.filter((c) => same(c) && isBelow(c));
+    if (arithmetic) belowLines[belowLines.length - 1] += ` (${arithmetic(hits)})`;
     const prov = fieldProvenance(ctx, `designCriteria.${field}`);
     const documentStates = hits.some((c) => !c.derived && !stated.unsure.has(readingKey(c)));
     const oneValue = new Set(stated.criteria.filter(same).map((c) => String(c.value))).size === 1;
@@ -2836,6 +2839,17 @@ export function evaluateDesignCriteriaFindings(
       (c) => c.criterion === "groundSnowPsf" && c.qualifier === "ground_asd" && typeof c.value === "number",
       (c) => (c.value as number) < ahjSnowAsd);
   }
+  // (#211) ROOF SNOW against the AHJ's stated (minimum) roof snow load — roof snow with roof snow,
+  // never with Pg. Flat (pf), minimum (pm) and unqualified/design roof snow are compared; a SLOPED
+  // ps is not: ps = Cs x pf is legitimately lower than a flat minimum on a steep or slippery roof,
+  // so comparing it would raise a false below-ahj on a correct design. Same per-line policy as
+  // above, with the arithmetic in the line so the examiner's question is answered on its face.
+  if (ahjRoofSnow != null) {
+    compareMore("Roof snow load", " psf", `${ahjRoofSnow} psf`, "roofSnowLoadPsf",
+      (c) => c.criterion === "roofSnowPsf" && c.qualifier !== "sloped" && typeof c.value === "number",
+      (c) => (c.value as number) < ahjRoofSnow,
+      (hits) => [...new Set(hits.map((c) => c.value as number))].sort((a, b) => a - b).map((v) => `${v} psf < ${ahjRoofSnow} psf`).join("; "));
+  }
   const belowProvenance = ctx.profile?.fieldSources
     ? [...new Set(belowFields.map((f) => fieldProvenance(ctx, f).text))].join(" / ")
     : provenance(ctx);
@@ -2850,7 +2864,7 @@ export function evaluateDesignCriteriaFindings(
         ...(ahjExposure ? ["windExposure" as const] : []),
         ...(ahjSnow != null ? ["groundSnowPsf" as const] : []),
       ])}`,
-      cityFeedback: `Provide updated design criteria on the plan set and in the engineer's letter/calculations. ${who} design criteria: ${[ahjWind != null ? `wind ${ahjWind} mph ultimate` : "", ahjExposure ? `Exposure ${ahjExposure}` : "", ahjSnow != null ? `ground snow ${ahjSnow} psf` : "", ahjSnowAsd != null ? `ground snow pg(asd) ${ahjSnowAsd} psf` : "", ahjSdc ? `Seismic Design Category ${ahjSdc}` : "", ahjRisk ? `Risk Category ${ahjRisk}` : "", ahjFrost != null ? `frost depth ${ahjFrost} in` : ""].filter(Boolean).join(", ")}. Revise attachment spacing and member checks to the corrected loads.`,
+      cityFeedback: `Provide updated design criteria on the plan set and in the engineer's letter/calculations. ${who} design criteria: ${[ahjWind != null ? `wind ${ahjWind} mph ultimate` : "", ahjExposure ? `Exposure ${ahjExposure}` : "", ahjSnow != null ? `ground snow ${ahjSnow} psf` : "", ahjSnowAsd != null ? `ground snow pg(asd) ${ahjSnowAsd} psf` : "", ahjRoofSnow != null ? `roof snow ${ahjRoofSnow} psf` : "", ahjSdc ? `Seismic Design Category ${ahjSdc}` : "", ahjRisk ? `Risk Category ${ahjRisk}` : "", ahjFrost != null ? `frost depth ${ahjFrost} in` : ""].filter(Boolean).join(", ")}. Revise attachment spacing and member checks to the corrected loads.`,
       designTeamAction: "Re-run the structural design (attachment spacing, member capacity, uplift) at the jurisdiction's criteria and reissue the plan-set structural notes and the engineer's letter with the corrected values.",
       evidenceNeeded: ["Plan-set design criteria matching the jurisdiction", "Engineer's letter/calculation at the jurisdiction's criteria", "Attachment spacing revised to the corrected loads", ...belowLines].slice(0, 8),
       codeReferences: [ref(ctx, "Table R301.2", "Climatic and geographic design criteria (established by the jurisdiction)", "The jurisdiction sets wind speed, exposure and ground snow load; a design below them is not approvable."), ref(ctx, "R301.2.1", "Wind design criteria", "Compare ultimate design wind speed (Vult) to the jurisdiction's value."), ref(ctx, "R301.2.3", "Snow loads", "Ground snow load Pg per the jurisdiction's criteria."),

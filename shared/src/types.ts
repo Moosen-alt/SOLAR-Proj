@@ -1581,6 +1581,10 @@ export interface JurisdictionDesignCriteria {
    *  A different quantity (~0.7 x Pg): kept in its own field so it is stored, not dropped, and never
    *  read as the strength Pg a below-ahj check compares against. */
   groundSnowLoadAsdPsf?: number;
+  /** The roof snow load the jurisdiction STATES as its design/minimum value (a flat-roof pf or pm,
+   *  as published in its criteria table) — a different quantity from Pg, compared only with a plan's
+   *  flat/unqualified roof snow (never a sloped ps, never Pg). */
+  roofSnowLoadPsf?: number;
   windSpeedMph?: number;
   windExposure?: string;
   /** The jurisdiction says it sits in a special wind region (IRC/ORSC Figure R301.2(2)
@@ -1591,6 +1595,13 @@ export interface JurisdictionDesignCriteria {
   /** ASCE 7 / IBC Table 1604.5 risk category ("I"…"IV") the jurisdiction requires. Residential PV
    *  is almost always II; recorded so a plan stating a LOWER category is compared, not assumed. */
   riskCategory?: string;
+  /** IRC Table R301.2 weathering probability for concrete/masonry. Informational (the KB card and
+   *  the verify summary show it); no rule compares it. */
+  weathering?: "negligible" | "moderate" | "severe";
+  /** IRC Table R301.2 termite damage probability, as published ("slight to moderate"). Informational. */
+  termite?: string;
+  /** Presumptive/allowable soil bearing capacity the jurisdiction states, psf. Informational. */
+  soilBearingPsf?: number;
   sourceUrl?: string;
 }
 
@@ -1719,7 +1730,8 @@ export interface DesignCriteriaResearchResult {
   provider: "claude" | "stub";
   /** Only values found on a page the search actually returned; each carries its citation. */
   values: Array<{
-    criterion: "groundSnowLoadPsf" | "windSpeedMph" | "windExposure" | "seismicDesignCategory" | "frostDepthIn" | "riskCategory";
+    criterion: "groundSnowLoadPsf" | "windSpeedMph" | "windExposure" | "seismicDesignCategory" | "frostDepthIn" | "riskCategory"
+      | "roofSnowLoadPsf" | "weathering" | "termite" | "soilBearingPsf";
     value: number | string;
     sourceUrl: string;
     quote?: string;
