@@ -136,14 +136,28 @@ function isIndexOrNotesPage(text: string): boolean {
 //
 // Sheet numbers are UPPERCASE letters then a number, a hyphen or a space between or not: S-1, S1,
 // S 1.1, PV-4, E-1.2. The key drops the separator, so the cover's "S-1" is the page's "S1".
+// A word that precedes a number in prose or a title block ("SHEET 2 OF 3", "REV 1", "QTY 24") is not
+// a sheet number: as one it splits an index row, or forms a stray group in a column run.
 const INDEX_SHEET_NUMBER = /\b([A-Z]{1,3})\s?-?\s?(\d{1,2}(?:\.\d{1,2})?)\b(?!\.\d)/g;
+const NOT_A_SHEET_PREFIX = /^(?:OF|REV|QTY|NO|AT|TO|IN|ON|BY|OR|AND|FOR|PER|THE|UL|NEC|IBC|IRC|IFC|AWG|KW|AMP|MIN|MAX|TYP|EA|FT)$/;
 const INDEX_SPEC_NAME = new RegExp(`${SPEC_SHEET_NAME.source}|\\b(?:SPEC(?:IFICATION)?S?|CUT|DATA)\\s*-?\\s*SHEETS?\\b`, "gi");
 const INDEX_CALCS_NAME = /\bCALC(?:ULATION)?S?\b/i;
 // A row's name is the words up to the next sheet number, at most this many: the last row runs into
 // whatever the cover says next, and a notes paragraph that mentions a "DATA SHEET" is not its name.
 const INDEX_NAME_WORDS = 6;
+// Where the index's names end on the cover: the notes block ("NOTES:", "NOTES 1.") or the project-data
+// block that follows it. A column run's names stop there, and at INDEX_NAME_WORDS per number in the
+// run, so "NOTES: SEE MODULE SPEC" after the table is never counted as a row (#212 review). A sheet
+// NAMED "GENERAL NOTES" in the name column is a name, not that block, and does not end it.
+const INDEX_NAMES_END = /\bNOTES\s*(?::|1\b)|\bPROJECT\s+DATA\b/;
 const sheetNumbers = (text: string) => [...text.matchAll(INDEX_SHEET_NUMBER)]
+  .filter((m) => !NOT_A_SHEET_PREFIX.test(m[1]))
   .map((m) => ({ key: `${m[1]}${m[2]}`, start: m.index ?? 0, end: (m.index ?? 0) + m[0].length }));
+/** The first `words` words of `text`, cut at the notes / project-data block. */
+const indexNames = (text: string, words: number) => {
+  const end = INDEX_NAMES_END.exec(text);
+  return (end ? text.slice(0, end.index) : text).trim().split(/\s+/).slice(0, words).join(" ");
+};
 const isIndexSpecName = (name: string) => new RegExp(INDEX_SPEC_NAME.source, "i").test(name) && !INDEX_CALCS_NAME.test(name);
 
 /**
@@ -166,13 +180,13 @@ export function indexSpecSheets(pageTexts: string[]): { spec: Set<string>; liste
       // The run of numbers starting here with nothing (but separators) between them.
       let j = i;
       while (j + 1 < nums.length && !/[A-Z0-9]/i.test(text.slice(nums[j].end, nums[j + 1].start))) j++;
-      const names = text.slice(nums[j].end, j + 1 < nums.length ? nums[j + 1].start : text.length);
+      const after = text.slice(nums[j].end, j + 1 < nums.length ? nums[j + 1].start : text.length);
       const run = nums.slice(i, j + 1);
       for (const n of run) listed.add(n.key);
       if (run.length === 1) {
-        if (isIndexSpecName(names.trim().split(/\s+/).slice(0, INDEX_NAME_WORDS).join(" "))) spec.add(run[0].key);
+        if (isIndexSpecName(indexNames(after, INDEX_NAME_WORDS))) spec.add(run[0].key);
       } else {
-        const count = [...names.matchAll(INDEX_SPEC_NAME)].length;
+        const count = [...indexNames(after, run.length * INDEX_NAME_WORDS).matchAll(INDEX_SPEC_NAME)].length;
         const prefix = (k: string) => k.replace(/[\d.]+$/, "");
         const groups = new Map<string, number[]>();
         run.forEach((n, at) => groups.set(prefix(n.key), [...(groups.get(prefix(n.key)) ?? []), at]));
