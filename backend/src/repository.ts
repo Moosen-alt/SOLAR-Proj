@@ -86,7 +86,7 @@ import { agencyListReplacesLine, issuingAgencyDocumentList } from "./application
 import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 // Static cycle (nextStep imports repository), used at CALL time only on both sides — the same
 // shape as correctionAgent. getProjectList needs the rule table synchronously.
-import { compactNextStep, decideNextStep, loadNextStepFacts } from "./nextStep";
+import { compactNextStep, decideNextStep, loadNextStepFacts, withoutCodeResearch } from "./nextStep";
 import { correctionHoldScope, criticalFieldHoldScope, findingHoldScope, GATE_TRACKS, scopeHoldsTrack, tracksHeld, type GateHoldScope } from "./gateScope";
 import { addAuditLog } from "./audit";
 import { clientLicenceRow, clientStagingOverlay, contractorLicenceForState, getClient } from "./clients";
@@ -207,6 +207,29 @@ export function buildReviewerReportFor(db: AppDb, project: ProjectRecord): Revie
   // attached document types so it cannot block a project that has them.
   const uploadedDocTypes = Object.keys(projectDocsByType(db, project.id));
   return buildReviewerReport(project, { codeContext, uploadedDocTypes, documentTexts: designDocumentTexts(db, project.id), pvWorksheet: filedPvWorksheetInput(db, project) });
+}
+
+// WHAT HOLDS THIS FILING: ONE ANSWER (#214). The text report with the cached vision verdicts folded
+// in. It makes no model call and renders no PDF; it only reads reviewer_vision_cache, so a read path
+// stays read-only.
+//
+// Owner ruling 2026-10-05 (#214 "yes"): a cached vision verdict that relaxed a finding relaxes it on
+// EVERY path. That means the submit gate, the correction notice, staging (prepareSubmission), Approve
+// and next-step (nextStep.reviewerBlockerList, then runAutopilotApproval), the re-judges, the
+// printable packet and the page load. Before this, the gate and the notice applied cached verdicts
+// and staging and Approve did not. A live Utah project showed 2 holds on the gate while 3 blockers
+// refused staging.
+//
+// The vision rules are unchanged (reviewerVision.applyVerdict): it only relaxes, only on a
+// high/medium-confidence "present" verdict, never a measured finding, and the finding stays visible
+// as a callout. Rule 1 is untouched: this decides which reviewer findings are blockers, before a named
+// person approves a run.
+//
+// buildReviewerReportFor stays exported for two readers only: the full vision pass, which must start
+// from the TEXT report, and tests that pin the text rules. Every gate consumer reads this function.
+// reviewerSeverityParity.test.ts fails if a production caller reaches the raw builder.
+export function reviewerGateReportFor(db: AppDb, project: ProjectRecord): ReviewerReport {
+  return applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
 }
 
 /** The newest filed PV worksheet read by position (project_documents.form_reading_json, written
@@ -1430,7 +1453,7 @@ function isStagedOrSubmitted(status: ProjectRecord["status"]): boolean {
 function operationDrafts(db: AppDb, detail: ProjectDetail): OperationStepDraft[] {
   const project = detail.project;
   const historicalReport = buildHistoricalFailureReport(db, project.id, null);
-  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
+  const reviewerReport = reviewerGateReportFor(db, project);
   const applicationDocs = buildApplicationDocumentPackage(project);
   const pendingCritical = detail.humanReviewItems.filter(isCriticalReviewItem).length;
   const pendingCorrections = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName === "correction").length;
@@ -1920,7 +1943,7 @@ export function getOperationsBrief(db: AppDb, projectId: string): OperationsBrie
   const detail = getProjectDetail(db, projectId);
   const plan = syncOperationsPlan(db, projectId);
   const project = detail.project;
-  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
+  const reviewerReport = reviewerGateReportFor(db, project);
   const applicationDocs = buildApplicationDocumentPackage(project);
   const historicalReport = buildHistoricalFailureReport(db, projectId, null);
   const blockers: OperationsBriefSignal[] = [];
@@ -2545,7 +2568,7 @@ export function getLiveProjectReadinessReport(db: AppDb, projectId: string): Liv
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
   const historicalReport = buildHistoricalFailureReport(db, projectId, null);
-  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
+  const reviewerReport = reviewerGateReportFor(db, project);
   const applicationDocs = buildApplicationDocumentPackage(project);
   const activeEmailSources = db.query<Row>("SELECT id, label, last_checked_at, last_matched_count, last_error FROM email_tracking_sources WHERE active = 1 ORDER BY updated_at DESC");
 
@@ -2841,7 +2864,7 @@ export function getProjectProcessMap(db: AppDb, projectId: string): ProjectProce
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
   const historicalReport = buildHistoricalFailureReport(db, projectId, null);
-  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
+  const reviewerReport = reviewerGateReportFor(db, project);
   const applicationDocs = buildApplicationDocumentPackage(project);
 
   const accountEvidence = evidenceForTopic(project, "accountVerification");
@@ -3206,7 +3229,7 @@ function renderInstallerActionText(packet: Omit<InstallerActionPacket, "reportTe
 export function getInstallerActionPacket(db: AppDb, projectId: string): InstallerActionPacket {
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
-  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
+  const reviewerReport = reviewerGateReportFor(db, project);
   const historicalReport = buildHistoricalFailureReport(db, projectId, null);
   const applicationDocs = buildApplicationDocumentPackage(project);
   const processMap = getProjectProcessMap(db, projectId);
@@ -3492,7 +3515,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
   const historicalReport = buildHistoricalFailureReport(db, projectId, null);
-  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
+  const reviewerReport = reviewerGateReportFor(db, project);
   const applicationDocs = buildApplicationDocumentPackage(project);
   const docInventory = documentInventory(db, project);
   // What the operator OWES — the document check below and Stage/Approve read this one answer.
@@ -3768,7 +3791,8 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       title: "PermitFlow reviewer and history check",
       lane: "permit",
       // Only REAL AHJ reviewer blockers and blocker-severity historical patterns gate
-      // staging — matching the actual prepareSubmission() guard. Blocked process-map
+      // staging — matching the actual prepareSubmission() guard, which reads the same
+      // severities (reviewerGateReportFor, #214; reviewerSeverityParity.test.ts). Blocked process-map
       // steps are derived from conditions already covered by the dedicated QC / docs /
       // reviewer checks, so they're advisory here (warning) and never double-count into
       // a false "can't submit".
@@ -4717,7 +4741,7 @@ export function runProjectWorkflow(db: AppDb, projectId: string): ProjectWorkflo
   runQcForProject(db, projectId);
   const detail = getProjectDetail(db, projectId);
   const historicalReport = buildHistoricalFailureReport(db, projectId, null);
-  const reviewerReport = buildReviewerReportFor(db, detail.project);
+  const reviewerReport = reviewerGateReportFor(db, detail.project);
   const applicationDocs = buildApplicationDocumentPackage(detail.project);
 
   const qcFails = detail.qcResults.filter((item) => item.qcStatus === "fail").length;
@@ -5021,9 +5045,9 @@ function assembleApplicationDocumentPackage(db: AppDb, projectId: string) {
 // defensible. And only on a PRE-STAGE project: re-running the report on a staged or filed job
 // must never relabel where that job actually is, least of all overwrite
 // `approved_awaiting_filing` on a filing that is waiting for a person to go and submit it.
-// A CLEAN VERDICT CAN GO STALE, SO THIS RECORD IS TWO-WAY. getReviewerReportWithVision runs the
-// text report FIRST (which lands here clean) and only then looks at the plan sheets, and vision
-// can confirm a blocker the text pass only suspected. A write-only recorder would leave
+// A CLEAN VERDICT CAN GO STALE, SO THIS RECORD IS TWO-WAY. getReviewerReportWithVision records the
+// gate's report FIRST (the text report plus verdicts already cached, which may land here clean) and
+// only then looks at the plan sheets, and a fresh look can disagree with that cached view. A write-only recorder would leave
 // "reviewer gate approved" standing on a packet the gate had just rejected — an unknown reading
 // as reassurance, which is the exact failure mode this codebase keeps paying for. So blockers
 // RETRACT the value, and retract nothing else: only the string this function itself wrote is
@@ -5043,7 +5067,9 @@ function recordReviewerGateVerdict(db: AppDb, projectId: string, report: Reviewe
 
 export function getReviewerReport(db: AppDb, projectId: string): ReviewerReport {
   const detail = getProjectDetail(db, projectId);
-  const report = buildReviewerReportFor(db, detail.project);
+  // The gate's severities (reviewerGateReportFor): the verdict recorded below is the one the gate
+  // shows, so a plain GET no longer overwrites a vision-cleared verdict with the text-only one.
+  const report = reviewerGateReportFor(db, detail.project);
   addAuditLog(db, projectId, "system", "ahj reviewer gate", "reviewer_report.generated", {
     blockerCount: report.findings.filter((item) => item.severity === "blocker").length,
     warningCount: report.findings.filter((item) => item.severity === "warning").length,
@@ -5117,12 +5143,7 @@ export async function rejudgeReviewerGatesAfterLookup(
       // have covered (best effort, like the rest of this re-judge — the next gate run corrects it).
       lookupRejudgeStartedAt.set(projectId, { mark: lookupLandingMark(), at: Date.now() });
       const detail = getProjectDetail(db, projectId);
-      let report = buildReviewerReportFor(db, detail.project);
-      try {
-        const { createLLMProvider } = await import("./llm");
-        const { applyVisionToReviewerReport } = await import("./reviewerVision");
-        report = await applyVisionToReviewerReport(db, createLLMProvider(), report, { cacheOnly: true });
-      } catch { /* vision is best-effort; the text report stands */ }
+      const report = reviewerGateReportFor(db, detail.project);
       addAuditLog(db, projectId, "system", "ahj reviewer gate", "reviewer_report.generated", {
         trigger,
         blockerCount: report.findings.filter((item) => item.severity === "blocker").length,
@@ -5191,7 +5212,12 @@ export function rejudgeQcDocumentsAfterLookup(db: AppDb, target: { state: string
 // actual plan-set sheets to confirm/deny weak findings (verdicts cached per plan
 // version). Falls back to the text report when no plan set or no LLM is present.
 export async function getReviewerReportWithVision(db: AppDb, projectId: string): Promise<ReviewerReport> {
-  const report = getReviewerReport(db, projectId);
+  // The audit row and the verdict of the gate as it stands (cached verdicts included).
+  getReviewerReport(db, projectId);
+  // The vision pass itself starts from the TEXT report, as it always has. Over the cached view it would
+  // skip a finding a cached verdict already relaxed, and it would meet a roof-plan measurement that had
+  // already been applied. Cached verdicts are read back inside the pass, so nothing is re-bought.
+  const report = buildReviewerReportFor(db, getProjectDetail(db, projectId).project);
   const { createLLMProvider } = await import("./llm");
   const { applyVisionToReviewerReport } = await import("./reviewerVision");
   const llm = createLLMProvider();
@@ -5202,22 +5228,17 @@ export async function getReviewerReportWithVision(db: AppDb, projectId: string):
     blockerCount: enriched.findings.filter((item) => item.severity === "blocker").length,
     warningCount: enriched.findings.filter((item) => item.severity === "warning").length,
   });
-  // The inner getReviewerReport already recorded the TEXT verdict. Vision runs after it and can
-  // change the blocker count, so the enriched report gets the last word.
+  // The inner getReviewerReport already recorded the verdict of the gate as it stood. This pass can
+  // add new verdicts and change the blocker count, so the enriched report gets the last word.
   recordReviewerGateVerdict(db, projectId, enriched);
   return enriched;
 }
 
 export async function getReviewerReportHtml(db: AppDb, projectId: string): Promise<string> {
   const detail = getProjectDetail(db, projectId);
-  let report = buildReviewerReportFor(db, detail.project);
-  // Fold in any cached vision verdicts (no new LLM cost) so the printable packet
-  // matches what the operator saw after running the gate with vision.
-  try {
-    const { createLLMProvider } = await import("./llm");
-    const { applyVisionToReviewerReport } = await import("./reviewerVision");
-    report = await applyVisionToReviewerReport(db, createLLMProvider(), report, { cacheOnly: true });
-  } catch { /* vision is best-effort; fall back to the text report */ }
+  // The gate's severities, cached vision verdicts included (no new LLM cost), so the printable
+  // packet matches the gate the operator saw.
+  const report = reviewerGateReportFor(db, detail.project);
   addAuditLog(db, projectId, "system", "ahj reviewer gate", "reviewer_report.html_opened", {
     blockerCount: report.findings.filter((item) => item.severity === "blocker").length,
     warningCount: report.findings.filter((item) => item.severity === "warning").length,
@@ -5251,12 +5272,9 @@ export async function readStageResults(db: AppDb, projectId: string): Promise<{
   const applicationDocs = ran.has("application_docs.generated") ? assembleApplicationDocumentPackage(db, projectId).pkg : null;
   let reviewerReport: ReviewerReport | null = null;
   if (ran.has("reviewer_report.generated")) {
-    reviewerReport = buildReviewerReportFor(db, detail.project);
-    try {
-      const { createLLMProvider } = await import("./llm");
-      const { applyVisionToReviewerReport } = await import("./reviewerVision");
-      reviewerReport = await applyVisionToReviewerReport(db, createLLMProvider(), reviewerReport, { cacheOnly: true });
-    } catch { /* vision is best-effort; the text report stands */ }
+    // The gate's severities (reviewerGateReportFor), read only: the vision cache is only read, and
+    // withoutCodeResearch suppresses the research enqueue an un-profiled AHJ would otherwise trigger.
+    reviewerReport = withoutCodeResearch(() => reviewerGateReportFor(db, detail.project));
   }
   const historicalReport = ran.has("historical_failures.generated") ? buildHistoricalFailureReport(db, projectId, null) : null;
   return { applicationDocs, reviewerReport, historicalReport };
@@ -8432,7 +8450,9 @@ export async function prepareSubmission(
   // The SAME predicate the submit gate reads (isCriticalReviewItem) — two answers to "does this
   // pending item hold staging?" let the gate go green while this 409 still refused.
   const pendingCount = detail.humanReviewItems.filter(isCriticalReviewItem).length;
-  const reviewerReport = buildReviewerReportFor(db, detail.project);
+  // The same severities the gate shows (reviewerGateReportFor, #214): a finding a cached vision verdict
+  // relaxed no longer refuses staging while the gate reads it green.
+  const reviewerReport = reviewerGateReportFor(db, detail.project);
   // ONLY THE FINDINGS THAT HOLD THIS FILING (gateScope — the answer the gate, Stage and Approve
   // read): a structural conflict does not refuse the utility's application or the separate
   // electrical permit. A trackless stage (null) is held by every finding.
