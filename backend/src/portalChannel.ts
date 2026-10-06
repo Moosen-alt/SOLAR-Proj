@@ -469,13 +469,21 @@ export function isPermitPlatformUrl(url: string | null | undefined): boolean {
 //   - the permit software's own install signature (a first host label or first path segment the
 //     product installs under): CityView (cvportal. / /CityViewPortal), Tyler EnerGov (energov. /
 //     /EnerGov_Prod …), CentralSquare eTRAKiT (etrakit. / /eTRAKiT3), self-hosted Accela Citizen
-//     Access (/CitizenAccess);
+//     Access (/CitizenAccess), Trimble Cityworks Public Access (cityworks. / /PublicAccess,
+//     /Cityworks…), Granicus SmartGov (smartgov. / /SmartGov) — issue #237. Audited against the
+//     platforms permitPlatformCatalog names: iWorQ, Citizenserve, ViewPoint/OpenGov,
+//     MyGovernmentOnline, Cloudpermit and Clariti are vendor-cloud only (PERMIT_PLATFORM_HOSTS).
+//     Deliberately NOT signatures: Click2Gov (CentralSquare's utility-billing product) and a bare
+//     /SelfService segment — a municipal utility's own customer portal lives under both. A
+//     /PublicAccess segment counts on ANY host (a library catalogue's included): the signal only
+//     ever REFUSES a URL on the NEM track, where no interconnection is filed on such a page, and a
+//     utility that really files there is let through by its own verified record (step 1 below);
 //   - a portal an AHJ row (seeded or verified KB row, an AHJ recipe) names as the city's permit
 //     portal: PortalEntity.permitPortals, built by portalRecipes.portalEntityEvidence.
 // The ONE way such a portal opens on the NEM track is unchanged: the utility's own human-VERIFIED
 // record names that host and tenant (hostFitsTrackAndEntity step 1).
-const SELF_HOSTED_PERMIT_HOST_LABEL = /^(?:cvportal|cityview(?:portal)?|energov\w*|etrakit\d*|citizenaccess)$/i;
-const SELF_HOSTED_PERMIT_PATH_SEGMENT = /^(?:cityviewportal|cityview|energov\w*|etrakit\d*|citizenaccess)$/i;
+const SELF_HOSTED_PERMIT_HOST_LABEL = /^(?:cvportal|cityview(?:portal)?|energov\w*|etrakit\d*|citizenaccess|cityworks|smartgov)$/i;
+const SELF_HOSTED_PERMIT_PATH_SEGMENT = /^(?:cityviewportal|cityview|energov\w*|etrakit\d*|citizenaccess|publicaccess|cityworks\w*|smartgov)$/i;
 export function isSelfHostedPermitPortalUrl(url: string | null | undefined): boolean {
   const host = portalHostOf(url);
   if (!host) return false;
