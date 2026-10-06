@@ -286,45 +286,60 @@ export function hasStampedStructuralEvidence(project: PermitPathInputs): boolean
 // STRUCTURAL LETTER BY …", "STRUCTURAL CALCULATIONS BY OTHERS", "SEE ENGINEERING CALCULATIONS
 // SHEET S-3") in the very words a letter is titled with, and crediting that is the engineered-
 // with-no-letter false pass the stamped-engineering hold exists to stop. So the document has to
-// ASSERT that it is the certification — a certifying or adequacy clause in its own voice, not
-// negated, hedged or pointing elsewhere — with an engineer's credential near that clause. The seal
-// is an IMAGE and the text layer never sees it, so this says nothing about the seal: "no stamp
-// seen" is unknown, not absent, and the consumers word it as "verify the seal", never as a stamp in
-// hand.
-const CERTIFYING_CLAUSE = /\b(?:hereby|do)\s+certif(?:y|ies)\b|\bthis\s+is\s+to\s+certify\b|\b(?:structure|framing|roof|trusses|rafters|members?)\b[\w\s/-]{0,40}?\b(?:is|are)\s+(?:structurally\s+)?adequate\b|\badequate\s+to\s+(?:support|carry|resist)\b/i;
-/** A clause that points AT a document, or tells someone to check, is not the document speaking. */
-const REFERENCE_CLAUSE = /\b(?:refer|referenced?|see|per|by\s+others|verify|confirm|contact|check)\b/i;
+// ASSERT, in its own voice, that THE EXISTING STRUCTURE is certified or adequate (not "this plan
+// was prepared", not a racking product's rating), in a clause that is not negated, hedged or
+// pointing at another document — and name an engineer near that clause, in a credential that is
+// itself neither negated ("NO PE STAMP REQUIRED") nor a placeholder ("ENGINEER OF RECORD: NONE").
+// The seal is an IMAGE and the text layer never sees it, so this says nothing about the seal: "no
+// stamp seen" is unknown, not absent, and the consumers word it as "verify the seal", never as a
+// stamp in hand.
+const STRUCTURE_NOUN = String.raw`(?:existing\s+)?(?:roof\s+)?(?:structure|framing|roof|trusses|rafters|members?)`;
+const CERTIFYING_CLAUSE = new RegExp(
+  String.raw`\b(?:hereby\s+certif(?:y|ies)|do\s+certify|this\s+is\s+to\s+certify)\b[\w\s/-]{0,60}?\b${STRUCTURE_NOUN}\b`
+  + String.raw`|\b${STRUCTURE_NOUN}\b[\w\s/-]{0,40}?\b(?:is|are)\s+(?:structurally\s+)?adequate\b`, "i");
+/** A clause that points AT another document, or tells someone to check, is not the document
+ *  speaking. Scoped to document targets: a certification citing its design code ("adequate per
+ *  ASCE 7-16") is the certification, not a pointer. */
+const REFERENCE_CLAUSE = /\b(?:refer(?:\s+to)?|see|per|reference[ds]?)\s+(?:the\s+|separate\s+|attached\s+)?(?:structural|engineering|engineer'?s?)\s+(?:letter|calc\w*|report|sheet|analysis)\b|\bby\s+others\b|\b(?:verify|confirm|contact|check)\b/i;
 /** The person who certified: engineer of record, a licensed/professional/registered engineer, or
- *  the credential itself (case-sensitive — "pe" is not one). Never "engineered" / "engineering". */
-const ENGINEER_CREDENTIAL = /\bengineer\s+of\s+record\b|\b(?:licensed|professional|registered)\s+(?:structural\s+)?engineer\b/i;
-const PE_CREDENTIAL = /\bP\.\s?E\.?(?![A-Za-z])|\bPE\b|\bS\.\s?E\.(?![A-Za-z])/;
+ *  the P.E./S.E. credential in a NAME or LICENCE position ("Jane Roe, P.E.", "PE No. 12345") —
+ *  never a bare "PE" (polyethylene, "PE stamp"), never "engineered" / "engineering". */
+const ENGINEER_CREDENTIAL = /\bengineer\s+of\s+record\b|\b(?:licensed|professional|registered)\s+(?:structural\s+)?engineer\b/gi;
+const PE_CREDENTIAL = /,\s*(?:P\.\s?E\.?|PE|S\.\s?E\.?|SE)(?![A-Za-z])|\b(?:P\.\s?E\.?|PE)\s*(?:No\.?|#|License|Lic\.?)\s*[#:]?\s*\d/g;
+/** A credential LABEL with nobody after it: "ENGINEER OF RECORD: NONE", ": N/A", ": TBD", ": ____". */
+const PLACEHOLDER_AFTER = /^\s*(?:[:\-–]\s*(?:_{2,}|-{2,})?\s*(?:\n|$)|[:\-–]?\s*(?:none|n\/?a|tbd|to\s+be\s+determined|blank|pending)\b)/i;
 /** "Near" without page boundaries (pages are joined into one extract): about a page of text. */
 const CREDENTIAL_WINDOW_CHARS = 2000;
 
 export function readsAsEngineerCertification(text: string): boolean {
   const body = String(text || "");
   if (!body.trim() || body === "[no text layer]") return false;
-  const credentialAt: number[] = [];
-  for (const re of [ENGINEER_CREDENTIAL, PE_CREDENTIAL]) {
-    const g = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
-    for (const m of body.matchAll(g)) credentialAt.push(m.index ?? 0);
-  }
-  if (!credentialAt.length) return false;
-  // Walk the clauses keeping their offsets, so "near the credential" is measured in the text.
+  // The clauses with their offsets, so a credential is judged in its own clause and "near" is
+  // measured in the text.
   const breaker = new RegExp(CLAUSE_BREAK.source, "gi");
   let start = 0;
-  const clauses: Array<{ clause: string; at: number }> = [];
+  const clauses: Array<{ clause: string; at: number; end: number }> = [];
   for (const m of body.matchAll(breaker)) {
-    clauses.push({ clause: body.slice(start, m.index), at: start });
+    clauses.push({ clause: body.slice(start, m.index), at: start, end: m.index ?? start });
     start = (m.index ?? 0) + m[0].length;
   }
-  clauses.push({ clause: body.slice(start), at: start });
+  clauses.push({ clause: body.slice(start), at: start, end: body.length });
+  const clauseAt = (i: number) => clauses.find((c) => i >= c.at && i <= c.end)?.clause.trim() ?? "";
+  const speaks = (c: string) => !NEGATOR.test(withoutNumberAbbreviation(c)) && !HEDGED.test(c);
+
+  const credentialAt: number[] = [];
+  for (const re of [ENGINEER_CREDENTIAL, PE_CREDENTIAL]) {
+    for (const m of body.matchAll(re)) {
+      const i = m.index ?? 0;
+      if (!speaks(clauseAt(i))) continue;                                  // "NO PE STAMP REQUIRED"
+      if (PLACEHOLDER_AFTER.test(body.slice(i + m[0].length))) continue;   // "ENGINEER OF RECORD: NONE"
+      credentialAt.push(i);
+    }
+  }
+  if (!credentialAt.length) return false;
   return clauses.some(({ clause, at }) => {
     const c = clause.trim();
-    return CERTIFYING_CLAUSE.test(c)
-      && !NEGATOR.test(withoutNumberAbbreviation(c))
-      && !HEDGED.test(c)
-      && !REFERENCE_CLAUSE.test(c)
+    return CERTIFYING_CLAUSE.test(c) && speaks(c) && !REFERENCE_CLAUSE.test(c)
       && credentialAt.some((i) => Math.abs(i - at) <= CREDENTIAL_WINDOW_CHARS);
   });
 }

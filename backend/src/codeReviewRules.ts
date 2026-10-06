@@ -883,7 +883,7 @@ export function evaluateDesignCodeFindings(
       severity: "warning",
       category: "structural",
       title: "Engineer's structural certification attached — verify the seal on the structural pages",
-      message: "The package carries an engineer's structural certification (in the plan set, split as the structural document). The text layer cannot see a PE seal, so whether it is sealed is unconfirmed, not missing.",
+      message: "The package carries an engineer's structural certification (on file as the structural document). The text layer cannot see a PE seal, so whether it is sealed is unconfirmed, not missing.",
       cityFeedback: "The structural calculations or engineer's letter must carry the engineer's wet or digital seal.",
       designTeamAction: "Open the structural pages and confirm the engineer's seal and signature are on the certification before submittal.",
       evidenceNeeded: ["PE seal and signature on the engineer's structural certification"],

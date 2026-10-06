@@ -73,8 +73,10 @@ const LETTER_PAGES: string[][] = [
     "Truss top chord stress ratio 0.82 < 1.00 OK. Lag screw withdrawal 266 lb > 112 lb demand OK.",
     "STRUCTURAL CALCULATIONS - ARRAY 2",
     "Truss top chord stress ratio 0.79 < 1.00 OK. Retrofits: none required.",
-    "The existing structure is adequate to support the proposed loads.",
-    "Signature ______________________   Engineer of Record   Date __________",
+    // A real certification cites its design code: "per ASCE 7-16" is not a pointer to another document.
+    "The existing truss framing is adequate per ASCE 7-16 to support the proposed loads.",
+    "Signature ______________________   Date __________",
+    "Jane Example, P.E., Engineer of Record",
   ],
 ];
 const letterText = LETTER_PAGES.flat().join("\n");
@@ -95,6 +97,8 @@ const FRAMING_NOTES = [
   "ATTACHMENT: FLASHED STANDOFF WITH 5/16 IN LAG, 2.5 IN MIN EMBEDMENT INTO TRUSS TOP CHORD",
   "RAIL: ALUMINUM RAIL, MAX ATTACHMENT SPACING 48 IN, MAX CANTILEVER 16 IN, STAGGER ATTACHMENTS",
   "ROOF COVERING: COMPOSITION SHINGLE, ONE LAYER. ROOF SLOPE 5:12. SHEATHING 1/2 IN OSB",
+  // Real plan sets say this; it also keeps every probe below within reach of an "engineer" signal.
+  "RACKING: ENGINEERED RACKING SYSTEM, RAILS LISTED TO UL 2703",
 ];
 const FRAMING_TEXT = `S 1.1 Sheet Name ATTACHMENT DETAIL\n${FRAMING_NOTES.join("\n")}\n`;
 const CITING_LINES: Record<string, string> = {
@@ -106,6 +110,16 @@ const CITING_LINES: Record<string, string> = {
   "analysis table, contact engineer": "STRUCTURAL ANALYSIS\nMEMBER 2x4 TRUSS  SPAN 26 FT  RATIO 0.82  OK\nCONTACT ENGINEER IF FIELD CONDITIONS DIFFER",
   "adequacy without a credential": "S-2 STRUCTURAL CALCULATIONS\nTHE EXISTING ROOF FRAMING IS ADEQUATE TO SUPPORT THE PV LOADS.",
   "verify-adequacy instruction": "CONTRACTOR TO VERIFY THE EXISTING STRUCTURE IS ADEQUATE. ENGINEER OF RECORD: TBD BY OTHERS",
+  // Re-review on #218: a credential that is negated or a placeholder names nobody.
+  "negated PE stamp": "NO PE STAMP REQUIRED. EXISTING RAFTERS ARE ADEQUATE FOR THE ADDED PV LOAD.",
+  "engineer of record: none": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nENGINEER OF RECORD: NONE",
+  "engineer of record: n/a": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nENGINEER OF RECORD: N/A",
+  "engineer of record: tbd": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nENGINEER OF RECORD: TBD",
+  "engineer of record: blank": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nENGINEER OF RECORD: ________",
+  // …and a certify/adequacy clause about something other than the existing structure is not one.
+  "racking manufacturer's rating": "EXAMPLE RAIL SYSTEM IS ENGINEERED AND CERTIFIED TO UL 2703. THE RAIL IS ADEQUATE FOR 72 IN SPANS. PE GASKETS.\nLICENSED PROFESSIONAL ENGINEER REVIEWED THE RAIL SPAN TABLES",
+  "unsigned title-block template": "I HEREBY CERTIFY THAT THIS PLAN WAS PREPARED BY ME OR UNDER MY DIRECT SUPERVISION AND THAT I AM A DULY LICENSED PROFESSIONAL ENGINEER UNDER THE LAWS OF THIS STATE\nSIGNATURE ________ DATE ________",
+  "contractor's statement": "CONTRACTOR CERTIFIES THAT THE EXISTING ROOF FRAMING IS ADEQUATE FOR THE PV LOADS",
 };
 for (const [name, line] of Object.entries(CITING_LINES)) {
   check(`MUST-EXCLUDE predicate: a framing sheet + "${name}" is not a certification`,
@@ -221,15 +235,18 @@ check("fixture: the framing sheet is split as `structural`",
 check("MUST-EXCLUDE: a framing-only structural split leaves the stamped-structural row MISSING", letterRow(framingOnly)?.present === false, JSON.stringify(letterRow(framingOnly)));
 check("MUST-EXCLUDE: …and the stamped-engineering finding stays a BLOCKER", stampFinding(framingOnly)?.severity === "blocker", JSON.stringify(stampFinding(framingOnly)?.severity));
 
-// MUST-EXCLUDE (review on #218): the framing sheet that CITES the letter is held, end to end.
-const citing = await mk([[...FRAMING_FULL, CITING_LINES["refer to the letter"]]]);
-check("fixture: the citing framing sheet is split as `structural`",
-  Boolean(db.get("SELECT id FROM project_documents WHERE project_id = ? AND doc_type = 'structural'", [citing])));
-check("MUST-EXCLUDE: a sheet citing \"REFER TO STRUCTURAL LETTER BY …\" leaves the stamped-structural row MISSING",
-  letterRow(citing)?.present === false, JSON.stringify(letterRow(citing)));
-check("MUST-EXCLUDE: …the stamped-engineering finding stays a BLOCKER", stampFinding(citing)?.severity === "blocker", JSON.stringify(stampFinding(citing)?.severity));
-check("MUST-EXCLUDE: …and permit-requirements still holds on it",
-  holdLabels(citing).some((l) => /stamped calculation/i.test(l)), JSON.stringify(holdLabels(citing)));
+// MUST-EXCLUDE (review on #218): every probe, end to end through the splitter, the inventory, the
+// reviewer and the submit gate — the sheet is split as `structural` and the job is still held.
+for (const [name, line] of Object.entries(CITING_LINES)) {
+  const pid = await mk([[...FRAMING_FULL, ...line.split("\n")]]);
+  const split = Boolean(db.get("SELECT id FROM project_documents WHERE project_id = ? AND doc_type = 'structural'", [pid]));
+  const r = letterRow(pid);
+  const sev = stampFinding(pid)?.severity;
+  const holds = holdLabels(pid);
+  check(`MUST-EXCLUDE gate: framing sheet + "${name}" (split as structural: ${split}) — row MISSING, finding a BLOCKER, still held`,
+    split && r?.present === false && sev === "blocker" && holds.some((l) => /stamped calculation/i.test(l)),
+    JSON.stringify({ present: r?.present, via: r?.via, sev, holds }));
+}
 
 db.close();
 if (failures) { console.error(`\nstructuralCertificationCredit: ${failures} FAILED`); process.exit(1); }
