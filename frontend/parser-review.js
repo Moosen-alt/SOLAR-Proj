@@ -1290,7 +1290,7 @@
   const INDEX_SPEC_NAME = new RegExp(`${SPEC_SHEET_NAME.source}|\\b(?:SPEC(?:IFICATION)?S?|CUT|DATA)\\s*-?\\s*SHEETS?\\b`, 'gi');
   const INDEX_CALCS_NAME = /\bCALC(?:ULATION)?S?\b/i;
   const INDEX_NAME_WORDS = 6;
-  const INDEX_NAMES_END = /\bNOTES\s*(?::|1\b)|\bPROJECT\s+DATA\b/;
+  const INDEX_NAMES_END = /\bNOTES?\b\s*(?:[:\-\u2013]|1\b)|(?<!\bGENERAL\s+)\bNOTES?\b|(?:^|\s)1\.\s|\bPROJECT\s+DATA\b/i;
   const sheetNumbers = (text) => [...text.matchAll(INDEX_SHEET_NUMBER)]
     .filter((m) => !NOT_A_SHEET_PREFIX.test(m[1]))
     .map((m) => ({ key: `${m[1]}${m[2]}`, start: m.index, end: m.index + m[0].length }));

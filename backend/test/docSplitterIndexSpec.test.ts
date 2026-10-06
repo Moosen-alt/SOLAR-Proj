@@ -144,7 +144,10 @@ console.log("\n3. WHAT THE INDEX CALLS A SPEC SHEET");
     index("SHEET # E-1 E-2 S-1 S-2 SHEET NAME LINE DIAGRAM SPEC SHEET SPEC SHEET").spec.size === 0);
   // #212 review: in columns the names stop at the notes / project-data block after the table.
   const cols = "SHEET # PV-1 PV-2 PV-3 S-1 S-2 SHEET NAME ROOF PLAN SITE PLAN LAYOUT SPEC SHEET SPEC SHEET";
-  for (const tail of ["NOTES: SEE MODULE SPEC FOR RATINGS", "PROJECT DATA MODULE SPEC QTRON 400W"]) {
+  for (const tail of ["NOTES: SEE MODULE SPEC FOR RATINGS", "PROJECT DATA MODULE SPEC QTRON 400W",
+    // #212 re-review: a singular, dashed, other-word, lower-case or headless numbered notes block.
+    "NOTE: SEE MODULE SPEC", "GENERAL NOTES - SEE MODULE SPEC", "ELECTRICAL NOTES SEE MODULE SPEC", "Notes: see module spec",
+    "1. SEE THE MODULE DATA SHEET", "project data module spec"]) {
     const r = index(`${cols} ${tail}`);
     run(`columns + "${tail}": S-1, S-2 only (not PV-1..PV-3, not nothing)`, json([...r.spec].sort()) === json(["S1", "S2"]), json([...r.spec]));
   }

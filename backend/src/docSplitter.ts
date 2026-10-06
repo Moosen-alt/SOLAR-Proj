@@ -145,11 +145,13 @@ const INDEX_CALCS_NAME = /\bCALC(?:ULATION)?S?\b/i;
 // A row's name is the words up to the next sheet number, at most this many: the last row runs into
 // whatever the cover says next, and a notes paragraph that mentions a "DATA SHEET" is not its name.
 const INDEX_NAME_WORDS = 6;
-// Where the index's names end on the cover: the notes block ("NOTES:", "NOTES 1.") or the project-data
-// block that follows it. A column run's names stop there, and at INDEX_NAME_WORDS per number in the
-// run, so "NOTES: SEE MODULE SPEC" after the table is never counted as a row (#212 review). A sheet
-// NAMED "GENERAL NOTES" in the name column is a name, not that block, and does not end it.
-const INDEX_NAMES_END = /\bNOTES\s*(?::|1\b)|\bPROJECT\s+DATA\b/;
+// Where the index's names end on the cover: the notes or project-data block that follows it. A
+// column run's names stop there, and at INDEX_NAME_WORDS per number in the run, so "NOTES: SEE MODULE
+// SPEC" after the table is never counted as a row (#212 review). The block is a NOTE(S) heading with
+// a colon or dash ("NOTE:", "GENERAL NOTES - …"), any other NOTE(S) word ("ELECTRICAL NOTES SEE …"),
+// the first numbered note ("1. SEE …"), or PROJECT DATA — in any case. A sheet NAMED "GENERAL NOTES"
+// in the name column (no colon or dash) is a name, not that block, and does not end it.
+const INDEX_NAMES_END = /\bNOTES?\b\s*(?:[:\-\u2013]|1\b)|(?<!\bGENERAL\s+)\bNOTES?\b|(?:^|\s)1\.\s|\bPROJECT\s+DATA\b/i;
 const sheetNumbers = (text: string) => [...text.matchAll(INDEX_SHEET_NUMBER)]
   .filter((m) => !NOT_A_SHEET_PREFIX.test(m[1]))
   .map((m) => ({ key: `${m[1]}${m[2]}`, start: m.index ?? 0, end: (m.index ?? 0) + m[0].length }));
