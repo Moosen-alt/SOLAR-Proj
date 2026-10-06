@@ -1446,6 +1446,9 @@ export interface NecEditionRequirements {
     insideBoundaryArticle: string | null;
     /** True when the edition expects a listed PV hazard control system / listed RSD equipment. */
     requiresListedEquipment: boolean;
+    /** True when the edition's inside-boundary options include "no exposed wiring methods or
+     *  conductive parts" (2017/2020 690.12(B)(2)(3); deleted in 2023). */
+    noExposedWiringOption: boolean;
     /** Initiation-device article when the edition expects its location on the plans, else null. */
     initiationDeviceArticle: string | null;
   };
@@ -1464,6 +1467,9 @@ export interface NecEditionRequirements {
     loadSide: string;
     busbar120: string | null;
   };
+  /** Cells taken from secondary sources and not yet checked against the edition's own text
+   *  (dotted paths, e.g. "labels.rapidShutdown"). A person confirms them, then removes the entry. */
+  unconfirmed?: readonly string[];
 }
 
 /** The canonical code families a state's own code names map onto (ORSC -> residential,

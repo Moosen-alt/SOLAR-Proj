@@ -28,6 +28,7 @@
 import type { ProjectRecord } from "../../shared/src/types";
 import { parseRating } from "./codeReviewRules";
 import { evidenceForTopic } from "./projectEvidence";
+import { moduleLevelElectronicsEquipment } from "./moduleLevelElectronics";
 import { structureAnswerOf, structureDescriptionOf, structureMeaningOf } from "./applicationDocsAgency";
 
 export interface WorksheetQuestion { key: string; label: string; options: string[]; kind: "form-fact" }
@@ -218,33 +219,17 @@ export function mountingPlaneCount(snapshot: Record<string, unknown>): { count: 
 }
 
 // ── DC-DC CONVERTERS (optimizers): read from the EQUIPMENT, never from prose ───────────────
-// "optimizer" anywhere in the joined plan text marked a Tesla string system DC-DC "Yes" because a
-// rail spec sheet says it "secures and bonds most micro-inverters and optimizers to rail", and a
-// micro system whose notes say "MLPE (microinverters or optimizers)" likewise. Evidence is now:
-//   - the inverter fields: a SolarEdge string inverter (SE... / make SolarEdge — its optimizers are
-//     part of the listed system), or an inverter/MLPE model field naming an optimizer;
-//   - an EQUIPMENT-SCHEDULE line in the text: an optimizer / DC-DC converter label followed by a
-//     separator or quantity and an optimizer MODEL ("OPTIMIZER: (20) SOLAREDGE S440"), or a quantity
-//     + model + label ("(20) TIGO TS4-A-O OPTIMIZERS"). A model token alone is not evidence (an RSD
-//     datasheet lists its optimizer siblings), nor is the word alone.
-const OPTIMIZER_MODEL = String.raw`(?:P\d{3,4}[A-Z]{0,3}|S\d{3,4}[A-Z]?|TS4-(?:A-|R-)?2?O|SUN2000-\d{3,4}W-P\w*)`;
-const OPTIMIZER_LABEL = String.raw`(?:(?:POWER|DC)\s+)?OPTIMI[SZ]ERS?|DC[-\s]?(?:TO[-\s]?)?DC\s+CONVERTERS?`;
-const MAKE_WORDS = String.raw`(?:[A-Z][A-Za-z.&-]*\s+){0,2}`;
-const SCHEDULE_LABEL_FIRST = new RegExp(String.raw`\b(?:${OPTIMIZER_LABEL})\s*(?:[:=|#-]|\(\s*\d{1,3}\s*\)|\bQTY\b)\s*(?:\(?\s*\d{1,3}\s*\)?\s*(?:x\s*)?)?${MAKE_WORDS}${OPTIMIZER_MODEL}\b`, "i");
-const SCHEDULE_QTY_FIRST = new RegExp(String.raw`(?:\(\s*\d{1,3}\s*\)|\b\d{1,3}\s*x)\s*${MAKE_WORDS}${OPTIMIZER_MODEL}\b[^.;]{0,30}?\b(?:${OPTIMIZER_LABEL})\b`, "i");
-// "8 NEW SOLAREDGE POWER OPTIMIZERS S440" / "(30) POWER OPTIMIZERS: S500" — quantity, label, model.
-const SCHEDULE_QTY_LABEL_MODEL = new RegExp(String.raw`(?:\(\s*\d{1,3}\s*\)|\b\d{1,3})\s+(?:NEW\s+|\(N\)\s*)?${MAKE_WORDS}(?:${OPTIMIZER_LABEL})\s*[,:=-]?\s*(?:MODEL\s*[:#]?\s*)?${OPTIMIZER_MODEL}\b`, "i");
+// The equipment reading is moduleLevelElectronics.ts — the ONE predicate the rapid-shutdown rule
+// also asks (#213). The worksheet adds one reading of its own: a SolarEdge string inverter (SE... /
+// make SolarEdge) answers DC-DC "Yes" here, because its optimizers are part of the listed system
+// and the 690.7(B) question is the safe side. That inverter alone does NOT soften a rapid-shutdown
+// blocker — the reviewer asks for the optimizers themselves.
 export function dcDcConverterEvidence(s: Record<string, unknown>, stringInverter: boolean): { present: boolean; basis: string } {
   const str = (k: string) => String(s[k] ?? "").trim();
   if (stringInverter && (/solaredge/i.test(str("invMake")) || /^SE\d/i.test(str("invModel")))) return { present: true, basis: `SolarEdge string inverter (${`${str("invMake")} ${str("invModel")}`.trim()})` };
-  for (const k of ["invModel", "mciMake", "mciModel"]) {
-    const v = str(k);
-    if (v && (new RegExp(String.raw`\b(?:${OPTIMIZER_LABEL})\b`, "i").test(v) || new RegExp(String.raw`^\s*${MAKE_WORDS}${OPTIMIZER_MODEL}\b`, "i").test(v))) return { present: true, basis: `${k} "${v}"` };
-  }
-  const t = [str("electricalCalcText"), str("labelsText"), str("planSetExtractedText")].join("\n").replace(/\s+/g, " ");
-  const m = SCHEDULE_LABEL_FIRST.exec(t) ?? SCHEDULE_QTY_FIRST.exec(t) ?? SCHEDULE_QTY_LABEL_MODEL.exec(t);
-  if (m) return { present: true, basis: `equipment line "${t.slice(Math.max(0, m.index - 20), m.index + m[0].length + 20).trim()}"` };
-  return { present: false, basis: "" };
+  const t = [str("electricalCalcText"), str("labelsText"), str("planSetExtractedText")].join("\n");
+  const hit = moduleLevelElectronicsEquipment(s, [{ label: "plan text", text: t }]);
+  return { present: hit.present, basis: hit.basis };
 }
 
 // ── THE ESS INVERTER'S OWN OUTPUT CURRENT (AC-coupled battery on a micro system) ────────────
