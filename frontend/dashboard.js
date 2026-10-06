@@ -2028,8 +2028,10 @@ function kbDesignCriteriaHtml(codeProfile) {
     const rec = lookup ? lookup.items.find((x) => x && x.item === item) : null;
     const when = lookup && lookup.at ? ` (lookup ${String(lookup.at).slice(0, 10)})` : "";
     const status = rec && rec.status === "not_found" ? `not found${when}`
-      : rec && rec.status === "site_specific" ? `site-specific${when}` : "not researched";
-    const link = rec && rec.status === "site_specific" && rec.sourceUrl ? ` <span class="muted">${esc(rec.note || "")} — ${esc(rec.sourceUrl)}</span>` : "";
+      : rec && rec.status === "site_specific" ? `site-specific${when}`
+      : rec && rec.status === "candidate_unparsed" ? `candidate page found, not parsed${when}` : "not researched";
+    const link = rec && rec.status === "site_specific" && rec.sourceUrl ? ` <span class="muted">${esc(rec.note || "")} — ${esc(rec.sourceUrl)}</span>`
+      : rec && rec.status === "candidate_unparsed" && rec.sourceUrl ? ` <span class="muted">${esc(rec.sourceUrl)}</span>` : "";
     gaps.push(`<li>${esc(label)}: <span class="badge badge-warning">${esc(status)} — verify</span>${link}</li>`);
   }
   const obs = Array.isArray(codeProfile.approvedDesignSummary) ? codeProfile.approvedDesignSummary : [];
