@@ -38,7 +38,7 @@
 //  18  handoff_ready → done → archived → unknown (an unknown never reads as reassurance)
 //
 // READ-ONLY. Nothing here writes: no audit rows, no reviewer-verdict recording, and the code-
-// research enqueue that buildReviewerReportFor/resolvePermitPathForProject trigger for an
+// research enqueue that reviewerGateReportFor/resolvePermitPathForProject trigger for an
 // un-profiled jurisdiction is suppressed for the duration of the read (withoutCodeResearch).
 //
 // IMPORTS. repository ↔ nextStep is a static cycle, used at CALL time only on both sides (the
@@ -70,9 +70,9 @@ import { issuingAuthorityForTrack } from "./applicationDocsAgency";
 import { parseJobProgressNote } from "./jobProgress";
 import { startedAtLabel } from "./formAcquisitionPlan";
 import {
-  buildReviewerReportFor,
   getProjectDetail,
   getSubmitGateReport,
+  reviewerGateReportFor,
   isCriticalReviewItem,
   mapCorrection,
   operatorHoldReason,
@@ -141,12 +141,14 @@ export function reviewInfoFromResultJson(resultJson: unknown): { reviewMismatche
   return empty;
 }
 
-/** Reviewer-gate blockers exactly as prepareSubmission and runAutopilotApproval judge them
- *  (the text report, no cached vision verdicts). Read-only via withoutCodeResearch. Each carries
- *  the filings it holds (gateScope.findingHoldScope — the answer prepareSubmission filters by), so
- *  a reader judging ONE track asks reviewerBlockersFor, never the bare list. */
+/** Reviewer-gate blockers exactly as the submit gate, prepareSubmission and runAutopilotApproval
+ *  judge them: the gate's severities with cached vision verdicts folded in (reviewerGateReportFor,
+ *  owner ruling #214). Read-only: withoutCodeResearch suppresses the research enqueue, and the vision
+ *  cache is only read. Each blocker carries the filings it holds (gateScope.findingHoldScope, the
+ *  answer prepareSubmission filters by), so a reader judging ONE track asks reviewerBlockersFor,
+ *  never the bare list. */
 export function reviewerBlockerList(db: AppDb, project: ProjectRecord): ReviewerBlocker[] {
-  const report = withoutCodeResearch(() => buildReviewerReportFor(db, project));
+  const report = withoutCodeResearch(() => reviewerGateReportFor(db, project));
   return report.findings
     .filter((finding) => finding.severity === "blocker")
     .map((finding) => ({ code: finding.id, detail: finding.title, tracks: tracksHeld(findingHoldScope(finding)) }));
