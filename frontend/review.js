@@ -243,6 +243,7 @@ let editingProfile = null;
 async function loadProfiles() {
   // The verify panel opens inside the list (under its row); re-rendering the list would take it along.
   if ($("profiles").contains($("verifyPanel"))) closeVerifyPanel();
+  if (!CPV) { $("profiles").textContent = CPV_MISSING; return; }
   try {
     const { profiles } = await (await api("/api/code-profiles")).json();
     $("profiles").innerHTML = profiles.map((p, i) => `
@@ -261,25 +262,31 @@ async function loadProfiles() {
       $("verifyEditor").value = JSON.stringify(editable, null, 2);
       $("verifyRaw").open = false;
       $("verifyTitle").textContent = `Verify ${profileName(editingProfile)}`;
-      $("verifySummary").innerHTML = profileSummaryHtml(editingProfile);
+      $("verifySummary").innerHTML = CPV.profileSummaryHtml(editingProfile);
       $("verifyStatus").textContent = CPV.sourcesLine(editingProfile);
       // Open directly under the row that was clicked, not at the bottom of a 25-row list.
       btn.closest(".rv-profile-row").after($("verifyPanel"));
       $("verifyPanel").style.display = "";
       $("verifyPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
     }));
-    // Deep link (#209): /review#profile=<key> opens that row's verify panel.
+    // Deep link (#209): /review#profile=<key> opens that row's verify panel ONCE. The hash is consumed
+    // here, so the reload after Mark verified (or after research) does not reopen it.
     const want = new URLSearchParams(location.hash.replace(/^#/, "")).get("profile");
-    const at = want ? profiles.findIndex((p) => p.key === want) : -1;
-    if (at >= 0) document.querySelector(`[data-edit="${at}"]`)?.click();
+    if (want) {
+      history.replaceState(null, "", location.pathname + location.search);
+      const at = profiles.findIndex((p) => p.key === want);
+      if (at >= 0) document.querySelector(`[data-edit="${at}"]`)?.click();
+    }
   } catch { $("profiles").textContent = "Could not load profiles."; }
 }
 
 // The summary, payload, name and rule-3 confirm text are shared with the dashboard's KB card
 // (frontend/code-profile-verify.js, #209), so both doors show and send the same thing.
-const CPV = window.CodeProfileVerify;
-const profileName = CPV.profileName;
-const profileSummaryHtml = CPV.profileSummaryHtml;
+// Read lazily and guarded: if that script failed to load, only the profile manager says so — the
+// rest of the review page (work types, preflight, submissions) still runs.
+const CPV = window.CodeProfileVerify || null;
+const CPV_MISSING = "The verify tools did not load — reload the page.";
+const profileName = (p) => (CPV ? CPV.profileName(p) : String(p?.state || ""));
 
 function closeVerifyPanel() {
   $("verifyPanel").style.display = "none";
@@ -304,6 +311,7 @@ $("researchBtn").addEventListener("click", async () => {
 });
 
 $("verifyBtn").addEventListener("click", async () => {
+  if (!CPV) { $("verifyStatus").textContent = CPV_MISSING; return; }
   let payload;
   try { payload = JSON.parse($("verifyEditor").value); } catch (err) {
     $("verifyRaw").open = true;

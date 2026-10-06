@@ -108,7 +108,7 @@
   function renderVerifyPanel(p) {
     if (!p || !p.key) return '';
     return `
-      <div class="rv-verify cp-verify-panel" data-code-profile-verify-panel="${esc(p.key)}" style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;margin-top:6px">
+      <div class="rv-verify cp-verify-panel" data-code-profile-verify-panel="${esc(p.key)}" style="margin-top:6px">
         <strong>Verify ${esc(profileName(p))}</strong>
         <div class="rv-vsummary">${profileSummaryHtml(p)}</div>
         <details class="rv-raw">

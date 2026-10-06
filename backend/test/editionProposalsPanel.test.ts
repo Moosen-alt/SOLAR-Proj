@@ -182,7 +182,7 @@ check("#182 dashboard.js renders the state block into #kbStateProposals and wire
     bindCodeProfileVerifyButtons: () => {},
   };
   vm.createContext(ctx);
-  vm.runInContext(["bindEditionProposalButtons", "renderStateCodeProposals"].map(cut).join("\n\n") + "\nrenderStateCodeProposals();", ctx);
+  vm.runInContext(["bindEditionProposalButtons", "captureVerifyDrafts", "restoreVerifyDrafts", "renderStateCodeProposals"].map(cut).join("\n\n") + "\nrenderStateCodeProposals();", ctx);
   assert.match(el.innerHTML, /State code profiles \(1\)/);
   for (const b of buttons) b.click?.();
   assert.deepEqual(decided, [["approve", adoption.fingerprint], ["dismiss", adoption.fingerprint]]);

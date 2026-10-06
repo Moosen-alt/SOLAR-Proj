@@ -11,7 +11,9 @@
 //     overwrite … only after checking every value against its cited source);
 //   - every interpolated value is escaped, and a source link is shown only for http(s);
 //   - the wiring: both pages load the module, the KB card and the State code profiles block call it,
-//     Mark verified PUTs /api/code-profiles/verify with the person's name, and the nav links /review.
+//     Mark verified PUTs /api/code-profiles/verify with the person's name. (No header link to /review:
+//     the plan review gate is not a top-level destination — owner ruling 2026-09-15, pinned by
+//     frontendDesignSystem.dom.smoke.ts; the inline control is the way in.)
 //   npx tsx backend/test/codeProfileVerifyPanel.test.ts
 import "./_isolate";
 import fs from "node:fs";
@@ -137,6 +139,17 @@ const dash = read("frontend/dashboard.js");
 const dashHtml = read("frontend/dashboard.html");
 const review = read("frontend/review.js");
 const reviewHtml = read("frontend/review.html");
+// Lift one top-level function out of dashboard.js by name (as editionProposalsPanel.test.ts does).
+const cut = (name: string): string => {
+  const m = new RegExp(`^(?:async )?function ${name}\\(`, "m").exec(dash);
+  if (!m) throw new Error(`dashboard.js: could not find function ${name}`);
+  let depth = 0, end = -1;
+  for (let j = dash.indexOf("{", m.index); j < dash.length; j++) {
+    if (dash[j] === "{") depth++;
+    else if (dash[j] === "}") { depth--; if (depth === 0) { end = j + 1; break; } }
+  }
+  return dash.slice(m.index, end);
+};
 
 check("both pages load the shared module before their page script", () => {
   assert.ok(/<script src="\/code-profile-verify\.js"><\/script>\s*\n\s*<script src="\/review\.js">/.test(reviewHtml), "review.html");
@@ -144,9 +157,11 @@ check("both pages load the shared module before their page script", () => {
   assert.ok(at > 0 && at < dashHtml.indexOf('src="/dashboard.js"'), "dashboard.html");
 });
 
-check("the dashboard navigation links the review page", () => {
-  const nav = dashHtml.slice(dashHtml.indexOf('<nav class="primary-nav"'), dashHtml.indexOf("</nav>"));
-  assert.match(nav, /<a class="page-link" href="\/review"/);
+
+check("no header link to /review (owner ruling 2026-09-15: the plan review gate is not a top-level destination)", () => {
+  const header = dashHtml.slice(dashHtml.indexOf("<header"), dashHtml.indexOf("</header>"));
+  assert.ok(header.length > 0, "dashboard.html has no <header>");
+  assert.ok(!/href="\/review"/.test(header), "the dashboard header links /review");
 });
 
 check("the KB card and the State code profiles block render the control and bind it", () => {
@@ -174,6 +189,85 @@ check("/review uses the shared confirm and sends the verifier's name", () => {
   assert.match(review, /window\.confirm\(CPV\.confirmMessage\(name\)\)/);
   assert.match(review, /JSON\.stringify\(\{ \.\.\.payload, verifiedBy \}\)/);
   assert.match(review, /#profile=<key>|get\("profile"\)/);
+});
+
+check("an open verify panel and its unsaved raw-JSON edits survive a KB re-render (any server-sent event)", () => {
+  const kb = cut("renderKnowledgeBase");
+  const cap = kb.indexOf("captureVerifyDrafts(container)");
+  const swap = kb.indexOf("container.innerHTML = html");
+  const restoreAt = kb.indexOf("restoreVerifyDrafts(container, drafts, bindCodeProfileVerifyButtons(container))");
+  assert.ok(cap > 0 && cap < swap && restoreAt > swap, "renderKnowledgeBase does not capture before the swap and restore after binding");
+  const sb = cut("renderStateCodeProposals");
+  assert.ok(sb.indexOf("captureVerifyDrafts(el)") < sb.indexOf("el.innerHTML ="), "the state block does not capture before its swap");
+  assert.match(sb, /restoreVerifyDrafts\(el, drafts, bindCodeProfileVerifyButtons\(el\)\)/);
+
+  // The two helpers themselves, lifted and run against a minimal fake DOM.
+  const ctx: Record<string, unknown> = {};
+  vm.createContext(ctx);
+  vm.runInContext([cut("captureVerifyDrafts"), cut("restoreVerifyDrafts")].join("\n\n") + "\nthis.capture = captureVerifyDrafts; this.restore = restoreVerifyDrafts;", ctx);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { capture, restore } = ctx as any;
+  const textarea = (value: string) => ({ value });
+  const details = (open: boolean) => ({ open });
+  const panel = (key: string, json: string, rawOpen: boolean) => ({
+    getAttribute: (a: string) => (a === "data-code-profile-verify-panel" ? key : null),
+    querySelector: (sel: string) => (sel.includes("json") ? textarea(json) : sel === "details" ? details(rawOpen) : null),
+  });
+  const before = { querySelectorAll: (sel: string) => (sel === "[data-code-profile-verify-panel]" ? [panel("zz|city of sample", '{"edited":true}', true)] : []) };
+  const drafts = capture(before);
+  assert.deepEqual(JSON.parse(JSON.stringify(drafts)), [{ key: "zz|city of sample", json: '{"edited":true}', rawOpen: true }]);
+
+  // After the swap: two seeded buttons and one verified-meanwhile row (no button). Only the drafted
+  // row reopens, with the person's edits and the raw section as they left it.
+  const reopened: string[] = [];
+  const slots: Record<string, { ta: { value: string }; raw: { open: boolean } }> = {};
+  const button = (key: string) => ({ getAttribute: () => key });
+  const after = { querySelectorAll: (sel: string) => (sel === "[data-code-profile-verify]" ? [button("zy|"), button("zz|city of sample")] : []) };
+  const open = (btn: { getAttribute: () => string }) => {
+    const key = btn.getAttribute();
+    reopened.push(key);
+    slots[key] = { ta: { value: "{\"fresh\":true}" }, raw: { open: false } };
+    return { querySelector: (sel: string) => (sel.includes("json") ? slots[key].ta : sel === "details" ? slots[key].raw : null) };
+  };
+  restore(after, drafts, open);
+  assert.deepEqual(reopened, ["zz|city of sample"]);
+  assert.equal(slots["zz|city of sample"].ta.value, '{"edited":true}', "the unsaved raw-JSON edit was lost");
+  assert.equal(slots["zz|city of sample"].raw.open, true);
+
+  const gone: string[] = [];
+  restore({ querySelectorAll: () => [] }, drafts, (b: { getAttribute: () => string }) => { gone.push(b.getAttribute()); return null; });
+  assert.deepEqual(gone, [], "a row with no verify button (verified meanwhile) was reopened");
+  assert.doesNotThrow(() => restore(after, drafts, undefined), "no binder (module missing) must be a no-op");
+});
+
+check("after a successful Mark verified the panel is cleared before the re-render (not restored as a draft)", () => {
+  const fn = cut("verifyCodeProfileFromKb");
+  const put = fn.indexOf('api("/api/code-profiles/verify"');
+  const clear = fn.indexOf('slot.innerHTML = ""');
+  assert.ok(put > 0 && clear > put && clear < fn.indexOf("renderKnowledgeBase()"), "the verified panel is not cleared between the PUT and the re-render");
+});
+
+check("/review survives a missing code-profile-verify.js (guarded, not a module-scope crash)", () => {
+  const sandboxReview: Record<string, unknown> = {
+    window: {}, location: { hash: "", pathname: "/review", search: "" }, history: { replaceState: () => {} },
+    localStorage: { getItem: () => "", setItem: () => {} },
+    document: { getElementById: () => el(), querySelectorAll: () => [], querySelector: () => null },
+    fetch: async () => ({ ok: true, json: async () => ({ workTypes: [], submissions: [], profiles: [] }) }),
+  };
+  function el(): Record<string, unknown> {
+    return { addEventListener: () => {}, contains: () => false, after: () => {}, style: {}, value: "", textContent: "", innerHTML: "", disabled: false };
+  }
+  vm.createContext(sandboxReview);
+  assert.doesNotThrow(() => vm.runInContext(review, sandboxReview), "review.js threw at load with window.CodeProfileVerify missing");
+  assert.match(review, /const CPV = window\.CodeProfileVerify \|\| null;/);
+  assert.match(review, /if \(!CPV\) \{ \$\("profiles"\)\.textContent = CPV_MISSING; return; \}/);
+});
+
+check("the /review#profile=<key> deep link is consumed once (a later loadProfiles does not reopen it)", () => {
+  const lp = review.slice(review.indexOf("async function loadProfiles"), review.indexOf("// The summary, payload, name"));
+  const consume = lp.indexOf("history.replaceState(null, \"\", location.pathname + location.search)");
+  const click = lp.indexOf("?.click()");
+  assert.ok(consume > 0 && consume < click, "the hash is not cleared before the panel opens");
 });
 
 console.log(failures === 0 ? "\ncodeProfileVerifyPanel: all checks passed." : `\ncodeProfileVerifyPanel: ${failures} check(s) FAILED.`);

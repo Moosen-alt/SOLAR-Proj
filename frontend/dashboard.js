@@ -1927,19 +1927,45 @@ function bindCodeProfileVerifyButtons(root) {
   if (!CPV) return;
   const rowFor = (key) => (state.codeProfiles || []).find((c) => c.key === key);
   const slotFor = (btn, key) => btn.closest(".cp-verify")?.querySelector(`[data-code-profile-verify-slot="${CSS.escape(key)}"]`);
-  root.querySelectorAll("[data-code-profile-verify]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const key = btn.getAttribute("data-code-profile-verify");
-      const row = rowFor(key);
-      const slot = slotFor(btn, key);
-      if (!row || !slot) return;
-      slot.innerHTML = CPV.renderVerifyPanel(row);
-      btn.style.display = "none";
-      slot.querySelector("[data-code-profile-verify-cancel]")?.addEventListener("click", () => { slot.innerHTML = ""; btn.style.display = ""; });
-      const confirmBtn = slot.querySelector("[data-code-profile-verify-confirm]");
-      confirmBtn?.addEventListener("click", () => verifyCodeProfileFromKb(slot, confirmBtn));
-    });
-  });
+  const open = (btn) => {
+    const key = btn.getAttribute("data-code-profile-verify");
+    const row = rowFor(key);
+    const slot = slotFor(btn, key);
+    if (!row || !slot) return null;
+    slot.innerHTML = CPV.renderVerifyPanel(row);
+    btn.style.display = "none";
+    slot.querySelector("[data-code-profile-verify-cancel]")?.addEventListener("click", () => { slot.innerHTML = ""; btn.style.display = ""; });
+    const confirmBtn = slot.querySelector("[data-code-profile-verify-confirm]");
+    confirmBtn?.addEventListener("click", () => verifyCodeProfileFromKb(slot, confirmBtn));
+    return slot;
+  };
+  root.querySelectorAll("[data-code-profile-verify]").forEach((btn) => btn.addEventListener("click", () => open(btn)));
+  return open;
+}
+
+// The KB tab re-renders on any server-sent event; an open verify panel (and the person's unsaved
+// raw-JSON edits) must survive that. Capture each open panel before the innerHTML swap, reopen it
+// after binding. A row that is no longer seeded (verified meanwhile) has no button, so its panel
+// is not restored — there is nothing left to verify.
+function captureVerifyDrafts(root) {
+  if (!root || !root.querySelectorAll) return [];
+  return Array.from(root.querySelectorAll("[data-code-profile-verify-panel]")).map((panel) => ({
+    key: panel.getAttribute("data-code-profile-verify-panel"),
+    json: panel.querySelector("[data-code-profile-verify-json]")?.value ?? null,
+    rawOpen: !!panel.querySelector("details")?.open,
+  }));
+}
+function restoreVerifyDrafts(root, drafts, open) {
+  if (!open || !drafts || !drafts.length) return;
+  for (const d of drafts) {
+    const btn = Array.from(root.querySelectorAll("[data-code-profile-verify]")).find((b) => b.getAttribute("data-code-profile-verify") === d.key);
+    const slot = btn ? open(btn) : null;
+    if (!slot) continue;
+    const ta = slot.querySelector("[data-code-profile-verify-json]");
+    if (ta && d.json != null) ta.value = d.json;
+    const raw = slot.querySelector("details");
+    if (raw) raw.open = d.rawOpen;
+  }
 }
 
 async function verifyCodeProfileFromKb(slot, btn) {
@@ -1958,6 +1984,7 @@ async function verifyCodeProfileFromKb(slot, btn) {
   btn.disabled = true;
   try {
     await api("/api/code-profiles/verify", { method: "PUT", body: JSON.stringify({ ...payload, verifiedBy }) });
+    slot.innerHTML = ""; // done: the re-render below must not restore this panel as a draft
     showMessage(`${name} verified — its citations are now authoritative.`);
   } catch (err) {
     btn.disabled = false;
@@ -2178,10 +2205,14 @@ function bindEditionProposalButtons(root) {
 function renderStateCodeProposals() {
   const el = $("kbStateProposals");
   if (!el) return;
+  const drafts = captureVerifyDrafts(el);
+  const listOpen = !!el.querySelector?.("details.state-code-verify")?.open;
   el.innerHTML = (typeof window !== "undefined" && window.EditionProposals ? window.EditionProposals.renderStateProposals(state.codeProfiles || []) : "")
     + (typeof window !== "undefined" && window.CodeProfileVerify ? window.CodeProfileVerify.renderStateVerifyRows(state.codeProfiles || []) : "");
   bindEditionProposalButtons(el);
-  bindCodeProfileVerifyButtons(el);
+  const listEl = el.querySelector?.("details.state-code-verify");
+  if (listEl && listOpen) listEl.open = true;
+  restoreVerifyDrafts(el, drafts, bindCodeProfileVerifyButtons(el));
 }
 
 function renderKnowledgeBase() {
@@ -2229,13 +2260,14 @@ function renderKnowledgeBase() {
       html += `<button type="button" id="kbShowMore" class="secondary" style="font-size:12px;margin-top:6px">Show ${Math.min(KB_PAGE_SIZE, matches.length - shown.length)} more (${matches.length - shown.length} left)</button>`;
     }
   }
+  const drafts = captureVerifyDrafts(container);
   container.innerHTML = html;
 
   container.querySelectorAll("[data-kb-delete]").forEach((btn) => {
     btn.addEventListener("click", () => deleteKnowledgeEntry(btn.getAttribute("data-kb-delete"), btn.getAttribute("data-kb-verified") === "1"));
   });
   bindEditionProposalButtons(container);
-  bindCodeProfileVerifyButtons(container);
+  restoreVerifyDrafts(container, drafts, bindCodeProfileVerifyButtons(container));
 
   const moreBtn = $("kbShowMore");
   if (moreBtn) {
