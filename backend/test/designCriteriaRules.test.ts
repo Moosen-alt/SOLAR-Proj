@@ -493,6 +493,45 @@ check("#216 MUST-PASS: on a SEEDED profile the in-window plan is a callout too (
   assert.equal(f?.severity, "callout");
 });
 
+check("#216 MUST-PASS: the window opens ON its effective date (lower bound from inside); the message has no doubled period", () => {
+  const f = njRun("2026-08-17");
+  assert.equal(f?.severity, "callout");
+  assert.ok(!/\.;|\.\./.test(f!.message), f!.message);
+});
+
+check("#216 MUST-PASS: two codes of ONE family each in their own window -> each line in grace (not a blocker)", () => {
+  // IBC and IEBC are both "building": editionsInEffect picks one current entry per family, so the
+  // question must be asked per code, or only one of them sees its previous edition.
+  const plan = project({ planSetExtractedText: "GOVERNING CODES: 2021 IRC, 2021 IBC, 2021 IEBC, 2020 NEC. SYSTEM SIZE: 8 kW DC" }, { state: "NJ", ahj: "Township of Testfield" } as Partial<ProjectRecord>);
+  const ctx = buildCodeContext("NJ", "Township of Testfield", njProfile({ adoptedCodes: [
+    { family: "residential", code: "IRC", edition: "2024", previousEdition: "2021", ...njWindow },
+    { family: "building", code: "IBC", edition: "2024", previousEdition: "2021", ...njWindow },
+    { family: "building", code: "IEBC", edition: "2024", previousEdition: "2021", ...njWindow },
+    { family: "electrical", code: "NEC", edition: "2023", previousEdition: "2020", ...njWindow },
+  ] }));
+  const f = get(evaluateDesignCriteriaFindings(plan, ctx, { roofMounted: true, asOf: "2026-10-05" }), BASIS);
+  assert.ok(f);
+  assert.match(f!.message, /IEBC 2021/, "the IEBC line is compared");
+  assert.equal(f!.severity, "callout", f!.message);
+});
+
+check("#216 MUST-PASS: a state code's printed model base is in grace when its state-code pair is", () => {
+  // Plan on the previous state edition and its base, inside a recorded window for the new state
+  // edition (whose base is the newer model code).
+  const plan = project({ planSetExtractedText: "GOVERNING CODES: 2023 OREGON RESIDENTIAL SPECIALTY CODE (2021 IRC), 2023 OREGON ELECTRICAL SPECIALTY CODE. SYSTEM SIZE: 8 kW DC" });
+  const ctx = ctxFor({ confidence: "verified", verifiedBy: "operator", adoptedCodes: [
+    { family: "residential", code: "ORSC", edition: "2026", title: "2026 Oregon Residential Specialty Code, based on the 2024 IRC", basedOn: "2024 IRC", previousEdition: "2023", ...njWindow },
+    { code: "OESC", edition: "2023" },
+  ] });
+  const fs = evaluateDesignCriteriaFindings(plan, ctx, { roofMounted: true, asOf: "2026-10-05" });
+  const f = get(fs, BASIS);
+  assert.ok(f, "both lines are compared");
+  assert.match(f!.message, /IRC 2021/, f!.message);
+  assert.equal(f!.severity, "callout", f!.message);
+  // After the mandatory date both lines block again.
+  assert.equal(get(evaluateDesignCriteriaFindings(plan, ctx, { roofMounted: true, asOf: "2027-03-01" }), BASIS)?.severity, "blocker");
+});
+
 check("#216 MUST-EXCLUDE: Utah-shaped rows (no mandatoryDate) are unchanged -> blocker", () => {
   const f = get(evaluateDesignCriteriaFindings(utah, utCtx({ confidence: "verified", adoptedCodes: [
     { code: "IRC", edition: "2021", effectiveDate: "2021-07-01", previousEdition: "2018" }, { code: "IBC", edition: "2021" },

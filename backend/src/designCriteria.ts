@@ -2244,21 +2244,24 @@ function upcomingWithin(ctx: EffectiveCodeContext, asOf: string | undefined, bef
 
 /** The recorded PHASE-IN that still allows exactly the code and edition a mismatch line compared,
  *  on `asOf` (issue #216). A state that adopts a new edition often accepts the previous one until a
- *  mandatory date (New Jersey's N.J.A.C. 5:23: effective 2026-08-17, mandatory 2027-02-17); a plan
- *  on that previous edition, filed inside the window, is not wrong. `editionsInEffect`
- *  (codeFamilies.ts) is the one helper that reads those windows. Only a window whose previous
- *  edition is ON FILE, for the same code token, softens: a window that does not say which edition
- *  it still allows, or that allows another code's edition, keeps the mismatch as it was. From the
- *  mandatory date on, `editionsInEffect` no longer reports a phase-in and the mismatch blocks. */
+ *  mandatory date; a plan on that previous edition, filed inside the window, is not wrong.
+ *  `editionsInEffect` (codeFamilies.ts) is the one helper that reads those windows. It answers per
+ *  FAMILY (one current entry each), so it is asked about the entries of the compared CODE only:
+ *  two codes of one family (IBC and IEBC) each in their own window each get their own answer.
+ *  Only a window whose previous edition is ON FILE, for the same code token, softens: a window
+ *  that does not say which edition it still allows, or that allows another code's edition, keeps
+ *  the mismatch as it was. From the mandatory date on, `editionsInEffect` no longer reports a
+ *  phase-in and the mismatch blocks. */
 function graceWindowFor(ctx: EffectiveCodeContext, asOf: string | undefined): (stated: { code: string; edition: string }) => EditionsInEffect | null {
   const date = String(asOf || new Date().toISOString()).slice(0, 10);
   const entries = ctx.adoptedCodes ?? [];
   return (stated) => {
     const code = normCodeToken(stated.code);
-    const families = new Set(entries.filter((e) => normCodeToken(e.code) === code).map((e) => codeFamilyOf(e)));
+    const sameCode = entries.filter((e) => normCodeToken(e.code) === code);
+    const families = new Set(sameCode.map((e) => codeFamilyOf(e)));
     for (const family of families) {
       if (!family) continue;
-      const window = editionsInEffect(entries, family, date);
+      const window = editionsInEffect(sameCode, family, date);
       if (window.status !== "phase_in") continue;
       if (window.allowed.some((a) => a.role === "previous" && normCodeToken(a.code) === code && String(a.edition).trim() === stated.edition)) return window;
     }
@@ -3047,14 +3050,17 @@ export function evaluateDesignCriteriaFindings(
     const seen = new Set<string>();
     const upcomingFor = upcomingWithin(ctx, opts.asOf, UPCOMING_SOFTEN_DAYS_BEFORE, UPCOMING_SOFTEN_DAYS_AFTER);
     const graceFor = graceWindowFor(ctx, opts.asOf);
-    const report = (key: string, line: string, compared: { code: string; edition: string }): void => {
+    // `graceVia`: the state-code pair a BASE line belongs to. The profile records only the new
+    // edition's base, so a plan's base on the previous state edition is in grace exactly when its
+    // state-code pair is.
+    const report = (key: string, line: string, compared: { code: string; edition: string }, graceVia?: { code: string; edition: string }): void => {
       if (seen.has(key)) return;
       seen.add(key);
       const due = upcomingFor(compared);
-      const grace = due ? null : graceFor(compared);
+      const grace = due ? null : graceFor(compared) ?? (graceVia ? graceFor(graceVia) : null);
       const text = due
         ? `${line} — the plan's edition is the upcoming ${due.code} ${due.edition}, anticipated effective ${due.anticipatedDate}`
-        : grace ? `${line} — still allowed during the phase-in: ${grace.note}` : line;
+        : grace ? `${line} — still allowed during the phase-in: ${grace.note.replace(/\.$/, "")}` : line;
       if (due) softened.add(text);
       if (grace) inGrace.add(text);
       lines.push(text);
@@ -3075,7 +3081,7 @@ export function evaluateDesignCriteriaFindings(
             ...profileEntries.filter((a) => a.base?.code === model).map((a) => ({ edition: a.base!.edition, label: `${a.label} (based on ${model} ${a.base!.edition})` })),
           ];
           if (recorded.length && !recorded.some((r) => r.edition === b.baseEdition)) {
-            report(`${code}|${b.edition}|${model}|${b.baseEdition}`, `plan states ${b.code} ${b.edition} based on ${model} ${b.baseEdition} (${b.source}) — profile records ${recorded.map((r) => r.label).join(" / ")}`, { code: model, edition: b.baseEdition });
+            report(`${code}|${b.edition}|${model}|${b.baseEdition}`, `plan states ${b.code} ${b.edition} based on ${model} ${b.baseEdition} (${b.source}) — profile records ${recorded.map((r) => r.label).join(" / ")}`, { code: model, edition: b.baseEdition }, b);
           }
         }
       }
@@ -3108,7 +3114,9 @@ export function evaluateDesignCriteriaFindings(
             ? "The jurisdiction still accepts the previous edition until the mandatory date — a submittal on or after that date must state the new edition."
             : softened.size === lines.length
               ? "The plan anticipates the upcoming edition — confirm which edition the jurisdiction will review under on the submittal date."
-              : "One side is out of date — confirm the currently adopted editions."}`,
+              : softened.size + inGrace.size === lines.length
+                ? "The plan's editions are the upcoming edition or a previous one still allowed during a phase-in — confirm which edition the jurisdiction will review under on the submittal date."
+                : "One side is out of date — confirm the currently adopted editions."}`,
         // AN UNVERIFIED PROFILE CANNOT TELL AN INSTALLER TO CHANGE THEIR PLAN. Venus TX (new-AHJ e2e,
         // 2026-09-26): a seeded state edition (NEC 2026) against a plan that correctly said 2020 —
         // and the installer was told to "update" it. Only a human-verified profile may ask for the
