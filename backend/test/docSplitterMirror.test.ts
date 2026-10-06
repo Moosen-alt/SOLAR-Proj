@@ -17,7 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { REPO } from "./_isolate";
-import { CATEGORY_PATTERNS, isUndecidedSpecPage, scorePage } from "../src/docSplitter";
+import { CATEGORY_PATTERNS, indexSpecSheets, isUndecidedSpecPage, scorePage } from "../src/docSplitter";
 
 const sandbox: { window: Record<string, unknown> } = { window: {} };
 vm.runInNewContext(fs.readFileSync(path.join(REPO, "frontend", "parser-review.js"), "utf8"), sandbox, { filename: "parser-review.js" });
@@ -109,13 +109,15 @@ console.log("\n3. A WHOLE SET: EACH SPEC SIDE IS ONLY ITS OWN PAGES");
   const MODULE = page("PV MODULE SPECIFICATION SHEET");
   const COMBINED = page("PV MODULE / INV SPECIFICATION SHEET");
   const SLD = page("ELECTRICAL LINE DIAGRAM");
+  // The splitter's classifyPlanSetPages over a whole set, the cover's sheet index included (#199).
   const splitter = (texts: string[]) => {
     const parts = { moduleSpecs: [] as number[], inverterSpecs: [] as number[], undecidedSpecs: [] as number[] };
+    const index = indexSpecSheets(texts);
     texts.forEach((t, i) => {
       const s = scorePage(t);
       if (s.docTypes.includes("module_spec")) parts.moduleSpecs.push(i + 1);
       if (s.docTypes.includes("inverter_spec")) parts.inverterSpecs.push(i + 1);
-      if (isUndecidedSpecPage(t, s)) parts.undecidedSpecs.push(i + 1);
+      if (isUndecidedSpecPage(t, s, index)) parts.undecidedSpecs.push(i + 1);
     });
     return parts;
   };
@@ -132,6 +134,39 @@ console.log("\n3. A WHOLE SET: EACH SPEC SIDE IS ONLY ITS OWN PAGES");
       json(fe.moduleSpecs) === json(be.moduleSpecs) && json(fe.inverterSpecs) === json(be.inverterSpecs) && json(fe.undecidedSpecs) === json(be.undecidedSpecs),
       `page ${json(fe)} splitter ${json(be)}`);
   }
+  // A SHEET INDEX cover naming image-only, title-block-only S-pages (#199): the page's map reads the
+  // index from the whole set and reports them undecided, as the splitter does — before, "missing".
+  const TITLE_ONLY = (n: string) => `SYNTH SOLAR CO ${n}`;
+  const indexSets: Array<[string, string[], number[]]> = [
+    ["a SHEET INDEX in rows", ["SHEET INDEX CS-1 COVER SHEET E-1 ELECTRICAL LINE DIAGRAM S-1 SPEC SHEET S-2 SPEC SHEET", SLD, TITLE_ONLY("S-1"), TITLE_ONLY("S-2")], [3, 4]],
+    ["a SHEET INDEX in columns", ["SHEET INDEX SHEET # CS-1 E-1 S-1 S-2 SHEET NAME COVER SHEET ELECTRICAL LINE DIAGRAM SPEC SHEET SPEC SHEET", SLD, TITLE_ONLY("S-1"), TITLE_ONLY("S-2")], [3, 4]],
+    ["columns followed by NOTES: SEE MODULE SPEC (#212 review)",
+      ["SHEET INDEX SHEET # PV-1 PV-2 PV-3 S-1 S-2 SHEET NAME ROOF PLAN SITE PLAN LAYOUT SPEC SHEET SPEC SHEET NOTES: SEE MODULE SPEC FOR RATINGS", TITLE_ONLY("PV-1"), TITLE_ONLY("S-1"), TITLE_ONLY("S-2")], [3, 4]],
+    ["columns followed by PROJECT DATA MODULE SPEC (#212 review)",
+      ["SHEET INDEX SHEET # PV-1 PV-2 PV-3 S-1 S-2 SHEET NAME ROOF PLAN SITE PLAN LAYOUT SPEC SHEET SPEC SHEET PROJECT DATA MODULE SPEC QTRON 400W", TITLE_ONLY("PV-1"), TITLE_ONLY("S-1"), TITLE_ONLY("S-2")], [3, 4]],
+    ["columns followed by NOTE: SEE MODULE SPEC (#212 re-review)",
+      ["SHEET INDEX SHEET # PV-1 PV-2 PV-3 S-1 S-2 SHEET NAME ROOF PLAN SITE PLAN LAYOUT SPEC SHEET SPEC SHEET NOTE: SEE MODULE SPEC", TITLE_ONLY("PV-1"), TITLE_ONLY("S-1"), TITLE_ONLY("S-2")], [3, 4]],
+    ["columns followed by GENERAL NOTES - SEE MODULE SPEC (#212 re-review)",
+      ["SHEET INDEX SHEET # PV-1 PV-2 PV-3 S-1 S-2 SHEET NAME ROOF PLAN SITE PLAN LAYOUT SPEC SHEET SPEC SHEET GENERAL NOTES - SEE MODULE SPEC", TITLE_ONLY("PV-1"), TITLE_ONLY("S-1"), TITLE_ONLY("S-2")], [3, 4]],
+    ["columns followed by ELECTRICAL NOTES SEE MODULE SPEC (#212 re-review)",
+      ["SHEET INDEX SHEET # PV-1 PV-2 PV-3 S-1 S-2 SHEET NAME ROOF PLAN SITE PLAN LAYOUT SPEC SHEET SPEC SHEET ELECTRICAL NOTES SEE MODULE SPEC", TITLE_ONLY("PV-1"), TITLE_ONLY("S-1"), TITLE_ONLY("S-2")], [3, 4]],
+    ["columns followed by Notes: see module spec (#212 re-review)",
+      ["SHEET INDEX SHEET # PV-1 PV-2 PV-3 S-1 S-2 SHEET NAME ROOF PLAN SITE PLAN LAYOUT SPEC SHEET SPEC SHEET Notes: see module spec", TITLE_ONLY("PV-1"), TITLE_ONLY("S-1"), TITLE_ONLY("S-2")], [3, 4]],
+    ["columns followed by 1. SEE THE MODULE DATA SHEET (#212 re-review)",
+      ["SHEET INDEX SHEET # PV-1 PV-2 PV-3 S-1 S-2 SHEET NAME ROOF PLAN SITE PLAN LAYOUT SPEC SHEET SPEC SHEET 1. SEE THE MODULE DATA SHEET", TITLE_ONLY("PV-1"), TITLE_ONLY("S-1"), TITLE_ONLY("S-2")], [3, 4]],
+    ["MUST-EXCLUDE: S-1 STRUCTURAL CALCS, PV-4 SITE PHOTOS", ["SHEET INDEX PV-4 SITE PHOTOS S-1 STRUCTURAL CALCS", TITLE_ONLY("PV-4"), TITLE_ONLY("S-1")], []],
+  ];
+  for (const [name, texts, want] of indexSets) {
+    const all = texts.map((text, i) => ({ page: i + 1, text }));
+    // The page passes only its DS-coded sheets as `pages` (none here) and the whole set as `allPages`.
+    const fe = PR.specSheetPages([], all);
+    const be = splitter(texts);
+    run(`${name}: undecided = the splitter's = ${json(want)}`, json(fe.undecidedSpecs) === json(be.undecidedSpecs) && json(be.undecidedSpecs) === json(want),
+      `page ${json(fe.undecidedSpecs)} splitter ${json(be.undecidedSpecs)}`);
+    run(`${name}: the map says ${want.length ? "undecided" : "missing"}, not a page list`,
+      PR.specMapValue(fe.moduleSpecs, fe.undecidedSpecs).startsWith(want.length ? "undecided" : "missing"), PR.specMapValue(fe.moduleSpecs, fe.undecidedSpecs));
+  }
+
   const micro = PR.specSheetPages([{ page: 1, text: SLD }, { page: 2, text: MICRO }]);
   run("THE POINT (#193): a set with only a MICROINVERTER SPECIFICATION SHEET maps the module spec as missing",
     PR.specMapValue(micro.moduleSpecs, micro.undecidedSpecs) === "missing" && json(micro.inverterSpecs) === "[2]", json(micro));
@@ -140,6 +175,33 @@ console.log("\n3. A WHOLE SET: EACH SPEC SIDE IS ONLY ITS OWN PAGES");
     PR.specMapValue(mod.inverterSpecs, mod.undecidedSpecs) === "missing" && json(mod.moduleSpecs) === "[1]", json(mod));
   const combined = PR.specSheetPages([{ page: 3, text: COMBINED }]);
   run("a combined MODULE / INV sheet is still both specs", json(combined.moduleSpecs) === "[3]" && json(combined.inverterSpecs) === "[3]", json(combined));
+}
+
+console.log("\n3b. THE COVER'S SHEET INDEX READS THE SAME ON BOTH SIDES (#199)");
+{
+  const ROW_NAMES = ["COVER SHEET", "SITE PLAN", "SPEC SHEET", "CUT SHEET", "DATA SHEET", "DATASHEET", "SPECIFICATION SHEET", "MODULE SPEC SHEET",
+    "EQUIPMENT SPECIFICATION", "STRUCTURAL CALCS", "SITE PHOTOS", "MODULE DATA SHEET CALCULATIONS", "GENERAL NOTES"];
+  const NUMBERS = ["S-1", "S1", "S 1.1", "PV-4", "E-1.2", "CS-1", "OF 2", "REV 1"];
+  const TAILS = ["", "NOTES: SEE MODULE SPEC FOR RATINGS", "PROJECT DATA MODULE SPEC QTRON 400W", "1. ALL WORK PER THE DATA SHEET",
+    "NOTE: SEE MODULE SPEC", "GENERAL NOTES - SEE MODULE SPEC", "ELECTRICAL NOTES SEE MODULE SPEC", "Notes: see module spec"];
+  const covers: string[] = [];
+  for (const a of NUMBERS) for (const x of ROW_NAMES) for (const tail of TAILS) covers.push(`SHEET INDEX ${a} ${x} PV-2 SITE PLAN ${tail}`);
+  for (const x of ROW_NAMES) for (const y of ROW_NAMES) for (const tail of TAILS) {
+    covers.push(`SHEET INDEX SHEET # CS-1 PV-1 S-1 S-2 SHEET NAME COVER ${x} ${y} SPEC SHEET ${tail}`);
+    covers.push(`SHEET INDEX SHEET # CS-1 S-1 S-2 S-3 SHEET NAME ${x} ${y} SPEC SHEET ${tail}`);
+  }
+  const bad: string[] = [];
+  for (const c of covers) {
+    const be = indexSpecSheets([c]);
+    const fe = PR.indexSpecSheets([c]);
+    const shape = (r: { spec: Set<string>; listed: Set<string> }) => json([[...r.spec].sort(), [...r.listed].sort()]);
+    if (shape(be) !== shape(fe) && bad.length < 5) bad.push(`${JSON.stringify(c)}: backend ${shape(be)} page ${shape(fe)}`);
+  }
+  run(`indexSpecSheets agrees on all ${covers.length} covers`, !bad.length, bad.join(" | "));
+  const pagesFor = ["SYNTH SOLAR CO S-1", "SHEET NUMBER: S-1 SEE S-2", "SHEET NUMBER: PV-11 SEE S-1", "S-1 SEE S-2", "SYNTH SOLAR CO S 1.1", "SHEET 1 OF 2 S-1"];
+  const index = "SHEET INDEX S-1 SPEC SHEET S-2 CUT SHEET S 1.1 DATA SHEET PV-11 SITE PLAN";
+  const wrong = pagesFor.filter((t) => isUndecidedSpecPage(t, scorePage(t), indexSpecSheets([index])) !== PR.isUndecidedSpecPage(t, PR.scoreSplitPage(t), PR.indexSpecSheets([index])));
+  run("isUndecidedSpecPage with an index agrees on every page", !wrong.length, json(wrong));
 }
 
 console.log("\n4. THE DOCTYPE ORDER (A TIE GOES TO THE EARLIER CATEGORY)");
