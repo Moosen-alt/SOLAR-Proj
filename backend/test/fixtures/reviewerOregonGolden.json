@@ -554,8 +554,8 @@
       "id": "reviewer.profile.missing",
       "severity": "warning",
       "category": "ahj_profile",
-      "title": "No seeded AHJ process profile matched",
-      "message": "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal.",
+      "title": "Portland permit process (who issues, single or separate permits, portal, forms): not in the shipped reference file and the per-job lookup found none",
+      "message": "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal. Adopted code editions are a separate record (jurisdiction code profile): not read by this check.",
       "cityFeedback": "The project jurisdiction/process requirements could not be matched to the seeded AHJ profile table. Provide confirmation of the AHJ, portal path, required applications, signature/stamp requirements, and utility sequencing before submission.",
       "designTeamAction": "Confirm the AHJ/process profile and add any required local forms or stamped documents.",
       "evidenceNeeded": [
@@ -1134,8 +1134,8 @@
       "id": "reviewer.profile.missing",
       "severity": "warning",
       "category": "ahj_profile",
-      "title": "No seeded AHJ process profile matched",
-      "message": "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal.",
+      "title": "Portland permit process (who issues, single or separate permits, portal, forms): not in the shipped reference file and the per-job lookup found none",
+      "message": "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal. Adopted code editions are a separate record (jurisdiction code profile): not read by this check.",
       "cityFeedback": "The project jurisdiction/process requirements could not be matched to the seeded AHJ profile table. Provide confirmation of the AHJ, portal path, required applications, signature/stamp requirements, and utility sequencing before submission.",
       "designTeamAction": "Confirm the AHJ/process profile and add any required local forms or stamped documents.",
       "evidenceNeeded": [

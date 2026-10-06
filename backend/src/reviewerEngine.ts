@@ -97,6 +97,9 @@ export function buildReviewerReport(
   project: ProjectRecord,
   opts: {
     codeContext?: EffectiveCodeContext;
+    /** The AHJ's OWN jurisdiction_code_profiles row (exact key or fuzzy name match), null when it
+     *  has none — the code-edition record reviewer.profile.missing names beside the process (#217). */
+    codeProfileRow?: { ahj: string; confidence: "seeded" | "verified" } | null;
     /** doc_type values actually attached to the project. The plan-set requirement is about
      *  whether the package EXISTS, and the parser-text signals below are only a proxy for
      *  that — a proxy that reads "missing" for a project holding every split document. */
@@ -192,20 +195,48 @@ export function buildReviewerReport(
   const looked = permitProcessFor(project);
   const statewideApplied = appProfile.id === "oregon-generic-epermitting";
   if (!profile) {
+    // THIS FINDING IS ABOUT THE PERMIT PROCESS RECORD, AND SAYS SO (#217). Its trigger is only that
+    // the shipped reference file (reference-ahj-processes.json, seeded) has no row for this AHJ; it
+    // never read the code profile, so "no hand-verified profile on file" right after an operator
+    // verified the code-profile row read as "your verification didn't take". The title names the
+    // process record and what the per-job lookup found (seeded or verified, from its own row); the
+    // message prints the sources it cites and says adopted code editions are a SEPARATE record,
+    // with that record's own status. Wording only — nothing here verifies anything (rule 3).
+    const ahjName = project.ahj || "AHJ";
+    const processRecord = `${ahjName} permit process (who issues, single or separate permits, portal, forms)`;
+    const lookupStatus = looked?.confidence === "verified"
+      ? `verified${looked.verifiedBy ? ` by ${looked.verifiedBy}` : ""}`
+      : "seeded, not yet verified";
+    const codeRecord = profileMissingCodeRecordNote(opts.codeContext, opts.codeProfileRow);
+    const lookedMessage = (lk: NonNullable<typeof looked>): string => {
+      const facts: Array<{ label: string; fact: { value: unknown; sourceUrl: string } }> = [
+        { label: "Issuing agency", fact: lk.issuingAgency },
+        { label: "Permit structure", fact: lk.permitStructure },
+      ];
+      for (const p of lk.permits ?? []) {
+        facts.push({ label: `${p.label || p.discipline} portal`, fact: p.portalUrl });
+        facts.push({ label: `${p.label || p.discipline} forms`, fact: p.documents });
+      }
+      const shown = (v: unknown): string | null =>
+        v === null || v === undefined || (Array.isArray(v) && !v.length) ? null : Array.isArray(v) ? v.join(", ") : String(v);
+      const lines = facts.map(({ label, fact }) => `${label}: ${shown(fact?.value) ?? "not found"}${shown(fact?.value) && fact?.sourceUrl ? ` (source: ${fact.sourceUrl})` : ""}.`);
+      const missing = facts.filter(({ fact }) => !shown(fact?.value)).length;
+      return `${lines.join(" ")} ${missing ? `Verify the ${missing} not-found item(s) before submittal.` : "Check each answer against its source before submittal."}`;
+    };
     findings.push(finding(
       "reviewer.profile.missing",
       looked || statewideApplied ? "callout" : "warning",
       "ahj_profile",
     looked
-      ? `Per-job lookup applied (seeded, cited); no hand-verified ${project.ahj || "AHJ"} profile on file`
+      ? `${processRecord}: per-job lookup found it (${lookupStatus}); not in the shipped reference file`
       : statewideApplied
-        ? `Oregon statewide profile applied; no ${project.ahj || "City"}-specific profile on file`
-        : "No seeded AHJ process profile matched",
-    looked
-      ? `${looked.issuingAgency.value ? `Issuing agency: ${looked.issuingAgency.value}. ` : ""}Permit structure: ${looked.permitStructure.value ?? "not found"}. Each answer carries its source; verify the not-found items before submittal.`
+        ? `${processRecord}: Oregon statewide profile applied; no ${project.ahj || "City"}-specific process record (per-job lookup found none)`
+        : `${processRecord}: not in the shipped reference file and the per-job lookup found none`,
+    `${looked
+      ? lookedMessage(looked)
       : statewideApplied
         ? "The packet used the Oregon ePermitting statewide profile (separate structural + electrical permits, OAR 918-050-0180(2)); verify any local application, stamp or signature requirement."
-        : "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal.",
+        : "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal."} ${codeRecord}`,
     true,
     {
       cityFeedback: "The project jurisdiction/process requirements could not be matched to the seeded AHJ profile table. Provide confirmation of the AHJ, portal path, required applications, signature/stamp requirements, and utility sequencing before submission.",
@@ -276,6 +307,23 @@ function evidenceStatus(check: ProjectEvidence): ReviewerFinding["evidenceStatus
 // generic one fires only when the field is empty, and the specific one is a blocker then too.
 // This pins the ordering so the next pair added cannot quietly drop a blocker.
 const SEVERITY_RANK: Record<string, number> = { blocker: 3, warning: 2, callout: 1 };
+
+/** The code-edition record's own status, for reviewer.profile.missing (#217): adopted editions live
+ *  in jurisdiction_code_profiles, a separate record from the permit process, verified or not on its
+ *  own. The AHJ's OWN row decides; the merged context's confidence is the weaker of the AHJ and state
+ *  layers, so a verified city row under a seeded state row would read "seeded" there. */
+function profileMissingCodeRecordNote(
+  ctx: EffectiveCodeContext | undefined,
+  own: { ahj: string; confidence: "seeded" | "verified" } | null | undefined,
+): string {
+  const lead = "Adopted code editions are a separate record (jurisdiction code profile):";
+  const tail = "verifying it does not clear this finding.";
+  const status = (c: "seeded" | "verified") => (c === "verified" ? "verified" : "seeded, not verified");
+  if (own) return `${lead} ${status(own.confidence)} (${own.ahj}'s code profile); ${tail}`;
+  if (own === undefined && !ctx) return `${lead} not read by this check.`;
+  if (ctx?.profile) return `${lead} no ${ctx.ahj || "AHJ"}-specific row; the ${ctx.profile.state || ctx.state} state default is ${status(ctx.profile.confidence)}; ${tail}`;
+  return `${lead} not on file (model-code defaults); ${tail}`;
+}
 
 export function findingOutranks(candidate: ReviewerFinding, held: ReviewerFinding): boolean {
   const isGeneric = (f: ReviewerFinding): boolean => f.id.startsWith("reviewer.core.");

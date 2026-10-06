@@ -149,7 +149,7 @@ import { resolvePermitPath, usStateCode } from "./permitPath";
 import { bcd5952FailedRows } from "./bcdChecklistFacts";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
 import type { PvWorksheetGateInput } from "./pvWorksheetGate";
-import { resolveEffectiveCodeContext, ensureCodeProfilesResearched, resolvePermitPathForProject, recordApprovedDesignObservation, isStructuralPermitTrack } from "./codeProfiles";
+import { resolveEffectiveCodeContext, ensureCodeProfilesResearched, ownCodeProfileRow, resolvePermitPathForProject, recordApprovedDesignObservation, isStructuralPermitTrack } from "./codeProfiles";
 import { applyCachedVisionVerdicts } from "./reviewerVision";
 import { nowIso } from "./time";
 import { isHarnessAbort, looksBotBlocked } from "./runAbort";
@@ -206,7 +206,11 @@ export function buildReviewerReportFor(db: AppDb, project: ProjectRecord): Revie
   // The reviewer's plan-set requirement is about whether the package EXISTS; give it the
   // attached document types so it cannot block a project that has them.
   const uploadedDocTypes = Object.keys(projectDocsByType(db, project.id));
-  return buildReviewerReport(project, { codeContext, uploadedDocTypes, documentTexts: designDocumentTexts(db, project.id), pvWorksheet: filedPvWorksheetInput(db, project) });
+  // The AHJ's OWN code-profile row (not the merged context, whose confidence is the weaker of the
+  // AHJ and state layers): reviewer.profile.missing names its status as a separate record (#217).
+  let codeProfileRow: { ahj: string; confidence: "seeded" | "verified" } | null = null;
+  try { const own = ownCodeProfileRow(db, project.state, project.ahj); codeProfileRow = own ? { ahj: own.profile.ahj, confidence: own.profile.confidence } : null; } catch { codeProfileRow = null; }
+  return buildReviewerReport(project, { codeContext, codeProfileRow, uploadedDocTypes, documentTexts: designDocumentTexts(db, project.id), pvWorksheet: filedPvWorksheetInput(db, project) });
 }
 
 /** The newest filed PV worksheet read by position (project_documents.form_reading_json, written
