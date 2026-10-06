@@ -3971,6 +3971,9 @@ const LLM_SNAPSHOT_KEYS = new Set([
   'combinedDcKw','combinedAcKw',
   'utilitySchedule','serviceVoltage','servicePhase','numberOfCircuits','parcelNumber','jobValue',
   'homeownerEmail','homeownerPhone',
+  // The declared valuation the packet's own permit application states (#201): kept for review
+  // beside the contract-based figure, never a filing input (valuation.ts reads jobValue only).
+  'statedValuation',
   'azimuth','tilt','roofSlope','mainServiceRating','pvArrays',
   'stampRecommendation',
   'electricalCalcText','structuralCalcText','sitePlanNotesText','roofPlanNotesText',
