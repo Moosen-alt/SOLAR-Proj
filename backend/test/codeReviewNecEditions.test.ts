@@ -110,10 +110,10 @@ check("2020: the same 690.12(B)(2) and 690.12(C) evidence; supply side renumbere
   assert.deepEqual(sections(tap), ["2020 NEC 705.11"]);
   assert.match(tap!.message, /705\.12\(B\)\(3\)\(2\)/);
 });
-check("2023: same RSD evidence; the 690.54 cell the table leaves unknown is not asked for", () => {
+check("2023: same RSD evidence; the RSD label is 690.12(D) (#215); the 690.54 cell the table leaves unknown is not asked for", () => {
   const fs = run({ edition: "2023" });
   assert.deepEqual(sections(get(fs, RSD_EDITION)), ["2023 NEC 690.12(B)(2)", "2023 NEC 690.12(C)"]);
-  assert.deepEqual(sections(get(fs, LABELS_EDITION)), ["2023 NEC 690.56(C)", "2023 NEC 690.13(B)", "2023 NEC 690.53"]);
+  assert.deepEqual(sections(get(fs, LABELS_EDITION)), ["2023 NEC 690.12(D)", "2023 NEC 690.13(B)", "2023 NEC 690.53"]);
   assert.deepEqual(sections(get(fs, "city.elec.supply-side-tap")), ["2023 NEC 705.11"]);
 });
 check("a plan showing every edition element → no edition findings under any edition", () => {

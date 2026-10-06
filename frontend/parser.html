@@ -3586,7 +3586,11 @@ function detectSplitPages(){
   // Module / inverter spec pages by the backend splitter's rule (parser-review.js §8): a
   // calculations sheet is never a spec sheet, and a title-only EQUIPMENT SPECIFICATION page is
   // undecided rather than guessed (#90).
-  const specs = window.ParserReview.specSheetPages(ds.map(p => ({page: p.page, text: normalizeText(p.text || '')})));
+  // The whole plan set as well: undecided spec pages and the cover's sheet index (#199) are judged
+  // over every page, as the splitter does — an index-named S-1 datasheet is not a DS-coded page.
+  const specs = window.ParserReview.specSheetPages(
+    ds.map(p => ({page: p.page, text: normalizeText(p.text || '')})),
+    pages.map(p => ({page: p.page, text: normalizeText(p.text || '')})));
   const moduleSpecs = specs.moduleSpecs;
   const inverterSpecs = specs.inverterSpecs;
 

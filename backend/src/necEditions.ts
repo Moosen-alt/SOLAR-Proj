@@ -21,6 +21,7 @@ export const NEC_EDITION_REQUIREMENTS: Readonly<Record<NecEditionYear, NecEditio
       limits: "controlled conductors more than 10 ft from the array or more than 5 ft inside a building limited to 30 V and 240 VA within 10 seconds of initiation",
       insideBoundaryArticle: null,
       requiresListedEquipment: false,
+      noExposedWiringOption: false,
       initiationDeviceArticle: null,
     },
     labels: {
@@ -45,6 +46,7 @@ export const NEC_EDITION_REQUIREMENTS: Readonly<Record<NecEditionYear, NecEditio
       limits: "outside the array boundary (1 ft from the array) controlled conductors limited to 30 V within 30 seconds; inside the boundary a listed PV hazard control system, 80 V within 30 seconds, or no exposed wiring",
       insideBoundaryArticle: "690.12(B)(2)",
       requiresListedEquipment: true,
+      noExposedWiringOption: true,
       // One- and two-family dwellings: the initiation device at a readily accessible location
       // outside the building — introduced in the 2017 NEC, and a plan reviewer asks where it is.
       initiationDeviceArticle: "690.12(C)",
@@ -68,6 +70,7 @@ export const NEC_EDITION_REQUIREMENTS: Readonly<Record<NecEditionYear, NecEditio
       limits: "outside the array boundary (1 ft from the array) controlled conductors limited to 30 V within 30 seconds; inside the boundary a listed PV hazard control system, 80 V within 30 seconds, or no exposed wiring",
       insideBoundaryArticle: "690.12(B)(2)",
       requiresListedEquipment: true,
+      noExposedWiringOption: true,
       initiationDeviceArticle: "690.12(C)",
     },
     labels: {
@@ -82,17 +85,30 @@ export const NEC_EDITION_REQUIREMENTS: Readonly<Record<NecEditionYear, NecEditio
     },
     interconnection: { supplySide: "705.11", loadSide: "705.12", busbar120: "705.12(B)(3)(2)" },
   },
+  // 2023 RAPID SHUTDOWN IS NOT A COPY OF 2020 (#215). Two changes this table carries:
+  //   - 690.12(B)(2) option (3), "no exposed wiring methods or conductive parts", was deleted (such
+  //     arrays are now evaluated as PV hazard control systems under UL 3741);
+  //   - the rapid-shutdown marking moved from 690.56(C) into 690.12(D) ("Buildings with Rapid
+  //     Shutdown"; 690.12(D)(1) more than one RSD type, 690.12(D)(2) the switch label).
+  // 2023 also added two exceptions (non-enclosed detached structures such as carports and trellises;
+  // circuits from arrays not on the building terminated on its exterior per 230.6) that this table
+  // does not encode.
+  // Source: secondary — Solar Power World, "2023 code changes: rapid shutdown requirements" (Jan
+  // 2024) and IAEI Magazine, "2023 National Electrical Code and Photovoltaic Power Systems". The
+  // NFPA 70-2023 text itself was not read, so the cells resting on it are listed in `unconfirmed`
+  // until a person checks them against the code.
   2023: {
     edition: 2023,
     rapidShutdown: {
       article: "690.12",
-      limits: "outside the array boundary (1 ft from the array) controlled conductors limited to 30 V within 30 seconds; inside the boundary a listed PV hazard control system, 80 V within 30 seconds, or no exposed wiring",
+      limits: "outside the array boundary (1 ft from the array) controlled conductors limited to 30 V within 30 seconds; inside the boundary a listed PV hazard control system or 80 V within 30 seconds (the 2020 \"no exposed wiring\" option was deleted)",
       insideBoundaryArticle: "690.12(B)(2)",
       requiresListedEquipment: true,
+      noExposedWiringOption: false,
       initiationDeviceArticle: "690.12(C)",
     },
     labels: {
-      rapidShutdown: "690.56(C)",
+      rapidShutdown: "690.12(D)",
       rapidShutdownWording: "SOLAR PV SYSTEM IS EQUIPPED WITH RAPID SHUTDOWN",
       disconnect: "690.13(B)",
       dcSource: "690.53",
@@ -105,6 +121,7 @@ export const NEC_EDITION_REQUIREMENTS: Readonly<Record<NecEditionYear, NecEditio
       dcConductorMarking: null,
     },
     interconnection: { supplySide: "705.11", loadSide: "705.12", busbar120: null },
+    unconfirmed: ["rapidShutdown.limits", "rapidShutdown.noExposedWiringOption", "labels.rapidShutdown"],
   },
 };
 

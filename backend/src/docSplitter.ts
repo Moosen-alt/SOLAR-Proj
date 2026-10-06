@@ -121,6 +121,99 @@ function isIndexOrNotesPage(text: string): boolean {
   return /SHEET INDEX/i.test(text) || /GENERAL NOTES AND PROJECT DATA/i.test(text);
 }
 
+// SPEC SHEETS NAMED ONLY IN THE COVER'S SHEET INDEX (#199). An image-only datasheet page whose text
+// layer is just the title block and its sheet number ("S-1") names nothing, so SPEC_SHEET_NAME never
+// saw it: it was filed nowhere and not reported undecided, and the page-index read (#79) never ran
+// on it. Its name lives on the cover: "S-1 SPEC SHEET". The index is read for the sheet numbers it
+// names as a spec sheet ("SPEC SHEET", "CUT SHEET", "DATA SHEET", "SPECIFICATION SHEET", with or
+// without an equipment word, or SPEC_SHEET_NAME's own wording), and a page carrying one of those
+// numbers is a spec-named page like any other: undecided unless a spec category claims it. Nothing
+// else changes: the read decides from the page image, under the same rule 2 screen and budget.
+//
+// A calculations entry ("S-1 STRUCTURAL CALCS") is never a spec sheet, whatever else its name says.
+// A page the index cannot name (no index, its number absent, or two index numbers and no labelled
+// SHEET NUMBER on it) is not guessed: with no category it stays in `unclassifiedPages`.
+//
+// Sheet numbers are UPPERCASE letters then a number, a hyphen or a space between or not: S-1, S1,
+// S 1.1, PV-4, E-1.2. The key drops the separator, so the cover's "S-1" is the page's "S1".
+// A word that precedes a number in prose or a title block ("SHEET 2 OF 3", "REV 1", "QTY 24") is not
+// a sheet number: as one it splits an index row, or forms a stray group in a column run.
+const INDEX_SHEET_NUMBER = /\b([A-Z]{1,3})\s?-?\s?(\d{1,2}(?:\.\d{1,2})?)\b(?!\.\d)/g;
+const NOT_A_SHEET_PREFIX = /^(?:OF|REV|QTY|NO|AT|TO|IN|ON|BY|OR|AND|FOR|PER|THE|UL|NEC|IBC|IRC|IFC|AWG|KW|AMP|MIN|MAX|TYP|EA|FT)$/;
+const INDEX_SPEC_NAME = new RegExp(`${SPEC_SHEET_NAME.source}|\\b(?:SPEC(?:IFICATION)?S?|CUT|DATA)\\s*-?\\s*SHEETS?\\b`, "gi");
+const INDEX_CALCS_NAME = /\bCALC(?:ULATION)?S?\b/i;
+// A row's name is the words up to the next sheet number, at most this many: the last row runs into
+// whatever the cover says next, and a notes paragraph that mentions a "DATA SHEET" is not its name.
+const INDEX_NAME_WORDS = 6;
+// Where the index's names end on the cover: the notes or project-data block that follows it. A
+// column run's names stop there, and at INDEX_NAME_WORDS per number in the run, so "NOTES: SEE MODULE
+// SPEC" after the table is never counted as a row (#212 review). The block is a NOTE(S) heading with
+// a colon or dash ("NOTE:", "GENERAL NOTES - …"), any other NOTE(S) word ("ELECTRICAL NOTES SEE …"),
+// the first numbered note ("1. SEE …"), or PROJECT DATA — in any case. A sheet NAMED "GENERAL NOTES"
+// in the name column (no colon or dash) is a name, not that block, and does not end it.
+const INDEX_NAMES_END = /\bNOTES?\b\s*(?:[:\-\u2013]|1\b)|(?<!\bGENERAL\s+)\bNOTES?\b|(?:^|\s)1\.\s|\bPROJECT\s+DATA\b/i;
+const sheetNumbers = (text: string) => [...text.matchAll(INDEX_SHEET_NUMBER)]
+  .filter((m) => !NOT_A_SHEET_PREFIX.test(m[1]))
+  .map((m) => ({ key: `${m[1]}${m[2]}`, start: m.index ?? 0, end: (m.index ?? 0) + m[0].length }));
+/** The first `words` words of `text`, cut at the notes / project-data block. */
+const indexNames = (text: string, words: number) => {
+  const end = INDEX_NAMES_END.exec(text);
+  return (end ? text.slice(0, end.index) : text).trim().split(/\s+/).slice(0, words).join(" ");
+};
+const isIndexSpecName = (name: string) => new RegExp(INDEX_SPEC_NAME.source, "i").test(name) && !INDEX_CALCS_NAME.test(name);
+
+/**
+ * The sheet numbers the cover's sheet index names as a spec sheet, and every number it lists.
+ * Two layouts, as the text layer joins them:
+ *   - ROWS: "S-1 SPEC SHEET S-2 SPEC SHEET" — each number, then its name.
+ *   - COLUMNS: "SHEET # CS-1 PV-1 S-1 S-2 SHEET NAME COVER SITE PLAN SPEC SHEET SPEC SHEET" — a run
+ *     of numbers with nothing between them, then every name. The names cannot be split back into
+ *     rows, so the run's spec names are COUNTED, and they belong to a group only when exactly one
+ *     same-letter group of the run, back to back, has that many numbers (S-1, S-2 above). Any other
+ *     count, or two groups that size, names nothing: the pages stay listed as they were.
+ */
+export function indexSpecSheets(pageTexts: string[]): { spec: Set<string>; listed: Set<string> } {
+  const spec = new Set<string>();
+  const listed = new Set<string>();
+  for (const text of pageTexts) {
+    if (!isIndexOrNotesPage(text)) continue;
+    const nums = sheetNumbers(text);
+    for (let i = 0; i < nums.length; ) {
+      // The run of numbers starting here with nothing (but separators) between them.
+      let j = i;
+      while (j + 1 < nums.length && !/[A-Z0-9]/i.test(text.slice(nums[j].end, nums[j + 1].start))) j++;
+      const after = text.slice(nums[j].end, j + 1 < nums.length ? nums[j + 1].start : text.length);
+      const run = nums.slice(i, j + 1);
+      for (const n of run) listed.add(n.key);
+      if (run.length === 1) {
+        if (isIndexSpecName(indexNames(after, INDEX_NAME_WORDS))) spec.add(run[0].key);
+      } else {
+        const count = [...indexNames(after, run.length * INDEX_NAME_WORDS).matchAll(INDEX_SPEC_NAME)].length;
+        const prefix = (k: string) => k.replace(/[\d.]+$/, "");
+        const groups = new Map<string, number[]>();
+        run.forEach((n, at) => groups.set(prefix(n.key), [...(groups.get(prefix(n.key)) ?? []), at]));
+        const fits = [...groups.values()].filter((at) => count > 0 && at.length === count && at[at.length - 1] - at[0] === at.length - 1);
+        if (fits.length === 1) for (const at of fits[0]) spec.add(run[at].key);
+      }
+      i = j + 1;
+    }
+  }
+  return { spec, listed };
+}
+
+/** The page's own sheet number among the index's: the labelled SHEET NUMBER / SHEET NO / SHEET #
+ *  when the page has one (a labelled PV-11 that cites "SEE S-1" is PV-11, not S-1), else the only
+ *  index number on the page. Anything else is no answer. */
+function pageSheetNumber(text: string, listed: Set<string>): string | null {
+  const labelled = /\bSHEET\s*(?:NUMBER|NO\.?|#)\s*:?\s*([A-Z]{1,3}\s?-?\s?\d{1,2}(?:\.\d{1,2})?)\b/.exec(text);
+  if (labelled) {
+    const key = sheetNumbers(labelled[1])[0]?.key;
+    return key && listed.has(key) ? key : null;
+  }
+  const onPage = new Set(sheetNumbers(text).map((n) => n.key).filter((k) => listed.has(k)));
+  return onPage.size === 1 ? [...onPage][0] : null;
+}
+
 // Assign a page to its SINGLE best-matching category (most pattern hits wins), the original
 // winner-take-all discipline. Returning EVERY matching category instead let a dense SLD page
 // that merely cites "INVERTER SPECIFICATIONS" / "UL 1741" in a callout block leak into the
@@ -377,6 +470,7 @@ async function classifyPlanSetPages(planSetPath: string, total: number): Promise
   const unclassified: number[] = [];
   const undecidedSpec: number[] = [];
   const undecidedSpecFiledAs: Record<string, string> = {};
+  const index = indexSpecSheets(pageTexts.slice(0, total));
   for (let i = 0; i < total; i++) {
     const text = pageTexts[i] ?? "";
     const { docTypes, byPattern } = scorePage(text);
@@ -390,7 +484,7 @@ async function classifyPlanSetPages(planSetPath: string, total: number): Promise
     // SPECIFICATIONS" in a callout, won by its own sheet name) is filed right, so reporting it is
     // noise (#119). A stray `words`-only winner (#91's STRUCTURAL racking brochure), a winner on a
     // cited sheet number only ("SEE E 1.1"), or no winner at all leaves the page undecided.
-    if (isUndecidedSpecPage(text, { docTypes, byPattern })) {
+    if (isUndecidedSpecPage(text, { docTypes, byPattern }, index)) {
       undecidedSpec.push(i + 1);
       if (docTypes.length) undecidedSpecFiledAs[String(i + 1)] = docTypes[0];
     }
@@ -400,8 +494,13 @@ async function classifyPlanSetPages(planSetPath: string, total: number): Promise
 
 // A page that names a spec sheet, is not a calculations or index page, landed in no spec part, and
 // whose winning category (if any) did not hit a title-block sheet name: undecided (#66, #91, #119).
-export function isUndecidedSpecPage(text: string, scored: { docTypes: string[]; byPattern: boolean }): boolean {
-  return SPEC_SHEET_NAME.test(text) && !CALCS_SHEET.test(text) && !isIndexOrNotesPage(text)
+// It names a spec sheet in its own text, or through its sheet number the cover's index names as a
+// spec sheet (`index`, from indexSpecSheets over the whole plan set) (#199).
+export function isUndecidedSpecPage(
+  text: string, scored: { docTypes: string[]; byPattern: boolean }, index?: { spec: Set<string>; listed: Set<string> },
+): boolean {
+  const named = SPEC_SHEET_NAME.test(text) || Boolean(index?.spec.size && index.spec.has(pageSheetNumber(text, index.listed) ?? ""));
+  return named && !CALCS_SHEET.test(text) && !isIndexOrNotesPage(text)
     && !scored.docTypes.some((t) => SPEC_DOC_TYPES.has(t)) && !scored.byPattern;
 }
 
