@@ -2181,6 +2181,10 @@ export interface ReviewerVisionVerdict {
   /** A MEASUREMENT verdict (city.fire.pathway-unmeasured): the dimensions the sheet states, in
    *  inches, null where it states none. Absent on an ordinary "is it on the sheet?" verdict. */
   measured?: { pathwayWidthIn: number | null; ridgeSetbackIn: number | null };
+  /** Which question this verdict answers: a hash of the exact prompt the model was asked
+   *  (reviewerVision.visionQuestionFor). A cached verdict relaxes a finding only while the finding
+   *  still asks that same question; absent on rows written before #214, which therefore never relax. */
+  question?: string;
 }
 
 export interface ReviewerFinding {
