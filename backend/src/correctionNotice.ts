@@ -29,8 +29,7 @@ import type {
   ReviewerReport,
 } from "../../shared/src/types";
 import type { AppDb } from "./db";
-import { buildReviewerReportFor, getProjectDetail } from "./repository";
-import { applyCachedVisionVerdicts } from "./reviewerVision";
+import { getProjectDetail, reviewerGateReportFor } from "./repository";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { buildHistoricalFailureReport } from "./historicalFailures";
 import { withoutCodeResearch } from "./nextStep";
@@ -207,7 +206,7 @@ export function renderCorrectionNoticeText(notice: CorrectionNotice): string {
 export function readCorrectionNotice(db: AppDb, projectId: string): CorrectionNotice {
   const { project } = getProjectDetail(db, projectId);
   return withoutCodeResearch(() => {
-    const report = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
+    const report = reviewerGateReportFor(db, project);
     const code = resolveEffectiveCodeContext(db, project.state, project.ahj);
     let priorCauses: HistoricalFailureCause[] = [];
     try { priorCauses = buildHistoricalFailureReport(db, projectId, null).topRejectionCauses; } catch { priorCauses = []; }

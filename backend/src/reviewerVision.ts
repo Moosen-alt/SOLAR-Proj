@@ -181,6 +181,21 @@ Return ONLY JSON:
 }`;
 }
 
+// A VERDICT ANSWERS ONE QUESTION (#214). The cache is keyed by finding id and plan-set signature, but
+// one id can ask different questions. city.elec.rapid-shutdown-missing words its title and evidence
+// differently for a micro-inverter design (a warning) and for a string design (a blocker), with the
+// same PDF on file. Since #214 a cached verdict decides staging and Approve, not only the gate's
+// display. So a verdict records the exact prompt it answered, and it relaxes a finding only while that
+// finding still asks it. A row written before this (no `question`) answers nothing known: it never
+// relaxes, and the full pass asks again (an unknown must not read as reassurance).
+export function visionQuestionFor(finding: ReviewerFinding): string {
+  return crypto.createHash("sha1").update(visionPrompt(finding)).digest("hex").slice(0, 16);
+}
+
+function answersQuestion(verdict: ReviewerVisionVerdict, finding: ReviewerFinding): boolean {
+  return Boolean(verdict.question) && verdict.question === visionQuestionFor(finding);
+}
+
 async function verifyOne(
   llm: LLMProvider,
   pdfPath: string,
@@ -338,7 +353,7 @@ export function applyCachedVisionVerdicts(db: AppDb, report: ReviewerReport): Re
     }
     if (!needsVision(finding)) return finding;
     const cached = readCache(db, report.projectId, finding.id, sig);
-    if (!cached || !cached.checked) return finding;
+    if (!cached || !cached.checked || !answersQuestion(cached, finding)) return finding;
     changed = true;
     return applyVerdict(finding, cached);
   });
@@ -365,7 +380,9 @@ export async function applyVisionToReviewerReport(
   try {
     pages = await extractPdfPages(pdfPath, 60);
   } catch {
-    return report;
+    // Nothing new can be asked, but the verdicts already cached still stand: the same view as every
+    // other reader (repository.reviewerGateReportFor), never the bare text report (#214).
+    return applyCachedVisionVerdicts(db, report);
   }
   const sig = sourceSig(pdfPath);
 
@@ -388,10 +405,11 @@ export async function applyVisionToReviewerReport(
       continue;
     }
     const cached = readCache(db, report.projectId, finding.id, sig);
-    let verdict = cached;
+    // A cached verdict to a different question (or to none recorded) is no verdict: ask again.
+    let verdict = cached && answersQuestion(cached, finding) ? cached : null;
     if (!verdict && budget > 0) {
       budget -= 1;
-      verdict = await verifyOne(llm, pdfPath, pages, finding, topic);
+      verdict = { ...(await verifyOne(llm, pdfPath, pages, finding, topic)), question: visionQuestionFor(finding) };
       if (verdict.checked) writeCache(db, report.projectId, finding.id, sig, verdict);
     }
     findings.push(verdict ? applyVerdict(finding, verdict) : finding);

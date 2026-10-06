@@ -13,7 +13,8 @@ import path from "node:path";
 
 process.env.AUTOPILOT_DB_PATH = process.env.AUTOPILOT_DB_PATH || "backend/data/autopilot.sqlite";
 const { openDatabase } = await import("../backend/src/db");
-const { getProjectDetail, buildReviewerReportFor } = await import("../backend/src/repository");
+const { getProjectDetail, reviewerGateReportFor } = await import("../backend/src/repository");
+const { withoutCodeResearch } = await import("../backend/src/nextStep");
 const { buildHistoricalFailureReport } = await import("../backend/src/historicalFailures");
 
 const db = await openDatabase();
@@ -59,7 +60,9 @@ for (const p of projects) {
   const qcFail = detail.qcResults.filter((r: { qcStatus: string }) => r.qcStatus === "fail").length;
   const pending = detail.humanReviewItems.filter((i: { status: string; fieldName: string; issueType: string }) =>
     i.status === "pending" && i.fieldName !== "correction" && i.issueType !== "Background job failed").length;
-  const reviewerBlockers = buildReviewerReportFor(db, detail.project)
+  // The blockers staging actually enforces (#214): the gate's severities, cached vision verdicts
+  // included. Read-only: no code-research enqueue from a status snapshot.
+  const reviewerBlockers = withoutCodeResearch(() => reviewerGateReportFor(db, detail.project))
     .findings.filter((f: { severity: string }) => f.severity === "blocker");
   const hist = buildHistoricalFailureReport(db, p.id, null);
   const learned = hist.checklist.filter((item: { status: string; sourceCauseSignature: string }) => {
