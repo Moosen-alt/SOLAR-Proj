@@ -2438,3 +2438,20 @@ input[type=file], .kx-inline-tool-row select, #splitTarget, #inlineSplitTarget {
   .detail-more .step-actions > .actions-label { flex-basis: 100%; }
   .detail-more .step-actions > .actions-divider { flex-basis: 100%; width: auto; height: 1px; margin: 4px 0; }
 }
+
+/* ===========================================================================
+   CODE-PROFILE VERIFY PANEL (#209) — frontend/code-profile-verify.js renders it on /review (under
+   the clicked profile row) and on the dashboard's KB tab (under a seeded row's "Review / verify").
+   Moved here from review.html so it is styled on both pages.
+   =========================================================================== */
+.rv-verify {
+  margin: 4px 0 14px; padding: 18px 20px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--surface-2);
+}
+.rv-verify h3 { font-size: var(--text-base); font-weight: 600; letter-spacing: -.02em; margin: 0 0 4px; }
+.rv-vsummary { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px 22px; margin-top: 14px; }
+.rv-vsec h4 { font-size: var(--text-xs); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+.rv-vsec ul { margin: 0; padding-left: 18px; display: grid; gap: 5px; font-size: var(--text-sm); line-height: 1.5; overflow-wrap: anywhere; }
+.rv-raw { margin-top: 14px; }
+.rv-raw > summary { cursor: pointer; font-size: var(--text-sm); font-weight: 600; color: var(--primary); }
+.rv-raw[open] > summary { margin-bottom: 10px; }

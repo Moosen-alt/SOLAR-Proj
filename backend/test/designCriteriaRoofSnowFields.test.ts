@@ -8,7 +8,7 @@
 //   2. saveVerifiedCodeProfile + listCodeProfiles (GET /api/code-profiles) round-trip them;
 //   3. the design-criteria lookup's parser keeps a quote-bound value and drops an unbound one,
 //      and mergeResearchedDesignCriteria lands them (seeded, cited);
-//   4. the KB card (kbDesignCriteriaHtml) and the /review verify summary (profileSummaryHtml)
+//   4. the KB card (kbDesignCriteriaHtml) and the verify summary (code-profile-verify.js profileSummaryHtml)
 //      show them, every value esc()'d.
 // Values are a synthetic fixture (a made-up jurisdiction); the fields are generic.
 //
@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import type { JurisdictionCodeProfile } from "../../shared/src/types";
 
@@ -153,10 +154,10 @@ const lift = (file: string) => {
 const dash = lift("dashboard.js");
 // eslint-disable-next-line no-new-func
 const kbDesignCriteriaHtml = new Function(`${dash("function", "esc")}\n${dash("const", "KB_CRITERIA_LABELS")}\n${dash("const", "KB_OBSERVED_LABELS")}\n${dash("function", "kbDesignCriteriaHtml")}\nreturn kbDesignCriteriaHtml;`)() as (p: unknown) => string;
-const rev = lift("review.js");
-const reviewBundle = ["esc", "httpUrl", "sourceLink", "KEY_WORDS", "humanKey", "plainValue"].map((n) => rev("const", n)).join("\n");
-// eslint-disable-next-line no-new-func
-const profileSummaryHtml = new Function(`${reviewBundle}\n${rev("function", "profileSummaryHtml")}\nreturn profileSummaryHtml;`)() as (p: unknown) => string;
+// The /review verify summary lives in frontend/code-profile-verify.js (#209), shared with the KB card.
+const cpvSandbox: { window: Record<string, any> } = { window: {} };
+vm.runInNewContext(fs.readFileSync(path.join(here, "..", "..", "frontend", "code-profile-verify.js"), "utf8"), cpvSandbox, { filename: "code-profile-verify.js" });
+const profileSummaryHtml = cpvSandbox.window.CodeProfileVerify.profileSummaryHtml as (p: unknown) => string;
 const text = (html: string): string => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 const XSS = "<img src=x onerror=alert(1)>";
 const cardProfile = (dc: Record<string, unknown>) => ({ state: "ZZ", ahj: "City of Testfield", confidence: "verified", verifiedBy: "operator", designCriteria: dc, citations: [], fireSetbacks: [], amendments: [] });
