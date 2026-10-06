@@ -16,6 +16,7 @@ import {
   type DesignTextSource,
 } from "./designCriteria";
 import { adoptedNecEdition, necEditionRequirements, NEC_EDITION_REQUIREMENTS } from "./necEditions";
+import { moduleLevelElectronicsEquipment, type ModuleLevelElectronicsEvidence } from "./moduleLevelElectronics";
 
 const oregonElectrical2023: CodeReference = {
   code: "2023 OESC / 2023 NEC",
@@ -271,7 +272,7 @@ export function mountKindForProject(project: ProjectRecord): MountKind {
 // topic:rapid-shutdown, and once dedupe started ranking by severity the blocker won — a design
 // that satisfies NEC 690.12 inherently was hard-blocked for a labelling gap.
 export function isMlpeDesignForProject(project: ProjectRecord): boolean {
-  return isMlpeDesign(project, designText(project));
+  return mlpeDesign(project, designText(project), packageTextSources(project)).mlpe;
 }
 
 // Module-level power electronics (microinverters / RSD-integrated optimizers) provide
@@ -293,14 +294,31 @@ const MLPE_TOPOLOGY = [
   /\bmlpe\b/i,
   /module.level (power electronics|shutdown|rapid shutdown)/i,
 ];
+// An Enphase micro is named by its model family as often as by the make: "IQ8M-72-2-US", "IQ8A",
+// "IQ7PLUS". `\biq\s?[678]\b` never matched those — the digit and the suffix letter are both word
+// characters — so a field holding just the model read as a string design and was hard-blocked
+// (#213). The suffix is letters only, so "IQ Battery 5P" (no digit after IQ) stays out.
+const ENPHASE_MICRO = /enphase|\biq\s?[678](?:[a-z]+)?\b/i;
 const MLPE_INVERTER_BRANDS = [
-  /enphase|\biq\s?[678]\b/i,
+  ENPHASE_MICRO,
   /ap\s?systems|apsystems|\bds3\b|\bqs1\b|\byc600\b/i,
   /hoymiles/i,
   /tigo\s?(ts4|rsd)/i,
 ];
 
-function isMlpeDesign(project: ProjectRecord, allText: string): boolean {
+// RSD-INTEGRATED OPTIMIZERS ARE MLPE TOO (#213). The policy above always said so, but nothing here
+// read optimizers: a SolarEdge string inverter with an S440 on every module came out a plain string
+// design and its edition-evidence finding went to a blocker once the profile was verified. The
+// optimizer EQUIPMENT (a model field, or a schedule line with a quantity and an optimizer model) is
+// read by moduleLevelElectronicsEquipment — the same predicate the Iowa worksheet asks — never the
+// brand (SolarEdge sells string inverters and batteries) or the bare word (rail datasheets and city
+// handouts say "optimizers"). `equipment` is that line, so the finding can cite it.
+function mlpeDesign(project: ProjectRecord, allText: string, texts: DesignTextSource[]): { mlpe: boolean; equipment: ModuleLevelElectronicsEvidence } {
+  const equipment = moduleLevelElectronicsEquipment(project.parserSnapshot ?? {}, texts);
+  return { mlpe: equipment.present || isMicroOrMlpeInverter(project, allText), equipment };
+}
+
+function isMicroOrMlpeInverter(project: ProjectRecord, allText: string): boolean {
   const microModel = str(project, "pvMicroModel");
   const inverterText = [
     microModel,
@@ -353,6 +371,18 @@ function affirmedIn(sources: DesignTextSource[], patterns: RegExp[], notAStateme
         // the title block (homeowner name, address).
         return { source: s.label, excerpt: m[0].slice(0, 120) };
       }
+    }
+  }
+  return null;
+}
+
+/** The first match, as stated — for a requirement whose own wording is a negation. */
+function statedIn(sources: DesignTextSource[], patterns: RegExp[]): Affirmed | null {
+  for (const s of sources) {
+    const text = String(s.text || "").replace(/\s+/g, " ");
+    for (const pattern of patterns) {
+      const m = pattern.exec(text);
+      if (m) return { source: s.label, excerpt: m[0].slice(0, 120) };
     }
   }
   return null;
@@ -548,9 +578,16 @@ export const RSD_LISTED_EQUIPMENT_PATTERNS: RegExp[] = [
   /\bPVHCS\b/i,
   /\bUL\s*3741\b/i,
   /\bPVRS[ES]\b/i,
-  /690\.12\s*\(\s*B\s*\)\s*\(\s*2\s*\)/i,
+  // Not "690.12(B)(2)(3)": that cites the no-exposed-wiring option, not a listed system.
+  /690\.12\s*\(\s*B\s*\)\s*\(\s*2\s*\)(?!\s*\(\s*3)/i,
   /\blisted\b[^.;\n]{0,40}\b(?:rapid\s*shutdown|RSD)\b/i,
   /\b(?:rapid\s*shutdown|RSD)\b[^.;\n]{0,40}\blisted\b/i,
+];
+/** 2017/2020 690.12(B)(2)(3): no exposed wiring methods or conductive parts inside the boundary —
+ *  deleted by the 2023 NEC (necEditions' `noExposedWiringOption`). */
+export const RSD_NO_EXPOSED_WIRING_PATTERNS: RegExp[] = [
+  /\bno\s+exposed\s+(?:wiring|conductive)/i,
+  /690\.12\s*\(\s*B\s*\)\s*\(\s*2\s*\)\s*\(\s*3\s*\)/i,
 ];
 /** 690.12(C) (2017+): where the initiation device is. */
 export const RSD_INITIATION_PATTERNS: RegExp[] = [
@@ -571,7 +608,7 @@ function readableDocumentText(text: unknown): boolean {
 function isMicroinverterDesign(project: ProjectRecord, allText: string): boolean {
   if (str(project, "pvMicroModel") || str(project, "pvMicroQty")) return true;
   const inverter = [str(project, "invModel"), str(project, "inverterModel")].filter(Boolean).join("\n");
-  if (inverter.trim()) return /micro.?inverter|enphase|\biq\s?[678]\b|hoymiles|apsystems/i.test(inverter);
+  if (inverter.trim()) return /micro.?inverter|hoymiles|apsystems/i.test(inverter) || ENPHASE_MICRO.test(inverter);
   return /micro.?inverter/i.test(allText);
 }
 
@@ -1253,7 +1290,7 @@ export function evaluateDesignCodeFindings(
   }
 
   if (rsdApplies && !hasAny(all, RAPID_SHUTDOWN_PATTERNS)) {
-    const mlpe = isMlpeDesign(project, all);
+    const { mlpe } = mlpeDesign(project, all, packageTexts);
     out.push(finding({
       id: "city.elec.rapid-shutdown-missing",
       // MLPE designs (microinverters / RSD optimizers) satisfy module-level rapid
@@ -1291,28 +1328,58 @@ export function evaluateDesignCodeFindings(
   const documentsRead = documentTexts.some((d) => readableDocumentText(d.text)) || readableDocumentText(str(project, "planSetExtractedText"));
   const ruleThreeSeverity: ReviewerFinding["severity"] = ctx?.verified && documentsRead ? "blocker" : "warning";
   if (nec && rsdApplies && hasAny(all, RAPID_SHUTDOWN_PATTERNS)) {
-    const mlpe = isMlpeDesign(project, all);
+    const { mlpe, equipment } = mlpeDesign(project, all, packageTexts);
+    const rs = nec.rapidShutdown;
     const gaps: Array<{ item: string; section: string }> = [];
-    if (nec.rapidShutdown.requiresListedEquipment && nec.rapidShutdown.insideBoundaryArticle && !affirmedIn(packageTexts, RSD_LISTED_EQUIPMENT_PATTERNS)) {
-      gaps.push({ item: "Listed PV hazard control system or listed rapid shutdown equipment for inside the array boundary", section: nec.rapidShutdown.insideBoundaryArticle });
+    // THE EDITION'S OWN OPTIONS (#215). 2017/2020 690.12(B)(2) accepted a third inside-boundary
+    // basis — no exposed wiring methods or conductive parts — which the 2023 NEC deleted. A plan
+    // stating only that basis clears the gap under 2017/2020 and not under 2023; that is the one
+    // 2023 difference this check tests, so it is the only time the finding names one.
+    // Not affirmedIn: the statement IS a negation ("NO EXPOSED WIRING"), which its guard drops.
+    const noExposedWiring = rs.insideBoundaryArticle && !affirmedIn(packageTexts, RSD_LISTED_EQUIPMENT_PATTERNS)
+      ? statedIn(packageTexts, RSD_NO_EXPOSED_WIRING_PATTERNS)
+      : null;
+    const deletedOptionStated = Boolean(noExposedWiring) && !rs.noExposedWiringOption;
+    if (rs.requiresListedEquipment && rs.insideBoundaryArticle && !affirmedIn(packageTexts, RSD_LISTED_EQUIPMENT_PATTERNS)
+      && !(noExposedWiring && rs.noExposedWiringOption)) {
+      gaps.push({ item: "Listed PV hazard control system or listed rapid shutdown equipment for inside the array boundary", section: rs.insideBoundaryArticle });
     }
-    if (nec.rapidShutdown.initiationDeviceArticle && !affirmedIn(packageTexts, RSD_INITIATION_PATTERNS)) {
-      gaps.push({ item: "Rapid shutdown initiation device location (readily accessible, outside a dwelling)", section: nec.rapidShutdown.initiationDeviceArticle });
+    if (rs.initiationDeviceArticle && !affirmedIn(packageTexts, RSD_INITIATION_PATTERNS)) {
+      gaps.push({ item: "Rapid shutdown initiation device location (readily accessible, outside a dwelling)", section: rs.initiationDeviceArticle });
     }
     if (gaps.length) {
-      out.push(finding({
-        id: "city.elec.rapid-shutdown-edition-evidence",
-        severity: mlpe ? "warning" : ruleThreeSeverity,
-        category: "electrical",
-        title: `Rapid shutdown does not show what NEC ${nec.edition} asks for`,
-        message: `The plans mention rapid shutdown, but the adopted NEC ${nec.edition} also needs: ${gaps.map((g) => `${g.item} (${g.section})`).join("; ")}.`,
-        cityFeedback: `Revise the electrical plans to show the NEC ${nec.edition} rapid shutdown basis: ${gaps.map((g) => `${g.section} — ${g.item.toLowerCase()}`).join("; ")}.`,
-        designTeamAction: mlpe
-          ? `Add the MLPE listing as the ${gaps.map((g) => g.section).join(" / ")} basis on the SLD and label schedule (equipment already complies).`
-          : `Add the ${gaps.map((g) => g.section).join(" / ")} evidence to the SLD/equipment schedule.`,
-        evidenceNeeded: gaps.map((g) => g.item),
-        codeReferences: gaps.map((g) => necRef(g.section, rapidShutdown)),
-      }));
+      const sectionList = gaps.map((g) => g.section).join(" / ");
+      const editionNote = deletedOptionStated
+        ? ` The plans state the "no exposed wiring" basis ("${noExposedWiring!.excerpt}"), an option the NEC ${nec.edition} removed from ${rs.insideBoundaryArticle}.`
+        : "";
+      out.push({
+        ...finding({
+          id: "city.elec.rapid-shutdown-edition-evidence",
+          // A blocker only when no inside-boundary method is identifiable at all: no module-level
+          // electronics (microinverters, or optimizer EQUIPMENT), no listed PVHCS / RSD device — on
+          // top of a verified edition and documents read (ruleThreeSeverity).
+          severity: mlpe ? "warning" : ruleThreeSeverity,
+          category: "electrical",
+          // The adopted edition is named as the one applied, not as a change from the last cycle —
+          // unless the check actually tested a difference (deletedOptionStated).
+          title: deletedOptionStated
+            ? `Rapid shutdown relies on an option the NEC ${nec.edition} removed`
+            : `Rapid shutdown basis not shown for the adopted NEC ${nec.edition}`,
+          message: `The plans mention rapid shutdown, but the adopted NEC ${nec.edition} also needs: ${gaps.map((g) => `${g.item} (${g.section})`).join("; ")}.${editionNote}`
+            + (equipment.present ? ` Module-level electronics are shown (${equipment.basis}); state the ${sectionList} basis and listing for them.` : ""),
+          cityFeedback: `Revise the electrical plans to show the NEC ${nec.edition} rapid shutdown basis: ${gaps.map((g) => `${g.section} — ${g.item.toLowerCase()}`).join("; ")}.`,
+          designTeamAction: equipment.present
+            ? `State the ${sectionList} basis and listing for the named MLPE (${equipment.excerpt}) on the SLD and label schedule (equipment already complies).`
+            : mlpe
+              ? `Add the MLPE listing as the ${sectionList} basis on the SLD and label schedule (equipment already complies).`
+              : `Add the ${sectionList} evidence to the SLD/equipment schedule.`,
+          evidenceNeeded: gaps.map((g) => g.item),
+          codeReferences: gaps.map((g) => necRef(g.section, rapidShutdown)),
+        }),
+        ...(equipment.present
+          ? { evidenceFound: [affirmedEvidence({ source: equipment.fromField ? PARSED_FIELDS_SOURCE : equipment.source, excerpt: equipment.excerpt }, "Module-level electronics (equipment)", "Optimizer/MLPE equipment on the design: module-level rapid shutdown is present; the listing basis is what is missing.")] }
+          : {}),
+      });
     }
   }
 
