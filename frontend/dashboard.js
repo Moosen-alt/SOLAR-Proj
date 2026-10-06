@@ -4693,7 +4693,7 @@ function trackPrerequisitesHtml(t) {
   const steps = Array.isArray(t.prerequisites) ? t.prerequisites.filter((p) => p && p.step) : [];
   if (!steps.length) return "";
   return `<div class="track-prereqs" style="margin:0 0 6px;font-size:12px"><strong>Before this filing, at another office:</strong>
-    <ol style="margin:2px 0 0 18px;padding:0">${steps.map((p) => `<li>${esc(p.step)}${httpUrl(p.sourceUrl) ? ` — ${linkifyText(httpUrl(p.sourceUrl))}` : ""}</li>`).join("")}</ol></div>`;
+    <ol style="margin:2px 0 0 18px;padding:0">${steps.map((p) => { const urls = [p.sourceUrl, ...(Array.isArray(p.alsoSourceUrls) ? p.alsoSourceUrls : [])].map(httpUrl).filter(Boolean); return `<li>${esc(p.step)}${urls.length ? ` — ${urls.map((u) => linkifyText(u)).join(", ")}` : ""}</li>`; }).join("")}</ol></div>`;
 }
 
 function trackNextActionText(t) {
