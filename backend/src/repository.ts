@@ -86,7 +86,7 @@ import { agencyListReplacesLine, issuingAgencyDocumentList } from "./application
 import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 // Static cycle (nextStep imports repository), used at CALL time only on both sides — the same
 // shape as correctionAgent. getProjectList needs the rule table synchronously.
-import { compactNextStep, decideNextStep, loadNextStepFacts } from "./nextStep";
+import { compactNextStep, decideNextStep, loadNextStepFacts, withoutCodeResearch } from "./nextStep";
 import { correctionHoldScope, criticalFieldHoldScope, findingHoldScope, GATE_TRACKS, scopeHoldsTrack, tracksHeld, type GateHoldScope } from "./gateScope";
 import { addAuditLog } from "./audit";
 import { clientLicenceRow, clientStagingOverlay, contractorLicenceForState, getClient } from "./clients";
@@ -5045,9 +5045,9 @@ function assembleApplicationDocumentPackage(db: AppDb, projectId: string) {
 // defensible. And only on a PRE-STAGE project: re-running the report on a staged or filed job
 // must never relabel where that job actually is, least of all overwrite
 // `approved_awaiting_filing` on a filing that is waiting for a person to go and submit it.
-// A CLEAN VERDICT CAN GO STALE, SO THIS RECORD IS TWO-WAY. getReviewerReportWithVision runs the
-// text report FIRST (which lands here clean) and only then looks at the plan sheets, and vision
-// can confirm a blocker the text pass only suspected. A write-only recorder would leave
+// A CLEAN VERDICT CAN GO STALE, SO THIS RECORD IS TWO-WAY. getReviewerReportWithVision records the
+// gate's report FIRST (the text report plus verdicts already cached, which may land here clean) and
+// only then looks at the plan sheets, and a fresh look can disagree with that cached view. A write-only recorder would leave
 // "reviewer gate approved" standing on a packet the gate had just rejected — an unknown reading
 // as reassurance, which is the exact failure mode this codebase keeps paying for. So blockers
 // RETRACT the value, and retract nothing else: only the string this function itself wrote is
@@ -5272,8 +5272,9 @@ export async function readStageResults(db: AppDb, projectId: string): Promise<{
   const applicationDocs = ran.has("application_docs.generated") ? assembleApplicationDocumentPackage(db, projectId).pkg : null;
   let reviewerReport: ReviewerReport | null = null;
   if (ran.has("reviewer_report.generated")) {
-    // The gate's severities (reviewerGateReportFor): reads the vision cache, writes nothing.
-    reviewerReport = reviewerGateReportFor(db, detail.project);
+    // The gate's severities (reviewerGateReportFor), read only: the vision cache is only read, and
+    // withoutCodeResearch suppresses the research enqueue an un-profiled AHJ would otherwise trigger.
+    reviewerReport = withoutCodeResearch(() => reviewerGateReportFor(db, detail.project));
   }
   const historicalReport = ran.has("historical_failures.generated") ? buildHistoricalFailureReport(db, projectId, null) : null;
   return { applicationDocs, reviewerReport, historicalReport };
