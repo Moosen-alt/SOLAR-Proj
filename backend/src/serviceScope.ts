@@ -20,13 +20,11 @@
  *  value this system derived (a generated work description would read its own
  *  output back).
  *
- *  NOT projectDescriptionText (#200): that is the parser's own one-paragraph scope
- *  SUMMARY, which it writes for every job and in which it states absences too ("no MSP
- *  upgrade and no main breaker derate"). Reading it back made the generator's sentence
- *  about an upgrade that is NOT there the evidence that one is. An upgrade the design
- *  shows is on its one-line (electricalCalcText) or site plan (sitePlanNotesText). */
+ *  Every one of these is a parser-written narrative blob that states absences plainly
+ *  ("no MSP upgrade and no main breaker derate", #200), so each is read through the
+ *  per-field negation guard below, never as a bare keyword hit. */
 const MPU_SCOPE_FIELDS = [
-  "description", "scopeText", "electricalCalcText",
+  "projectDescriptionText", "description", "scopeText", "electricalCalcText",
   "sitePlanNotesText", "mpu", "serviceUpgrade",
 ] as const;
 

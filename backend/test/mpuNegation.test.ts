@@ -1,9 +1,14 @@
 // A NEGATED OR GENERATED MENTION IS NOT A MAIN PANEL / SERVICE UPGRADE (#200).
 // snapshotHasMpuScope read "no MSP upgrade and no main breaker derate" as an MPU ("msp upgrade" matched
-// inside "NO msp upgrade"), and read it from projectDescriptionText — the parser's own scope summary,
-// which states absences. All four readers of that one predicate then called the job an MPU: the
-// reviewer's installer.mpu-permit callout, the MPU permit track, the packet's MPU line, and the
-// electrical service fee lines. Synthetic text only.
+// inside "NO msp upgrade") in projectDescriptionText — a parser-written summary that, like every scope
+// blob, states absences plainly. All four readers of that one predicate then called the job an MPU:
+// the reviewer's installer.mpu-permit callout, the MPU permit track, the packet's MPU line, and the
+// electrical service fee lines — and the KB's own copy of the regex tagged it scope:mpu. Synthetic
+// text only.
+//
+// KNOWN GAPS (still read as an upgrade; the guard looks for a negator word, not for meaning):
+//   "Panel upgrade: not anticipated", "Main panel upgrade was considered but rejected",
+//   "MPU avoided by derate", "MPU unnecessary".
 //   npx tsx backend/test/mpuNegation.test.ts
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -14,7 +19,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mpu-negation-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmp, "test.db");
 
 const { snapshotHasMpuScope } = await import("../src/serviceScope");
-const { serviceLineCounts } = await import("../src/batteryServiceFeeder");
+const { serviceFeeder200Quantity } = await import("../src/batteryServiceFeeder");
+const { extractProjectFeatureTags } = await import("../src/knowledgeBase");
 const { requiredTracks } = await import("../src/submittalTracks");
 const { buildReviewerReport } = await import("../src/reviewerEngine");
 const { buildApplicationDocumentPackage } = await import("../src/applicationDocs");
@@ -50,8 +56,9 @@ check("predicate: an unrelated 'no' in another clause does not cancel a stated u
   assert.equal(snapshotHasMpuScope({ electricalCalcText: "No batteries, MPU to 200A." }), true);
   assert.equal(snapshotHasMpuScope({ electricalCalcText: "No derate and main panel upgrade to 225A bus." }), true);
 });
-check("predicate: the parser's generated projectDescriptionText is not read (never a value this system derived)", () => {
-  assert.equal(snapshotHasMpuScope({ projectDescriptionText: "7.2 kW roof mount; main panel upgrade to 200A." }), false);
+check("predicate: projectDescriptionText is read through the same guard (negated → false, affirmed → true)", () => {
+  assert.equal(snapshotHasMpuScope({ projectDescriptionText: "7.2 kW roof mount, supply-side tap; no MSP upgrade and no main breaker derate." }), false);
+  assert.equal(snapshotHasMpuScope({ projectDescriptionText: "7.2 kW roof mount; main panel upgrade to 200A." }), true);
 });
 
 // ---- end to end: all four readers ----------------------------------------------------------------
@@ -72,6 +79,7 @@ const NEGATED = project({
   sitePlanNotesText: "Site plan PV-2: N/A - no panel upgrade.",
 });
 const AFFIRMED = project({ electricalCalcText: "SLD E-1: MPU 125A→200A, new 200A main breaker." });
+const AFFIRMED_SCOPE_ONLY = project({ projectDescriptionText: "7.2 kW roof mount; main panel upgrade to a new 200A main breaker." });
 
 const readers = (p: ProjectRecord) => {
   const findings = buildReviewerReport(p).findings ?? [];
@@ -80,15 +88,20 @@ const readers = (p: ProjectRecord) => {
     callout: findings.some((f) => f.id === "installer.mpu-permit"),
     track: requiredTracks(p).includes("mpu"),
     packetLine: pkg.docs.some((d) => /main panel\/service upgrade \(MPU\) is in scope/.test(d.markdown)),
-    feeLine: serviceLineCounts(p.parserSnapshot as Record<string, unknown>).upgrade,
+    // The typed fee box: "Service 0-200 amps (qty)".
+    feeLine: serviceFeeder200Quantity(p.parserSnapshot as Record<string, unknown>) !== "0",
+    kbTag: extractProjectFeatureTags(p).includes("scope:mpu"),
   };
 };
 
-check("control: a stated MPU reaches all four readers (callout, track, packet line, fee line)", () => {
-  assert.deepEqual(readers(AFFIRMED), { callout: true, track: true, packetLine: true, feeLine: true });
+check("control: a stated MPU reaches every reader (callout, track, packet line, fee box, KB tag)", () => {
+  assert.deepEqual(readers(AFFIRMED), { callout: true, track: true, packetLine: true, feeLine: true, kbTag: true });
 });
-check("negated mentions: no installer.mpu-permit finding, no mpu track, no packet MPU line, no service fee line", () => {
-  assert.deepEqual(readers(NEGATED), { callout: false, track: false, packetLine: false, feeLine: false });
+check("control: an MPU stated only in projectDescriptionText still reaches every reader", () => {
+  assert.deepEqual(readers(AFFIRMED_SCOPE_ONLY), { callout: true, track: true, packetLine: true, feeLine: true, kbTag: true });
+});
+check("negated mentions: no installer.mpu-permit finding, no mpu track, no packet MPU line, service fee box 0, no scope:mpu tag", () => {
+  assert.deepEqual(readers(NEGATED), { callout: false, track: false, packetLine: false, feeLine: false, kbTag: false });
 });
 
 fs.rmSync(tmp, { recursive: true, force: true });
