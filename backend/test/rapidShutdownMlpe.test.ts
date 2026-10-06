@@ -97,6 +97,30 @@ check("MUST-EXCLUDE: 'optimizer' only in a rail datasheet or a city handout → 
   assert.equal(get(run("2023", `${PLACARD} ${rail} ${handout}`, STRING_INVERTER, docs), RSD_EDITION)?.severity, "blocker");
 });
 
+// Helm's review probes on #233: each matched the equipment shape and softened the blocker.
+for (const [name, text, snap] of [
+  ["a structural sheet reference: 'MICROINVERTERS OR OPTIMIZERS - SEE SHEET S101'", `${PLACARD} MICROINVERTERS OR OPTIMIZERS - SEE SHEET S101.`, STRING_INVERTER],
+  ["'RSD BY OPTIMIZERS: SEE S101'", `${PLACARD} RSD BY OPTIMIZERS: SEE S101.`, STRING_INVERTER],
+  ["a field holding 'No optimizers'", PLACARD, { ...STRING_INVERTER, mciModel: "No optimizers" }],
+  ["'NO OPTIMIZERS - S440 NOT USED'", `${PLACARD} NO OPTIMIZERS - S440 NOT USED.`, STRING_INVERTER],
+  ["a zero count: '(0) S440 OPTIMIZERS'", `${PLACARD} (0) S440 OPTIMIZERS.`, STRING_INVERTER],
+  ["a negated schedule line: '(22) S440 OPTIMIZERS NOT USED'", `${PLACARD} (22) S440 OPTIMIZERS NOT USED.`, STRING_INVERTER],
+  ["'OPTIMIZERS: N/A'", `${PLACARD} OPTIMIZERS: N/A.`, STRING_INVERTER],
+] as const) {
+  check(`MUST-EXCLUDE: ${name} is not optimizer equipment → blocker`, () => {
+    assert.equal(get(run("2023", text, snap as Record<string, unknown>), RSD_EDITION)?.severity, "blocker");
+  });
+}
+check("the finding quotes the matched equipment line only — never the title block around it", () => {
+  const titleBlock = "PROJECT: SYNTH OWNER, 123 SAMPLE LANE, APN 000-000-000.";
+  const text = `${titleBlock} (22) SOLAREDGE S440 POWER OPTIMIZERS ${titleBlock} ${PLACARD}`;
+  const f = get(run("2023", text), RSD_EDITION);
+  assert.ok(f);
+  const said = [f.message, f.designTeamAction, ...(f.evidenceFound ?? []).map((e) => e.excerpt)].join(" | ");
+  assert.doesNotMatch(said, /SYNTH OWNER|SAMPLE LANE|APN/, said);
+  assert.equal(moduleLevelElectronicsEquipment({}, [{ label: "Plan set", text }]).basis, 'equipment line "(22) SOLAREDGE S440 POWER OPTIMIZERS"');
+});
+
 console.log("\nB. #213 comment — an Enphase model alone in the inverter field");
 
 for (const model of ["IQ8M", "IQ8A-72-2-US", "IQ7PLUS"]) {
@@ -111,16 +135,45 @@ check("MUST-EXCLUDE: 'IQ Battery 5P' in the battery field of a string design →
 
 console.log("\nC. #215 — the 2023 row is its own edition");
 
-const NO_EXPOSED = `${PLACARD} INSIDE ARRAY BOUNDARY: NO EXPOSED WIRING METHODS OR CONDUCTIVE PARTS, PER 690.12(B)(2)(3).`;
-check("'no exposed wiring' is an inside-boundary basis under 2020, not under 2023", () => {
-  const f2020 = get(run("2020", NO_EXPOSED), RSD_EDITION);
+const CITES_B23 = `${PLACARD} INSIDE ARRAY BOUNDARY PER NEC 690.12(B)(2)(3).`;
+check("a 690.12(B)(2)(3) citation answers the inside-boundary gap under 2020, not under 2023 (deleted option)", () => {
+  const f2020 = get(run("2020", CITES_B23), RSD_EDITION);
   assert.equal(f2020, undefined, f2020?.message);
-  const f2023 = get(run("2023", NO_EXPOSED), RSD_EDITION);
+  const f2023 = get(run("2023", CITES_B23), RSD_EDITION);
   assert.ok(f2023, "2023 deleted the option: the inside-boundary gap is owed");
-  assert.equal(f2023.severity, "blocker");
   assert.deepEqual(sections(f2023), ["2023 NEC 690.12(B)(2)"]);
   assert.match(f2023.title, /option the NEC 2023 removed/);
-  assert.match(f2023.message, /no exposed wiring/i);
+  // That deletion is a secondary-source cell: said so, and held to a warning until confirmed.
+  assert.match(f2023.message, /not yet confirmed against the NFPA 70-2023 text/);
+  assert.equal(f2023.severity, "warning");
+  // …but not when another gap sits beside it: no initiation device shown keeps the blocker.
+  const noSwitch = "E-2 SOLAR PV SYSTEM EQUIPPED WITH RAPID SHUTDOWN. LABEL SCHEDULE: SERVICE EQUIPMENT DIRECTORY. INSIDE ARRAY BOUNDARY PER NEC 690.12(B)(2)(3).";
+  const both = get(run("2023", noSwitch), RSD_EDITION);
+  assert.deepEqual(sections(both), ["2023 NEC 690.12(B)(2)", "2023 NEC 690.12(C)"]);
+  assert.equal(both!.severity, "blocker");
+});
+// Helm's review probes: a GENERAL "no exposed wiring" note is not the option, under any edition.
+for (const [edition, note] of [
+  ["2020", "GENERAL NOTE: NO EXPOSED WIRING IN ATTIC OR LIVING SPACE."],
+  ["2017", "ALL CONDUCTORS IN EMT, NO EXPOSED WIRING."],
+  ["2020", "OPTION (3) NO EXPOSED WIRING METHODS - NOT USED."],
+] as const) {
+  check(`MUST-EXCLUDE: NEC ${edition} '${note}' does not answer 690.12(B)(2) → blocker`, () => {
+    assert.equal(get(run(edition, `${PLACARD} ${note}`), RSD_EDITION)?.severity, "blocker");
+  });
+}
+check("MUST-EXCLUDE: a city handout's 'no exposed wiring' under 2020 → blocker", () => {
+  const handout = "CITY HANDOUT: NO EXPOSED WIRING ON ROOFTOPS.";
+  const f = get(run("2020", PLACARD, STRING_INVERTER, [{ label: "Plan set", text: PLACARD }, { label: "City handout", text: handout }]), RSD_EDITION);
+  assert.equal(f?.severity, "blocker");
+});
+check("2023: '690.12(B)(2)(3) - NOT USED' or a general note does not make the finding claim the deleted option", () => {
+  for (const text of [`${PLACARD} 690.12(B)(2)(3) - NOT USED.`, `${PLACARD} GENERAL NOTE: NO EXPOSED WIRING IN ATTIC.`]) {
+    const f = get(run("2023", text), RSD_EDITION);
+    assert.ok(f, text);
+    assert.equal(f.severity, "blocker", text);
+    assert.doesNotMatch(f.title, /removed/, text);
+  }
 });
 check("the finding names a 2023 difference only when the check tested one", () => {
   const f = get(run("2023", PLACARD), RSD_EDITION);
@@ -142,9 +195,13 @@ check("the RSD label article: 690.56(C) under 2020, 690.12(D) under 2023 — and
   const missing = get(run("2023", "LABEL SCHEDULE: SERVICE EQUIPMENT DIRECTORY."), RSD_MISSING);
   assert.ok(sections(missing).includes("2023 NEC 690.12(D)"), sections(missing).join(", "));
 });
-check("a 690.12(B)(2)(3) citation is not a listed-system statement", () => {
-  const f = get(run("2023", `${PLACARD} INSIDE BOUNDARY PER 690.12(B)(2)(3).`), RSD_EDITION);
-  assert.deepEqual(sections(f), ["2023 NEC 690.12(B)(2)"]);
+check("2023: the label is asked at 690.12(D), a plan citing 690.12(D) answers it, and the unconfirmed article is said in the finding", () => {
+  const labels = "LABEL SCHEDULE: SERVICE EQUIPMENT DIRECTORY.";
+  const missing = get(run("2023", labels), "city.elec.labels-edition-missing");
+  assert.ok(missing?.codeReferences.some((r) => r.section === "690.12(D)"), missing?.message);
+  assert.match(missing!.message, /690\.12\(D\) is \(per secondary sources; not yet confirmed against the NFPA 70-2023 text\)/);
+  const cited = get(run("2023", `${labels} RSD MARKING PER NEC 690.12(D).`), "city.elec.labels-edition-missing");
+  assert.ok(!cited?.codeReferences.some((r) => r.section === "690.12(D)"), cited?.message);
 });
 
 if (failures) {

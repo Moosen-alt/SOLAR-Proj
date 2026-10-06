@@ -13,6 +13,7 @@ import {
   packageTextSources,
   PARSED_FIELDS_SOURCE,
   residentialCodeRef,
+  sheetTextSources,
   type DesignTextSource,
 } from "./designCriteria";
 import { adoptedNecEdition, necEditionRequirements, NEC_EDITION_REQUIREMENTS } from "./necEditions";
@@ -376,18 +377,6 @@ function affirmedIn(sources: DesignTextSource[], patterns: RegExp[], notAStateme
   return null;
 }
 
-/** The first match, as stated — for a requirement whose own wording is a negation. */
-function statedIn(sources: DesignTextSource[], patterns: RegExp[]): Affirmed | null {
-  for (const s of sources) {
-    const text = String(s.text || "").replace(/\s+/g, " ");
-    for (const pattern of patterns) {
-      const m = pattern.exec(text);
-      if (m) return { source: s.label, excerpt: m[0].slice(0, 120) };
-    }
-  }
-  return null;
-}
-
 function affirmedEvidence(hit: Affirmed, label: string, note: string): ReviewerFindingEvidence {
   return {
     kind: hit.source === PARSED_FIELDS_SOURCE ? "field_value" : "source_excerpt",
@@ -578,17 +567,17 @@ export const RSD_LISTED_EQUIPMENT_PATTERNS: RegExp[] = [
   /\bPVHCS\b/i,
   /\bUL\s*3741\b/i,
   /\bPVRS[ES]\b/i,
-  // Not "690.12(B)(2)(3)": that cites the no-exposed-wiring option, not a listed system.
-  /690\.12\s*\(\s*B\s*\)\s*\(\s*2\s*\)(?!\s*\(\s*3)/i,
+  /690\.12\s*\(\s*B\s*\)\s*\(\s*2\s*\)/i,
   /\blisted\b[^.;\n]{0,40}\b(?:rapid\s*shutdown|RSD)\b/i,
   /\b(?:rapid\s*shutdown|RSD)\b[^.;\n]{0,40}\blisted\b/i,
 ];
-/** 2017/2020 690.12(B)(2)(3): no exposed wiring methods or conductive parts inside the boundary —
- *  deleted by the 2023 NEC (necEditions' `noExposedWiringOption`). */
-export const RSD_NO_EXPOSED_WIRING_PATTERNS: RegExp[] = [
-  /\bno\s+exposed\s+(?:wiring|conductive)/i,
-  /690\.12\s*\(\s*B\s*\)\s*\(\s*2\s*\)\s*\(\s*3\s*\)/i,
-];
+/** The 2017/2020 690.12(B)(2)(3) citation — the "no exposed wiring methods or conductive parts"
+ *  option the 2023 NEC deleted (necEditions' `noExposedWiringOption`). Only the citation itself: a
+ *  general "no exposed wiring" note (attic, EMT, a city handout) is not the option (Helm review). */
+const RSD_DELETED_OPTION_CITATION = /690\.12\s*\(\s*B\s*\)\s*\(\s*2\s*\)\s*\(\s*3\s*\)/i;
+/** "… 690.12(B)(2)(3) – NOT USED" names the option to reject it. */
+const notUsedAfter: MentionGuard = (text, index, matched) =>
+  /^[^.;]{0,30}?\b(?:not\s+used|not\s+applicable|n\/a)\b/i.test(text.slice(index + matched.length, index + matched.length + 40));
 /** 690.12(C) (2017+): where the initiation device is. */
 export const RSD_INITIATION_PATTERNS: RegExp[] = [
   /\binitiat(?:ion|ing|or)\b/i,
@@ -612,6 +601,15 @@ function isMicroinverterDesign(project: ProjectRecord, allText: string): boolean
   return /micro.?inverter/i.test(allText);
 }
 
+/** A table cell taken from secondary sources and not yet checked against the edition's text. */
+function isUnconfirmed(nec: NecEditionRequirements, cell: string): boolean {
+  return Boolean(nec.unconfirmed?.includes(cell));
+}
+/** Said in the finding wherever it rests on such a cell, so a reader knows to check the code. */
+function unconfirmedNote(nec: NecEditionRequirements, cells: string[]): string {
+  return cells.some((c) => isUnconfirmed(nec, c)) ? ` (per secondary sources; not yet confirmed against the NFPA 70-${nec.edition} text)` : "";
+}
+
 function necRapidShutdownEvidence(nec: NecEditionRequirements, mlpe: boolean): string[] {
   const rs = nec.rapidShutdown;
   return [
@@ -630,6 +628,11 @@ interface NecLabelRequirement {
   patterns: RegExp[];
 }
 
+/** A cited section as written on a sheet: "690.12(D)" also matches "690.12 (D)". */
+function sectionPattern(section: string): RegExp {
+  return new RegExp(section.replace(/\./g, "\\.").replace(/\(/g, "\\s*\\(\\s*").replace(/\)/g, "\\s*\\)"), "i");
+}
+
 /** The labels the edition names that apply to this design. A null cell is skipped, not guessed. */
 function necLabelRequirements(nec: NecEditionRequirements, opts: { rsdApplies: boolean; standAlone: boolean; dcCircuits: boolean }): NecLabelRequirement[] {
   const l = nec.labels;
@@ -639,7 +642,9 @@ function necLabelRequirements(nec: NecEditionRequirements, opts: { rsdApplies: b
       label: "Rapid shutdown label", section: l.rapidShutdown, wording: l.rapidShutdownWording,
       // The 690.56(C) PLACARD, not the device: "rapid shutdown switch" names the initiation
       // device (690.12(C)) and must not satisfy the label.
-      patterns: [/equipped\s+with\s+rapid\s+shutdown/i, /690\.56\s*\(\s*C\s*\)/i, /\b(?:rapid\s*shutdown|RSD)\s*(?:label|placard|sign)\b/i],
+      // The edition's own label section counts too (2023 moved it to 690.12(D), #215).
+      patterns: [/equipped\s+with\s+rapid\s+shutdown/i, /690\.56\s*\(\s*C\s*\)/i, /\b(?:rapid\s*shutdown|RSD)\s*(?:label|placard|sign)\b/i,
+        ...(l.rapidShutdown !== "690.56(C)" ? [sectionPattern(l.rapidShutdown)] : [])],
     });
   }
   out.push({ label: "Power-source directory", section: l.powerSourceDirectory, patterns: POWER_SOURCE_DIRECTORY_PATTERNS });
@@ -1302,7 +1307,8 @@ export function evaluateDesignCodeFindings(
       message: (mlpe
         ? "The design uses microinverters/module-level power electronics, which provide inherent module-level rapid shutdown, but the plans do not call out NEC 690.12 compliance or the RSD label."
         : "No rapid shutdown callout or equipment evidence was detected.")
-        + (nec ? ` The adopted NEC ${nec.edition} ${nec.rapidShutdown.article} requires ${nec.rapidShutdown.limits}.` : ""),
+        + (nec ? ` The adopted NEC ${nec.edition} ${nec.rapidShutdown.article} requires ${nec.rapidShutdown.limits}${unconfirmedNote(nec, ["rapidShutdown.limits"])}.` : "")
+        + (nec && isUnconfirmed(nec, "labels.rapidShutdown") ? ` The rapid shutdown label section ${nec.labels.rapidShutdown} is${unconfirmedNote(nec, ["labels.rapidShutdown"])}.` : ""),
       cityFeedback: mlpe
         ? "Add a rapid shutdown note to the electrical plans stating the module-level shutdown basis (microinverter/MLPE listing) and show the required rapid shutdown label/placard for the adopted NEC cycle."
         : "Revise the electrical plans to identify rapid shutdown equipment, initiation/control location, controlled conductors or array boundary basis, and required field marking for the adopted NEC cycle.",
@@ -1331,17 +1337,19 @@ export function evaluateDesignCodeFindings(
     const { mlpe, equipment } = mlpeDesign(project, all, packageTexts);
     const rs = nec.rapidShutdown;
     const gaps: Array<{ item: string; section: string }> = [];
-    // THE EDITION'S OWN OPTIONS (#215). 2017/2020 690.12(B)(2) accepted a third inside-boundary
-    // basis — no exposed wiring methods or conductive parts — which the 2023 NEC deleted. A plan
-    // stating only that basis clears the gap under 2017/2020 and not under 2023; that is the one
-    // 2023 difference this check tests, so it is the only time the finding names one.
-    // Not affirmedIn: the statement IS a negation ("NO EXPOSED WIRING"), which its guard drops.
-    const noExposedWiring = rs.insideBoundaryArticle && !affirmedIn(packageTexts, RSD_LISTED_EQUIPMENT_PATTERNS)
-      ? statedIn(packageTexts, RSD_NO_EXPOSED_WIRING_PATTERNS)
-      : null;
-    const deletedOptionStated = Boolean(noExposedWiring) && !rs.noExposedWiringOption;
-    if (rs.requiresListedEquipment && rs.insideBoundaryArticle && !affirmedIn(packageTexts, RSD_LISTED_EQUIPMENT_PATTERNS)
-      && !(noExposedWiring && rs.noExposedWiringOption)) {
+    // THE EDITION'S OWN OPTIONS (#215). 2017/2020 690.12(B)(2) had a third inside-boundary option,
+    // (3) no exposed wiring methods or conductive parts, which the 2023 NEC deleted. Under 2017/2020
+    // a "690.12(B)(2)…" citation answers the gap as it always has; under 2023 a citation of the
+    // deleted (B)(2)(3) no longer does. Only that citation counts as relying on the deleted option —
+    // never a general "no exposed wiring" note — and only read from the plan set's own sheets.
+    const deletedOption = !rs.noExposedWiringOption && rs.insideBoundaryArticle;
+    const citesDeletedOption: MentionGuard | undefined = deletedOption
+      ? (text, index, matched) => /690\.12/i.test(matched) && /^\s*\(\s*3\s*\)/.test(text.slice(index + matched.length))
+      : undefined;
+    const listed = affirmedIn(packageTexts, RSD_LISTED_EQUIPMENT_PATTERNS, citesDeletedOption);
+    const planSheets = sheetTextSources(project, documentTexts).filter((src) => !SPEC_SHEET_SOURCE.test(src.label) && !/handout/i.test(src.label));
+    const deletedOptionCited = deletedOption && !listed ? affirmedIn(planSheets, [RSD_DELETED_OPTION_CITATION], notUsedAfter) : null;
+    if (rs.requiresListedEquipment && rs.insideBoundaryArticle && !listed) {
       gaps.push({ item: "Listed PV hazard control system or listed rapid shutdown equipment for inside the array boundary", section: rs.insideBoundaryArticle });
     }
     if (rs.initiationDeviceArticle && !affirmedIn(packageTexts, RSD_INITIATION_PATTERNS)) {
@@ -1349,8 +1357,8 @@ export function evaluateDesignCodeFindings(
     }
     if (gaps.length) {
       const sectionList = gaps.map((g) => g.section).join(" / ");
-      const editionNote = deletedOptionStated
-        ? ` The plans state the "no exposed wiring" basis ("${noExposedWiring!.excerpt}"), an option the NEC ${nec.edition} removed from ${rs.insideBoundaryArticle}.`
+      const editionNote = deletedOptionCited
+        ? ` The plans cite ${deletedOptionCited.excerpt} ("no exposed wiring"), an option the NEC ${nec.edition} removed from ${rs.insideBoundaryArticle}${unconfirmedNote(nec, ["rapidShutdown.noExposedWiringOption"])}.`
         : "";
       out.push({
         ...finding({
@@ -1358,15 +1366,19 @@ export function evaluateDesignCodeFindings(
           // A blocker only when no inside-boundary method is identifiable at all: no module-level
           // electronics (microinverters, or optimizer EQUIPMENT), no listed PVHCS / RSD device — on
           // top of a verified edition and documents read (ruleThreeSeverity).
-          severity: mlpe ? "warning" : ruleThreeSeverity,
+          // A finding that rests ONLY on the deleted option is at most a warning while that table
+          // cell is unconfirmed against the code text; another gap beside it keeps its severity.
+          severity: mlpe || (deletedOptionCited && isUnconfirmed(nec, "rapidShutdown.noExposedWiringOption") && gaps.every((g) => g.section === rs.insideBoundaryArticle))
+            ? "warning"
+            : ruleThreeSeverity,
           category: "electrical",
           // The adopted edition is named as the one applied, not as a change from the last cycle —
-          // unless the check actually tested a difference (deletedOptionStated).
-          title: deletedOptionStated
+          // unless the check actually tested a difference (deletedOptionCited).
+          title: deletedOptionCited
             ? `Rapid shutdown relies on an option the NEC ${nec.edition} removed`
             : `Rapid shutdown basis not shown for the adopted NEC ${nec.edition}`,
           message: `The plans mention rapid shutdown, but the adopted NEC ${nec.edition} also needs: ${gaps.map((g) => `${g.item} (${g.section})`).join("; ")}.${editionNote}`
-            + (equipment.present ? ` Module-level electronics are shown (${equipment.basis}); state the ${sectionList} basis and listing for them.` : ""),
+            + (equipment.present ? ` Module-level electronics are shown (${equipment.excerpt}); state the ${sectionList} basis and listing for them.` : ""),
           cityFeedback: `Revise the electrical plans to show the NEC ${nec.edition} rapid shutdown basis: ${gaps.map((g) => `${g.section} — ${g.item.toLowerCase()}`).join("; ")}.`,
           designTeamAction: equipment.present
             ? `State the ${sectionList} basis and listing for the named MLPE (${equipment.excerpt}) on the SLD and label schedule (equipment already complies).`
@@ -1415,7 +1427,8 @@ export function evaluateDesignCodeFindings(
         severity: ruleThreeSeverity,
         category: "electrical",
         title: `PV label schedule is missing labels NEC ${nec.edition} requires`,
-        message: `The package shows a label schedule, but not: ${missingLabels.map((l) => `${l.label} (${l.section})`).join("; ")}.`,
+        message: `The package shows a label schedule, but not: ${missingLabels.map((l) => `${l.label} (${l.section})`).join("; ")}.`
+          + (missingLabels.some((l) => l.section === nec.labels.rapidShutdown) && isUnconfirmed(nec, "labels.rapidShutdown") ? ` The rapid shutdown label section ${nec.labels.rapidShutdown} is${unconfirmedNote(nec, ["labels.rapidShutdown"])}.` : ""),
         cityFeedback: `Add the NEC ${nec.edition} labels to the label schedule: ${missingLabels.map((l) => `${l.section} ${l.label}${l.wording ? ` ("${l.wording}")` : ""}`).join("; ")}.`,
         designTeamAction: "Add the missing labels and their locations to the label sheet.",
         evidenceNeeded: missingLabels.map((l) => `${l.label} (${l.section})`),
