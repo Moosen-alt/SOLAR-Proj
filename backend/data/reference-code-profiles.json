@@ -716,6 +716,91 @@
     }
    ],
    "updatedAt": ""
+  },
+  {
+   "key": "",
+   "state": "UT",
+   "ahj": "City of Saratoga Springs",
+   "confidence": "seeded",
+   "adoptedCodes": [
+    {
+     "code": "IBC",
+     "edition": "2024",
+     "family": "building",
+     "title": "International Building Code, 2024 edition, incl. Appendices C and J (Saratoga Springs City Code 18.01.01, Ord. 25-26)",
+     "sourceUrl": "https://www.saratogasprings-ut.gov/DocumentCenter/View/536/Title-18---Building-and-Construction",
+     "quote": "The 2024 edition of the International Building Code, including Appendices C and J, issued by the International Code Council;"
+    },
+    {
+     "code": "IRC",
+     "edition": "2021",
+     "family": "residential",
+     "title": "International Residential Code, 2021 edition, incl. Appendix AQ (Saratoga Springs City Code 18.01.01, Ord. 25-26)",
+     "sourceUrl": "https://www.saratogasprings-ut.gov/DocumentCenter/View/536/Title-18---Building-and-Construction",
+     "quote": "The 2021 edition of the International Residential Code, issued by the International Code Council, including Appendix AQ, issued by the International Code Council;"
+    },
+    {
+     "code": "NEC",
+     "edition": "2023",
+     "family": "electrical",
+     "title": "National Electrical Code, 2023 edition (Saratoga Springs City Code 18.01.01, Ord. 25-26)",
+     "sourceUrl": "https://www.saratogasprings-ut.gov/DocumentCenter/View/536/Title-18---Building-and-Construction",
+     "quote": "The 2023 edition of the National Electrical Code, issued by the National Fire Protection Association;"
+    },
+    {
+     "code": "IECC",
+     "edition": "2024",
+     "family": "energy",
+     "title": "International Energy Conservation Code, 2024 edition (Saratoga Springs City Code 18.01.01, Ord. 25-26)",
+     "sourceUrl": "https://www.saratogasprings-ut.gov/DocumentCenter/View/536/Title-18---Building-and-Construction",
+     "quote": "The 2024 edition of the International Energy Conservation Code, issued by the International Code Council;"
+    },
+    {
+     "code": "IFC",
+     "edition": "2024",
+     "family": "fire",
+     "title": "International Fire Code, 2024 edition, with amendments (Saratoga Springs City Code 18.01.02, Ord. 26-22)",
+     "sourceUrl": "https://www.saratogasprings-ut.gov/DocumentCenter/View/536/Title-18---Building-and-Construction",
+     "quote": "The 2024 edition of the International Fire Code, with amendments;",
+     "notes": "CONFLICT IN THE CITY'S OWN TEXT (read 2026-10-06): 18.01.02 opens 'The City of Saratoga Springs hereby adopts the International Fire Code, 2018 Edition, including appendices B, C, D, E, F, G, H, I, and J.' and then adopts 'The 2024 edition of the International Fire Code, with amendments'. The State Fire Code controls: Utah Code 15A-5-103 incorporates 'the International Fire Code, 2024 edition, excluding appendices' statewide (https://le.utah.gov/xcode/Title15A/Chapter5/15A-5-S103.html), and Utah is statewide-uniform (15A-1-204), so 2024 is recorded; the 2018 line is a stale remnant."
+    }
+   ],
+   "amendments": [
+    {
+     "code": "City Code 19.05.12",
+     "section": "Solar Panels (land use)",
+     "summary": "Residential-grade roof-mounted panels only; ground-mounted arrays in the rear or interior side yard, no more than 15 ft high, screened behind a 6-ft opaque fence; reflection minimised; grid-tied systems installed by a licensed PV contractor per the NEC (Ord. 15-21).",
+     "sourceUrl": "https://www.saratogasprings-ut.gov/DocumentCenter/View/697/1905-Supplementary-Regulations"
+    }
+   ],
+   "designCriteria": {
+    "groundSnowLoadPsf": 31,
+    "windSpeedMph": 103,
+    "seismicDesignCategory": "D2",
+    "frostDepthIn": 30,
+    "sourceUrl": "https://www.saratogasprings-ut.gov/213/Design-Criteria"
+   },
+   "prescriptive": {},
+   "fireSetbacks": [],
+   "citations": [
+    {
+     "label": "Saratoga Springs City Code Title 18 Building and Construction, 18.01 Adopted Codes (Ord. 25-26; fire code Ord. 26-22) \u2014 read 2026-10-06",
+     "sourceUrl": "https://www.saratogasprings-ut.gov/DocumentCenter/View/536/Title-18---Building-and-Construction"
+    },
+    {
+     "label": "Saratoga Springs Design Criteria page \u2014 verbatim 2026-10-06: Ground Snow Load '31 pounds', Roof Snow Load '30 pounds', Wind Speed '103 [51] exposure B or C', Seismic 'D2', Frost Line '30 inches', Weathering 'Severe', Termite 'Slight/moderate', Soils Bearing Capacity '1,500 psf (assumed) (Exception: Dalmore Meadows, 1200 psf)'. Units are not printed for snow or wind (read as psf and mph); '[51]' is unexplained and exposure is 'B or C', so no single exposure is recorded.",
+     "sourceUrl": "https://www.saratogasprings-ut.gov/213/Design-Criteria"
+    },
+    {
+     "label": "Saratoga Springs City Code 19.05.12 Solar Panels (Title 19.05 Supplementary Regulations, Ord. 15-21)",
+     "sourceUrl": "https://www.saratogasprings-ut.gov/DocumentCenter/View/697/1905-Supplementary-Regulations"
+    },
+    {
+     "label": "Utah Code 15A-5-103 \u2014 State Fire Code: 2024 IFC statewide (controls over the stale 'IFC 2018' line in City Code 18.01.02)",
+     "sourceUrl": "https://le.utah.gov/xcode/Title15A/Chapter5/15A-5-S103.html"
+    }
+   ],
+   "updatedAt": ""
   }
  ],
  "stateAdoptionsComment": "Generated 2026-09-24 from the source-verified code-edition truth files (confirmed claims only; see the code-editions build report). Seeded as 'seeded' with provenance reference_truth and merged onto seeded state rows at boot; a human-verified state row is never written \u2014 a disagreement becomes an edition proposal. Every value carries its official sourceUrl/quote: keep them when editing.",
