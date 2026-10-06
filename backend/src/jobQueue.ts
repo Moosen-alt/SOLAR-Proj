@@ -12,6 +12,7 @@ import { nowIso } from "./time";
 import { logger } from "./logger";
 import { runWithLlmContext } from "./llmAccounting";
 import { noteJobProgress, parseJobProgressNote, type JobProgressNote } from "./jobProgress";
+import { sameAgencyName } from "./agencyName";
 
 export type JobType =
   | "permit_checks"
@@ -652,6 +653,22 @@ export function claimNextJob(db: AppDb): JobRecord | null {
   return { ...job, status: "running", startedAt: now };
 }
 
+// A fee_research job waits (re-pends) while a permit-process lookup for the same agency is running.
+const FEE_RESEARCH_DEFER_MS = 60_000;
+const MAX_FEE_RESEARCH_DEFERRALS = 30;
+/** Is a permit_process_lookup for this (state, agency) RUNNING now? Agency names compare through
+ *  sameAgencyName ("City of X Building Division" is the City of X). */
+function permitLookupRunningFor(db: AppDb, state: string, ahj: string): boolean {
+  if (!ahj.trim()) return false;
+  const rows = db.query<{ payload: string }>("SELECT payload FROM job_queue WHERE job_type = 'permit_process_lookup' AND status = 'running'");
+  return rows.some((r) => {
+    try {
+      const lp = JSON.parse(r.payload) as { state?: unknown; ahj?: unknown };
+      return String(lp.state || "").trim().toLowerCase() === state.trim().toLowerCase() && sameAgencyName(String(lp.ahj || ""), ahj);
+    } catch { return false; }
+  });
+}
+
 /** A design-criteria lookup (or the full code research that asks for the same criteria) finished —
  *  AFTER its row left 'running', so the re-judged finding reads where the lookup now stands. The
  *  gate of every pre-stage project in that AHJ is re-run (repository.rejudgeReviewerGatesAfterLookup);
@@ -874,10 +891,30 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
       // "is a row held" check, asked again at run time — a held target costs no model call. (The
       // local-review line is held by another rule — localReviewScheduleRow — and is not re-checked.)
       const track = p.track === "nem" ? "nem" : "permit";
+      // WAIT FOR A LOOKUP THAT IS PRICING THIS ROW RIGHT NOW (#206 review). With JOB_CONCURRENCY > 1
+      // a permit-track job queued at issuer-known time could start while that lookup's own
+      // documents/fees step is still pricing the same agency's rows — a second web-grounded call for
+      // the same fee, and saveFeeSchedule lets the last writer win. Such a job goes back to pending a
+      // minute later (not a retry: retry_count is untouched), then meets the "already priced" check
+      // below. Bounded: after MAX_FEE_RESEARCH_DEFERRALS it runs regardless (a lookup lasts ≤ ~20 min
+      // and the watchdog reclaims a stale one).
+      const deferred = Number((job.payload as { deferredForLookup?: unknown }).deferredForLookup) || 0;
+      if (track === "permit" && deferred < MAX_FEE_RESEARCH_DEFERRALS && permitLookupRunningFor(db, String(p.state || ""), String(p.ahj || ""))) {
+        db.run(
+          "UPDATE job_queue SET status = 'pending', scheduled_at = ?, payload = ? WHERE id = ? AND status = 'running'",
+          [new Date(Date.now() + FEE_RESEARCH_DEFER_MS).toISOString(), JSON.stringify({ ...job.payload, deferredForLookup: deferred + 1 }), job.id],
+        );
+        return true;
+      }
       const heldNow = p.role !== "local_review"
         && findFeeScheduleForProject(db, { state: String(p.state || ""), ahj: String(p.ahj || ""), utility: String(p.utility || "") }, track, discipline as Parameters<typeof findFeeScheduleForProject>[3]);
       if (heldNow) {
         result = { skipped: true, reason: "already priced since it was queued — no research needed", track, discipline };
+        try {
+          addAuditLog(db, job.projectId, "system", "fee research", "fees.research_skipped_priced", {
+            ahj: String(p.ahj || ""), track, discipline: discipline || "(any)", reason: "already priced since it was queued",
+          });
+        } catch { /* audit is best-effort — never fail the job over it */ }
       } else {
         const outcome = await researchFeeSchedule(db, {
           state: String(p.state || ""),

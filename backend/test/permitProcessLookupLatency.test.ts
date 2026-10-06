@@ -12,6 +12,7 @@
 //   K3 no onIssuerKnown call / no early delegation write                  → (i1), (j1) fail.
 //   K4 fee_research job without the "already priced" re-check             → (g1) fails.
 //   K5 no per-step log line                                               → (l1) fails.
+//   K6 fee_research does not wait for a running lookup of the same agency → (g2) fails.
 //
 // Run: npx tsx backend/test/permitProcessLookupLatency.test.ts
 import "./_isolate"; // FIRST
@@ -278,6 +279,32 @@ await check("(g1) a fee_research job whose target was priced after it was queued
   const ur = jq.getJob(db, unpriced.id)!;
   assert.equal(ur.status, "done");
   assert.notEqual((ur.result as Record<string, unknown>)?.skipped, true, `researched (keyless here, so found nothing): ${JSON.stringify(ur.result)}`);
+});
+
+await check("(g2) review of #223: while a permit_process_lookup for the SAME agency is running (its documents/fees may be pricing this row), a permit-track fee_research job re-pends a minute later without researching or spending a retry; a job for another agency, or a NEM job, is not held; once the lookup is done it runs", async () => {
+  db.run("UPDATE job_queue SET status = 'failed' WHERE status IN ('pending','running')");
+  const past = () => new Date(Date.now() - 1000).toISOString();
+  const lookup = jq.enqueueJob(db, "permit_process_lookup", { state: "OR", ahj: "City of Holdbrook" }, { scheduledAt: new Date(Date.now() + 3_600_000).toISOString() });
+  db.run("UPDATE job_queue SET status = 'running' WHERE id = ?", [lookup.id]); // a lookup mid-run (no handler is executing it here)
+  const key = fees.feeScheduleProfileKey({ state: "OR", ahj: "City of Holdbrook" }, "permit");
+  const held = jq.enqueueJob(db, "fee_research", { state: "OR", ahj: "City of Holdbrook Building Division", utility: "", track: "permit", discipline: "electrical", profileKey: key, researchKey: `permit|${key}|electrical`, role: "issuer" }, { scheduledAt: past(), maxRetries: 2 });
+  const otherKey = fees.feeScheduleProfileKey({ state: "OR", ahj: "City of Elsewhereton" }, "permit");
+  const other = jq.enqueueJob(db, "fee_research", { state: "OR", ahj: "City of Elsewhereton", utility: "", track: "permit", discipline: "electrical", profileKey: otherKey, researchKey: `permit|${otherKey}|electrical`, role: "issuer" }, { scheduledAt: past() });
+  const nem = jq.enqueueJob(db, "fee_research", { state: "OR", ahj: "City of Holdbrook", utility: "Holdbrook Light", track: "nem", discipline: "", profileKey: "nem-test", researchKey: "nem|nem-test|", role: "issuer" }, { scheduledAt: past() });
+  for (let k = 0; k < 6; k++) await jq.processNextJob(db);
+  const h = db.get<{ status: string; scheduled_at: string; retry_count: number; payload: string; result: string | null }>("SELECT status, scheduled_at, retry_count, payload, result FROM job_queue WHERE id = ?", [held.id])!;
+  assert.equal(h.status, "pending", "held back while the lookup runs");
+  assert.ok(Date.parse(h.scheduled_at) > Date.now() + 30_000, `re-scheduled about a minute out: ${h.scheduled_at}`);
+  assert.equal(h.retry_count, 0, "a deferral is not a retry");
+  assert.equal(JSON.parse(h.payload).deferredForLookup, 1);
+  assert.equal(h.result, null, "no research ran");
+  assert.equal(jq.getJob(db, other.id)?.status, "done", "another agency's job is not held");
+  assert.equal(jq.getJob(db, nem.id)?.status, "done", "a NEM job is not held (the lookup never prices NEM)");
+  // The lookup lands: the held job runs on its next claim.
+  db.run("UPDATE job_queue SET status = 'done' WHERE id = ?", [lookup.id]);
+  db.run("UPDATE job_queue SET scheduled_at = ? WHERE id = ?", [past(), held.id]);
+  await jq.processNextJob(db);
+  assert.equal(jq.getJob(db, held.id)?.status, "done");
 });
 
 if (failures) { console.error(`\n${failures} permitProcessLookupLatency test(s) failed.`); process.exit(1); }

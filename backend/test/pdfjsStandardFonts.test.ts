@@ -60,7 +60,9 @@ await check("(h1) the helper's options carry pdfjs-dist's standard_fonts path (t
 await check("(h2) no server-side call site forgets: every getDocument( in backend/src opens through pdfjsDocumentOptions", () => {
   const dir = path.join(REPO, "backend/src");
   const bare: string[] = [];
-  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".ts"))) {
+  const files = (fs.readdirSync(dir, { recursive: true }) as string[]).filter((x) => x.endsWith(".ts"));
+  assert.ok(files.length > 50, `scanned ${files.length} files`);
+  for (const f of files) {
     fs.readFileSync(path.join(dir, f), "utf8").split("\n").forEach((line, i) => {
       if (/\bgetDocument\(/.test(line) && !/getDocument\(pdfjsDocumentOptions\(/.test(line) && !/^\s*(\/\/|\*)/.test(line)) bare.push(`${f}:${i + 1}: ${line.trim()}`);
     });
