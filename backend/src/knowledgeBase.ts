@@ -29,6 +29,7 @@ import { classifyChannelWords, isStatewidePortalUrl, permitProcessKey, savePermi
 import { usStateCode } from "./permitPath";
 import { enrichMboxLearningWithLlm, stripUrlsFromModelMemory } from "./llm";
 import { allAhjProcessProfiles, findAhjProcessProfile } from "./processProfiles";
+import { hasMpuScope } from "./serviceScope";
 import { nowIso } from "./time";
 import { logger } from "./logger";
 import { inferPlatform, isRecognizedPlatform, looksLikeBareUrl } from "./portalPlatformRules";
@@ -528,7 +529,8 @@ export function extractProjectFeatureTags(project: ProjectRecord): string[] {
   if (/load.side|breaker|back.?feed/i.test(project.interconnectionMethod + "\n" + all)) tags.add("interco:load_side");
   if (/ground.mount|ground mounted/i.test(all)) tags.add("mount:ground");
   else tags.add("mount:roof");
-  if (/main panel upgrade|\bMPU\b/i.test(all)) tags.add("scope:mpu");
+  // THE ONE MPU predicate (serviceScope): a "no MSP upgrade" job is not tagged an MPU (#200).
+  if (hasMpuScope(project)) tags.add("scope:mpu");
   if (/meter collar|connectder|mmd/i.test(all)) tags.add("scope:meter_adapter");
   if (/trench|underground|811|locate/i.test(all)) tags.add("scope:locates");
   const moduleMake = text(project.parserSnapshot.moduleMake);

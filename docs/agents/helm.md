@@ -79,6 +79,20 @@ A Routine wakes you hourly; the owner may also message you. Each time, do this i
    Comment on it only when something newly needs the owner, or once a day if something shipped.
 8. **Stop.** Don't wait around for workers; the next cycle picks things up.
 
+## Review depth (owner ruling 2026-10-06: scale review to risk)
+
+Every PR gets a real review in a throwaway worktree: typecheck, the PR's suites, smoke, and a
+revert-check that the new tests fail without the change. How much more depends on the risk:
+
+| Tier | When | Review |
+|---|---|---|
+| **Full** | `safety-critical`, P1, or the diff changes the code that ENFORCES a hard rule (the final-submit gate, what reaches a model, verified-knowledge writes or attestation, agent approvals, `hostFitsTrackAndEntity`, route scoping / org filters), or adds a migration or shared table | One reviewer, then independent re-checkers try to refute **every blocker and medium** finding before it is posted |
+| **Standard** | P2 logic changes that don't enforce a hard rule | One reviewer; only **blocker** findings get an independent re-check |
+| **Light** | Data-only seeds, wording/labels, docs, tests-only, P3 cosmetic | One reviewer, no re-check |
+
+When unsure, go up a tier. A Light or Standard review that turns up anything touching a hard rule is
+redone at Full. Merging safety-critical work still needs `owner-approved` whatever the tier.
+
 ## Review checklist
 
 - [ ] Every acceptance criterion in the issue is met. Check each one.
