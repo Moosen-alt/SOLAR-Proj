@@ -43,6 +43,7 @@ import { parseBracketRow } from "./pdfTables";
 import { candidateNamedBy, chooseRecordType, classifyDocument, DOCUMENT_URL, staleOrOtherFeeSource, detectPlatform, documentLinks, excerptFor, extractCodeEditions, extractPrerequisites, isAgencyOwnUrl, isOfficialAgencyHost, linksAnotherModule, platformOfUrl, readPortalCatalog, registrableDomain, resolvePortalFromPages, solarRecordTypeCandidates, tenantContradictsAgency, wordsNameAnotherJurisdiction, type PortalCatalog, type PortalResolution, type RecordTypeCandidate } from "./permitPlatformCatalog";
 import { createPageReader, feeLinePrintedTogether, quoteOnPage, type PageReader, type ReadPage } from "./agencyPageReader";
 import { documentFetchDisabled } from "./documentFetch";
+import { classifyPrerequisites } from "./permitProcessPrerequisites";
 export { registrableDomain };
 
 export const PROCESS_LOOKUP_SYSTEM = `You look up how RESIDENTIAL ROOFTOP SOLAR PV permits are issued for ONE jurisdiction in the United States.
@@ -58,7 +59,7 @@ Find, with web search (search several times with different queries: the city, it
 
 Where answers may come from: the jurisdiction's own site; its county's building-inspection site; the state building agency; the permitting portal's public pages and public permit records.
 
-4. prerequisites — a step at ANOTHER office before or beside filing ("submit to City Hall first, then to the County", a zoning sign-off). A prerequisite office is NOT the issuing agency: the issuing agency is the one that issues the permit.
+4. prerequisites — a step at ANOTHER office that must happen BEFORE the application is filed or the permit is issued ("submit to City Hall first, then to the County", a zoning sign-off). A prerequisite office is NOT the issuing agency: the issuing agency is the one that issues the permit. What happens AFTER the permit is approved or issued (copies of approved plans, inspections, final, occupancy) is NEVER a prerequisite. Take prerequisites only from pages about THIS permit (residential solar / electrical / building) — never from another permit type's page (basement, deck, fence, pool…). List each step once, however many pages repeat it.
 
 EVERY value carries "sourceUrl" (a page your search returned or you opened) and "quote" (the exact words on that page that state it, under 250 characters, containing the answer itself). If you cannot find a page that states it, set "value": null and say what you searched in "notFound". Never answer from memory. Never guess.
 
@@ -112,6 +113,8 @@ You may OPEN (web_fetch) a few result pages — the agency's own fee schedule (o
 
 EVERY value carries "sourceUrl" (a page your search returned or you opened — the agency's own fee schedule or form is best) and "quote" (the exact printed words, under 250 characters; for a fee the quote must contain the amount). If a source does not state it, "value": null with "notFound". Never answer from memory. Never guess.
 
+prerequisites: only a step at another office that must happen BEFORE filing or issuance, from a page about THIS permit — never what happens after the permit is approved / issued, never another permit type's (basement, deck, fence…) page.
+
 Return ONLY JSON:
 {"permits": [{"discipline": "structural"|"electrical"|"combo",
   "documents": {"value": ["..."]|null, "sourceUrl": "", "quote": "", "notFound": ""},
@@ -126,6 +129,8 @@ For each permit named in the request:
 - recordType: the record / permit type selected when applying ONLINE on that portal, in the portal's or the agency's own words (e.g. "Residential Electrical - Solar"). A paper application FORM's title is NOT a record type — if you only find form titles, set it to null.
 
 EVERY value carries "sourceUrl" (a page your search returned or you opened) and "quote" (the exact words on that page that state it, under 250 characters: for a portal, the words naming or linking it; for a record type, the words naming it). If no page states it, "value": null with "notFound". Never answer from memory. Never guess.
+
+prerequisites: only a step at another office that must happen BEFORE filing or issuance, from a page about THIS permit — never what happens after the permit is approved / issued, never another permit type's (basement, deck, fence…) page.
 
 Return ONLY JSON:
 {"permits": [{"discipline": "structural"|"electrical"|"combo",
@@ -1392,7 +1397,9 @@ export async function runPermitProcessLookup(
     };
   });
   prerequisites.push(...(ev?.prerequisites ?? []));
-  const uniquePrereqs = prerequisites.filter((x, i) => prerequisites.findIndex((y) => str(y.value).toLowerCase() === str(x.value).toLowerCase() || (Boolean(x.quote) && y.quote === x.quote)) === i);
+  // Only real before-filing steps of THIS permit, near-duplicates from several pages collapsed into
+  // one that keeps every source (#204) — the model's and our own page read alike.
+  const uniquePrereqs = classifyPrerequisites(prerequisites);
   const notes = [
     ...problems.filter(Boolean),
     ...(issuingAgency !== part1.issuingAgency ? [`Issuing agency lifted from the permits' agreeing cited agencies (${issuingAgency.value}).`] : []),

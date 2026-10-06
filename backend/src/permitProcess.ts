@@ -40,6 +40,7 @@ import { namedKnownUtility, UTILITY_IDENTITY_LABEL } from "./utilityIdentity";
 import { hostAliasesOf } from "./portalCredentials";
 import { isApplicationPortalShapedUrl } from "./portalChannel";
 import { structureType } from "./codeReviewRules";
+import { classifyPrerequisites } from "./permitProcessPrerequisites";
 
 // ── Keys ────────────────────────────────────────────────────────────────────────────────
 /** "City of Jefferson, OR" / "city of  jefferson" → "city of jefferson". A trailing state code
@@ -77,6 +78,10 @@ function rowToLookup(row: Record<string, unknown>): PermitProcessLookup | null {
       verifiedAt: (row.verified_at as string | null) ?? null,
       verifiedBy: (row.verified_by as string | null) ?? null,
       permits: Array.isArray(payload.permits) ? payload.permits : [],
+      // A SEEDED row's prerequisites are read through the one classifier (#204), so a row saved
+      // before it ("after the permit is issued…" stored as a step FIRST at another office) reads
+      // right without a re-lookup. A person's verified row reads as they verified it (rule 3).
+      ...(Array.isArray(payload.prerequisites) && !row.verified_at ? { prerequisites: classifyPrerequisites(payload.prerequisites) } : {}),
     };
   } catch {
     return null;

@@ -22,6 +22,7 @@
 //   4. PREREQUISITES AND CODES FROM THE WORDS ON A PAGE WE READ — each a sentence quoted verbatim.
 import type { PermitProcessDiscipline } from "../../shared/src/types";
 import type { PageLink, PageReader, ReadPage } from "./agencyPageReader";
+import { pageIsOtherPermitType, prerequisiteRefusal } from "./permitProcessPrerequisites";
 import { hostFitsTrackAndEntity, isPathTenantedHost, isPermitPlatformUrl, isUtilityPlatformUrl, isVendorRootOrMarketing, portalHostOf, portalTenantKey, portalTenantOf, registrableDomain } from "./portalChannel";
 // registrableDomain and isVendorRootOrMarketing live in portalChannel (lookup-close-6 MF4: the
 // lookup's portal door asks "is this the vendor's own site?" too, so the ONE predicate sits beside
@@ -731,6 +732,9 @@ const PREREQ_KINDS: Array<{ kind: string; re: RegExp }> = [
 export interface CitedNote { kind: string; value: string; sourceUrl: string; quote: string }
 export function extractPrerequisites(page: Pick<ReadPage, "ok" | "finalUrl" | "text">): CitedNote[] {
   if (!page.ok) return [];
+  // A page about ANOTHER permit type (a city's "Obtaining a Basement Permit") states that permit's
+  // steps, never this job's (#204).
+  if (pageIsOtherPermitType(page.finalUrl, (page as Partial<ReadPage>).title)) return [];
   const out: CitedNote[] = [];
   for (const s of sentences(page.text)) {
     if (!/\b(?:must|required|requires|need|needs|will need|shall|only|before|prior|first|approv|takes)/i.test(s)) continue;
@@ -738,6 +742,8 @@ export function extractPrerequisites(page: Pick<ReadPage, "ok" | "finalUrl" | "t
     if (k?.kind === "Contractor licence / registration" && (!/\b(?:must|required|requires|shall|will need|only)\b/i.test(s) || !/\b(?:permits?|applications?|apply|portal|account|submit\w*)\b/i.test(s))) continue;
     if (k && out.filter((o) => o.kind === k.kind).length >= 2) continue;
     if (!k || out.some((o) => o.kind === k.kind && o.quote === s)) continue;
+    // "After the permit is approved and issued we will provide…" is not a step before filing (#204).
+    if (prerequisiteRefusal(s, page.finalUrl, { kind: k.kind })) continue;
     const lead = /\b\d+\s*(?:-|–|to)\s*\d+\s+business days|\b\d+\s+business days/i.exec(s)?.[0];
     out.push({ kind: k.kind, value: `${k.kind}${lead ? ` (${lead})` : ""}: ${s}`.slice(0, 300), sourceUrl: page.finalUrl, quote: s.slice(0, 300) });
   }

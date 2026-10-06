@@ -4039,6 +4039,9 @@ export interface CitedFact<T> {
   /** A named portal that REDIRECTS to its official host (lookup D3): kept as the final URL, with the
    *  URL the source named and the hops our one polite read saw. */
   redirect?: { from: string; finalUrl: string; chain: string[]; status: number };
+  /** Other pages that state the SAME fact in other words (a prerequisite collapsed from
+   *  near-duplicates, permitProcessPrerequisites.classifyPrerequisites) — every source is kept. */
+  alsoSourceUrls?: string[];
 }
 export type PermitProcessDiscipline = "structural" | "electrical" | "combo" | "other";
 export interface PermitFeeAnswer {
