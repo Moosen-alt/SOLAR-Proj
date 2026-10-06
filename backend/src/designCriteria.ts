@@ -53,6 +53,7 @@ import type {
   UpcomingCodeEdition,
 } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
+import { codeFamilyOf, editionsInEffect, type EditionsInEffect } from "./codeFamilies";
 
 export interface DesignTextSource {
   label: string;
@@ -2247,6 +2248,33 @@ function upcomingWithin(ctx: EffectiveCodeContext, asOf: string | undefined, bef
   return (stated) => due.find((u) => normCodeToken(u.code) === normCodeToken(stated.code) && String(u.edition).trim() === stated.edition) ?? null;
 }
 
+/** The recorded PHASE-IN that still allows exactly the code and edition a mismatch line compared,
+ *  on `asOf` (issue #216). A state that adopts a new edition often accepts the previous one until a
+ *  mandatory date; a plan on that previous edition, filed inside the window, is not wrong.
+ *  `editionsInEffect` (codeFamilies.ts) is the one helper that reads those windows. It answers per
+ *  FAMILY (one current entry each), so it is asked about the entries of the compared CODE only:
+ *  two codes of one family (IBC and IEBC) each in their own window each get their own answer.
+ *  Only a window whose previous edition is ON FILE, for the same code token, softens: a window
+ *  that does not say which edition it still allows, or that allows another code's edition, keeps
+ *  the mismatch as it was. From the mandatory date on, `editionsInEffect` no longer reports a
+ *  phase-in and the mismatch blocks. */
+function graceWindowFor(ctx: EffectiveCodeContext, asOf: string | undefined): (stated: { code: string; edition: string }) => EditionsInEffect | null {
+  const date = String(asOf || new Date().toISOString()).slice(0, 10);
+  const entries = ctx.adoptedCodes ?? [];
+  return (stated) => {
+    const code = normCodeToken(stated.code);
+    const sameCode = entries.filter((e) => normCodeToken(e.code) === code);
+    const families = new Set(sameCode.map((e) => codeFamilyOf(e)));
+    for (const family of families) {
+      if (!family) continue;
+      const window = editionsInEffect(sameCode, family, date);
+      if (window.status !== "phase_in") continue;
+      if (window.allowed.some((a) => a.role === "previous" && normCodeToken(a.code) === code && String(a.edition).trim() === stated.edition)) return window;
+    }
+    return null;
+  };
+}
+
 /**
  * NO EDITIONS ON FILE — the plan's code basis next to the lookup state. A callout, never more:
  * the model-code defaults are placeholders (the "current cycle" says nothing about what this AHJ
@@ -3025,6 +3053,9 @@ export function evaluateDesignCriteriaFindings(
   //   · a mismatch against a human-VERIFIED profile -> a blocker, unless the plan prints the
   //     state's UPCOMING edition, its status reads adopted/filed/effective, and its date is
   //     between 90 days ahead and 30 days past (a warning naming the date; #124).
+  //   · a plan on the PREVIOUS edition inside a recorded phase-in (effective <= asOf < mandatory,
+  //     previous edition on file) -> not a mismatch: a callout naming the mandatory date, on a
+  //     verified or a seeded profile (#216). From the mandatory date on it blocks as above.
   //
   // LIKE WITH LIKE. A plan entry is compared with the profile entry of the SAME named code
   // (state code to state code: ORSC with ORSC). Base model codes are compared only when a base
@@ -3039,14 +3070,25 @@ export function evaluateDesignCriteriaFindings(
     // Lines whose plan edition is the state's upcoming edition, due within the window: these
     // never block, and say the date.
     const softened = new Set<string>();
+    // Lines whose plan edition the profile itself still allows today (a phase-in, #216): these are
+    // not mismatches yet, and say the mandatory date.
+    const inGrace = new Set<string>();
     const seen = new Set<string>();
     const upcomingFor = upcomingWithin(ctx, opts.asOf, UPCOMING_SOFTEN_DAYS_BEFORE, UPCOMING_SOFTEN_DAYS_AFTER);
-    const report = (key: string, line: string, compared: { code: string; edition: string }): void => {
+    const graceFor = graceWindowFor(ctx, opts.asOf);
+    // `graceVia`: the state-code pair a BASE line belongs to. The profile records only the new
+    // edition's base, so a plan's base on the previous state edition is in grace exactly when its
+    // state-code pair is.
+    const report = (key: string, line: string, compared: { code: string; edition: string }, graceVia?: { code: string; edition: string }): void => {
       if (seen.has(key)) return;
       seen.add(key);
       const due = upcomingFor(compared);
-      const text = due ? `${line} — the plan's edition is the upcoming ${due.code} ${due.edition}, anticipated effective ${due.anticipatedDate}` : line;
+      const grace = due ? null : graceFor(compared) ?? (graceVia ? graceFor(graceVia) : null);
+      const text = due
+        ? `${line} — the plan's edition is the upcoming ${due.code} ${due.edition}, anticipated effective ${due.anticipatedDate}`
+        : grace ? `${line} — still allowed during the phase-in: ${grace.note.replace(/\.$/, "")}` : line;
       if (due) softened.add(text);
+      if (grace) inGrace.add(text);
       lines.push(text);
     };
     for (const b of stated.codeBasis) {
@@ -3065,7 +3107,7 @@ export function evaluateDesignCriteriaFindings(
             ...profileEntries.filter((a) => a.base?.code === model).map((a) => ({ edition: a.base!.edition, label: `${a.label} (based on ${model} ${a.base!.edition})` })),
           ];
           if (recorded.length && !recorded.some((r) => r.edition === b.baseEdition)) {
-            report(`${code}|${b.edition}|${model}|${b.baseEdition}`, `plan states ${b.code} ${b.edition} based on ${model} ${b.baseEdition} (${b.source}) — profile records ${recorded.map((r) => r.label).join(" / ")}`, { code: model, edition: b.baseEdition });
+            report(`${code}|${b.edition}|${model}|${b.baseEdition}`, `plan states ${b.code} ${b.edition} based on ${model} ${b.baseEdition} (${b.source}) — profile records ${recorded.map((r) => r.label).join(" / ")}`, { code: model, edition: b.baseEdition }, b);
           }
         }
       }
@@ -3080,23 +3122,34 @@ export function evaluateDesignCriteriaFindings(
     }
     if (lines.length) {
       // A VERIFIED edition is the jurisdiction's code: a plan on another edition is not approvable
-      // as drawn. Only a seeded row stays a warning, and only an upcoming edition softens it.
-      const blocks = ctx.verified && lines.some((l) => !softened.has(l));
+      // as drawn. Only a seeded row stays a warning, and only an upcoming edition softens it. A
+      // plan wholly inside a recorded phase-in is no mismatch at all: a callout naming the date.
+      // Softening only ever lowers severity (rule 3): one line outside both still blocks.
+      const blocks = ctx.verified && lines.some((l) => !softened.has(l) && !inGrace.has(l));
+      const graceOnly = inGrace.size === lines.length;
       out.push({
         id: "city.code.basis-mismatch",
-        severity: blocks ? "blocker" : "warning",
+        severity: blocks ? "blocker" : graceOnly ? "callout" : "warning",
         category: "plan_set",
-        title: "Plan's code basis differs from the jurisdiction's adopted codes",
+        title: graceOnly
+          ? "Plan's code basis is the previous edition — still allowed during the phase-in"
+          : "Plan's code basis differs from the jurisdiction's adopted codes",
         message: `${lines.join("; ")}. Profile: ${provenance(ctx)}. ${blocks
           ? "The adopted editions are verified — the plan's governing-codes block must state them."
-          : softened.size === lines.length
-            ? "The plan anticipates the upcoming edition — confirm which edition the jurisdiction will review under on the submittal date."
-            : "One side is out of date — confirm the currently adopted editions."}`,
+          : graceOnly
+            ? "The jurisdiction still accepts the previous edition until the mandatory date — a submittal on or after that date must state the new edition."
+            : softened.size === lines.length
+              ? "The plan anticipates the upcoming edition — confirm which edition the jurisdiction will review under on the submittal date."
+              : softened.size + inGrace.size === lines.length
+                ? "The plan's editions are the upcoming edition or a previous one still allowed during a phase-in — confirm which edition the jurisdiction will review under on the submittal date."
+                : "One side is out of date — confirm the currently adopted editions."}`,
         // AN UNVERIFIED PROFILE CANNOT TELL AN INSTALLER TO CHANGE THEIR PLAN. Venus TX (new-AHJ e2e,
         // 2026-09-26): a seeded state edition (NEC 2026) against a plan that correctly said 2020 —
         // and the installer was told to "update" it. Only a human-verified profile may ask for the
         // change; otherwise the ask is to confirm with the AHJ, and it is not an installer callout.
-        cityFeedback: ctx.verified
+        cityFeedback: graceOnly
+          ? `The plan's governing-codes block states the previous edition, which ${who} still accepts during its phase-in — submit before the mandatory date or update the block to the new edition.`
+          : ctx.verified
           ? `Update the plan's governing-codes block to the code editions currently adopted by ${who}.`
           : `Confirm with ${who} which code editions are currently adopted before changing the plan's governing-codes block — the editions on file are unverified.`,
         designTeamAction: "Confirm the adopted editions with the jurisdiction; correct the plan's GOVERNING CODES block, or correct the jurisdiction's code profile if the plan is right.",
@@ -3105,7 +3158,7 @@ export function evaluateDesignCriteriaFindings(
           .filter((code) => profileEntries.some((a) => a.code === normCodeToken(code)))
           .slice(0, 4)
           .map((code) => ctx.citationFor(code, "Adopted edition", `${code} as adopted by ${who}`)),
-        installerCallout: ctx.verified,
+        installerCallout: ctx.verified && !graceOnly,
         evidenceStatus: "verified",
         evidenceFound: stated.codeBasis.slice(0, 12).map((b) => ({
           kind: "source_excerpt" as const,
