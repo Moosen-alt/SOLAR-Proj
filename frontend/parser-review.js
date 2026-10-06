@@ -987,6 +987,44 @@
   function licenseLabel(state) {
     return LICENSE_LABELS[String(state || '').trim().toUpperCase()] || 'contractor license';
   }
+  // THE CLIENT'S LICENCE, NAMED BY THE CLIENT'S STATE (#202). A Utah installer's number is a DOPL
+  // licence, not Oregon's CCB — the "Save to project" prompt and the contractor licence note both
+  // said CCB for every client. The client types its licences per state (form-agent ruling
+  // 2026-09-28): licenseState is the issuing state of the licence columns, the business address
+  // the fallback. Same LICENSE_LABELS table as the plan-set line above — no second table. A state
+  // that is blank or not a two-letter code is unknown: the generic words, never Oregon's.
+  function clientLicenceState(client) {
+    const c = client || {};
+    for (const v of [c.licenseState, c.businessState]) {
+      const st = clean(v).toUpperCase();
+      if (/^[A-Z]{2}$/.test(st)) return st;
+    }
+    return '';
+  }
+  /** "CCB licence", "DOPL licence", "CID licence"; "contractor licence" when the state names none. */
+  function licenceWords(state) {
+    const label = LICENSE_LABELS[clean(state).toUpperCase()];
+    if (!label) return 'contractor licence';
+    return /registration|licen[cs]e/i.test(label) ? label : `${label} licence`;
+  }
+  /** The "Save to project" client prompt. No client chosen = no client state = the generic words. */
+  function clientGatePrompt(client) {
+    return `Choose the Client / Contractor this project is filed for — the permit application carries that client’s ${licenceWords(clientLicenceState(client))} and the portal logs in as them, so a new project cannot be created without one.`;
+  }
+  /** The parsed contractor licence note: "<Company> | DOPL 123 | … | <phone>". */
+  function clientLicenceNote(client) {
+    const c = client || {};
+    return [
+      c.companyName || c.legalBusinessName,
+      c.ccbLicenseNumber ? `${licenseLabel(clientLicenceState(c))} ${c.ccbLicenseNumber}` : '',
+      c.electricalLicenseNumber ? `Elec Lic ${c.electricalLicenseNumber}` : '',
+      c.metroCityLicenseNumber ? `Metro/City ${c.metroCityLicenseNumber}` : '',
+      c.electricalSupervisorName ? `Supervisor ${c.electricalSupervisorName}` : '',
+      c.electricianLicenseNumber ? `Electrician Lic ${c.electricianLicenseNumber}` : '',
+      c.businessEmail || c.contactEmail,
+      c.businessPhone || c.phone,
+    ].filter(Boolean).join(' | ');
+  }
   const isNA = (v) => !clean(v) || /^(?:N\/?A|NONE|NULL|NOT\s+SHOWN|NOT\s+AVAILABLE|-+)$/i.test(clean(v));
   function installerLine(s, state) {
     if (!s || isNA(s.contractorCompany)) return '';
@@ -1304,6 +1342,7 @@
     structureBasis, structureFromPlan, structureOption, STRUCTURE_OPTIONS,
     otherStructureEvidence, outbuildingBesideWork, otherBuildingWords,
     licenseLabel, installerLine, identifyUtility,
+    clientLicenceState, licenceWords, clientGatePrompt, clientLicenceNote,
     locatesDecision, EXCAVATION_TYPES,
     filterTapEvidence, isNoteMention,
     formatReviewList,

@@ -299,7 +299,7 @@
   <script src="/vendor/tesseract-5.1.1.min.js"></script>
   <!-- The review-list rules (meter cross-check, notes, resolution, scope callout, locates)
        live in their own DOM-free file so the backend unit test loads the SAME code. -->
-  <script src="parser-review.js?v=10"></script>
+  <script src="parser-review.js?v=11"></script>
 </head>
 
 <body>
@@ -765,7 +765,7 @@
           <button id="saveToSystemBtn" onclick="saveToSystem()" class="primary" style="width:100%;justify-content:center">Save to project</button>
         </div>
       </div>
-      <div id="clientGateHint" class="ps-note" style="display:none">Choose the <strong>Client / Contractor</strong> above before saving a new project &mdash; the permit application carries that client&rsquo;s CCB licence and the portal logs in as them, so a project cannot be created without one.</div>
+      <div id="clientGateHint" class="ps-note" style="display:none">Choose the <strong>Client / Contractor</strong> above before saving a new project &mdash; the permit application carries that client&rsquo;s <span id="clientGateLicence">contractor licence</span> and the portal logs in as them, so a project cannot be created without one.</div>
       <!-- WHICH COMPANY IS THIS? Filled from the plan set's title block by the backend
            resolver (backend/src/clientMatch.ts) on the parse response. An exact CCB match
            selects the client outright; anything weaker fills the picker but leaves the
@@ -868,6 +868,8 @@ const state = {
   // human has agreed with it. `clientConfirmed` starts true so an operator who never
   // runs a parse is never gated by a suggestion that was never made.
   clientResolution:null,
+  // The picked client's record (loadContractorInfo): its state names its licence (#202).
+  selectedClient:null,
   clientConfirmed:true,
   // Has a parse ever run in this session? A collapsed group reading "0 of 27 read" before
   // any parse would be a finding about documents nobody has submitted yet; before a parse
@@ -5314,7 +5316,7 @@ async function loadSystemSelects() {
     // WAS: "You can still parse and save as a new project." That stopped being true the
     // moment a new project required a client — without the clients list there is nothing
     // to pick, so saying "you can still save" would send the operator into a 400.
-    if (s) s.textContent = '⚠ Could not load the projects/clients list — check your connection. Parsing still works, but a NEW project cannot be saved until the client list loads (every filing carries a client’s CCB licence). Reload once the connection is back.';
+    if (s) s.textContent = '⚠ Could not load the projects/clients list — check your connection. Parsing still works, but a NEW project cannot be saved until the client list loads (every filing carries a client’s contractor licence). Reload once the connection is back.';
   }
   refreshClientGate();
 }
@@ -5339,10 +5341,13 @@ function refreshClientGate() {
   btn.title = missing
     ? 'Choose the Client / Contractor this project is filed for — a new project cannot be created without one.'
     : unconfirmed
-      ? 'This client was suggested from the plan set, not matched on a CCB licence number — confirm it before saving.'
+      ? 'This client was suggested from the plan set, not matched on a licence number — confirm it before saving.'
       : '';
   const hint = $('clientGateHint');
   if (hint) hint.style.display = missing ? '' : 'none';
+  // The licence is the CLIENT's, named by its state (#202) — textContent, never markup.
+  const words = $('clientGateLicence');
+  if (words) words.textContent = ParserReview.licenceWords(ParserReview.clientLicenceState(missing ? null : state.selectedClient));
 }
 
 // True while the picker still holds a client that the RESOLVER put there on weaker
@@ -5741,7 +5746,7 @@ async function saveToSystem() {
   // the backend: the button can be re-enabled from a console, and saveToSystem is called
   // by name elsewhere on this page.
   if (!existingId && !clientId) {
-    if (statusEl) statusEl.textContent = '⚠ Choose the Client / Contractor this project is filed for — the permit application carries that client’s CCB licence and the portal logs in as them, so a new project cannot be created without one.';
+    if (statusEl) statusEl.textContent = '⚠ ' + ParserReview.clientGatePrompt(null);
     refreshClientGate();
     $('clientSelect')?.focus();
     return;
@@ -5750,7 +5755,7 @@ async function saveToSystem() {
   // not bound until a human agrees. Checked here as well as by the button state, for the
   // same reason the rule above is: the button can be re-enabled from a console.
   if (!existingId && pendingClientConfirmation(clientId)) {
-    if (statusEl) statusEl.textContent = '⚠ This client was read off the plan set, not matched on a CCB licence number. Confirm it is the right company before saving — a project filed under the wrong contractor’s licence is the costliest mistake here.';
+    if (statusEl) statusEl.textContent = '⚠ This client was read off the plan set, not matched on a licence number. Confirm it is the right company before saving — a project filed under the wrong contractor’s licence is the costliest mistake here.';
     refreshClientGate();
     $('clientSelect')?.focus();
     return;
@@ -5908,7 +5913,7 @@ async function uploadIntakeDocs(projectId){
 // info. Auto-fill every contractor field from that client (and clear them when no
 // client is selected) so a project is never staged with another client's data.
 const CONTRACTOR_FIELDS = ['installerCompany','installerEmail','installerPhone','installerLine1','installerCity','installerState','installerZip','electricalLicenseNumber','contractorLicenseNumber','metroCityLicenseNumber','supervisingElectrician','electricianLicenseNumber','contractorLicenseNotes'];
-function clearContractorFields(){ CONTRACTOR_FIELDS.forEach(id => setVal(id, '')); updateGroupSummaries(); }
+function clearContractorFields(){ state.selectedClient = null; CONTRACTOR_FIELDS.forEach(id => setVal(id, '')); updateGroupSummaries(); }
 
 async function loadContractorInfo(clientId) {
   clearContractorFields();
@@ -5918,6 +5923,7 @@ async function loadContractorInfo(clientId) {
     if (!res.ok) return;
     const c = await res.json();
     const client = c.client || c;
+    state.selectedClient = client;
     setVal('installerCompany', client.legalBusinessName || client.companyName || '');
     setVal('installerEmail', client.businessEmail || client.contactEmail || '');
     setVal('installerPhone', client.businessPhone || client.phone || '');
@@ -5930,21 +5936,13 @@ async function loadContractorInfo(clientId) {
     setVal('metroCityLicenseNumber', client.metroCityLicenseNumber || '');
     setVal('supervisingElectrician', client.electricalSupervisorName || '');
     setVal('electricianLicenseNumber', client.electricianLicenseNumber || '');
-    // A readable summary of who will be on this submittal — for the coordinator to verify.
-    const notes = [
-      client.companyName || client.legalBusinessName,
-      client.ccbLicenseNumber ? `CCB ${client.ccbLicenseNumber}` : '',
-      client.electricalLicenseNumber ? `Elec Lic ${client.electricalLicenseNumber}` : '',
-      client.metroCityLicenseNumber ? `Metro/City ${client.metroCityLicenseNumber}` : '',
-      client.electricalSupervisorName ? `Supervisor ${client.electricalSupervisorName}` : '',
-      client.electricianLicenseNumber ? `Electrician Lic ${client.electricianLicenseNumber}` : '',
-      client.businessEmail || client.contactEmail,
-      client.businessPhone || client.phone,
-    ].filter(Boolean).join(' | ');
-    setVal('contractorLicenseNotes', notes);
+    // A readable summary of who will be on this submittal — for the coordinator to verify. The
+    // licence is labelled by the client's state (#202): DOPL for a Utah client, never Oregon's CCB.
+    setVal('contractorLicenseNotes', ParserReview.clientLicenceNote(client));
     updateGroupSummaries(); // setVal fires no input event; the installer fold's count would go stale
+    refreshClientGate();
     if (!client.ccbLicenseNumber) {
-      const s = $('saveStatus'); if (s) s.textContent = `⚠ ${client.companyName || 'This client'} has no CCB license on file — add it in the Clients tab before submitting.`;
+      const s = $('saveStatus'); if (s) s.textContent = `⚠ ${client.companyName || 'This client'} has no ${ParserReview.licenceWords(ParserReview.clientLicenceState(client))} on file — add it in the Clients tab before submitting.`;
     }
   } catch (e) {
     console.warn('Could not load contractor info:', e);
