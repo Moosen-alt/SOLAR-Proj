@@ -5,7 +5,7 @@ import { performance } from "node:perf_hooks";
 import type { AcroFieldForMapping, AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, JurisdictionCodeResearchInput, DesignCriteriaResearchResult, ParserExtractedField, ParserFieldEvidence, ParserExtractionConflict, ParserExtractionUncertainty, ParserExtractionResolution, PlanPageIndex, CodeEdition, CodeFamily, CodeFamilyAdoptionModel, JurisdictionAdoptionModel, UpcomingCodeEdition, WebLookupResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { RESEARCH_PORTAL_UNCONFIRMED_NOTE } from "./researchedPortalUrl";
-import { scopeResultsToState, stateScopeOf, stateScopedFormQueries } from "./formSearchScope";
+import { documentNameQueries, scopeResultsToState, stateScopeOf, stateScopedFormQueries } from "./formSearchScope";
 import { logger } from "./logger";
 import { persistLlmCall } from "./llmAccounting";
 import { routeFor, taskForLabel, takeAdvisorSlot, describeRoutes, BASELINE_MODEL, type LlmEffort, type LlmTask, type ResolvedRoute, type AdvisorConfig } from "./modelRouting";
@@ -3276,7 +3276,7 @@ Notes:
     });
   }
 
-  async findAhjFormUrl(input: { ahj: string; state: string; formType?: string; knownContext?: string }): Promise<AhjFormUrlResult> {
+  async findAhjFormUrl(input: { ahj: string; state: string; formType?: string; knownContext?: string; documentNames?: string[]; issuerHost?: string }): Promise<AhjFormUrlResult> {
     const formType = input.formType || "permit_application";
     const system = `You are a solar permitting research assistant. Find the OFFICIAL blank ${formType.replace(/_/g, " ")} PDF form that the named Authority Having Jurisdiction (AHJ) uses for residential rooftop solar PV permits.
 
@@ -3312,7 +3312,9 @@ Rules:
     // THE STATE, BY NAME AND ABBREVIATION, IN EVERY QUERY (issue #162): "State: OR" alone let three
     // searches for the City of Monroe, Oregon return only Monroe MI / CT / OH.
     const scope = stateScopeOf(input.state);
-    const queries = stateScopedFormQueries(input.ahj, input.state, formType);
+    // The dead-link retry (issue #205) searches for the lookup's documents BY NAME on the issuer's host.
+    const named = input.documentNames?.length ? documentNameQueries(input.ahj, input.state, input.documentNames, input.issuerHost) : [];
+    const queries = named.length ? named : stateScopedFormQueries(input.ahj, input.state, formType);
     const stateLine = scope ? `${scope.name} (${scope.abbr}) — only ${input.ahj}, ${scope.abbr}; a same-named place in any other state is not this AHJ` : input.state;
     const queryLines = queries.length ? `\nSearch with queries like these (each names the state):\n${queries.map((q) => `- ${q}`).join("\n")}` : "";
     const userMsg = `AHJ: ${input.ahj}\nState: ${stateLine}\nForm needed: residential solar ${formType.replace(/_/g, " ")} (building + electrical permit applications).${input.knownContext ? `\n\n${input.knownContext}\nStart from the known portal/URLs above when searching.` : ""}\nFind the AHJ's forms/applications page and the direct blank PDF links.${queryLines}`;

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { PDFDocument } from "pdf-lib";
 import type { AppDb } from "./db";
-import type { AhjFormUrlResult, LLMProvider, ProjectRecord } from "../../shared/src/types";
+import type { AhjFormUrlResult, LLMProvider, PermitProcessLookup, ProjectRecord } from "../../shared/src/types";
 import { inspectFormFields, inspectPlacedFields, loadStoredTemplates, formApplicationKind, storedApplicationKind, applicationKindForPath, type InspectedField, type OverlayField, type SignaturePlacement } from "./ahjForms";
 import {
   attestsAttachedDocument, OREGON_CCB_SOURCE, placementOnWidget, sanitizeAcroMap, STATE_LICENCE_SOURCE, typedLicenceSource, type OperatorItem,
@@ -46,6 +46,8 @@ import {
 export { applicationKindForProject, hasStoredTemplateOfType, type EnsureFormResult } from "./formAcquisitionPlan";
 import { clearFormSearchTimeout, noteFormSearchTimeout, recentFormSearchTimeout, type FormSearchTimeout } from "./formAcquisitionPlan";
 import { formatBudget } from "./llm";
+import { deadLinkSentence } from "./formAcquisitionPlan";
+import { getPermitProcessLookup, lookupPortalOnlyFor, portalOnlyCardSentence } from "./permitProcess";
 import { isRefusal, PAGE_READ_MIN_GAP_MS, type PageReader } from "./agencyPageReader";
 // Its own line (not beside the applicationDocs import above): forms-fill rewrites the ahjForms import next to it.
 import { permitStructureForProject } from "./applicationDocs";
@@ -254,20 +256,30 @@ export function sha256(bytes: Uint8Array): string {
 // ALWAYS carries a reason. Null still means "no usable PDF" to every caller; the reason is now
 // in the log instead of nowhere.
 export async function fetchPdf(url: string): Promise<Uint8Array | null> {
-  const failed = (): null => { noteFormFetchFailure(url); return null; };
+  return (await fetchPdfOutcome(url)).bytes;
+}
+
+/** A URL that answered 404 / 410: the document is GONE from that address (the AHJ moved it) — a
+ *  different finding from a wall, a login page or a timeout (issue #205). */
+export const isDeadLinkStatus = (status: number | undefined): boolean => status === 404 || status === 410;
+
+/** fetchPdf with the reason kept: `deadLink` when the server answered 404 / 410 (issue #205 — a
+ *  found blank whose link is dead is "found, dead link", never "not found"). */
+export async function fetchPdfOutcome(url: string): Promise<{ bytes: Uint8Array | null; status?: number; deadLink: boolean }> {
+  const failed = (status?: number) => { noteFormFetchFailure(url); return { bytes: null, ...(status ? { status } : {}), deadLink: isDeadLinkStatus(status) }; };
   try {
     const got = await fetchPublicDocument(url);
     if (!got.ok || !got.bytes) {
       logger.warn("ahj-forms", "a blank form could not be downloaded", {
         url, status: got.status, via: got.via, reason: got.reason,
       });
-      return failed();
+      return failed(got.status);
     }
     const buf = got.bytes;
     const type = got.contentType || "";
     // %PDF magic, or a pdf content-type. Guard against HTML error pages.
-    if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) { clearFormFetchFailure(url); return buf; }
-    if (type.includes("pdf") && buf.length > 1000) { clearFormFetchFailure(url); return buf; }
+    if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) { clearFormFetchFailure(url); return { bytes: buf, status: got.status, deadLink: false }; }
+    if (type.includes("pdf") && buf.length > 1000) { clearFormFetchFailure(url); return { bytes: buf, status: got.status, deadLink: false }; }
     // The link answered — with a login page, a "moved" notice or a CMS 200 error page. That is
     // a different repair from a wall (fix the link, not the browser), so it is said differently.
     logger.warn("ahj-forms", "a form link answered, but not with a PDF", {
@@ -706,7 +718,7 @@ export async function buildOverlayMapForPdf(
  *  AHJ facts, never project values. */
 export function formFindAuditDetails(
   ahj: string,
-  ensure: Pick<EnsureFormResult, "status" | "message" | "formName" | "permitType" | "sourceUrl" | "lookupFailed">,
+  ensure: Pick<EnsureFormResult, "status" | "message" | "formName" | "permitType" | "sourceUrl" | "lookupFailed" | "deadLinks">,
   additional: Array<{ formType: string; status: string; message: string }>,
 ): Record<string, unknown> {
   return {
@@ -714,6 +726,8 @@ export function formFindAuditDetails(
     message: String(ensure.message || "").slice(0, 2000),
     lookupFailed: Boolean(ensure.lookupFailed),
     sourceUrl: ensure.sourceUrl || "",
+    // Found, dead link (issue #205): the URLs that answered 404, kept with the finding.
+    ...(ensure.deadLinks?.length ? { deadLinks: ensure.deadLinks.slice(0, 6) } : {}),
     additional: additional.map((a) => `${a.formType}:${a.status}`),
     additionalMessages: additional.map((a) => `${a.formType}: ${String(a.message || "").slice(0, 600)}`),
   };
@@ -1099,7 +1113,11 @@ async function runAhjFormsPass(
 }
 
 /** One acquisition pass's shared search state: set when a form type's search ran out of budget. */
-export interface FormSearchPass { timedOut?: FormSearchTimeout }
+export interface FormSearchPass {
+  timedOut?: FormSearchTimeout;
+  /** Set once this pass spent its one dead-link retry (issue #205). */
+  deadLinkRetried?: boolean;
+}
 
 /** The operator's sentence for a timed-out form search (the App Docs panel shows it as the message). */
 export function searchTimeoutMessage(t: Pick<FormSearchTimeout, "budgetMs" | "pagesSeen" | "leads">): string {
@@ -1113,6 +1131,178 @@ function searchTimeoutResult(project: ProjectRecord, t: FormSearchTimeout): Ensu
     status: "not_found", lookupFailed: true, searchTimeout: t,
     message: `${searchTimeoutMessage(t)} — the search was not run again for this form in the same pass; not a finding about ${project.ahj}, and nothing has been counted as present.`,
   };
+}
+
+// ── Found, dead link: the one retry (issue #205) ──────────────────────────────────────────────────
+// Owner's live log (a Utah city, 2026-10-06): the search returned two city document links, both 404,
+// while the per-job process lookup for the same city had already named its two solar submittal
+// documents. The retry uses what we already know, scoped as the first search was:
+//   - the issuer's forms LISTING page (deadLinkListingPage: the page the lookup cited for the documents,
+//     else the listing a document platform keeps beside the dead file), read once through the pass's
+//     page reader (its budget);
+//   - one more search for the lookup's document names, on the issuer's host, in the AHJ's state — only
+//     when the lookup names any (without them a search would only repeat the first one).
+
+/** The submittal documents the per-job lookup names for this slot's permit — form-like names only
+ *  (an application, a form, a checklist…; a "site plan" is not a blank to search for). */
+export function processDocumentNames(lookup: PermitProcessLookup | null, formType: string): string[] {
+  if (!lookup) return [];
+  const disciplines = formType === "electrical_application" ? ["electrical", "combo"] : ["structural", "combo", "other"];
+  const own = lookup.permits.filter((p) => disciplines.includes(p.discipline));
+  const out: string[] = [];
+  for (const p of own.length ? own : lookup.permits) {
+    for (const d of p.documents?.value ?? []) {
+      const name = String(d || "").replace(/\s+/g, " ").trim();
+      if (name && /application|\bform\b|checklist|worksheet|affidavit|submittal/i.test(name) && !out.some((o) => o.toLowerCase() === name.toLowerCase())) out.push(name.slice(0, 120));
+    }
+  }
+  return out.slice(0, 3);
+}
+
+const DOC_NAME_STOP = new Set(["the", "for", "and", "of", "a", "an", "to", "pdf", "form"]);
+const docWords = (s: string): string[] => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").split(" ").filter((w) => w.length > 1 && !DOC_NAME_STOP.has(w));
+/** Does a link's text / slug name one of the lookup's documents (most of its words)? */
+export function namesProcessDocument(text: string, url: string, documentNames: string[]): boolean {
+  const have = new Set(docWords(`${text} ${documentSlugWords(url)}`));
+  return documentNames.some((n) => {
+    const want = docWords(n);
+    return want.length > 0 && want.filter((w) => have.has(w)).length / want.length >= 0.7;
+  });
+}
+
+/** Document platforms whose file links sit under a public LISTING page of their own, by the dead
+ *  link's URL shape (a platform's shape, never a jurisdiction's): a CivicPlus DocumentCenter file
+ *  (/DocumentCenter/View/<id>/<name>) is listed at /DocumentCenter on the same site. */
+const PLATFORM_LISTING_PAGES: Array<{ file: RegExp; listing: (u: URL) => string }> = [
+  { file: /\/DocumentCenter\/View\//i, listing: (u) => `${u.origin}/DocumentCenter` },
+];
+/** The issuer's forms listing page for the dead-link retry, on ANY site platform: the page the per-job
+ *  lookup cited for the documents (when it is a page, not a document), else the listing a known
+ *  document platform keeps beside the dead file, else "" (no listing known — nothing is guessed). */
+export function deadLinkListingPage(deadLinks: string[], docsSource: string): string {
+  if (docsSource && /^https?:\/\//i.test(docsSource) && !DOCUMENT_URL.test(docsSource)) return docsSource;
+  for (const dead of deadLinks) {
+    let u: URL;
+    try { u = new URL(dead); } catch { continue; }
+    const known = PLATFORM_LISTING_PAGES.find((p) => p.file.test(u.pathname));
+    if (known) return known.listing(u);
+  }
+  return "";
+}
+
+async function retryAfterDeadLinks(
+  db: AppDb,
+  llm: LLMProvider,
+  project: ProjectRecord,
+  formType: string,
+  ctx: {
+    research: AhjFormUrlResult;
+    deadLinks: string[];
+    tried: string[];
+    fp: FormsPageOptions;
+    kindDirective: string;
+    /** Download these; TRUE once a blank is held. */
+    tryCandidates: (list: FormCandidate[]) => Promise<boolean>;
+  },
+): Promise<string> {
+  const names = [project.ahj].filter(Boolean);
+  const onAhjSite = (url: string) => isAhjFormsSite(portalHostOf(url), names, project.state);
+  let lookup: PermitProcessLookup | null = null;
+  try { lookup = getPermitProcessLookup(db, project.state, project.ahj); } catch { lookup = null; }
+  const documentNames = processDocumentNames(lookup, formType);
+  // THE ISSUER'S HOST: where the dead link lived (it was on the AHJ's own site, or it would not have
+  // been tried as a found blank), else the lookup's cited documents page, else the forms page.
+  const docsSource = (lookup?.permits ?? []).map((p) => String(p.documents?.sourceUrl || "")).find((u) => u && onAhjSite(u)) || "";
+  const issuerUrl = ctx.deadLinks.find(onAhjSite) || docsSource || (ctx.research.formsPageUrl && onAhjSite(ctx.research.formsPageUrl) ? ctx.research.formsPageUrl : "");
+  const issuerHost = issuerUrl ? portalHostOf(issuerUrl) : "";
+  const onIssuer = (url: string) => {
+    const host = portalHostOf(url);
+    return Boolean(host) && (issuerHost ? registrableDomain(host) === registrableDomain(issuerHost) : onAhjSite(url));
+  };
+  const dead = new Set(ctx.deadLinks);
+  const fresh = (url: string) => !dead.has(url) && !ctx.tried.includes(url) && !neverTheApplication(url, formType) && onIssuer(url);
+  const notes: string[] = [];
+  // The other of the two building-side applications is not this one (the harvest's own test).
+  let want: "prescriptive" | "structural" | null = null;
+  try { want = formType === "building_application" || formType === "permit_application" ? applicationKindForProject(project) : null; } catch { want = null; }
+  const kindOk = (label: string, url: string) => {
+    const k = formApplicationKind(`${url} ${label}`);
+    return !(k && want && k !== want);
+  };
+
+  // (1) THE LISTING PAGE — free: no model call, one read from the pass's reader budget.
+  const listing = deadLinkListingPage(ctx.deadLinks.filter(onAhjSite), docsSource);
+  if (!listing) {
+    notes.push(`No forms listing page is known on ${project.ahj}'s site to re-read.`);
+  } else if (listing === ctx.research.formsPageUrl) {
+    notes.push(`The forms listing page ${listing} was already read in this search.`);
+  } else {
+    const reader = ctx.fp.reader !== undefined ? ctx.fp.reader : await defaultFormsPageReader();
+    if (!reader) {
+      notes.push(`The forms listing page ${listing} was not read (page reading is off on this installation).`);
+    } else {
+      await politeGap(listing, ctx.fp);
+      const read = await reader.read(listing);
+      noteHostHit(listing);
+      if (!read.ok || read.kind !== "html") {
+        notes.push(`The forms listing page ${listing} could not be read (${read.reason || read.kind}).`);
+      } else {
+        const fromPage: FormCandidate[] = [];
+        // FIRST, a link that names one of the lookup's documents by its own title, on the issuer's site —
+        // even an opaque file URL the catalog's application words would not pick. The lookup listed that
+        // document for THIS slot's permit (processDocumentNames), so it carries no discipline of its own
+        // ("Electrical Permit Application for Roof-Mounted Solar PV" is a combined permit's application).
+        if (documentNames.length) {
+          for (const l of read.links) {
+            if (fromPage.some((c) => c.url === l.href) || !fresh(l.href)) continue;
+            if (namesProcessDocument(l.text, l.href, documentNames) && kindOk(l.text, l.href)) fromPage.push({ url: l.href, label: l.text, origin: "forms-page" });
+          }
+        }
+        for (const l of applicationFormLinks([read], names, project.state)) {
+          if (!fromPage.some((c) => c.url === l.href) && fresh(l.href) && kindOk(l.text, l.href)) fromPage.push({ url: l.href, label: l.text, origin: "forms-page", discipline: l.discipline });
+        }
+        notes.push(`Re-read the forms listing page ${listing}: ${fromPage.length} current link(s).`);
+        if (fromPage.length && await ctx.tryCandidates(fromPage.slice(0, MAX_PAGE_CANDIDATES))) return ` Retried once: ${notes.join(" ")}`;
+      }
+    }
+  }
+
+  // (2) ONE SEARCH FOR THE LOOKUP'S DOCUMENTS BY NAME — only when the lookup names any.
+  if (!documentNames.length) {
+    notes.push(`The per-job process lookup names no submittal documents for ${project.ahj}, so the search was not run again.`);
+    return ` Retried once: ${notes.join(" ")}`;
+  }
+  const knownContext = [
+    `The form links found earlier for ${project.ahj} are DEAD (HTTP 404 — the AHJ has moved the files): ${ctx.deadLinks.join(", ")}. Never return them.`,
+    `${project.ahj}'s per-job process lookup names its residential solar submittal documents: ${documentNames.map((n) => `"${n}"`).join(", ")}. Search ${issuerHost ? `${issuerHost} (site:${issuerHost})` : `${project.ahj}'s own site`} for these documents BY NAME and return their CURRENT document links.`,
+    ctx.kindDirective,
+  ].filter(Boolean).join("\n\n");
+  const again = await llm.findAhjFormUrl({ ahj: project.ahj, state: project.state, formType, knownContext, documentNames, issuerHost });
+  const fromSearch: FormCandidate[] = [];
+  for (const url of again.candidateUrls ?? []) if (fresh(url) && kindOk("", url)) fromSearch.push({ url, label: "", origin: "research" });
+  for (const r of again.searchResults ?? []) {
+    if (fromSearch.some((c) => c.url === r.url) || !fresh(r.url) || !onAhjSite(r.url) || !kindOk(r.title, r.url)) continue;
+    // A result titled as one of the lookup's documents is this slot's (as on the listing page above).
+    if (namesProcessDocument(r.title, r.url, documentNames)) { fromSearch.push({ url: r.url, label: r.title, origin: "search-result" }); continue; }
+    const doc = classifyApplicationDocument(r.title, r.url);
+    if (doc) fromSearch.push({ url: r.url, label: r.title, origin: "search-result", discipline: doc.discipline });
+  }
+  notes.push(`Searched once more for ${documentNames.map((n) => `"${n}"`).join(", ")} on ${issuerHost || `${project.ahj}'s site`}: ${fromSearch.length} current link(s).`);
+  if (fromSearch.length) await ctx.tryCandidates(fromSearch.slice(0, MAX_PAGE_CANDIDATES + MAX_SEARCH_CANDIDATES));
+  return ` Retried once: ${notes.join(" ")}`;
+}
+
+/** The track a form slot belongs to, for the lookup's portal answer (null: not an application). */
+function slotTrack(formType: string): "building" | "electrical" | null {
+  if (formType === "electrical_application") return "electrical";
+  if (formType === "building_application" || formType === "permit_application") return "building";
+  return null;
+}
+/** The lookup says this slot's application is taken in the AHJ's portal and names no PDF blank. */
+function slotPortalOnly(project: ProjectRecord, formType: string): { portalUrl: string } | null {
+  const track = slotTrack(formType);
+  if (!track) return null;
+  try { return lookupPortalOnlyFor(project, track); } catch { return null; }
 }
 
 // WHICH of the two building-side applications a form search is for — and NONE where the split does
@@ -1315,6 +1505,7 @@ export async function ensureAhjFormTemplate(
     : "";
 
   if (!candidateUrls.length) {
+    const portalOnlyEarly = slotPortalOnly(project, formType);
     const portalNote = research.submittalPortalUrl
       ? ` Submittal portal: ${research.submittalPortalUrl}${research.portalPlatform ? ` (${research.portalPlatform})` : ""} — it's pre-filled on the record/training step.`
       : "";
@@ -1328,7 +1519,7 @@ export async function ensureAhjFormTemplate(
       // A refused site is not "no form": nothing was downloaded because nothing more was asked of it.
       message: `Permitting type: ${permitType.callout}${research.notes ? ` ${research.notes}` : harvest.refusedDomains.size
         ? ` No form was downloaded for ${project.ahj}: its site refused the read. Retry Find official form later, or upload the official blank.`
-        : ` No downloadable PDF form was found for ${project.ahj} — submit through the method above.`}${harvestNote}${portalNote}${reqNote}`,
+        : ` No downloadable PDF form was found for ${project.ahj} — submit through the method above.`}${harvestNote}${portalNote}${reqNote}${portalOnlyEarly ? ` ${portalOnlyCardSentence(project, portalOnlyEarly.portalUrl)}` : ""}`,
     };
   }
 
@@ -1340,43 +1531,84 @@ export async function ensureAhjFormTemplate(
   const downloads: Array<{ url: string; bytes: Uint8Array; type: string; label: string; found: boolean }> = [];
   const seenHashes = new Set<string>();
   const storedTypes = new Set<string>();
-  for (const c of candidates) {
-    if (downloads.length >= 4) break;
-    const url = c.url;
-    // A document WE found (the forms page / a search result) is named by its own words: it is this
-    // slot's primary blank only when its discipline fits, and it is fetched as an extra only for a
-    // slot nothing downloaded yet fills — never a wasted request to the AHJ's host.
-    const found = c.origin === "forms-page" || c.origin === "search-result";
-    const words = found ? `${c.label} ${documentSlugWords(url)}` : "";
-    if (found) {
-      if (!downloads.length && c.discipline && !disciplineFitsSlot(c.discipline, formType)) continue;
-      if (downloads.length) {
-        const t = classifyFormType(`${url} ${words}`, formType);
-        if (t === formType || downloads.some((d) => d.type === t)) continue;
+  // FOUND, DEAD LINK (issue #205): a candidate that answered 404 / 410 is a blank the AHJ MOVED — kept
+  // apart from every other failed request (a wall, a login page, an HTML error page), because the
+  // operator's repair differs ("the city moved the file", not "none exists") and so does the cooldown.
+  const deadLinks: string[] = [];
+  let otherFailures = 0;
+  const tryCandidates = async (list: FormCandidate[]): Promise<void> => {
+    for (const c of list) {
+      if (downloads.length >= 4) break;
+      const url = c.url;
+      // A document WE found (the forms page / a search result) is named by its own words: it is this
+      // slot's primary blank only when its discipline fits, and it is fetched as an extra only for a
+      // slot nothing downloaded yet fills — never a wasted request to the AHJ's host.
+      const found = c.origin === "forms-page" || c.origin === "search-result";
+      const words = found ? `${c.label} ${documentSlugWords(url)}` : "";
+      if (found) {
+        if (!downloads.length && c.discipline && !disciplineFitsSlot(c.discipline, formType)) continue;
+        if (downloads.length) {
+          const t = classifyFormType(`${url} ${words}`, formType);
+          if (t === formType || downloads.some((d) => d.type === t)) continue;
+        }
       }
+      // AND GENTLY, whoever proposed the URL: a download from a host this module just asked (the forms
+      // page read, any earlier download) waits the gap — the model's own link on the forms page's host too.
+      // EVERY request is recorded on its host, whoever proposed it and whether or not it returned a PDF
+      // (skeptic F3: only a FOUND document was recorded, so a failed model link on the same host was
+      // followed at once by the next request — the gap was measured from the forms page read).
+      await politeGap(url, fp);
+      const got = await fetchPdfOutcome(url);
+      noteHostHit(url);
+      if (!got.bytes) {
+        if (got.deadLink) deadLinks.push(url);
+        else otherFailures++;
+        continue;
+      }
+      const bytes = got.bytes;
+      const hash = sha256(bytes);
+      if (seenHashes.has(hash)) continue;
+      seenHashes.add(hash);
+      const type = downloads.length === 0 ? formType : classifyFormType(`${url} ${found ? words : research.formName || ""}`, formType);
+      downloads.push({ url, bytes, type, label: found ? c.label : "", found });
     }
-    // AND GENTLY, whoever proposed the URL: a download from a host this module just asked (the forms
-    // page read, any earlier download) waits the gap — the model's own link on the forms page's host too.
-    // EVERY request is recorded on its host, whoever proposed it and whether or not it returned a PDF
-    // (skeptic F3: only a FOUND document was recorded, so a failed model link on the same host was
-    // followed at once by the next request — the gap was measured from the forms page read).
-    await politeGap(url, fp);
-    const bytes = await fetchPdf(url);
-    noteHostHit(url);
-    if (!bytes) continue;
-    const hash = sha256(bytes);
-    if (seenHashes.has(hash)) continue;
-    seenHashes.add(hash);
-    const type = downloads.length === 0 ? formType : classifyFormType(`${url} ${found ? words : research.formName || ""}`, formType);
-    downloads.push({ url, bytes, type, label: found ? c.label : "", found });
+  };
+  await tryCandidates(candidates);
+  // ONE RETRY, IN THE SAME RUN, WHEN A FOUND LINK IS DEAD (issue #205): the issuer's forms listing page,
+  // and — when the per-job process lookup names this AHJ's submittal documents — one more search for
+  // them BY NAME on the issuer's own host, in the AHJ's state (#162 scope). Once per pass (searchPass),
+  // within the search's existing per-call cap; never on a found link that merely failed otherwise.
+  let retryNote = "";
+  if (!downloads.length && deadLinks.length && !opts.searchPass?.deadLinkRetried) {
+    if (opts.searchPass) opts.searchPass.deadLinkRetried = true;
+    retryNote = await retryAfterDeadLinks(db, llm, project, formType, {
+      research, deadLinks, tried: candidateUrls, fp, kindDirective,
+      tryCandidates: async (list) => { candidateUrls.push(...list.map((c) => c.url)); await tryCandidates(list); return downloads.length > 0; },
+    });
   }
+  // THE PORTAL, WHEN THE LOOKUP SAYS THE APPLICATION IS TAKEN THERE (issue #205): no blank is expected.
+  const portalOnly = slotPortalOnly(project, formType);
+  const portalOnlyNote = portalOnly ? ` ${portalOnlyCardSentence(project, portalOnly.portalUrl)}` : "";
   if (!downloads.length) {
+    // Every link that failed answered 404 / 410: FOUND, DEAD LINK — not "not found".
+    if (deadLinks.length && !otherFailures) {
+      return {
+        status: "dead_link",
+        deadLinks: [...new Set(deadLinks)],
+        sourceUrl: deadLinks[0],
+        permitType: permitType.callout,
+        ...(research.lookupFailed ? { lookupFailed: true } : {}),
+        ...(searchTimeout ? { searchTimeout } : {}),
+        message: `${couldNotRun ? `${couldNotRun} ` : ""}Permitting type: ${permitType.callout} Found, dead link: ${deadLinkSentence([...new Set(deadLinks)])}. Find official form again, or upload the current blank; it has not been counted as present.${retryNote}${harvestNote}${portalOnlyNote}`,
+      };
+    }
     return {
       status: "not_found",
       permitType: permitType.callout,
       ...(research.lookupFailed ? { lookupFailed: true } : {}),
       ...(searchTimeout ? { searchTimeout } : {}),
-      message: `${couldNotRun ? `${couldNotRun} ` : ""}Permitting type: ${permitType.callout} Found candidate links for ${project.ahj} but none returned a valid PDF (link rot or login-gated). Upload the blank PDF to proceed. Tried: ${candidateUrls.join(", ")}${harvestNote}`,
+      ...(deadLinks.length ? { deadLinks: [...new Set(deadLinks)] } : {}),
+      message: `${couldNotRun ? `${couldNotRun} ` : ""}Permitting type: ${permitType.callout} Found candidate links for ${project.ahj} but none returned a valid PDF (link rot or login-gated). Upload the blank PDF to proceed. Tried: ${candidateUrls.join(", ")}${deadLinks.length ? ` (dead links, HTTP 404: ${[...new Set(deadLinks)].join(", ")})` : ""}${retryNote}${harvestNote}${portalOnlyNote}`,
     };
   }
 

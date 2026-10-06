@@ -117,6 +117,30 @@ export function permitProcessFor(project: Pick<ProjectRecord, "state" | "ahj">):
   return registry.get(permitProcessKey(project.state, project.ahj)) ?? null;
 }
 
+/** A document name that says it is a downloadable blank (a PDF, a form to download / fill). */
+const NAMES_PDF_BLANK = /\bpdf\b|\.pdf\b|\bform\b|\bfillable\b|\bdownload/i;
+
+/**
+ * THE APPLICATION IS TAKEN IN THE AHJ'S PORTAL — NO PDF BLANK EXPECTED (issue #205, a Utah city: the
+ * lookup named its city's permit portal, and the forms gate still held "official form not
+ * on file"). True for a track when the per-job lookup cites a portal for that track's permit and names
+ * no PDF blank among its documents (NAMES_PDF_BLANK). A track whose lookup names a PDF keeps its hold.
+ */
+export function lookupPortalOnlyFor(project: Pick<ProjectRecord, "state" | "ahj">, track: "building" | "electrical"): { portalUrl: string } | null {
+  const lookup = permitProcessFor(project);
+  if (!lookup) return null;
+  const disciplines = track === "electrical" ? ["electrical", "combo"] : ["structural", "combo"];
+  const permits = lookup.permits.filter((p) => disciplines.includes(p.discipline));
+  const withPortal = permits.find((p) => String(p.portalUrl?.value || "").trim());
+  if (!withPortal) return null;
+  if (permits.some((p) => (p.documents?.value ?? []).some((d) => NAMES_PDF_BLANK.test(String(d || ""))))) return null;
+  return { portalUrl: String(withPortal.portalUrl.value).trim() };
+}
+/** The card's / the gate's words for it. */
+export function portalOnlyCardSentence(project: Pick<ProjectRecord, "ahj">, portalUrl: string): string {
+  return `${project.ahj || "This AHJ"} takes the application in its portal (${portalUrl}, per the per-job lookup); no PDF blank expected.`;
+}
+
 export type SavePermitProcessResult = { saved: boolean; reason: string; lookup: PermitProcessLookup | null };
 
 /**

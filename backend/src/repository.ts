@@ -81,7 +81,7 @@ import { statewideDecisionFor, statewideUrlRefusal } from "./statewideEvidence";
 import { RESEARCH_UNCONFIRMED_REASON, researchNamedPlatform, researchSaysPortalUnconfirmed, researchWithFittedUrl } from "./researchedPortalUrl";
 import { bindRecipeForReplay, describeReplayBinding, openPerJobQuestions } from "./recipeReplayBinding";
 import { agencyListStatusResolver, documentInventory, missingFilledAtStaging, owedDocumentAction, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
-import { startedAtLabel, type StageAcquiredForm } from "./formAcquisitionPlan";
+import { deadLinkSentence, formDeadLinks, startedAtLabel, type StageAcquiredForm } from "./formAcquisitionPlan";
 import { agencyListReplacesLine, issuingAgencyDocumentList } from "./applicationDocsAgency";
 import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 // Static cycle (nextStep imports repository), used at CALL time only on both sides — the same
@@ -3425,6 +3425,8 @@ function acquisitionSentence(a: StageAcquiredForm | undefined): string {
   // The search is running NOW (formAcquisitionPlan's in-flight registry): said as such — never "find
   // the official form or upload the blank" over a search that is finding it.
   if (a.inFlight) return `Stage is searching for it now (${startedAtLabel(a.inFlight.since)}) — the form research for ${a.authority} is in flight; when it finishes this row says what it found`;
+  // A dead-link run left the cooldown open for ONE more search (issue #205): said, with the dead URL.
+  if (a.via === "research" && a.deadLinks?.length) return `${deadLinkSentence(a.deadLinks)}; Stage's form research searches once more for ${a.authority} — if it finds nothing, Stage stops and says so`;
   if (a.via === "research") return `no free copy is on file; Stage's form research runs for ${a.authority} (the 24h cooldown is open) — if it finds nothing, Stage stops and says so`;
   return `${a.authority}'s ${a.via === "curated" ? "published form (a checked, hash-locked copy)" : "application PDF the per-job lookup cites"} is downloaded from ${a.sourceUrl} and filled before Stage counts — if the download fails, Stage stops and says so`;
 }
@@ -3855,7 +3857,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
         ? docInventory.applicationSetUnknown
         : gateDocs.owed.length
         ? `Missing before staging: ${gateDocs.owed
-            .map((d) => `${d.docType === "structural_letter" && d.why ? `${d.label} (${d.why})` : d.label} — ${owedDocumentAction(d)}`)
+            .map((d) => `${d.docType === "structural_letter" && d.why ? `${d.label} (${d.why})` : d.label} — ${owedDocumentAction(d, formDeadLinks(db, project))}`)
             .join("; ")}.`
         : docInventory.missingAdvisory.length
           ? "Confirm the advisory document(s) are included in the plan set."
@@ -3870,7 +3872,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       ...(gateDocs.owed.length ? {
         holds: gateDocs.owed.map((d) => ({
           label: d.label,
-          action: owedDocumentAction(d),
+          action: owedDocumentAction(d, formDeadLinks(db, project)),
           tracks: GATE_TRACKS.filter((t) => stagingMissingDocuments({ ...docInventory, missingBlocking: [d] }, t).length > 0),
         })),
       } : {}),
@@ -8486,7 +8488,7 @@ export async function prepareSubmission(
   if (missingDocs.length > 0) {
     // Each document says its own fix (owedDocumentAction — the gate's words): a form Stage could not
     // acquire is found / uploaded as a blank; a file is attached or split out of the plan set.
-    throw new HttpError(409, `Submission staging blocked: required document(s) not attached${track !== "nem" ? " after Stage's own form acquisition and fill" : ""} — ${missingDocs.map((d) => `${d.label} (${owedDocumentAction(d)})`).join("; ")}. The AHJ/utility must receive a complete package.`, {
+    throw new HttpError(409, `Submission staging blocked: required document(s) not attached${track !== "nem" ? " after Stage's own form acquisition and fill" : ""} — ${missingDocs.map((d) => `${d.label} (${owedDocumentAction(d, formDeadLinks(db, detail.project))})`).join("; ")}. The AHJ/utility must receive a complete package.`, {
       missingDocuments: missingDocs.map((d) => ({ docType: d.docType, label: d.label, lane: d.lane })),
     });
   }

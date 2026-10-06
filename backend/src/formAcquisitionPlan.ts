@@ -35,8 +35,12 @@ import { servedByStateIssuer, stateIssuerFormsFor, stateRulesFor, stateTradeIssu
 import { sameAgencyName } from "./agencyName";
 
 export interface EnsureFormResult {
-  status: "exists" | "acquired" | "needs_manual" | "not_found";
+  /** dead_link (issue #205): the search FOUND the blank, but every link to it answered 404 / 410 —
+   *  the AHJ moved the file, not "it has none". `deadLinks` names the URLs. */
+  status: "exists" | "acquired" | "needs_manual" | "not_found" | "dead_link";
   message: string;
+  /** The found-but-dead URLs (status dead_link). */
+  deadLinks?: string[];
   formName?: string;
   sourceUrl?: string;
   mappedFields?: number;
@@ -121,6 +125,42 @@ export function acquisitionCooldownOpen(db: AppDb, key: string): boolean {
   if (!table) return true;
   const prior = db.get<{ attempted_at: number }>("SELECT attempted_at FROM ahj_form_acquisition_attempts WHERE scope_key = ?", [key]);
   return !prior || Date.now() - Number(prior.attempted_at) >= FORM_ACQUISITION_COOLDOWN_MS;
+}
+
+// ── Found, dead link (issue #205) ───────────────────────────────────────────────────────
+// Owner's live log (a Utah city, 2026-10-06): the search found two city blanks, both answered 404, and the run was counted as a finished "not found" — the 24h cooldown held the next
+// project in the city to the no-research pass. A run that ended ONLY in dead links is recorded here
+// (the URLs, when) instead of holding the cooldown, so the next project in that AHJ/path may search
+// ONCE more; a second dead-link run inside FORM_ACQUISITION_COOLDOWN_MS keeps the cooldown (that was
+// the one retry). Written by prepareOfficialDocuments (the claim's owner), created there — never by a
+// read: formDeadLinks below answers "no table" as "nothing recorded" (reads write nothing).
+export const FORM_DEAD_LINK_TABLE = "ahj_form_dead_links";
+export function ensureFormDeadLinkTable(db: AppDb): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS ${FORM_DEAD_LINK_TABLE} (
+    scope_key TEXT PRIMARY KEY, urls_json TEXT NOT NULL, recorded_at INTEGER NOT NULL)`);
+}
+/** The dead-link record for this cooldown key inside FORM_ACQUISITION_COOLDOWN_MS, else null. READ-ONLY. */
+export function formDeadLinkRecord(db: AppDb, key: string): { urls: string[]; recordedAt: number } | null {
+  const table = db.get<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", [FORM_DEAD_LINK_TABLE]);
+  if (!table) return null;
+  const row = db.get<{ urls_json: string; recorded_at: number }>(`SELECT urls_json, recorded_at FROM ${FORM_DEAD_LINK_TABLE} WHERE scope_key = ?`, [key]);
+  if (!row || Date.now() - Number(row.recorded_at) >= FORM_ACQUISITION_COOLDOWN_MS) return null;
+  let urls: string[] = [];
+  try { urls = (JSON.parse(row.urls_json) as unknown[]).map(String).filter(Boolean); } catch { urls = []; }
+  return { urls, recordedAt: Number(row.recorded_at) };
+}
+/** The found-but-dead form URLs recorded for this project's AHJ/path (the gate names them), else []. */
+export function formDeadLinks(db: AppDb, project: ProjectRecord): string[] {
+  try {
+    const path = resolvePermitPath(project).path;
+    if (path === "unknown") return [];
+    return formDeadLinkRecord(db, acquisitionScopeKey(project, path))?.urls ?? [];
+  } catch { return []; }
+}
+/** The operator's words for found-but-dead links: the file moved, it did not vanish. */
+export function deadLinkSentence(urls: string[]): string {
+  const shown = urls.slice(0, 3);
+  return `the form search found ${shown.length > 1 ? "these links" : "a link"} for it, but ${shown.length > 1 ? "they answer" : "it answers"} 404 (dead link — the AHJ has moved the file, not removed it): ${shown.join(", ")}`;
 }
 
 // ── The form research pass in flight (single flight) ────────────────────────────────────
@@ -431,6 +471,9 @@ export interface StageAcquiredForm {
   /** Set when the research pass for this AHJ/path is running RIGHT NOW (formResearchInFlight):
    *  the gate says "Stage is searching for it now — started HH:MM", never "find it or upload it". */
   inFlight?: { since: string };
+  /** The links the LAST search found for it that answered 404 (formDeadLinks, issue #205): this
+   *  research pass is the one retry a dead-link run leaves open. */
+  deadLinks?: string[];
 }
 
 /**
@@ -482,6 +525,9 @@ export function stageAcquiresForm(
   // "claimed, in flight" from "claimed, finished".
   const running = formResearchInFlight(acquisitionScopeKey(project, acq.path));
   if (running) return { via: "research", sourceUrl: "", authority: project.ahj, inFlight: { since: running.since } };
-  if (acq.researchOpen && !findApplicationProfile(project).requiresPortalEntryOnly) return { via: "research", sourceUrl: "", authority: project.ahj };
+  if (acq.researchOpen && !findApplicationProfile(project).requiresPortalEntryOnly) {
+    const deadLinks = formDeadLinks(db, project);
+    return { via: "research", sourceUrl: "", authority: project.ahj, ...(deadLinks.length ? { deadLinks } : {}) };
+  }
   return null;
 }

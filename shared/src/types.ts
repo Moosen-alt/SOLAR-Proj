@@ -3385,6 +3385,11 @@ export interface LLMProvider {
     formType?: string;
     /** What the KB already knows (imported reference data) — a verified-first starting point. */
     knownContext?: string;
+    /** The dead-link retry (issue #205): the submittal documents the per-job process lookup names —
+     *  the queries search for them BY NAME (each still naming the state, #162). */
+    documentNames?: string[];
+    /** The issuer's own host, to scope those queries to (site:<host>). */
+    issuerHost?: string;
   }): Promise<AhjFormUrlResult>;
 
   /** Map a blank form's AcroForm field names onto project data sources so the
