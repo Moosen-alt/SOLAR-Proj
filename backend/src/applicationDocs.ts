@@ -54,6 +54,8 @@ export interface PermitPrerequisiteStep {
   step: string;
   sourceUrl: string;
   quote: string;
+  /** Other pages stating the same step (near-duplicates collapsed into this one). */
+  alsoSourceUrls?: string[];
 }
 export interface PermitStructureAnswer {
   structure: "separate" | "combo" | "unknown";
@@ -104,7 +106,7 @@ function citedPrerequisites(project: ProjectRecord): PermitPrerequisiteStep[] {
   for (const p of lk?.prerequisites ?? []) {
     const step = typeof p?.value === "string" ? p.value.trim() : "";
     if (!step || !/^https?:\/\//i.test(String(p.sourceUrl || "")) || String(p.quote || "").trim().length < 8) continue;
-    if (!out.some((o) => o.step.toLowerCase() === step.toLowerCase())) out.push({ step, sourceUrl: String(p.sourceUrl), quote: String(p.quote).trim() });
+    if (!out.some((o) => o.step.toLowerCase() === step.toLowerCase())) out.push({ step, sourceUrl: String(p.sourceUrl), quote: String(p.quote).trim(), ...(p.alsoSourceUrls?.length ? { alsoSourceUrls: [...p.alsoSourceUrls] } : {}) });
   }
   return out;
 }
