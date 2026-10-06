@@ -554,8 +554,8 @@
       "id": "reviewer.profile.missing",
       "severity": "warning",
       "category": "ahj_profile",
-      "title": "No seeded AHJ process profile matched",
-      "message": "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal.",
+      "title": "Portland permit process (who issues, single or separate permits, portal, forms): not in the shipped reference file and the per-job lookup found none",
+      "message": "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal. Adopted code editions are a separate record (jurisdiction code profile): not read by this check.",
       "cityFeedback": "The project jurisdiction/process requirements could not be matched to the seeded AHJ profile table. Provide confirmation of the AHJ, portal path, required applications, signature/stamp requirements, and utility sequencing before submission.",
       "designTeamAction": "Confirm the AHJ/process profile and add any required local forms or stamped documents.",
       "evidenceNeeded": [
@@ -566,18 +566,18 @@
       ],
       "codeReferences": [],
       "installerCallout": true,
-      "evidenceStatus": "missing",
+      "evidenceStatus": "weak",
       "evidenceFound": [
         {
           "kind": "absence_check",
-          "label": "Battery operating mode — not found in the package",
+          "label": "General source check",
           "source": "Parsed project package",
-          "excerpt": "No matching evidence found. Checked for: Battery model/quantity, Backup/non-backup mode, Export setting, Backup panel scope.",
+          "excerpt": "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal. Adopted code editions are a separate record (jurisdiction code profile): not read by this check.",
           "confidence": "low",
           "pageHint": "",
           "screenshotPath": "",
           "verifier": "rule_engine",
-          "note": "This is a missing-proof callout, not proof of a design defect. Verify the source package before sending to client."
+          "note": "Rule-generated callout. Human should verify the source package before forwarding."
         }
       ]
     }
@@ -1134,8 +1134,8 @@
       "id": "reviewer.profile.missing",
       "severity": "warning",
       "category": "ahj_profile",
-      "title": "No seeded AHJ process profile matched",
-      "message": "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal.",
+      "title": "Portland permit process (who issues, single or separate permits, portal, forms): not in the shipped reference file and the per-job lookup found none",
+      "message": "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal. Adopted code editions are a separate record (jurisdiction code profile): not read by this check.",
       "cityFeedback": "The project jurisdiction/process requirements could not be matched to the seeded AHJ profile table. Provide confirmation of the AHJ, portal path, required applications, signature/stamp requirements, and utility sequencing before submission.",
       "designTeamAction": "Confirm the AHJ/process profile and add any required local forms or stamped documents.",
       "evidenceNeeded": [
@@ -1146,18 +1146,18 @@
       ],
       "codeReferences": [],
       "installerCallout": true,
-      "evidenceStatus": "missing",
+      "evidenceStatus": "weak",
       "evidenceFound": [
         {
           "kind": "absence_check",
-          "label": "Battery operating mode — not found in the package",
+          "label": "General source check",
           "source": "Parsed project package",
-          "excerpt": "No matching evidence found. Checked for: Battery model/quantity, Backup/non-backup mode, Export setting, Backup panel scope.",
+          "excerpt": "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal. Adopted code editions are a separate record (jurisdiction code profile): not read by this check.",
           "confidence": "low",
           "pageHint": "",
           "screenshotPath": "",
           "verifier": "rule_engine",
-          "note": "This is a missing-proof callout, not proof of a design defect. Verify the source package before sending to client."
+          "note": "Rule-generated callout. Human should verify the source package before forwarding."
         }
       ]
     }
