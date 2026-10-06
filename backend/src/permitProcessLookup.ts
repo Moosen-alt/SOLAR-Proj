@@ -670,7 +670,9 @@ export interface PermitProcessLookupRun {
   saved: boolean;
   reason: string;
   lookup: PermitProcessLookup | null;
-  calls: Array<{ part: string; grounded: number; searches?: number; stopReason: string | null; error?: string; pagesRead: number; readPages?: boolean; agency?: string }>;
+  /** One entry per model call: searches used of its cap, how many returned results (grounded), its
+   *  wall time — the same facts the per-step log line prints (#206). */
+  calls: Array<{ part: string; grounded: number; searches?: number; searchCap?: number; ms?: number; stopReason: string | null; error?: string; pagesRead: number; readPages?: boolean; agency?: string }>;
   /** The model's raw answers and the URLs its searches returned — for offline re-scoring only
    *  (never stored by the job). */
   raw?: { process: string; documentsFees: string; processUrls: string[]; documentsFeesUrls: string[]; portal?: string; portalUrls?: string[] };
@@ -680,9 +682,10 @@ export interface PermitProcessLookupRun {
 
 /**
  * THE BOUND (per lookup, worst case). Calls: process 1 (+1 retry on an abort) + portal ≤ 2 + documents/
- * fees ≤ 2 (+1 retry each on an abort, WITHOUT page reading) = 8. Searches: 8 (+8) + 2×4 + 2×5 (+2×5)
- * = 44. Page fetches (readPages): 2×3 + 2×3 = 12, each capped at DESIGN_LOOKUP_MAX_PAGE_TOKENS. Time:
- * the portal and documents/fees calls run CONCURRENTLY after the process part, so wall time ≤ 4 part
+ * fees ≤ 2 (+1 retry each on an abort, WITHOUT page reading) = 8. Searches: 5 (+5) + 2×4 + 2×5 (+2×5)
+ * = 38 — no step may search more than LOOKUP_SEARCH_CAP. Page fetches (readPages): 2×3 + 2×3 = 12, each
+ * capped at DESIGN_LOOKUP_MAX_PAGE_TOKENS. Time: the portal and documents/fees calls run CONCURRENTLY
+ * after the process part (documents/fees starts before the portal catalog reads), so wall time ≤ 4 part
  * budgets (process + retry, documents/fees + retry) = 20 min at the 300 s default. Every call carries
  * its own abort; an aborted/ungrounded call keeps NOTHING (no search results → no value), so a
  * timeout never saves a guess.
@@ -694,9 +697,17 @@ export interface PermitProcessLookupRun {
  * its catalog SKIPS the portal model call.
  */
 const ABORTED = /abort|timeout|timed out|overloaded|5\d\d/i;
-const PORTAL_SEARCHES = 4;
+/** THE PER-STEP SEARCH CAP (#206), passed to the server as web_search max_uses: at the cap the model
+ *  is refused further searches and answers from what it has. Live (Saratoga Springs UT, 2026-10-06)
+ *  the process step was allowed 8 and spent its whole 300 s budget searching (8 × ~37 s), was aborted
+ *  with no answer and retried — a 5-minute loss before any other step could start; the retry needed
+ *  ONE search. 5 searches fit inside the part budget at that pace (5 × ~37 s ≈ 190 s), so the first
+ *  attempt lands. Every step's allowance is at most this. */
+export const LOOKUP_SEARCH_CAP = 5;
+const PROCESS_SEARCHES = LOOKUP_SEARCH_CAP;
+const PORTAL_SEARCHES = Math.min(4, LOOKUP_SEARCH_CAP);
 const PORTAL_FETCHES = 3;
-const DOCS_SEARCHES = 5;
+const DOCS_SEARCHES = LOOKUP_SEARCH_CAP;
 const DOCS_FETCHES = 3;
 const partBudgetMs = () => Math.max(300000, Number(process.env.PERMIT_PROCESS_LOOKUP_TIMEOUT_MS) || 0);
 const seenOf = (r: WebLookupResult) => [...r.resultUrls, ...(r.fetchedUrls ?? [])];
@@ -940,7 +951,14 @@ export function defaultLookupReader(maxReads = 18): PageReader | null {
 export async function runPermitProcessLookup(
   db: AppDb,
   llm: Pick<LLMProvider, "webLookup">,
-  input: { state: string; ahj: string; utility?: string; dcKw?: string | number; acKw?: string | number; permitPath?: string; force?: boolean; reader?: PageReader | null },
+  input: {
+    state: string; ahj: string; utility?: string; dcKw?: string | number; acKw?: string | number; permitPath?: string; force?: boolean; reader?: PageReader | null;
+    /** Called ONCE, as soon as a grounded process part has named who issues each permit (and the
+     *  delegation rows saying so are written) — before the portal and documents/fees steps run. The
+     *  job queues the permit-track fee research here instead of after the whole lookup (#206).
+     *  Best effort: a throw here never changes the lookup. */
+    onIssuerKnown?: (issuer: { issuingAgency: string | null; disciplines: PermitProcessDiscipline[] }) => void;
+  },
 ): Promise<PermitProcessLookupRun> {
   const calls: PermitProcessLookupRun["calls"] = [];
   const existing = getPermitProcessLookup(db, input.state, input.ahj);
@@ -949,16 +967,30 @@ export async function runPermitProcessLookup(
   // re-asked without `force` — the trigger's 24 h dedupe bounds how often.
   if (existing && !input.force && !lookupHasUnaskedPart(existing)) return { saved: false, reason: "already looked up (seeded)", lookup: existing, calls };
   if (!llm.webLookup) return { saved: false, reason: "no web lookup available (no model key)", lookup: existing, calls };
-  const ask = llm.webLookup.bind(llm);
+  const webLookup = llm.webLookup.bind(llm);
+  // Every call timed, and its cap remembered, for the per-step line below.
+  const timing = new WeakMap<WebLookupResult, { ms: number; cap: number }>();
+  const ask = async (q: Parameters<typeof webLookup>[0]): Promise<WebLookupResult> => {
+    const t0 = Date.now();
+    const r = await webLookup(q);
+    timing.set(r, { ms: Date.now() - t0, cap: q.maxSearches ?? 0 });
+    return r;
+  };
   const reader = input.reader === undefined ? defaultLookupReader() : input.reader;
   const entity = await lookupPortalEntity(db, input.state, input.ahj);
-  const logCall = (part: string, r: WebLookupResult, extra: { readPages?: boolean; agency?: string } = {}) =>
-    calls.push({ part, grounded: r.groundedSearches, searches: r.searches, stopReason: r.stopReason, error: r.error, pagesRead: r.pagesRead, ...extra });
+  // ONE LINE PER STEP (#206): searches used of the cap, how many returned results, and whether the
+  // answer counts as grounded — so the next slow lookup is diagnosable from the log without a re-run.
+  const logCall = (part: string, r: WebLookupResult, extra: { readPages?: boolean; agency?: string; grounded?: boolean } = {}) => {
+    const { grounded: groundedAnswer, ...rest } = extra;
+    const t = timing.get(r);
+    calls.push({ part, grounded: r.groundedSearches, searches: r.searches, ...(t ? { searchCap: t.cap, ms: t.ms } : {}), stopReason: r.stopReason, error: r.error, pagesRead: r.pagesRead, ...rest });
+    logger.info("permit-process", `permitProcessLookup.${part} ${input.ahj} (${input.state}): ${r.error ? "failed" : "answered"} ms=${t?.ms ?? "?"} searches=${r.searches ?? 0}/${t?.cap ?? "?"} withResults=${r.groundedSearches} grounded=${groundedAnswer ?? r.groundedSearches > 0} pagesRead=${r.pagesRead} stop=${r.stopReason ?? "-"}${rest.agency ? ` agency=${rest.agency}` : ""}${r.error ? ` err=${str(r.error).slice(0, 160)}` : ""}`);
+  };
 
   const where = `Jurisdiction: ${input.ahj}\nState: ${input.state}`;
   // Part one decides WHICH agency the later parts ask about, so an abort here is retried ONCE (an
   // abort is transient; an answer that ran and found nothing is not retried).
-  const askProcess = () => ask({ label: "permitProcessLookup.process", system: processLookupSystemFor(input.state), user: where, maxTokens: 8000, maxSearches: 8, readPages: false, timeoutMs: partBudgetMs() });
+  const askProcess = () => ask({ label: "permitProcessLookup.process", system: processLookupSystemFor(input.state), user: where, maxTokens: 8000, maxSearches: PROCESS_SEARCHES, readPages: false, timeoutMs: partBudgetMs() });
   let p1 = await askProcess();
   logCall("process", p1, { readPages: false });
   if (p1.error && ABORTED.test(p1.error)) {
@@ -1043,6 +1075,20 @@ export async function runPermitProcessLookup(
   const byDiscipline = new Map(part1.permits.map((p) => [p.discipline, p] as const));
   const system = `System: ${str(input.dcKw) || "?"} kW DC, ${str(input.acKw) || "?"} kVA AC, permit path: ${str(input.permitPath) || "unknown"}`;
 
+  // THE ISSUER IS KNOWN NOW (#206). A grounded, unerrored part one decides who issues each permit, and
+  // nothing after it changes that, so the delegation rows it implies are written here (the same rows
+  // applyLookupFees writes on landing — saving one twice changes nothing) and the caller is told: the
+  // permit-track fee research then starts beside the portal and documents/fees steps instead of
+  // waiting minutes for them. An errored or ungrounded part one tells nobody (the run throws).
+  if (first && !p1.error) {
+    const issuerPermits: Array<Pick<PermitProcessPermitAnswer, "discipline" | "issuingAgency">> = part1.permits.length
+      ? part1.permits : disciplines.map((d) => ({ discipline: d, issuingAgency: ungrounded("not found") }));
+    for (const permit of issuerPermits) {
+      try { saveLookupDelegation(db, { state: input.state, ahj: input.ahj, issuingAgency }, permit); } catch (err) { logger.warn("permit-process", `delegation landing failed: ${err instanceof Error ? err.message : String(err)}`); }
+    }
+    try { input.onIssuerKnown?.({ issuingAgency: issuingAgency.value ?? null, disciplines }); } catch { /* best effort */ }
+  }
+
   // THE PORTAL RESOLVED FROM THE AGENCY'S OWN PAGE (our read attests it) outranks a model-cited one;
   // its public catalog names the record type in the PORTAL'S words. ONLY FOR THE PERMITS ITS
   // PUBLISHER ISSUES (issuerOf above).
@@ -1103,20 +1149,40 @@ export async function runPermitProcessLookup(
     for (const f of facts) if (f?.value && recordTypeBelongsToPortal(f, portalUrl, rtCtx(d))) return f.value;
     return null;
   };
-  // THE CATALOG OF A PORTAL THE DOOR ACCEPTED (close-5 MF1): a refused tenant contributes nothing.
-  await fillRecordTypes(disciplines, (d) => portalOf(d).value ?? null, (d) => citedRt(d, portalOf(d).value, byDiscipline.get(d)?.recordType));
-
   // Pages we read for documents / fees, handed to that question verbatim (compact excerpts) — the
   // model may cite them, and a quote cited to one must be ON it (parseDocsFeesPart's page door).
   const pageBlock = ev?.docs.length
     ? `\n\nPages already read for you (quote them exactly; cite the URL exactly as given). They may not cover everything — search for anything they do not state:\n${ev.docs.map((d, i) => `[${i + 1}] ${d.page.finalUrl} (${d.kind === "fees" ? "fee schedule" : "checklist / requirements"})\n${d.excerpt}`).join("\n\n")}`
     : "";
 
+  // DOCUMENTS/FEES STARTS NOW (#206), before the portal catalog reads below: its question needs only
+  // the agency and the pages already read, never a record type, so it no longer waits out the
+  // catalog's polite per-host gaps. Reading fee-schedule PDFs can outrun the part budget (the recall
+  // eval: 3 of 7 aborted at 300 s); an ABORTED page-reading call is retried once without page reading
+  // — the lighter question that finished before — so reading pages never costs the answer the lookup
+  // used to get.
+  type Answer = { kind: "portal" | "docs"; agency: string; disciplines: PermitProcessDiscipline[]; r: WebLookupResult; first?: WebLookupResult };
+  const docsTasks = groups.map((g): Promise<Answer> => {
+    const head = `Issuing agency: ${g.agency}\nFor permits in: ${input.ahj}, ${input.state}`;
+    const askDocs = (readPages: boolean) => ask({ label: "permitProcessLookup.documentsFees", system: DOCS_FEES_LOOKUP_SYSTEM, user: `${head}\nPermits: ${g.disciplines.join(", ")}\n${system}${pageBlock}`, maxTokens: 8000, maxSearches: DOCS_SEARCHES, readPages, ...(readPages ? { maxFetches: DOCS_FETCHES } : {}), timeoutMs: partBudgetMs() });
+    return askDocs(true).then(async (firstTry) => {
+      if (!(firstTry.error && ABORTED.test(firstTry.error))) return { kind: "docs" as const, agency: g.agency, disciplines: g.disciplines, r: firstTry };
+      return { kind: "docs" as const, agency: g.agency, disciplines: g.disciplines, r: await askDocs(false), first: firstTry };
+    });
+  });
+  // Settled before any await below, so a step that fails while the catalog is read is never an
+  // unhandled rejection; Promise.all still sees the original promises.
+  for (const t of docsTasks) t.catch(() => undefined);
+
+  // THE CATALOG OF A PORTAL THE DOOR ACCEPTED (close-5 MF1): a refused tenant contributes nothing.
+  await fillRecordTypes(disciplines, (d) => portalOf(d).value ?? null, (d) => citedRt(d, portalOf(d).value, byDiscipline.get(d)?.recordType));
+
   // THE PORTAL IS ITS OWN GROUNDED STEP (reading the agency's pages), for the permits still without a
   // portal or a record type (none when our read resolved the portal and its catalog named the solar
-  // types); documents/fees read pages too. All run concurrently.
-  const tasks: Array<Promise<{ kind: "portal" | "docs"; agency: string; disciplines: PermitProcessDiscipline[]; r: WebLookupResult; first?: WebLookupResult }>> = [];
-  for (const g of groups) {
+  // types). It runs concurrently with documents/fees. Answers are consumed per group in the old order
+  // (portal, then documents/fees): the portal step's page reads widen what documents/fees may cite.
+  const tasks: Array<Promise<Answer>> = [];
+  groups.forEach((g, gi) => {
     // "IS A PORTAL STILL NEEDED" IS THE ONE RECORD-TYPE QUESTION (close-6 MF1): a permit whose JUDGED
     // portal has a record type — from that portal's catalog, or a cited type that belongs to it — needs
     // no step; with no judged portal neither can hold, so the permit is asked (the old separate
@@ -1127,15 +1193,8 @@ export async function runPermitProcessLookup(
       tasks.push(ask({ label: "permitProcessLookup.portal", system: PORTAL_LOOKUP_SYSTEM, user: `${head}\nPermits: ${needPortal.join(", ")}`, maxTokens: 6000, maxSearches: PORTAL_SEARCHES, readPages: true, maxFetches: PORTAL_FETCHES, timeoutMs: partBudgetMs() })
         .then((r) => ({ kind: "portal" as const, agency: g.agency, disciplines: needPortal, r })));
     }
-    // Reading fee-schedule PDFs can outrun the part budget (the recall eval: 3 of 7 aborted at 300 s);
-    // an ABORTED page-reading call is retried once without page reading — the lighter question that
-    // finished before — so reading pages never costs the answer the lookup used to get.
-    const askDocs = (readPages: boolean) => ask({ label: "permitProcessLookup.documentsFees", system: DOCS_FEES_LOOKUP_SYSTEM, user: `${head}\nPermits: ${g.disciplines.join(", ")}\n${system}${pageBlock}`, maxTokens: 8000, maxSearches: DOCS_SEARCHES, readPages, ...(readPages ? { maxFetches: DOCS_FETCHES } : {}), timeoutMs: partBudgetMs() });
-    tasks.push(askDocs(true).then(async (firstTry) => {
-      if (!(firstTry.error && ABORTED.test(firstTry.error))) return { kind: "docs" as const, agency: g.agency, disciplines: g.disciplines, r: firstTry };
-      return { kind: "docs" as const, agency: g.agency, disciplines: g.disciplines, r: await askDocs(false), first: firstTry };
-    }));
-  }
+    tasks.push(docsTasks[gi]);
+  });
   const answers = await Promise.all(tasks);
 
   // Keyed by (agency, discipline): each group's answer fills only the permits asked of that agency.
@@ -1148,13 +1207,13 @@ export async function runPermitProcessLookup(
   const gone = [...(ev?.gone ?? [])];
   let groundedParts = grounded1 ? 1 : 0;
   for (const a of answers) {
-    if (a.first) logCall("documentsFees", a.first, { readPages: true, agency: a.agency });
-    logCall(a.kind === "portal" ? "portal" : a.first ? "documentsFees (retry, no page reading)" : "documentsFees", a.r, { readPages: !a.first, agency: a.agency });
+    if (a.first) logCall("documentsFees", a.first, { readPages: true, agency: a.agency, grounded: false });
     // GROUNDED = the web search returned results, OR (documents/fees) the pages WE read were handed to
     // the question: an answer may rest on them alone (measured: with the fee schedule in hand the model
     // ran no search, and "no search" read as model memory and discarded the whole answer). Every value
     // is still cited to a page the search returned or we read, and a quote cited to our page must be ON it.
     const grounded = a.r.groundedSearches > 0 || (a.kind === "docs" && Boolean(pageBlock) && !a.r.error && Boolean(a.r.text));
+    logCall(a.kind === "portal" ? "portal" : a.first ? "documentsFees (retry, no page reading)" : "documentsFees", a.r, { readPages: !a.first, agency: a.agency, grounded });
     if (grounded && !a.r.error) groundedParts++;
     if (a.kind === "portal") {
       raw.portal += (raw.portal ? "\n" : "") + a.r.text;
@@ -1502,6 +1561,30 @@ export function citedStateSurcharge(state: string, fee: CitedFact<PermitFeeAnswe
   return { percent, quote: m[0].trim(), sourceUrl: fee.sourceUrl };
 }
 
+/** WHO CHARGES THIS PERMIT'S FEE: the permit's cited agency, else the lookup's. When that is another
+ *  authority than the AHJ, the AHJ's row for the discipline is written as a delegation to it (the
+ *  fee is read from the issuer's own row). Called on landing (applyLookupFees) and, earlier, as soon
+ *  as part one names the issuer (#206) — saving the same delegation twice changes nothing. */
+export function saveLookupDelegation(
+  db: AppDb,
+  lookup: { state: string; ahj: string; issuingAgency: CitedFact<string> },
+  permit: Pick<PermitProcessPermitAnswer, "discipline" | "issuingAgency">,
+): { owner: string; saved: { saved: boolean; reason: string } | null } {
+  if (permit.discipline === "other") return { owner: lookup.ahj, saved: null };
+  const agency = permit.issuingAgency.value ? permit.issuingAgency : lookup.issuingAgency;
+  const agencyName = str(agency.value);
+  // THE AHJ ITSELF, under a department suffix or a stray "/" (close-5 MF4: "City of Charleston
+  // Permit Center /"), is not another authority: no delegation row, its own fee.
+  const delegates = Boolean(agencyName) && !sameAgencyName(agencyName, lookup.ahj);
+  if (!delegates) return { owner: lookup.ahj, saved: null };
+  const r = saveFeeSchedule(db, { state: lookup.state, ahj: lookup.ahj, track: "permit", discipline: permit.discipline }, {
+    found: true, reason: "", basis: "other", brackets: [], sourceUrl: agency.sourceUrl, sourceQuote: agency.quote, sourceKind: "official",
+    collectedByProfileKey: feeScheduleProfileKey({ state: lookup.state, ahj: agencyName }, "permit"),
+    notes: `Per-job lookup: ${agencyName} issues ${lookup.ahj}'s ${permit.discipline} permits.`,
+  });
+  return { owner: agencyName, saved: { saved: r.saved, reason: r.reason ?? "" } };
+}
+
 /**
  * THE LOOKUP'S FEES LAND THROUGH THE FEE WRITE PATH. When a DIFFERENT agency issues the permits
  * (a county for a city), the AHJ's rows DELEGATE to that agency (collectedByProfileKey, sourced
@@ -1512,20 +1595,9 @@ export function applyLookupFees(db: AppDb, lookup: PermitProcessLookup): Array<{
   const out: Array<{ discipline: string; saved: boolean; reason: string }> = [];
   for (const permit of lookup.permits) {
     if (permit.discipline === "other") continue;
-    const agency = permit.issuingAgency.value ? permit.issuingAgency : lookup.issuingAgency;
-    const agencyName = str(agency.value);
-    // THE AHJ ITSELF, under a department suffix or a stray "/" (close-5 MF4: "City of Charleston
-    // Permit Center /"), is not another authority: no delegation row, its own fee.
-    const delegates = Boolean(agencyName) && !sameAgencyName(agencyName, lookup.ahj);
-    const owner = delegates ? agencyName : lookup.ahj;
-    if (delegates) {
-      const r = saveFeeSchedule(db, { state: lookup.state, ahj: lookup.ahj, track: "permit", discipline: permit.discipline }, {
-        found: true, reason: "", basis: "other", brackets: [], sourceUrl: agency.sourceUrl, sourceQuote: agency.quote, sourceKind: "official",
-        collectedByProfileKey: feeScheduleProfileKey({ state: lookup.state, ahj: agencyName }, "permit"),
-        notes: `Per-job lookup: ${agencyName} issues ${lookup.ahj}'s ${permit.discipline} permits.`,
-      });
-      out.push({ discipline: `${permit.discipline} (delegation)`, saved: r.saved, reason: r.reason ?? "" });
-    }
+    const delegation = saveLookupDelegation(db, lookup, permit);
+    const owner = delegation.owner;
+    if (delegation.saved) out.push({ discipline: `${permit.discipline} (delegation)`, saved: delegation.saved.saved, reason: delegation.saved.reason });
     const fee = permit.fee;
     if (!fee.value) continue;
     const tiers = (fee.value as PermitFeeAnswer & { tiers?: Array<{ maxKva: number; amountUsd: number; label: string }> }).tiers ?? [];

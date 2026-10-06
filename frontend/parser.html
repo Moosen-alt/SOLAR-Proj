@@ -1302,6 +1302,18 @@ function pageText(planDoc, pageNums){
   return nums.map(n => (planDoc.pages.find(p => p.page === n) || {}).text || '').join('\n');
 }
 
+// RACKING FROM THE CALLOUT, NEVER THE TITLE BLOCK (#201). The "RACKING:" regex used to run on
+// across a title block ("RACKING HARDWARE … RESIDENCE NEW PHOTOVOLTAIC SYSTEM PROJECT - 9.020 KW
+// DC") and save that as the racking product, which precedent matching (#147) keys on. A capture
+// that reads as a project description is no racking; the text read's rackingSystem (from the
+// racking callouts, backend packetApplication.ts) fills the field instead.
+function parseRackingLine(cover){
+  const raw = matchFirst(cover, [
+    /RACKING\s*:?\s*([A-Z0-9 #\-./+]+?(?:SYSTEM(?: FOR [A-Z ]+)?)?)(?=\s+ARRAY AREA|\s+UTILITY|\s+MSP|\n|$)/i
+  ]);
+  if (/\bPHOTOVOLTAIC\s+SYSTEM\b|\bRESIDENCE\b|\b\d+(?:\.\d+)?\s*KW\s*(?:DC|AC)\b|\bPROJECT\b/i.test(raw)) return '';
+  return title(raw);
+}
 function matchFirst(text, patterns){
   const t = normalizeText(text || '');
   for (const re of patterns){
@@ -2048,9 +2060,7 @@ function parsePlanData(planDoc){
     /ROOF MATERIAL\s*:?\s*([A-Z][A-Z -]*?)(?=\s+ASCE|\s+WIND|\s+ROOF|\n|$)/i,
     /MATERIAL\s*[-:]?\s*((?:CONCRETE |CLAY )?(?:S-|FLAT )?TILE|COMPOSITE SHINGLE|COMP SHINGLE|METAL|TPO|FLAT ROOF)/i
   ]));
-  const racking = title(matchFirst(cover, [
-    /RACKING\s*:?\s*([A-Z0-9 #\-./+]+?(?:SYSTEM(?: FOR [A-Z ]+)?)?)(?=\s+ARRAY AREA|\s+UTILITY|\s+MSP|\n|$)/i
-  ]));
+  const racking = parseRackingLine(cover);
   // The backend screens wind EXPOSURE (letter) and wind SPEED (mph) separately
   // (permitPath evaluatePrescriptiveCriteria), so capture them into their own
   // fields instead of one combined "110 MPH, C" string.
@@ -3890,6 +3900,9 @@ const LLM_FIELD_TARGETS = {
   invMake: ['invMake'], invModel: ['invModel'], invQty: ['invQty'],
   batteryMake: ['batteryMake'], batteryModel: ['batteryModel'], batteryQty: ['batteryQty'],
   roofMaterial: ['roofMaterial'], mounting: ['mounting'],
+  // The racking product read off the racking callouts fills the visible Racking box (#201), so
+  // the saved racking matches rackingSystem instead of a title-block string the regex caught.
+  rackingSystem: ['racking'],
   // Canonical key -> DOM id where the two differ. Everything else falls back to
   // a same-name input (see applyExtraction).
   roofRafterSpan: ['roofRafterSpanFeet'],
@@ -3962,6 +3975,9 @@ const LLM_SNAPSHOT_KEYS = new Set([
   'combinedDcKw','combinedAcKw',
   'utilitySchedule','serviceVoltage','servicePhase','numberOfCircuits','parcelNumber','jobValue',
   'homeownerEmail','homeownerPhone',
+  // The declared valuation the packet's own permit application states (#201): kept for review
+  // beside the contract-based figure, never a filing input (valuation.ts reads jobValue only).
+  'statedValuation',
   'azimuth','tilt','roofSlope','mainServiceRating','pvArrays',
   'stampRecommendation',
   'electricalCalcText','structuralCalcText','sitePlanNotesText','roofPlanNotesText',

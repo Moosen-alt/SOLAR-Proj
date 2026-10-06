@@ -12,6 +12,7 @@ import { nowIso } from "./time";
 import { logger } from "./logger";
 import { runWithLlmContext } from "./llmAccounting";
 import { noteJobProgress, parseJobProgressNote, type JobProgressNote } from "./jobProgress";
+import { sameAgencyName } from "./agencyName";
 
 export type JobType =
   | "permit_checks"
@@ -652,6 +653,22 @@ export function claimNextJob(db: AppDb): JobRecord | null {
   return { ...job, status: "running", startedAt: now };
 }
 
+// A fee_research job waits (re-pends) while a permit-process lookup for the same agency is running.
+const FEE_RESEARCH_DEFER_MS = 60_000;
+const MAX_FEE_RESEARCH_DEFERRALS = 30;
+/** Is a permit_process_lookup for this (state, agency) RUNNING now? Agency names compare through
+ *  sameAgencyName ("City of X Building Division" is the City of X). */
+function permitLookupRunningFor(db: AppDb, state: string, ahj: string): boolean {
+  if (!ahj.trim()) return false;
+  const rows = db.query<{ payload: string }>("SELECT payload FROM job_queue WHERE job_type = 'permit_process_lookup' AND status = 'running'");
+  return rows.some((r) => {
+    try {
+      const lp = JSON.parse(r.payload) as { state?: unknown; ahj?: unknown };
+      return String(lp.state || "").trim().toLowerCase() === state.trim().toLowerCase() && sameAgencyName(String(lp.ahj || ""), ahj);
+    } catch { return false; }
+  });
+}
+
 /** A design-criteria lookup (or the full code research that asks for the same criteria) finished —
  *  AFTER its row left 'running', so the re-judged finding reads where the lookup now stands. The
  *  gate of every pre-stage project in that AHJ is re-run (repository.rejudgeReviewerGatesAfterLookup);
@@ -866,38 +883,69 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
       // rows themselves are the re-try backoff marker. saveFeeSchedule owns the
       // hard refusals (human-verified rows, open conflicts, unsourced fees), so
       // nothing in this handler can weaken them.
-      const { researchFeeSchedule } = await import("./feeSchedules");
-      const p = job.payload as { state?: string; ahj?: string; utility?: string; track?: string; discipline?: string; focus?: string };
+      const { researchFeeSchedule, findFeeScheduleForProject } = await import("./feeSchedules");
+      const p = job.payload as { state?: string; ahj?: string; utility?: string; track?: string; discipline?: string; focus?: string; role?: string };
       const discipline = String(p.discipline || "");
-      const outcome = await researchFeeSchedule(db, {
-        state: String(p.state || ""),
-        ahj: String(p.ahj || ""),
-        utility: String(p.utility || ""),
-        track: p.track === "nem" ? "nem" : "permit",
-        discipline,
-        // Public agency wording only (feeResearchTargets): which fee to look for — a state issuer's
-        // schedule, or an AHJ's zoning review — never a project or customer detail.
-        focus: typeof p.focus === "string" ? p.focus.slice(0, 600) : undefined,
-      });
-      result = {
-        saved: outcome.saved, found: outcome.found,
-        profileKey: outcome.profileKey, track: outcome.track, discipline,
-        refusedVerified: outcome.refusedVerified, refusedConflicted: outcome.refusedConflicted,
-        reason: outcome.reason || undefined,
-      };
-      // The attempt is a visible fact either way (the cold-start portal-URL
-      // research does the same): a save says where the fee sheet's new number came
-      // from; a miss says research ran and found nothing, so the project's honest
-      // unknown is a checked unknown, not a gap nobody looked at.
-      try {
-        addAuditLog(db, job.projectId, "system", "fee research",
-          outcome.saved ? "fees.schedule_researched" : "fees.research_no_result", {
-            profileKey: outcome.profileKey, track: outcome.track, discipline: discipline || "(any)",
-            saved: outcome.saved, found: outcome.found,
-            refusedVerified: outcome.refusedVerified || undefined,
-            reason: (outcome.reason || "").slice(0, 400) || undefined,
+      // ALREADY PRICED SINCE IT WAS QUEUED (#206): the permit-process lookup queues this job as soon as
+      // it knows the issuer, and its documents/fees step may land the same row first. The enqueue's own
+      // "is a row held" check, asked again at run time — a held target costs no model call. (The
+      // local-review line is held by another rule — localReviewScheduleRow — and is not re-checked.)
+      const track = p.track === "nem" ? "nem" : "permit";
+      // WAIT FOR A LOOKUP THAT IS PRICING THIS ROW RIGHT NOW (#206 review). With JOB_CONCURRENCY > 1
+      // a permit-track job queued at issuer-known time could start while that lookup's own
+      // documents/fees step is still pricing the same agency's rows — a second web-grounded call for
+      // the same fee, and saveFeeSchedule lets the last writer win. Such a job goes back to pending a
+      // minute later (not a retry: retry_count is untouched), then meets the "already priced" check
+      // below. Bounded: after MAX_FEE_RESEARCH_DEFERRALS it runs regardless (a lookup lasts ≤ ~20 min
+      // and the watchdog reclaims a stale one).
+      const deferred = Number((job.payload as { deferredForLookup?: unknown }).deferredForLookup) || 0;
+      if (track === "permit" && deferred < MAX_FEE_RESEARCH_DEFERRALS && permitLookupRunningFor(db, String(p.state || ""), String(p.ahj || ""))) {
+        db.run(
+          "UPDATE job_queue SET status = 'pending', scheduled_at = ?, payload = ? WHERE id = ? AND status = 'running'",
+          [new Date(Date.now() + FEE_RESEARCH_DEFER_MS).toISOString(), JSON.stringify({ ...job.payload, deferredForLookup: deferred + 1 }), job.id],
+        );
+        return true;
+      }
+      const heldNow = p.role !== "local_review"
+        && findFeeScheduleForProject(db, { state: String(p.state || ""), ahj: String(p.ahj || ""), utility: String(p.utility || "") }, track, discipline as Parameters<typeof findFeeScheduleForProject>[3]);
+      if (heldNow) {
+        result = { skipped: true, reason: "already priced since it was queued — no research needed", track, discipline };
+        try {
+          addAuditLog(db, job.projectId, "system", "fee research", "fees.research_skipped_priced", {
+            ahj: String(p.ahj || ""), track, discipline: discipline || "(any)", reason: "already priced since it was queued",
           });
-      } catch { /* audit is best-effort — never fail the job over it */ }
+        } catch { /* audit is best-effort — never fail the job over it */ }
+      } else {
+        const outcome = await researchFeeSchedule(db, {
+          state: String(p.state || ""),
+          ahj: String(p.ahj || ""),
+          utility: String(p.utility || ""),
+          track,
+          discipline,
+          // Public agency wording only (feeResearchTargets): which fee to look for — a state issuer's
+          // schedule, or an AHJ's zoning review — never a project or customer detail.
+          focus: typeof p.focus === "string" ? p.focus.slice(0, 600) : undefined,
+        });
+        result = {
+          saved: outcome.saved, found: outcome.found,
+          profileKey: outcome.profileKey, track: outcome.track, discipline,
+          refusedVerified: outcome.refusedVerified, refusedConflicted: outcome.refusedConflicted,
+          reason: outcome.reason || undefined,
+        };
+        // The attempt is a visible fact either way (the cold-start portal-URL
+        // research does the same): a save says where the fee sheet's new number came
+        // from; a miss says research ran and found nothing, so the project's honest
+        // unknown is a checked unknown, not a gap nobody looked at.
+        try {
+          addAuditLog(db, job.projectId, "system", "fee research",
+            outcome.saved ? "fees.schedule_researched" : "fees.research_no_result", {
+              profileKey: outcome.profileKey, track: outcome.track, discipline: discipline || "(any)",
+              saved: outcome.saved, found: outcome.found,
+              refusedVerified: outcome.refusedVerified || undefined,
+              reason: (outcome.reason || "").slice(0, 400) || undefined,
+            });
+        } catch { /* audit is best-effort — never fail the job over it */ }
+      }
     } else if (job.jobType === "permit_process_lookup") {
       // Lands 'seeded' through permitProcess.savePermitProcessLookup (a verified row is never
       // overwritten) and its fees through saveFeeSchedule; then asks for fee research on whatever
@@ -905,9 +953,26 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
       const { runPermitProcessLookup } = await import("./permitProcessLookup");
       const { createLLMProvider } = await import("./llm");
       const p = job.payload as Record<string, unknown>;
+      // Fee research for whatever the project still cannot price, against the issuer the lookup named
+      // (its delegation rows). Asked TWICE, deduped by ensureFeeSchedulesResearched (pending/running
+      // job or any attempt inside 24 h): once the moment part one names the issuer (#206 — the
+      // research no longer waits minutes for the portal and documents/fees steps), and again on
+      // landing for anything the landed row changed. A target the lookup prices in between is
+      // skipped by the fee_research job itself, before any model call.
+      const queueFeeResearch = async () => {
+        if (!job.projectId) return;
+        try {
+          const { getProjectDetail } = await import("./repository");
+          const { ensureFeeSchedulesResearched } = await import("./feeSchedules");
+          const { requiredTracks } = await import("./submittalTracks");
+          const project = getProjectDetail(db, job.projectId).project;
+          await ensureFeeSchedulesResearched(db, project, requiredTracks(project));
+        } catch { /* fee research is best-effort */ }
+      };
       const run = await runPermitProcessLookup(db, createLLMProvider(), {
         state: String(p.state || ""), ahj: String(p.ahj || ""), utility: String(p.utility || ""),
         dcKw: String(p.dcKw || ""), acKw: String(p.acKw || ""), permitPath: String(p.permitPath || ""),
+        onIssuerKnown: () => { void queueFeeResearch(); },
       });
       result = { saved: run.saved, reason: run.reason, calls: run.calls };
       try {
@@ -916,15 +981,7 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
           agency: run.lookup?.issuingAgency?.value ?? null, structure: run.lookup?.permitStructure?.value ?? null,
         });
       } catch { /* audit is best-effort */ }
-      if (job.projectId) {
-        try {
-          const { getProjectDetail } = await import("./repository");
-          const { ensureFeeSchedulesResearched } = await import("./feeSchedules");
-          const { requiredTracks } = await import("./submittalTracks");
-          const project = getProjectDetail(db, job.projectId).project;
-          void ensureFeeSchedulesResearched(db, project, requiredTracks(project)).catch(() => null);
-        } catch { /* fee research is best-effort */ }
-      }
+      void queueFeeResearch();
     } else {
       result = { skipped: true, reason: "job type handled externally" };
     }

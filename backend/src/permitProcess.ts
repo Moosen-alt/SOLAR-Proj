@@ -38,6 +38,7 @@ import { sameAgencyName } from "./agencyName";
 import { trackIssuersFromSnapshot } from "./normalize";
 import { namedKnownUtility, UTILITY_IDENTITY_LABEL } from "./utilityIdentity";
 import { hostAliasesOf } from "./portalCredentials";
+import { isApplicationPortalShapedUrl } from "./portalChannel";
 import { structureType } from "./codeReviewRules";
 
 // ── Keys ────────────────────────────────────────────────────────────────────────────────
@@ -115,6 +116,37 @@ export function getPermitProcessLookup(db: AppDb | null, state: string, ahj: str
 export function permitProcessFor(project: Pick<ProjectRecord, "state" | "ahj">): PermitProcessLookup | null {
   if (!String(project?.ahj ?? "").trim()) return null;
   return registry.get(permitProcessKey(project.state, project.ahj)) ?? null;
+}
+
+/** A document name that says it is a downloadable blank (a PDF, a form to download / fill). */
+const NAMES_PDF_BLANK = /\bpdf\b|\.pdf\b|\bform\b|\bfillable\b|\bdownload/i;
+
+/**
+ * THE APPLICATION IS TAKEN IN THE AHJ'S PORTAL — NO PDF BLANK EXPECTED (issue #205, a Utah city: the
+ * lookup named its city's permit portal, and the forms gate still held "official form not on file").
+ * Non-null for a track when the per-job lookup cites a portal for that track's permit and names no PDF
+ * blank among its documents (NAMES_PDF_BLANK). `waives` — may the missing-blank hold be dropped — only
+ * when the cited URL is shaped like an application portal (portalChannel.isApplicationPortalShapedUrl:
+ * a homepage or a building info page is not one), or a person verified the lookup row. A cited URL that
+ * does not waive is still said on the card; the application row keeps its hold.
+ */
+export function lookupPortalOnlyFor(project: Pick<ProjectRecord, "state" | "ahj">, track: "building" | "electrical"): { portalUrl: string; waives: boolean } | null {
+  const lookup = permitProcessFor(project);
+  if (!lookup) return null;
+  const disciplines = track === "electrical" ? ["electrical", "combo"] : ["structural", "combo"];
+  const permits = lookup.permits.filter((p) => disciplines.includes(p.discipline));
+  const withPortal = permits.find((p) => String(p.portalUrl?.value || "").trim());
+  if (!withPortal) return null;
+  if (permits.some((p) => (p.documents?.value ?? []).some((d) => NAMES_PDF_BLANK.test(String(d || ""))))) return null;
+  const portalUrl = String(withPortal.portalUrl.value).trim();
+  const verified = lookup.confidence === "verified" || Boolean(lookup.verifiedAt);
+  return { portalUrl, waives: verified || isApplicationPortalShapedUrl(portalUrl) };
+}
+/** The card's / the gate's words for it. */
+export function portalOnlyCardSentence(project: Pick<ProjectRecord, "ahj">, portalUrl: string, waives = true): string {
+  return waives
+    ? `${project.ahj || "This AHJ"} takes the application in its portal (${portalUrl}, per the per-job lookup); no PDF blank expected.`
+    : `The per-job lookup names ${portalUrl} as where ${project.ahj || "this AHJ"} takes the application, but that is not confirmed as an application portal, so the official form is still expected.`;
 }
 
 export type SavePermitProcessResult = { saved: boolean; reason: string; lookup: PermitProcessLookup | null };
