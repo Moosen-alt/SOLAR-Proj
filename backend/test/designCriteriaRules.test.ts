@@ -424,6 +424,83 @@ check("#124 MUST-PASS: the softening window and statuses are the named constants
   assert.deepEqual([...UPCOMING_SOFTENING_STATUSES], ["adopted", "filed", "effective"]);
 });
 
+// #216 — A RECORDED PHASE-IN. A state that adopts a new edition and still accepts the previous one
+// until a mandatory date (NJ-shaped, N.J.A.C. 5:23: effective 2026-08-17, mandatory 2027-02-17).
+// A plan on the previous edition filed inside the window is not a mismatch; after it, it blocks.
+const NJ_PLAN = "GOVERNING CODES: 2021 IRC, 2020 NEC. SYSTEM SIZE: 8 kW DC";
+const njPlan = project({ planSetExtractedText: NJ_PLAN }, { state: "NJ", ahj: "Township of Testfield" } as Partial<ProjectRecord>);
+const njWindow = { effectiveDate: "2026-08-17", mandatoryDate: "2027-02-17" };
+const njProfile = (over: Partial<JurisdictionCodeProfile> = {}): JurisdictionCodeProfile => ({
+  key: "nj|township of testfield|unknown", state: "NJ", ahj: "Township of Testfield", confidence: "verified", verifiedBy: "operator",
+  adoptedCodes: [
+    { family: "residential", code: "IRC", edition: "2024", previousEdition: "2021", ...njWindow },
+    { family: "electrical", code: "NEC", edition: "2023", previousEdition: "2020", ...njWindow },
+  ],
+  amendments: [], designCriteria: {}, prescriptive: {}, fireSetbacks: [], citations: [], updatedAt: "",
+  researchedAt: "2026-09-01T00:00:00.000Z",
+  ...over,
+});
+const njRun = (asOf: string, over: Partial<JurisdictionCodeProfile> = {}): ReviewerFinding | undefined =>
+  get(evaluateDesignCriteriaFindings(njPlan, buildCodeContext("NJ", "Township of Testfield", njProfile(over)), { roofMounted: true, asOf }), BASIS);
+
+check("#216 MUST-PASS: verified, plan on the previous edition inside the recorded phase-in -> not a blocker (a callout naming the mandatory date)", () => {
+  const f = njRun("2026-10-05");
+  assert.ok(f, "the plan still gets an answer");
+  assert.notEqual(f!.severity, "blocker");
+  assert.equal(f!.severity, "callout");
+  assert.match(f!.message, /2027-02-17/);
+  assert.equal(f!.installerCallout, false, "the plan is acceptable as drawn: not an installer callout");
+});
+
+check("#216 MUST-EXCLUDE: the same plan after the mandatory date -> blocker", () => {
+  assert.equal(njRun("2027-03-01")?.severity, "blocker");
+  assert.equal(njRun("2027-02-17")?.severity, "blocker", "the mandatory date itself is outside the window");
+  assert.equal(njRun("2027-02-16")?.severity, "callout", "the day before still inside");
+});
+
+check("#216 MUST-EXCLUDE: before the new edition took effect the window is not open -> mismatch stays (nothing softens early)", () => {
+  // 2026-08-01: the 2024/2023 editions are not effective yet; editionsInEffect reports the previous
+  // edition applies, not a phase-in. This rule only reads phase-ins: the mismatch is as it was.
+  assert.equal(njRun("2026-08-01")?.severity, "blocker");
+});
+
+check("#216 MUST-EXCLUDE: a plan on an edition OLDER than the recorded previous one still blocks inside the window", () => {
+  const old = project({ planSetExtractedText: "GOVERNING CODES: 2018 IRC, 2017 NEC. SYSTEM SIZE: 8 kW DC" }, { state: "NJ", ahj: "Township of Testfield" } as Partial<ProjectRecord>);
+  const f = get(evaluateDesignCriteriaFindings(old, buildCodeContext("NJ", "Township of Testfield", njProfile()), { roofMounted: true, asOf: "2026-10-05" }), BASIS);
+  assert.equal(f?.severity, "blocker");
+});
+
+check("#216 MUST-EXCLUDE: one line in the window and one outside it -> still a blocker (softening only lowers, per line)", () => {
+  // NEC's window is recorded; IRC's mandatory date has passed.
+  const f = njRun("2026-10-05", { adoptedCodes: [
+    { family: "residential", code: "IRC", edition: "2024", previousEdition: "2021", effectiveDate: "2025-01-01", mandatoryDate: "2025-07-01" },
+    { family: "electrical", code: "NEC", edition: "2023", previousEdition: "2020", ...njWindow },
+  ] });
+  assert.equal(f?.severity, "blocker");
+  assert.match(f!.message, /still allowed during the phase-in/);
+});
+
+check("#216 MUST-EXCLUDE: a window that does not record WHICH edition it still allows does not soften", () => {
+  const f = njRun("2026-10-05", { adoptedCodes: [
+    { family: "residential", code: "IRC", edition: "2024", ...njWindow },
+    { family: "electrical", code: "NEC", edition: "2023", ...njWindow },
+  ] });
+  assert.equal(f?.severity, "blocker");
+});
+
+check("#216 MUST-PASS: on a SEEDED profile the in-window plan is a callout too (never raised)", () => {
+  const f = njRun("2026-10-05", { confidence: "seeded", verifiedBy: undefined });
+  assert.equal(f?.severity, "callout");
+});
+
+check("#216 MUST-EXCLUDE: Utah-shaped rows (no mandatoryDate) are unchanged -> blocker", () => {
+  const f = get(evaluateDesignCriteriaFindings(utah, utCtx({ confidence: "verified", adoptedCodes: [
+    { code: "IRC", edition: "2021", effectiveDate: "2021-07-01", previousEdition: "2018" }, { code: "IBC", edition: "2021" },
+    { code: "NEC", edition: "2023", effectiveDate: "2025-07-01", previousEdition: "2020" }, { code: "IFC", edition: "2021" },
+  ] }), { roofMounted: true, asOf: "2026-10-05" }), BASIS);
+  assert.equal(f?.severity, "blocker");
+});
+
 check("#108 MUST-PASS: vision may never relax either code-basis finding", () => {
   assert.equal(visionMayRelax({ id: BASIS } as ReviewerFinding), false);
   assert.equal(visionMayRelax({ id: BASIS_UNVERIFIED } as ReviewerFinding), false);
