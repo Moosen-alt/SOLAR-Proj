@@ -150,7 +150,7 @@ import { bcd5952FailedRows } from "./bcdChecklistFacts";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
 import type { PvWorksheetGateInput } from "./pvWorksheetGate";
 import { resolveEffectiveCodeContext, ensureCodeProfilesResearched, ownCodeProfileRow, resolvePermitPathForProject, recordApprovedDesignObservation, isStructuralPermitTrack } from "./codeProfiles";
-import { applyCachedVisionVerdicts } from "./reviewerVision";
+import { applyCachedVisionVerdicts, visionRelaxedBlockers } from "./reviewerVision";
 import { nowIso } from "./time";
 import { isHarnessAbort, looksBotBlocked } from "./runAbort";
 import { finalSubmitEnvAllows, recipeShapeProblems } from "../../shared/src/portalSafety";
@@ -233,8 +233,31 @@ export function buildReviewerReportFor(db: AppDb, project: ProjectRecord): Revie
 // buildReviewerReportFor stays exported for two readers only: the full vision pass, which must start
 // from the TEXT report, and tests that pin the text rules. Every gate consumer reads this function.
 // reviewerSeverityParity.test.ts fails if a production caller reaches the raw builder.
-export function reviewerGateReportFor(db: AppDb, project: ProjectRecord): ReviewerReport {
-  return applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
+//
+// verdictsWrittenBefore (#226): fold in only the verdicts cached BEFORE that instant. A final-submit
+// run reads the gate a second time this way, as of its approval, so a verdict a concurrent stage_step
+// wrote after the Approve click cannot be what lets that run's final submit through.
+export function reviewerGateReportFor(db: AppDb, project: ProjectRecord, opts: { verdictsWrittenBefore?: string } = {}): ReviewerReport {
+  return applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project), opts);
+}
+
+/** The audit row for a gate that let a filing through on a vision verdict (#226): staging
+ *  (prepareSubmission) or Approve (runAutopilotApproval) went past a blocker only a cached vision
+ *  verdict relaxed. Names each finding with the question its verdict answered, so the run history
+ *  shows the step relied on a vision read and which one. Nothing relaxed → no row. */
+export function auditVisionRelaxedAtStage(
+  db: AppDb, projectId: string,
+  input: { via: "stage" | "approve"; runId: string; track: string | null; relaxed: ReviewerFinding[]; writtenAfterApproval?: string[] },
+): void {
+  if (input.relaxed.length === 0) return;
+  addAuditLog(db, projectId, "system", "reviewer gate", "reviewer_gate.vision_relaxed_at_stage", {
+    via: input.via, runId: input.runId, track: input.track,
+    findings: input.relaxed.map((f) => ({
+      findingId: f.id, question: f.visionVerification?.question ?? null,
+      page: f.visionVerification?.page ?? null, confidence: f.visionVerification?.confidence ?? null,
+    })),
+    ...(input.writtenAfterApproval ? { writtenAfterApproval: input.writtenAfterApproval } : {}),
+  });
 }
 
 /** The newest filed PV worksheet read by position (project_documents.form_reading_json, written
@@ -7406,18 +7429,18 @@ export function createRunApproval(
  * The id alone is not the check: the row must still be this project's, this track's, unconsumed
  * and unexpired.
  */
-function claimRunApproval(db: AppDb, projectId: string, track: string, approvalId: string | null | undefined): { id: string; approver: string } | null {
+function claimRunApproval(db: AppDb, projectId: string, track: string, approvalId: string | null | undefined): { id: string; approver: string; createdAt: string } | null {
   const wanted = String(approvalId ?? "").trim();
   if (!wanted) return null;
   const row = db.get<Row>(
-    `SELECT id, approver FROM portal_run_approvals
+    `SELECT id, approver, created_at FROM portal_run_approvals
       WHERE id = ? AND project_id = ? AND track = ? AND consumed_at IS NULL AND expires_at > ?`,
     [wanted, projectId, track || "permit", nowIso()],
   );
   if (!row) return null;
   db.run("UPDATE portal_run_approvals SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL", [nowIso(), text(row.id)]);
   if (Number(db.get<{ n: number }>("SELECT changes() AS n")?.n ?? 0) === 0) return null; // another run took it
-  return { id: text(row.id), approver: text(row.approver) };
+  return { id: text(row.id), approver: text(row.approver), createdAt: text(row.created_at) };
 }
 
 /** The approval id the RUNNING prepare_submission job for this project carries in its payload —
@@ -7466,11 +7489,17 @@ export function automaticSubmitRefusals(
     recipeId: string | null; runApproval: { approver: string; runId: string } | null; runId: string; env?: Record<string, string | undefined>;
     /** Set when the recipe was learned for ANOTHER entity (shared-portal reuse): such a run always stops at review. */
     borrowedFrom?: string | null;
+    /** Reviewer blockers this run's gate let through on a vision verdict cached AFTER the approval
+     *  (#226): the approver was shown them as blockers, so such a run always stops at review. */
+    relaxedSinceApproval?: string[];
   },
 ): string[] {
   const out: string[] = [];
   if (!finalSubmitEnvAllows(input.env ?? process.env)) out.push("PORTAL_ALLOW_FINAL_SUBMIT is not 1 on this process");
   if (input.borrowedFrom) out.push(`the recipe was learned for ${input.borrowedFrom}, not this jurisdiction — a borrowed recipe always stops at review`);
+  if (input.relaxedSinceApproval?.length) {
+    out.push(`a vision verdict cached after the approval relaxed ${input.relaxedSinceApproval.join(", ")} — the approver saw ${input.relaxedSinceApproval.length > 1 ? "them as blockers" : "it as a blocker"}; approve again to file`);
+  }
   const a = input.runApproval;
   const approver = a && typeof a.approver === "string" ? a.approver.trim() : "";
   const runId = String(input.runId ?? "").trim();
@@ -7496,7 +7525,7 @@ export function automaticSubmitRefusals(
  *  come from automaticSubmitRefusals. */
 export function maySubmitAutomatically(
   db: AppDb,
-  input: { recipeId: string | null; runApproval: { approver: string; runId: string } | null; runId: string; env?: Record<string, string | undefined> },
+  input: Parameters<typeof automaticSubmitRefusals>[1],
 ): boolean {
   return automaticSubmitRefusals(db, input).length === 0;
 }
@@ -8472,6 +8501,8 @@ export async function prepareSubmission(
   // electrical permit. A trackless stage (null) is held by every finding.
   const reviewerBlockers = reviewerReport.findings.filter((finding) => finding.severity === "blocker"
     && scopeHoldsTrack(findingHoldScope(finding), track ?? null));
+  // The blockers that hold this filing only because a cached vision verdict relaxed them.
+  const visionRelaxed = visionRelaxedBlockers(reviewerReport).filter((finding) => scopeHoldsTrack(findingHoldScope(finding), track ?? null));
   const historicalReport = buildHistoricalFailureReport(db, projectId, null);
   const learnedHistoricalMissing = historicalReport.checklist.filter((item) => {
     const cause = historicalReport.topRejectionCauses.find((candidate) => candidate.signature === item.sourceCauseSignature);
@@ -8488,6 +8519,23 @@ export async function prepareSubmission(
       historicalMissing: learnedHistoricalMissing.slice(0, 8).map((item) => item.title),
     });
   }
+  // THE APPROVER SAW THE GATE AS IT WAS AT THE CLICK (#226). A stage_step running beside this job can
+  // cache a verdict after the Approve & auto-submit click. Read the gate again with only the verdicts
+  // cached before the approval: a blocker relaxed now but not then was shown to the approver as a
+  // blocker, so this run stages like an ordinary run and stops at review
+  // (automaticSubmitRefusals.relaxedSinceApproval). Only a claimed approval with something relaxed pays
+  // for the second read; it makes no model call.
+  const relaxedSinceApproval = claimedApproval && visionRelaxed.length > 0
+    ? (() => {
+      const asApproved = reviewerGateReportFor(db, detail.project, { verdictsWrittenBefore: claimedApproval.createdAt || "" });
+      const relaxedThen = new Set(visionRelaxedBlockers(asApproved).map((finding) => finding.id));
+      return visionRelaxed.map((finding) => finding.id).filter((findingId) => !relaxedThen.has(findingId));
+    })()
+    : [];
+  auditVisionRelaxedAtStage(db, projectId, {
+    via: "stage", runId, track: track ?? null, relaxed: visionRelaxed,
+    writtenAfterApproval: claimedApproval ? relaxedSinceApproval : undefined,
+  });
 
   // DOCUMENT-PRESENCE GATE: never stage a submittal that is missing a required file.
   // This is the guardrail against the "AHJ emailed back: documents still missing"
@@ -8775,7 +8823,7 @@ export async function prepareSubmission(
   // with no recipe it is refused: the ruling requires a valid recipe shape for any click.
   const runApproval = claimedApproval ? { approver: claimedApproval.approver, runId } : null;
   const submitRefusals = wantsFinalSubmit
-    ? automaticSubmitRefusals(db, { recipeId: recipe?.id ?? null, runApproval, runId, borrowedFrom: borrowed?.learnedFor ?? null })
+    ? automaticSubmitRefusals(db, { recipeId: recipe?.id ?? null, runApproval, runId, borrowedFrom: borrowed?.learnedFor ?? null, relaxedSinceApproval })
     : [];
   const resolvedAutoSubmit = wantsFinalSubmit && submitRefusals.length === 0;
   if (wantsFinalSubmit && !resolvedAutoSubmit) {

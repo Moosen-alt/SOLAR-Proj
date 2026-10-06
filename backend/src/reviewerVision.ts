@@ -53,11 +53,18 @@ function sourceSig(pdfPath: string): string {
   }
 }
 
-function readCache(db: AppDb, projectId: string, findingId: string, sig: string): ReviewerVisionVerdict | null {
-  const row = db.get<{ verdict: string }>(
-    "SELECT verdict FROM reviewer_vision_cache WHERE project_id = ? AND finding_id = ? AND source_sig = ?",
-    [projectId, findingId, sig],
-  );
+function readCache(db: AppDb, projectId: string, findingId: string, sig: string, writtenBefore?: string): ReviewerVisionVerdict | null {
+  // writtenBefore: a verdict cached at or after that instant is no verdict (the gate as of an
+  // approval, #226). A verdict re-written since then carries the new created_at and is excluded too.
+  const row = writtenBefore === undefined
+    ? db.get<{ verdict: string }>(
+      "SELECT verdict FROM reviewer_vision_cache WHERE project_id = ? AND finding_id = ? AND source_sig = ?",
+      [projectId, findingId, sig],
+    )
+    : db.get<{ verdict: string }>(
+      "SELECT verdict FROM reviewer_vision_cache WHERE project_id = ? AND finding_id = ? AND source_sig = ? AND created_at < ?",
+      [projectId, findingId, sig, writtenBefore],
+    );
   if (!row) return null;
   try {
     return JSON.parse(row.verdict) as ReviewerVisionVerdict;
@@ -327,7 +334,10 @@ function applyVerdict(finding: ReviewerFinding, verdict: ReviewerVisionVerdict):
     // Relax a purely text-derived warning OR blocker — the data IS on the sheet.
     // Keep it as a visible callout so the human still sees it, but it no longer
     // blocks staging/submission.
-    if (finding.severity === "warning" || finding.severity === "blocker") out.severity = "callout";
+    if (finding.severity === "warning" || finding.severity === "blocker") {
+      out.severity = "callout";
+      out.visionRelaxedFrom = finding.severity;
+    }
     out.designTeamAction = `Vision-verified on the plan set (page ${verdict.page}). ${finding.designTeamAction}`;
   }
   return out;
@@ -339,26 +349,36 @@ function applyVerdict(finding: ReviewerFinding, verdict: ReviewerVisionVerdict):
 // full async pass that POPULATES this cache; this lets the submit gate, installer
 // packet, and readiness reports — which build their own text-only report — reflect
 // those same vision verdicts so a vision-cleared blocker stops blocking submission.
-export function applyCachedVisionVerdicts(db: AppDb, report: ReviewerReport): ReviewerReport {
+//
+// opts.verdictsWrittenBefore: only verdicts cached before that instant count (the gate as an approver
+// saw it, #226).
+export function applyCachedVisionVerdicts(db: AppDb, report: ReviewerReport, opts: { verdictsWrittenBefore?: string } = {}): ReviewerReport {
   const pdfPath = findPlanSetPdf(db, report.projectId);
   if (!pdfPath) return report;
   const sig = sourceSig(pdfPath);
+  const before = opts.verdictsWrittenBefore;
   let changed = false;
   const findings = report.findings.map((finding) => {
     if (isMeasurementTarget(finding)) {
-      const measured = readCache(db, report.projectId, finding.id, sig);
+      const measured = readCache(db, report.projectId, finding.id, sig, before);
       if (!measured || !measured.checked) return finding;
       changed = true;
       return applyRoofPlanMeasurement(finding, measured);
     }
     if (!needsVision(finding)) return finding;
-    const cached = readCache(db, report.projectId, finding.id, sig);
+    const cached = readCache(db, report.projectId, finding.id, sig, before);
     if (!cached || !cached.checked || !answersQuestion(cached, finding)) return finding;
     changed = true;
     return applyVerdict(finding, cached);
   });
   if (!changed) return report;
   return { ...report, findings, installerCallouts: findings.filter((item) => item.installerCallout) };
+}
+
+/** The findings in a gate report that are no longer blockers only because a cached vision verdict
+ *  relaxed them (applyVerdict). What staging and Approve audit when they proceed past one (#226). */
+export function visionRelaxedBlockers(report: ReviewerReport): ReviewerFinding[] {
+  return report.findings.filter((finding) => finding.visionRelaxedFrom === "blocker");
 }
 
 // Opt-in vision pass over an already-built reviewer report. Returns a new report

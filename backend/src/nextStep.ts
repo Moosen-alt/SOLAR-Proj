@@ -56,6 +56,7 @@ import type {
   NextStepWhy,
   ProjectRecord,
   ProjectStatus,
+  ReviewerFinding,
   SubmitGateHold,
   SubmitGateReport,
   SubmittalTrackType,
@@ -68,6 +69,7 @@ import { billingTrack } from "./submissionFees";
 import { findingHoldScope, gateCheckDefaultScope, scopeHoldsTrack, tracksHeld } from "./gateScope";
 import { issuingAuthorityForTrack } from "./applicationDocsAgency";
 import { parseJobProgressNote } from "./jobProgress";
+import { visionRelaxedBlockers } from "./reviewerVision";
 import { startedAtLabel } from "./formAcquisitionPlan";
 import {
   getProjectDetail,
@@ -148,10 +150,19 @@ export function reviewInfoFromResultJson(resultJson: unknown): { reviewMismatche
  *  answer prepareSubmission filters by), so a reader judging ONE track asks reviewerBlockersFor,
  *  never the bare list. */
 export function reviewerBlockerList(db: AppDb, project: ProjectRecord): ReviewerBlocker[] {
+  return reviewerGateRead(db, project).blockers;
+}
+
+/** reviewerBlockerList plus the blockers a cached vision verdict relaxed (visionRelaxedBlockers),
+ *  from ONE read of the gate: Approve passes the second list to the audit row it writes when it
+ *  proceeds past one (#226). Read-only, like reviewerBlockerList. */
+export function reviewerGateRead(db: AppDb, project: ProjectRecord): { blockers: ReviewerBlocker[]; visionRelaxed: Array<ReviewerBlocker & { finding: ReviewerFinding }> } {
   const report = withoutCodeResearch(() => reviewerGateReportFor(db, project));
-  return report.findings
-    .filter((finding) => finding.severity === "blocker")
-    .map((finding) => ({ code: finding.id, detail: finding.title, tracks: tracksHeld(findingHoldScope(finding)) }));
+  const asBlocker = (finding: ReviewerFinding): ReviewerBlocker => ({ code: finding.id, detail: finding.title, tracks: tracksHeld(findingHoldScope(finding)) });
+  return {
+    blockers: report.findings.filter((finding) => finding.severity === "blocker").map(asBlocker),
+    visionRelaxed: visionRelaxedBlockers(report).map((finding) => ({ ...asBlocker(finding), finding })),
+  };
 }
 
 export interface ReviewerBlocker { code: string; detail: string; /** The filings it holds; absent = every one. */ tracks?: SubmittalTrackType[] }
