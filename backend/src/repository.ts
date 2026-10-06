@@ -134,7 +134,7 @@ import {
   isVerifiedKnowledge,
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
-import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens, TRACK_ISSUER_SNAPSHOT_KEYS, withTrackIssuers } from "./normalize";
+import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens, staleDerivedKeys, TRACK_ISSUER_SNAPSHOT_KEYS, withTrackIssuers } from "./normalize";
 import {
   classificationDrift, classifyPermitStatusText, effectiveCheckDays, extractStatusDate, isAuthWallText, isNemApprovalOutcome, nextCheckIso, outcomeTrack, portalStatedStatus,
   readingMayFinishTrack, shouldRecordStatusCheck, trackKind, UNCONFIRMED_READING_LABEL,
@@ -803,6 +803,11 @@ export function updateProject(db: AppDb, projectId: string, payload: ParserPaylo
   // e.g. an addition discovered on re-parse out of the canonical flag.
   delete (existingSnapshot as Record<string, unknown>)["hasExistingSystem"];
   delete (existingSnapshot as Record<string, unknown>)["hasBattery"];
+  // Same for the canonical ALIASES (inverterModel ← invModel, inverterQuantity ← invQty, …, #225):
+  // a stored alias that merely echoes its source is dropped and re-derived from the merged evidence,
+  // so editing invModel moves inverterModel with it. An alias set on its own (differs from its
+  // source) is kept, and one sent in THIS payload wins over everything via the merge below.
+  for (const key of staleDerivedKeys(existingSnapshot as ParserPayload)) delete (existingSnapshot as Record<string, unknown>)[key];
   const mergedSnapshot: ParserPayload = { ...existingSnapshot, ...payload };
   // WHICH PORTAL THIS FILES ON IS NOT A SIDE EFFECT OF AN EDIT.
   //
