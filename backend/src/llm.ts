@@ -5,7 +5,7 @@ import { performance } from "node:perf_hooks";
 import type { AcroFieldForMapping, AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, JurisdictionCodeResearchInput, DesignCriteriaResearchResult, ParserExtractedField, ParserFieldEvidence, ParserExtractionConflict, ParserExtractionUncertainty, ParserExtractionResolution, PlanPageIndex, CodeEdition, CodeFamily, CodeFamilyAdoptionModel, JurisdictionAdoptionModel, UpcomingCodeEdition, WebLookupResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { RESEARCH_PORTAL_UNCONFIRMED_NOTE } from "./researchedPortalUrl";
-import { scopeResultsToState, stateScopeOf, stateScopedFormQueries } from "./formSearchScope";
+import { documentNameQueries, scopeResultsToState, stateScopeOf, stateScopedFormQueries } from "./formSearchScope";
 import { logger } from "./logger";
 import { persistLlmCall } from "./llmAccounting";
 import { routeFor, taskForLabel, takeAdvisorSlot, describeRoutes, BASELINE_MODEL, type LlmEffort, type LlmTask, type ResolvedRoute, type AdvisorConfig } from "./modelRouting";
@@ -898,7 +898,7 @@ export const FLAT_FORM_OVERLAY_MAX_TOKENS = 16000;
 // (DESIGN_LOOKUP_MAX_FETCHES) and per page (DESIGN_LOOKUP_MAX_PAGE_TOKENS), and its tokens are
 // recorded in llm_calls like every call (instrument()). What it stores is unchanged: seeded,
 // blank-fill only, each value with its page and quote (codeProfiles.mergeResearchedDesignCriteria).
-export const DESIGN_CRITERIA_LOOKUP_SYSTEM = `You look up ONE building jurisdiction's structural design criteria for residential roofs: ground snow load, ultimate design wind speed (Vult), wind exposure category, seismic design category (SDC), frost line depth, risk category. Answer EVERY one: a value you found, or omit it and say in notes that you looked and did not find it.
+export const DESIGN_CRITERIA_LOOKUP_SYSTEM = `You look up ONE building jurisdiction's structural design criteria for residential roofs: ground snow load, ultimate design wind speed (Vult), wind exposure category, seismic design category (SDC), frost line depth, risk category — and, when the same table states them, the roof snow load, weathering probability, termite probability and soil bearing capacity. Answer EVERY one: a value you found, or omit it and say in notes that you looked and did not find it.
 
 WHERE A VALUE MAY COME FROM (a page you actually found):
 1. The jurisdiction's building-department pages and PDFs (design criteria, "currently adopted codes").
@@ -912,7 +912,7 @@ You may OPEN (web_fetch) a result page to read its table — only official city,
 WHEN TO OMIT (and say why in notes):
 - The source gives several values or a range for the jurisdiction ("115/125/140", "20-25 psf", "Exposure B or C", special wind region inside it), or says criteria are site-specific or vary by elevation (an elevation-banded table, an address lookup tool / hazard map) — omit the value, and report it under "siteSpecific" with that table's or tool's official URL.
 - The value belongs to a neighbouring or different jurisdiction — omit.
-- A ROOF snow load (flat/sloped/minimum roof snow, Pf, Pm) is never a ground snow load.
+- A ROOF snow load (flat/sloped/minimum roof snow, Pf, Pm) is never a ground snow load. When the jurisdiction's table states its own roof snow load (a flat/minimum roof snow value), give it under roofSnowLoadPsf; never a sloped Ps.
 - windSpeedMph must be the ULTIMATE (strength) speed Vult; omit a speed labelled ASD, nominal, Vasd, or a legacy "basic wind speed" from a pre-2012 map.
 - groundSnowLoadPsf is the strength-level ground snow load Pg. A value labelled allowable-stress pg(asd) (2024-edition Table R301.2 prints pg(asd)) goes under groundSnowLoadAsdPsf instead — never under groundSnowLoadPsf.
 - Use the CURRENT edition: a table from a superseded code cycle, or a staging/preview copy of a page, is not the value.
@@ -926,6 +926,10 @@ Return ONLY JSON:
  "seismicDesignCategory": {"value": "<A|B|C|D0|D1|D2|E>", "sourceUrl": "<page>", "quote": "<exact words naming the seismic design category>"} or omit,
  "frostDepthIn": {"value": <inches>, "sourceUrl": "<page>", "quote": "<exact words, with frost and the number>"} or omit,
  "riskCategory": {"value": "<I|II|III|IV>", "sourceUrl": "<page>", "quote": "<exact words naming the risk category the jurisdiction requires for dwellings>"} or omit,
+ "roofSnowLoadPsf": {"value": <number>, "sourceUrl": "<page>", "quote": "<exact words, with roof snow and the number>"} or omit,
+ "weathering": {"value": "<negligible|moderate|severe>", "sourceUrl": "<page>", "quote": "<exact words naming the weathering probability>"} or omit,
+ "termite": {"value": "<the probability as published, e.g. slight to moderate>", "sourceUrl": "<page>", "quote": "<exact words, with termite>"} or omit,
+ "soilBearingPsf": {"value": <number>, "sourceUrl": "<page>", "quote": "<exact words, with soil bearing and the number>"} or omit,
  "siteSpecific": [{"criterion": "groundSnowLoadPsf|windSpeedMph|windExposure|seismicDesignCategory|frostDepthIn", "sourceUrl": "<the official table/tool page>", "note": "<≤20 words: how it varies, e.g. by elevation band>"}] or omit,
  "notes": "<what you could not confirm, and any site-specific tool>"}
 Every value object may also carry "sourceKind": "design_criteria_table|adoption_ordinance|building_safety_policy|code_text|project_handout".
@@ -1132,17 +1136,22 @@ export function parseDesignCriteriaLookup(
   const values: DesignCriteriaResearchResult["values"] = [];
   const dropped: string[] = [];
   if (grounded) {
-    for (const key of ["groundSnowLoadPsf", "groundSnowLoadAsdPsf", "windSpeedMph", "windExposure", "seismicDesignCategory", "frostDepthIn", "riskCategory"] as const) {
+    for (const key of ["groundSnowLoadPsf", "groundSnowLoadAsdPsf", "windSpeedMph", "windExposure", "seismicDesignCategory", "frostDepthIn", "riskCategory", "roofSnowLoadPsf", "weathering", "termite", "soilBearingPsf"] as const) {
       const v = parsed[key] as { value?: unknown; sourceUrl?: unknown; quote?: unknown; sourceKind?: unknown } | undefined;
       if (!v || typeof v !== "object") continue;
       const criterion: LookupValue["criterion"] = key === "groundSnowLoadAsdPsf" ? "groundSnowLoadPsf" : key;
       const sourceUrl = typeof v.sourceUrl === "string" ? v.sourceUrl.trim() : "";
       const quote = typeof v.quote === "string" ? v.quote.trim() : "";
-      const isText = criterion === "windExposure" || criterion === "seismicDesignCategory" || criterion === "riskCategory";
+      const isText = criterion === "windExposure" || criterion === "seismicDesignCategory" || criterion === "riskCategory"
+        || criterion === "weathering" || criterion === "termite";
       // A risk category answered as "2" is Risk Category II.
       const romanRisk: Record<string, string> = { "1": "I", "2": "II", "3": "III", "4": "IV" };
       const rawText = String(v.value ?? "").trim().toUpperCase();
-      const value = isText ? (criterion === "riskCategory" ? romanRisk[rawText] ?? rawText : rawText) : typeof v.value === "number" ? v.value : Number.NaN;
+      // Weathering is one of three words, stored lower-case; termite is kept as published ("Slight
+      // to Moderate"), whitespace collapsed — too long for the field is dropped below, never cut.
+      const value = criterion === "weathering" ? String(v.value ?? "").trim().toLowerCase()
+        : criterion === "termite" ? String(v.value ?? "").trim().replace(/\s+/g, " ")
+        : isText ? (criterion === "riskCategory" ? romanRisk[rawText] ?? rawText : rawText) : typeof v.value === "number" ? v.value : Number.NaN;
       if (!sourceUrl || (typeof value === "number" && !Number.isFinite(value)) || value === "") continue;
       let why = "";
       let qualifier: LookupValue["qualifier"];
@@ -1167,27 +1176,53 @@ export function parseDesignCriteriaLookup(
           && new RegExp(`^\\s*[:=-]?\\s*(?:${value}${arabic ? `|${arabic}` : ""})(?![A-Za-z0-9])`).test(tail);
         if (!named) why = "quote does not name the risk category";
         else if (/^\s*[:=-]?\s*(?:IV|I{1,3}|[1-4])\s*(?:,|\/|&|-|–|\bor\b|\band\b|\bto\b|\bthrough\b)\s*(?:IV|I{1,3}|[1-4])(?![A-Za-z0-9])/.test(tail)) why = "quote lists several risk categories";
+      } else if (criterion === "weathering") {
+        // IRC Table R301.2 weathering probability: one of three words, bound to its own label.
+        const label = quote.match(/weathering/i);
+        const tail = label ? quote.slice((label.index ?? 0) + label[0].length).split(/[.;]/)[0].slice(0, 30) : "";
+        if (!/^(?:negligible|moderate|severe)$/.test(String(value)) || !new RegExp(`^[^A-Za-z]*(?:probability\\s*)?[:=-]?\\s*${value}\\b`, "i").test(tail)) why = "quote does not name the weathering probability";
+        // "Moderate to Severe" is a range, not one probability.
+        else if (/\b(?:negligible|moderate|severe)\s*(?:to|or|and|-|–|\/)\s*(?:negligible|moderate|severe)\b/i.test(tail)) why = "quote gives a range of weathering probabilities";
+      } else if (criterion === "termite") {
+        // Informational: the quote names termite and carries the words given.
+        if (!/termite/i.test(quote) || !quote.toLowerCase().replace(/\s+/g, " ").includes(String(value).toLowerCase())) why = "quote does not state the termite probability";
+        else if (String(value).length > 120) why = "termite wording longer than the field";
       } else {
-        const nums = numbersIn(quote);
+        // Soil bearing is published with a thousands separator ("1,500 psf"): read as one number,
+        // not a "1, 500" list. Only there — a comma between two loads is a list.
+        const q = criterion === "soilBearingPsf" ? quote.replace(/(\d),(?=\d{3}(?!\d))/g, "$1") : quote;
+        const nums = numbersIn(q);
         const hits = nums.map((x, i) => ({ ...x, i })).filter((x) => x.n === value);
         if (!hits.length) why = "quote does not contain the value";
-        else if (hits.every((h) => inRangeOrList(quote, h.at, h.end))) why = "value sits in a range or list";
-        else if (SITE_CONDITIONAL.test(quote)) why = "quote makes the value site-specific";
+        else if (hits.every((h) => inRangeOrList(q, h.at, h.end))) why = "value sits in a range or list";
+        else if (SITE_CONDITIONAL.test(q)) why = "quote makes the value site-specific";
         else if (criterion === "frostDepthIn") {
-          const bound = hits.filter((h) => !inRangeOrList(quote, h.at, h.end)).some((h) => {
-            const l = labelOf(quote, nums, h.i);
+          const bound = hits.filter((h) => !inRangeOrList(q, h.at, h.end)).some((h) => {
+            const l = labelOf(q, nums, h.i);
             return /frost/i.test(l.before) || /^\s*(?:in(?:ch(?:es)?)?\.?|")?\s*\(?\s*frost/i.test(l.after);
           });
           if (!bound) why = "quote does not bind the value to frost depth";
+        } else if (criterion === "roofSnowLoadPsf") {
+          // A ROOF SNOW label (roof snow / pf / pm) right before the number — never a bare "roof"
+          // (roof live / dead load), never a sloped ps, never a ground snow number re-labelled.
+          const bound = hits.filter((h) => !inRangeOrList(q, h.at, h.end)).some((h) => {
+            const l = labelOf(q, nums, h.i);
+            return snowClass(l) === "roof" && /roof\s+snow|\bp\s?[fm]\b/i.test(l.before)
+              && !/\blive\b|\bdead\b|\bsloped\b|\btotal\b|\bp\s?s\b/i.test(l.before);
+          });
+          if (!bound) why = "quote does not bind the value to roof snow";
+        } else if (criterion === "soilBearingPsf") {
+          const bound = hits.filter((h) => !inRangeOrList(q, h.at, h.end)).some((h) => /soil|bearing/i.test(labelOf(q, nums, h.i).before));
+          if (!bound) why = "quote does not bind the value to soil bearing";
         } else if (criterion === "windSpeedMph") {
-          const classes = hits.filter((h) => !inRangeOrList(quote, h.at, h.end)).map((h) => windClass(labelOf(quote, nums, h.i)));
-          const speeds = nums.filter((x) => /^\s*mph\b/i.test(quote.slice(x.end, x.end + 6)));
+          const classes = hits.filter((h) => !inRangeOrList(q, h.at, h.end)).map((h) => windClass(labelOf(q, nums, h.i)));
+          const speeds = nums.filter((x) => /^\s*mph\b/i.test(q.slice(x.end, x.end + 6)));
           if (classes.includes("ult")) { /* bound to Vult / ultimate / wind */ }
           else if (classes.includes("asd")) why = "quote labels the speed ASD/nominal";
           else if (speeds.length > 1) why = "quote carries several speeds and none is labelled Vult";
-          else if (/\b(?:v\s*_?\s*asd|vasd|asd|nominal|allowable\s+stress)\b/i.test(quote)) why = "quote labels the speed ASD/nominal";
+          else if (/\b(?:v\s*_?\s*asd|vasd|asd|nominal|allowable\s+stress)\b/i.test(q)) why = "quote labels the speed ASD/nominal";
         } else {
-          const classes = hits.filter((h) => !inRangeOrList(quote, h.at, h.end)).map((h) => snowClass(labelOf(quote, nums, h.i)));
+          const classes = hits.filter((h) => !inRangeOrList(q, h.at, h.end)).map((h) => snowClass(labelOf(q, nums, h.i)));
           // Under the pg(asd) key only a number labelled pg(asd) counts; under the Pg key a number
           // labelled pg(asd) is re-qualified (kept apart), never stored as the strength Pg.
           if (key === "groundSnowLoadAsdPsf") {
@@ -3276,7 +3311,7 @@ Notes:
     });
   }
 
-  async findAhjFormUrl(input: { ahj: string; state: string; formType?: string; knownContext?: string }): Promise<AhjFormUrlResult> {
+  async findAhjFormUrl(input: { ahj: string; state: string; formType?: string; knownContext?: string; documentNames?: string[]; issuerHost?: string; maxSearches?: number; budgetMs?: number }): Promise<AhjFormUrlResult> {
     const formType = input.formType || "permit_application";
     const system = `You are a solar permitting research assistant. Find the OFFICIAL blank ${formType.replace(/_/g, " ")} PDF form that the named Authority Having Jurisdiction (AHJ) uses for residential rooftop solar PV permits.
 
@@ -3312,7 +3347,9 @@ Rules:
     // THE STATE, BY NAME AND ABBREVIATION, IN EVERY QUERY (issue #162): "State: OR" alone let three
     // searches for the City of Monroe, Oregon return only Monroe MI / CT / OH.
     const scope = stateScopeOf(input.state);
-    const queries = stateScopedFormQueries(input.ahj, input.state, formType);
+    // The dead-link retry (issue #205) searches for the lookup's documents BY NAME on the issuer's host.
+    const named = input.documentNames?.length ? documentNameQueries(input.ahj, input.state, input.documentNames, input.issuerHost) : [];
+    const queries = named.length ? named : stateScopedFormQueries(input.ahj, input.state, formType);
     const stateLine = scope ? `${scope.name} (${scope.abbr}) — only ${input.ahj}, ${scope.abbr}; a same-named place in any other state is not this AHJ` : input.state;
     const queryLines = queries.length ? `\nSearch with queries like these (each names the state):\n${queries.map((q) => `- ${q}`).join("\n")}` : "";
     const userMsg = `AHJ: ${input.ahj}\nState: ${stateLine}\nForm needed: residential solar ${formType.replace(/_/g, " ")} (building + electrical permit applications).${input.knownContext ? `\n\n${input.knownContext}\nStart from the known portal/URLs above when searching.` : ""}\nFind the AHJ's forms/applications page and the direct blank PDF links.${queryLines}`;
@@ -3323,7 +3360,9 @@ Rules:
     // list was thrown away. Kept as data for the acquisition's own predicate (ahjFormAuto).
     let searchResults: Array<{ url: string; title: string }> = [];
     let searchTimeout: AhjFormUrlResult["searchTimeout"];
-    const budgetMs = webResearchBudgetMs();
+    // A caller may ask for LESS (the dead-link retry, issue #205) — never more than the defaults.
+    const budgetMs = input.budgetMs && input.budgetMs > 0 ? Math.min(input.budgetMs, webResearchBudgetMs()) : webResearchBudgetMs();
+    const maxSearches = input.maxSearches && input.maxSearches > 0 ? Math.min(3, Math.floor(input.maxSearches)) : 3;
     try {
       // A GROUNDED SEARCH NEEDS A GROUNDED BUDGET. This ran on askWithWebSearch's 45-second
       // default while making up to three web searches, and on City of Salem it aborted at
@@ -3339,7 +3378,7 @@ Rules:
       // notes after three searches, so it gets more.
       // Every result the searches returned (not the first 20): the out-of-state ones are discarded
       // below BEFORE the cap, so a page of Monroe MI hits cannot crowd Monroe OR's out of it.
-      const web = await this.askWithWebSearch("findAhjFormUrl", system, userMsg, 4000, 3, budgetMs, [], FORM_SEARCH_RESULTS_SEEN);
+      const web = await this.askWithWebSearch("findAhjFormUrl", system, userMsg, 4000, maxSearches, budgetMs, [], FORM_SEARCH_RESULTS_SEEN);
       const raw = web.text;
       searchResults = (web.resultUrls || []).map((url) => ({ url, title: String(web.resultTitles?.[url] || "") }));
       parsed = this.parseJson(raw, {});

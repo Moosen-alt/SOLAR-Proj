@@ -1446,6 +1446,9 @@ export interface NecEditionRequirements {
     insideBoundaryArticle: string | null;
     /** True when the edition expects a listed PV hazard control system / listed RSD equipment. */
     requiresListedEquipment: boolean;
+    /** True when the edition's inside-boundary options include "no exposed wiring methods or
+     *  conductive parts" (2017/2020 690.12(B)(2)(3); deleted in 2023). */
+    noExposedWiringOption: boolean;
     /** Initiation-device article when the edition expects its location on the plans, else null. */
     initiationDeviceArticle: string | null;
   };
@@ -1464,6 +1467,9 @@ export interface NecEditionRequirements {
     loadSide: string;
     busbar120: string | null;
   };
+  /** Cells taken from secondary sources and not yet checked against the edition's own text
+   *  (dotted paths, e.g. "labels.rapidShutdown"). A person confirms them, then removes the entry. */
+  unconfirmed?: readonly string[];
 }
 
 /** The canonical code families a state's own code names map onto (ORSC -> residential,
@@ -1581,6 +1587,10 @@ export interface JurisdictionDesignCriteria {
    *  A different quantity (~0.7 x Pg): kept in its own field so it is stored, not dropped, and never
    *  read as the strength Pg a below-ahj check compares against. */
   groundSnowLoadAsdPsf?: number;
+  /** The roof snow load the jurisdiction STATES as its design/minimum value (a flat-roof pf or pm,
+   *  as published in its criteria table) — a different quantity from Pg, compared only with a plan's
+   *  flat/unqualified roof snow (never a sloped ps, never Pg). */
+  roofSnowLoadPsf?: number;
   windSpeedMph?: number;
   windExposure?: string;
   /** The jurisdiction says it sits in a special wind region (IRC/ORSC Figure R301.2(2)
@@ -1591,6 +1601,13 @@ export interface JurisdictionDesignCriteria {
   /** ASCE 7 / IBC Table 1604.5 risk category ("I"…"IV") the jurisdiction requires. Residential PV
    *  is almost always II; recorded so a plan stating a LOWER category is compared, not assumed. */
   riskCategory?: string;
+  /** IRC Table R301.2 weathering probability for concrete/masonry. Informational (the KB card and
+   *  the verify summary show it); no rule compares it. */
+  weathering?: "negligible" | "moderate" | "severe";
+  /** IRC Table R301.2 termite damage probability, as published ("slight to moderate"). Informational. */
+  termite?: string;
+  /** Presumptive/allowable soil bearing capacity the jurisdiction states, psf. Informational. */
+  soilBearingPsf?: number;
   sourceUrl?: string;
 }
 
@@ -1719,7 +1736,8 @@ export interface DesignCriteriaResearchResult {
   provider: "claude" | "stub";
   /** Only values found on a page the search actually returned; each carries its citation. */
   values: Array<{
-    criterion: "groundSnowLoadPsf" | "windSpeedMph" | "windExposure" | "seismicDesignCategory" | "frostDepthIn" | "riskCategory";
+    criterion: "groundSnowLoadPsf" | "windSpeedMph" | "windExposure" | "seismicDesignCategory" | "frostDepthIn" | "riskCategory"
+      | "roofSnowLoadPsf" | "weathering" | "termite" | "soilBearingPsf";
     value: number | string;
     sourceUrl: string;
     quote?: string;
@@ -1901,6 +1919,9 @@ export type StatedDesignCriterionQualifier =
   | "roof"
   | "flat"
   | "sloped"
+  /** ASCE 7 pm / "minimum roof snow load": the non-reducible low-slope minimum, a formula
+   *  intermediate — never a design's governing roof snow (#211 review). */
+  | "minimum"
   | "unspecified";
 
 export interface StatedDesignCriterion {
@@ -3389,6 +3410,15 @@ export interface LLMProvider {
     formType?: string;
     /** What the KB already knows (imported reference data) — a verified-first starting point. */
     knownContext?: string;
+    /** The dead-link retry (issue #205): the submittal documents the per-job process lookup names —
+     *  the queries search for them BY NAME (each still naming the state, #162). */
+    documentNames?: string[];
+    /** The issuer's own host, to scope those queries to (site:<host>). */
+    issuerHost?: string;
+    /** A smaller quota for the retry: web searches (capped at the default 3) and the time budget
+     *  (capped at the default). Omitted: the defaults. */
+    maxSearches?: number;
+    budgetMs?: number;
   }): Promise<AhjFormUrlResult>;
 
   /** Map a blank form's AcroForm field names onto project data sources so the
@@ -4009,6 +4039,9 @@ export interface CitedFact<T> {
   /** A named portal that REDIRECTS to its official host (lookup D3): kept as the final URL, with the
    *  URL the source named and the hops our one polite read saw. */
   redirect?: { from: string; finalUrl: string; chain: string[]; status: number };
+  /** Other pages that state the SAME fact in other words (a prerequisite collapsed from
+   *  near-duplicates, permitProcessPrerequisites.classifyPrerequisites) — every source is kept. */
+  alsoSourceUrls?: string[];
 }
 export type PermitProcessDiscipline = "structural" | "electrical" | "combo" | "other";
 export interface PermitFeeAnswer {

@@ -1961,12 +1961,17 @@ function codeProfileForKb(kbProfile, codeProfiles, designLookups) {
 const KB_CRITERIA_LABELS = {
   "designCriteria.groundSnowLoadPsf": ["Ground snow load", " psf"],
   "designCriteria.groundSnowLoadAsdPsf": ["Ground snow load pg(asd) (allowable-stress, not Pg)", " psf"],
+  "designCriteria.roofSnowLoadPsf": ["Roof snow load (AHJ-stated minimum)", " psf"],
   "designCriteria.windSpeedMph": ["Design wind speed (ultimate)", " mph"],
   "designCriteria.windExposure": ["Wind exposure", ""],
   "designCriteria.specialWindRegion": ["Special wind region", ""],
   "designCriteria.seismicDesignCategory": ["Seismic design category", ""],
   "designCriteria.frostDepthIn": ["Frost depth", " in"],
   "designCriteria.riskCategory": ["Risk category", ""],
+  // Informational (IRC Table R301.2): shown for the record, compared by no rule.
+  "designCriteria.weathering": ["Weathering (informational)", ""],
+  "designCriteria.termite": ["Termite (informational)", ""],
+  "designCriteria.soilBearingPsf": ["Soil bearing (informational)", " psf"],
   "prescriptive.maxAttachmentSpacingIn": ["Max attachment spacing", " in o.c."],
   "prescriptive.listingEvidenceRequired": ["Module / racking UL listing evidence required", ""],
 };
@@ -4693,7 +4698,7 @@ function trackPrerequisitesHtml(t) {
   const steps = Array.isArray(t.prerequisites) ? t.prerequisites.filter((p) => p && p.step) : [];
   if (!steps.length) return "";
   return `<div class="track-prereqs" style="margin:0 0 6px;font-size:12px"><strong>Before this filing, at another office:</strong>
-    <ol style="margin:2px 0 0 18px;padding:0">${steps.map((p) => `<li>${esc(p.step)}${httpUrl(p.sourceUrl) ? ` — ${linkifyText(httpUrl(p.sourceUrl))}` : ""}</li>`).join("")}</ol></div>`;
+    <ol style="margin:2px 0 0 18px;padding:0">${steps.map((p) => { const urls = [p.sourceUrl, ...(Array.isArray(p.alsoSourceUrls) ? p.alsoSourceUrls : [])].map(httpUrl).filter(Boolean); return `<li>${esc(p.step)}${urls.length ? ` — ${urls.map((u) => linkifyText(u)).join(", ")}` : ""}</li>`; }).join("")}</ol></div>`;
 }
 
 function trackNextActionText(t) {

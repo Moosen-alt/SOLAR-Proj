@@ -53,6 +53,7 @@ import type {
   UpcomingCodeEdition,
 } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
+import { codeFamilyOf, editionsInEffect, type EditionsInEffect } from "./codeFamilies";
 
 export interface DesignTextSource {
   label: string;
@@ -987,8 +988,14 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   }
 
   // ROOF SNOW — a different quantity (Pf/Ps = f(Pg, Ce, Ct, Is, Cs)); never compared to Pg.
-  const roofQual = (word: string | undefined): StatedDesignCriterionQualifier =>
-    !word ? "roof" : /flat/i.test(word) ? "flat" : /sloped|total/i.test(word) ? "sloped" : "roof";
+  // The SYMBOL decides when one is printed ("Roof snow load, ps = 22 psf" is a sloped ps, whatever
+  // word leads); then the leading word. pm / "minimum roof snow" is ASCE 7's low-slope minimum, a
+  // formula intermediate, never the governing load: qualified "minimum" so no rule reads it as one.
+  const roofQual = (word: string | undefined, symbol?: string): StatedDesignCriterionQualifier => {
+    const sym = /\bp\s?([fsm])\b/i.exec(symbol ?? "")?.[1]?.toLowerCase();
+    if (sym) return sym === "f" ? "flat" : sym === "s" ? "sloped" : "minimum";
+    return !word ? "roof" : /flat/i.test(word) ? "flat" : /sloped|total/i.test(word) ? "sloped" : /minimum/i.test(word) ? "minimum" : "roof";
+  };
   // "ROOF SNOW LOAD: 20 PSF", "Minimum roof snow load, Pm: 20 psf", and a calc table's unit-first
   // "Flat Roof Snow Load, p f [psf]: 21" (bracketed unit + separator, as for ground snow).
   const roofLabel = new RegExp(String.raw`\b(flat|sloped|total|design|balanced|minimum)?\s*roof\s+snow(?:\s+load)?(?:\s*,?\s*p\s?[fsm]\b)?\s*(?:(\[\s*psf\s*\])\s*[:=]|${SEP})?\s*(\d+(?:\.\d+)?)\s*(psf)?`, "gid");
@@ -996,7 +1003,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
     if (!m[2] && !m[4]) continue;
     // ":"/"=" assign outright; a spaced dash, like no separator, only where the run's layout agrees.
     if (!/[:=]/.test(m[0]) && labelFirstIsNextLabels(m, 3)) continue;
-    push("roofSnowPsf", roofQual(m[1]), m[3], m);
+    push("roofSnowPsf", roofQual(m[1], m[0].slice(0, valueStartOf(m, 3) - m.index)), m[3], m);
   }
   const roofAfter = new RegExp(String.raw`${NOT_NEGATIVE}(\d+(?:\.\d+)?)\s*psf\b\s*(${SEP}\s*)?(flat|sloped|total|design)?\s*roof\s+snow`, "gi");
   while ((m = roofAfter.exec(text))) {
@@ -1007,7 +1014,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   while ((m = pf.exec(text))) push("roofSnowPsf", "flat", m[1], m);
   // The minimum roof snow load symbol: "p m = 20 psf".
   const pm = /\bp\s?m\s*=\s*(\d+(?:\.\d+)?)\s*psf/gi;
-  while ((m = pm.exec(text))) push("roofSnowPsf", "roof", m[1], m);
+  while ((m = pm.exec(text))) push("roofSnowPsf", "minimum", m[1], m);
   const ps = /\b(?:total\s+snow\s+load\s*,?\s*)?p\s?s\s*=?\s*(\d+(?:\.\d+)?)\s*psf/gi;
   while ((m = ps.exec(text))) {
     // "ps 20.00 psf" alone is too short to trust; require the "=" or the "Total Snow Load" label.
@@ -2241,6 +2248,33 @@ function upcomingWithin(ctx: EffectiveCodeContext, asOf: string | undefined, bef
   return (stated) => due.find((u) => normCodeToken(u.code) === normCodeToken(stated.code) && String(u.edition).trim() === stated.edition) ?? null;
 }
 
+/** The recorded PHASE-IN that still allows exactly the code and edition a mismatch line compared,
+ *  on `asOf` (issue #216). A state that adopts a new edition often accepts the previous one until a
+ *  mandatory date; a plan on that previous edition, filed inside the window, is not wrong.
+ *  `editionsInEffect` (codeFamilies.ts) is the one helper that reads those windows. It answers per
+ *  FAMILY (one current entry each), so it is asked about the entries of the compared CODE only:
+ *  two codes of one family (IBC and IEBC) each in their own window each get their own answer.
+ *  Only a window whose previous edition is ON FILE, for the same code token, softens: a window
+ *  that does not say which edition it still allows, or that allows another code's edition, keeps
+ *  the mismatch as it was. From the mandatory date on, `editionsInEffect` no longer reports a
+ *  phase-in and the mismatch blocks. */
+function graceWindowFor(ctx: EffectiveCodeContext, asOf: string | undefined): (stated: { code: string; edition: string }) => EditionsInEffect | null {
+  const date = String(asOf || new Date().toISOString()).slice(0, 10);
+  const entries = ctx.adoptedCodes ?? [];
+  return (stated) => {
+    const code = normCodeToken(stated.code);
+    const sameCode = entries.filter((e) => normCodeToken(e.code) === code);
+    const families = new Set(sameCode.map((e) => codeFamilyOf(e)));
+    for (const family of families) {
+      if (!family) continue;
+      const window = editionsInEffect(sameCode, family, date);
+      if (window.status !== "phase_in") continue;
+      if (window.allowed.some((a) => a.role === "previous" && normCodeToken(a.code) === code && String(a.edition).trim() === stated.edition)) return window;
+    }
+    return null;
+  };
+}
+
 /**
  * NO EDITIONS ON FILE — the plan's code basis next to the lookup state. A callout, never more:
  * the model-code defaults are placeholders (the "current cycle" says nothing about what this AHJ
@@ -2796,15 +2830,18 @@ export function evaluateDesignCriteriaFindings(
   const ahjFrost = typeof dc.frostDepthIn === "number" && dc.frostDepthIn > 0 ? dc.frostDepthIn : null;
   const ahjRisk = normRiskCategory(dc.riskCategory);
   const ahjSnowAsd = typeof dc.groundSnowLoadAsdPsf === "number" && dc.groundSnowLoadAsdPsf > 0 ? dc.groundSnowLoadAsdPsf : null;
+  const ahjRoofSnow = typeof dc.roofSnowLoadPsf === "number" && dc.roofSnowLoadPsf > 0 ? dc.roofSnowLoadPsf : null;
   let moreBlocks = false;
   const compareMore = (
     label: string, unit: string, required: string, field: keyof JurisdictionDesignCriteria,
     same: (c: StatedDesignCriterion) => boolean, isBelow: (c: StatedDesignCriterion) => boolean,
+    arithmetic?: (hits: StatedDesignCriterion[]) => string,
   ): void => {
     const before = belowLines.length;
     collect(field, label, unit, required, (c) => same(c) && isBelow(c));
     if (belowLines.length === before) return;
     const hits = stated.criteria.filter((c) => same(c) && isBelow(c));
+    if (arithmetic) belowLines[belowLines.length - 1] += ` (${arithmetic(hits)})`;
     const prov = fieldProvenance(ctx, `designCriteria.${field}`);
     const documentStates = hits.some((c) => !c.derived && !stated.unsure.has(readingKey(c)));
     const oneValue = new Set(stated.criteria.filter(same).map((c) => String(c.value))).size === 1;
@@ -2836,6 +2873,23 @@ export function evaluateDesignCriteriaFindings(
       (c) => c.criterion === "groundSnowPsf" && c.qualifier === "ground_asd" && typeof c.value === "number",
       (c) => (c.value as number) < ahjSnowAsd);
   }
+  // (#211) ROOF SNOW against the AHJ's stated roof snow load — roof snow with roof snow, never with
+  // Pg. What is compared is each document's GOVERNING roof snow: the largest flat (pf) or
+  // unqualified/design roof snow it states. Never a SLOPED ps (ps = Cs x pf is legitimately lower
+  // than a flat value on a steep or slippery roof) and never the pm minimum (a formula intermediate:
+  // "pm = 20 psf … ps = 33 psf" governs at 33). The largest per document also reads a progressive
+  // calc ("pf = 17.64 psf … pf = 20.00 psf") at its result. Same per-line policy as above, with the
+  // arithmetic in the line so the examiner's question is answered on its face.
+  if (ahjRoofSnow != null) {
+    const roofReadings = stated.criteria.filter((c) => c.criterion === "roofSnowPsf" && (c.qualifier === "flat" || c.qualifier === "roof") && typeof c.value === "number");
+    const governingBySource = new Map<string, number>();
+    for (const c of roofReadings) governingBySource.set(c.source, Math.max(governingBySource.get(c.source) ?? -Infinity, c.value as number));
+    const governing = new Set(roofReadings.filter((c) => c.value === governingBySource.get(c.source)));
+    compareMore("Roof snow load", " psf", `${ahjRoofSnow} psf`, "roofSnowLoadPsf",
+      (c) => governing.has(c),
+      (c) => (c.value as number) < ahjRoofSnow,
+      (hits) => [...new Set(hits.map((c) => c.value as number))].sort((a, b) => a - b).map((v) => `${v} psf < ${ahjRoofSnow} psf`).join("; "));
+  }
   const belowProvenance = ctx.profile?.fieldSources
     ? [...new Set(belowFields.map((f) => fieldProvenance(ctx, f).text))].join(" / ")
     : provenance(ctx);
@@ -2850,7 +2904,7 @@ export function evaluateDesignCriteriaFindings(
         ...(ahjExposure ? ["windExposure" as const] : []),
         ...(ahjSnow != null ? ["groundSnowPsf" as const] : []),
       ])}`,
-      cityFeedback: `Provide updated design criteria on the plan set and in the engineer's letter/calculations. ${who} design criteria: ${[ahjWind != null ? `wind ${ahjWind} mph ultimate` : "", ahjExposure ? `Exposure ${ahjExposure}` : "", ahjSnow != null ? `ground snow ${ahjSnow} psf` : "", ahjSnowAsd != null ? `ground snow pg(asd) ${ahjSnowAsd} psf` : "", ahjSdc ? `Seismic Design Category ${ahjSdc}` : "", ahjRisk ? `Risk Category ${ahjRisk}` : "", ahjFrost != null ? `frost depth ${ahjFrost} in` : ""].filter(Boolean).join(", ")}. Revise attachment spacing and member checks to the corrected loads.`,
+      cityFeedback: `Provide updated design criteria on the plan set and in the engineer's letter/calculations. ${who} design criteria: ${[ahjWind != null ? `wind ${ahjWind} mph ultimate` : "", ahjExposure ? `Exposure ${ahjExposure}` : "", ahjSnow != null ? `ground snow ${ahjSnow} psf` : "", ahjSnowAsd != null ? `ground snow pg(asd) ${ahjSnowAsd} psf` : "", ahjRoofSnow != null ? `roof snow ${ahjRoofSnow} psf` : "", ahjSdc ? `Seismic Design Category ${ahjSdc}` : "", ahjRisk ? `Risk Category ${ahjRisk}` : "", ahjFrost != null ? `frost depth ${ahjFrost} in` : ""].filter(Boolean).join(", ")}. Revise attachment spacing and member checks to the corrected loads.`,
       designTeamAction: "Re-run the structural design (attachment spacing, member capacity, uplift) at the jurisdiction's criteria and reissue the plan-set structural notes and the engineer's letter with the corrected values.",
       evidenceNeeded: ["Plan-set design criteria matching the jurisdiction", "Engineer's letter/calculation at the jurisdiction's criteria", "Attachment spacing revised to the corrected loads", ...belowLines].slice(0, 8),
       codeReferences: [ref(ctx, "Table R301.2", "Climatic and geographic design criteria (established by the jurisdiction)", "The jurisdiction sets wind speed, exposure and ground snow load; a design below them is not approvable."), ref(ctx, "R301.2.1", "Wind design criteria", "Compare ultimate design wind speed (Vult) to the jurisdiction's value."), ref(ctx, "R301.2.3", "Snow loads", "Ground snow load Pg per the jurisdiction's criteria."),
@@ -2999,6 +3053,9 @@ export function evaluateDesignCriteriaFindings(
   //   · a mismatch against a human-VERIFIED profile -> a blocker, unless the plan prints the
   //     state's UPCOMING edition, its status reads adopted/filed/effective, and its date is
   //     between 90 days ahead and 30 days past (a warning naming the date; #124).
+  //   · a plan on the PREVIOUS edition inside a recorded phase-in (effective <= asOf < mandatory,
+  //     previous edition on file) -> not a mismatch: a callout naming the mandatory date, on a
+  //     verified or a seeded profile (#216). From the mandatory date on it blocks as above.
   //
   // LIKE WITH LIKE. A plan entry is compared with the profile entry of the SAME named code
   // (state code to state code: ORSC with ORSC). Base model codes are compared only when a base
@@ -3013,14 +3070,25 @@ export function evaluateDesignCriteriaFindings(
     // Lines whose plan edition is the state's upcoming edition, due within the window: these
     // never block, and say the date.
     const softened = new Set<string>();
+    // Lines whose plan edition the profile itself still allows today (a phase-in, #216): these are
+    // not mismatches yet, and say the mandatory date.
+    const inGrace = new Set<string>();
     const seen = new Set<string>();
     const upcomingFor = upcomingWithin(ctx, opts.asOf, UPCOMING_SOFTEN_DAYS_BEFORE, UPCOMING_SOFTEN_DAYS_AFTER);
-    const report = (key: string, line: string, compared: { code: string; edition: string }): void => {
+    const graceFor = graceWindowFor(ctx, opts.asOf);
+    // `graceVia`: the state-code pair a BASE line belongs to. The profile records only the new
+    // edition's base, so a plan's base on the previous state edition is in grace exactly when its
+    // state-code pair is.
+    const report = (key: string, line: string, compared: { code: string; edition: string }, graceVia?: { code: string; edition: string }): void => {
       if (seen.has(key)) return;
       seen.add(key);
       const due = upcomingFor(compared);
-      const text = due ? `${line} — the plan's edition is the upcoming ${due.code} ${due.edition}, anticipated effective ${due.anticipatedDate}` : line;
+      const grace = due ? null : graceFor(compared) ?? (graceVia ? graceFor(graceVia) : null);
+      const text = due
+        ? `${line} — the plan's edition is the upcoming ${due.code} ${due.edition}, anticipated effective ${due.anticipatedDate}`
+        : grace ? `${line} — still allowed during the phase-in: ${grace.note.replace(/\.$/, "")}` : line;
       if (due) softened.add(text);
+      if (grace) inGrace.add(text);
       lines.push(text);
     };
     for (const b of stated.codeBasis) {
@@ -3039,7 +3107,7 @@ export function evaluateDesignCriteriaFindings(
             ...profileEntries.filter((a) => a.base?.code === model).map((a) => ({ edition: a.base!.edition, label: `${a.label} (based on ${model} ${a.base!.edition})` })),
           ];
           if (recorded.length && !recorded.some((r) => r.edition === b.baseEdition)) {
-            report(`${code}|${b.edition}|${model}|${b.baseEdition}`, `plan states ${b.code} ${b.edition} based on ${model} ${b.baseEdition} (${b.source}) — profile records ${recorded.map((r) => r.label).join(" / ")}`, { code: model, edition: b.baseEdition });
+            report(`${code}|${b.edition}|${model}|${b.baseEdition}`, `plan states ${b.code} ${b.edition} based on ${model} ${b.baseEdition} (${b.source}) — profile records ${recorded.map((r) => r.label).join(" / ")}`, { code: model, edition: b.baseEdition }, b);
           }
         }
       }
@@ -3054,23 +3122,34 @@ export function evaluateDesignCriteriaFindings(
     }
     if (lines.length) {
       // A VERIFIED edition is the jurisdiction's code: a plan on another edition is not approvable
-      // as drawn. Only a seeded row stays a warning, and only an upcoming edition softens it.
-      const blocks = ctx.verified && lines.some((l) => !softened.has(l));
+      // as drawn. Only a seeded row stays a warning, and only an upcoming edition softens it. A
+      // plan wholly inside a recorded phase-in is no mismatch at all: a callout naming the date.
+      // Softening only ever lowers severity (rule 3): one line outside both still blocks.
+      const blocks = ctx.verified && lines.some((l) => !softened.has(l) && !inGrace.has(l));
+      const graceOnly = inGrace.size === lines.length;
       out.push({
         id: "city.code.basis-mismatch",
-        severity: blocks ? "blocker" : "warning",
+        severity: blocks ? "blocker" : graceOnly ? "callout" : "warning",
         category: "plan_set",
-        title: "Plan's code basis differs from the jurisdiction's adopted codes",
+        title: graceOnly
+          ? "Plan's code basis is the previous edition — still allowed during the phase-in"
+          : "Plan's code basis differs from the jurisdiction's adopted codes",
         message: `${lines.join("; ")}. Profile: ${provenance(ctx)}. ${blocks
           ? "The adopted editions are verified — the plan's governing-codes block must state them."
-          : softened.size === lines.length
-            ? "The plan anticipates the upcoming edition — confirm which edition the jurisdiction will review under on the submittal date."
-            : "One side is out of date — confirm the currently adopted editions."}`,
+          : graceOnly
+            ? "The jurisdiction still accepts the previous edition until the mandatory date — a submittal on or after that date must state the new edition."
+            : softened.size === lines.length
+              ? "The plan anticipates the upcoming edition — confirm which edition the jurisdiction will review under on the submittal date."
+              : softened.size + inGrace.size === lines.length
+                ? "The plan's editions are the upcoming edition or a previous one still allowed during a phase-in — confirm which edition the jurisdiction will review under on the submittal date."
+                : "One side is out of date — confirm the currently adopted editions."}`,
         // AN UNVERIFIED PROFILE CANNOT TELL AN INSTALLER TO CHANGE THEIR PLAN. Venus TX (new-AHJ e2e,
         // 2026-09-26): a seeded state edition (NEC 2026) against a plan that correctly said 2020 —
         // and the installer was told to "update" it. Only a human-verified profile may ask for the
         // change; otherwise the ask is to confirm with the AHJ, and it is not an installer callout.
-        cityFeedback: ctx.verified
+        cityFeedback: graceOnly
+          ? `The plan's governing-codes block states the previous edition, which ${who} still accepts during its phase-in — submit before the mandatory date or update the block to the new edition.`
+          : ctx.verified
           ? `Update the plan's governing-codes block to the code editions currently adopted by ${who}.`
           : `Confirm with ${who} which code editions are currently adopted before changing the plan's governing-codes block — the editions on file are unverified.`,
         designTeamAction: "Confirm the adopted editions with the jurisdiction; correct the plan's GOVERNING CODES block, or correct the jurisdiction's code profile if the plan is right.",
@@ -3079,7 +3158,7 @@ export function evaluateDesignCriteriaFindings(
           .filter((code) => profileEntries.some((a) => a.code === normCodeToken(code)))
           .slice(0, 4)
           .map((code) => ctx.citationFor(code, "Adopted edition", `${code} as adopted by ${who}`)),
-        installerCallout: ctx.verified,
+        installerCallout: ctx.verified && !graceOnly,
         evidenceStatus: "verified",
         evidenceFound: stated.codeBasis.slice(0, 12).map((b) => ({
           kind: "source_excerpt" as const,

@@ -15,6 +15,7 @@
 
 import { createHash } from "node:crypto";
 import type { LabelItem } from "./formTextLayer";
+import { pdfjsDocumentOptions } from "./pdfjsOptions";
 
 /** A horizontal rule (a stroked line, a hairline filled rectangle, or a band's edge). */
 export interface HRule { page: number; y: number; yTop: number; yBottom: number; x0: number; x1: number; band?: boolean }
@@ -191,7 +192,7 @@ export async function extractPageGeometry(pdfBytes: Uint8Array, angles: Record<n
   let pages: PageGeometry[] = [];
   try {
     const { getDocument, OPS } = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const doc = await getDocument({ data: new Uint8Array(pdfBytes), useSystemFonts: true }).promise;
+    const doc = await getDocument(pdfjsDocumentOptions({ data: new Uint8Array(pdfBytes), useSystemFonts: true })).promise;
     for (let n = 1; n <= doc.numPages; n++) {
       const page = await doc.getPage(n);
       const vp = page.getViewport({ scale: 1 });

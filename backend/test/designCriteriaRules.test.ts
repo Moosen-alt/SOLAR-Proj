@@ -424,6 +424,122 @@ check("#124 MUST-PASS: the softening window and statuses are the named constants
   assert.deepEqual([...UPCOMING_SOFTENING_STATUSES], ["adopted", "filed", "effective"]);
 });
 
+// #216 — A RECORDED PHASE-IN. A state that adopts a new edition and still accepts the previous one
+// until a mandatory date (NJ-shaped, N.J.A.C. 5:23: effective 2026-08-17, mandatory 2027-02-17).
+// A plan on the previous edition filed inside the window is not a mismatch; after it, it blocks.
+const NJ_PLAN = "GOVERNING CODES: 2021 IRC, 2020 NEC. SYSTEM SIZE: 8 kW DC";
+const njPlan = project({ planSetExtractedText: NJ_PLAN }, { state: "NJ", ahj: "Township of Testfield" } as Partial<ProjectRecord>);
+const njWindow = { effectiveDate: "2026-08-17", mandatoryDate: "2027-02-17" };
+const njProfile = (over: Partial<JurisdictionCodeProfile> = {}): JurisdictionCodeProfile => ({
+  key: "nj|township of testfield|unknown", state: "NJ", ahj: "Township of Testfield", confidence: "verified", verifiedBy: "operator",
+  adoptedCodes: [
+    { family: "residential", code: "IRC", edition: "2024", previousEdition: "2021", ...njWindow },
+    { family: "electrical", code: "NEC", edition: "2023", previousEdition: "2020", ...njWindow },
+  ],
+  amendments: [], designCriteria: {}, prescriptive: {}, fireSetbacks: [], citations: [], updatedAt: "",
+  researchedAt: "2026-09-01T00:00:00.000Z",
+  ...over,
+});
+const njRun = (asOf: string, over: Partial<JurisdictionCodeProfile> = {}): ReviewerFinding | undefined =>
+  get(evaluateDesignCriteriaFindings(njPlan, buildCodeContext("NJ", "Township of Testfield", njProfile(over)), { roofMounted: true, asOf }), BASIS);
+
+check("#216 MUST-PASS: verified, plan on the previous edition inside the recorded phase-in -> not a blocker (a callout naming the mandatory date)", () => {
+  const f = njRun("2026-10-05");
+  assert.ok(f, "the plan still gets an answer");
+  assert.notEqual(f!.severity, "blocker");
+  assert.equal(f!.severity, "callout");
+  assert.match(f!.message, /2027-02-17/);
+  assert.equal(f!.installerCallout, false, "the plan is acceptable as drawn: not an installer callout");
+});
+
+check("#216 MUST-EXCLUDE: the same plan after the mandatory date -> blocker", () => {
+  assert.equal(njRun("2027-03-01")?.severity, "blocker");
+  assert.equal(njRun("2027-02-17")?.severity, "blocker", "the mandatory date itself is outside the window");
+  assert.equal(njRun("2027-02-16")?.severity, "callout", "the day before still inside");
+});
+
+check("#216 MUST-EXCLUDE: before the new edition took effect the window is not open -> mismatch stays (nothing softens early)", () => {
+  // 2026-08-01: the 2024/2023 editions are not effective yet; editionsInEffect reports the previous
+  // edition applies, not a phase-in. This rule only reads phase-ins: the mismatch is as it was.
+  assert.equal(njRun("2026-08-01")?.severity, "blocker");
+});
+
+check("#216 MUST-EXCLUDE: a plan on an edition OLDER than the recorded previous one still blocks inside the window", () => {
+  const old = project({ planSetExtractedText: "GOVERNING CODES: 2018 IRC, 2017 NEC. SYSTEM SIZE: 8 kW DC" }, { state: "NJ", ahj: "Township of Testfield" } as Partial<ProjectRecord>);
+  const f = get(evaluateDesignCriteriaFindings(old, buildCodeContext("NJ", "Township of Testfield", njProfile()), { roofMounted: true, asOf: "2026-10-05" }), BASIS);
+  assert.equal(f?.severity, "blocker");
+});
+
+check("#216 MUST-EXCLUDE: one line in the window and one outside it -> still a blocker (softening only lowers, per line)", () => {
+  // NEC's window is recorded; IRC's mandatory date has passed.
+  const f = njRun("2026-10-05", { adoptedCodes: [
+    { family: "residential", code: "IRC", edition: "2024", previousEdition: "2021", effectiveDate: "2025-01-01", mandatoryDate: "2025-07-01" },
+    { family: "electrical", code: "NEC", edition: "2023", previousEdition: "2020", ...njWindow },
+  ] });
+  assert.equal(f?.severity, "blocker");
+  assert.match(f!.message, /still allowed during the phase-in/);
+});
+
+check("#216 MUST-EXCLUDE: a window that does not record WHICH edition it still allows does not soften", () => {
+  const f = njRun("2026-10-05", { adoptedCodes: [
+    { family: "residential", code: "IRC", edition: "2024", ...njWindow },
+    { family: "electrical", code: "NEC", edition: "2023", ...njWindow },
+  ] });
+  assert.equal(f?.severity, "blocker");
+});
+
+check("#216 MUST-PASS: on a SEEDED profile the in-window plan is a callout too (never raised)", () => {
+  const f = njRun("2026-10-05", { confidence: "seeded", verifiedBy: undefined });
+  assert.equal(f?.severity, "callout");
+});
+
+check("#216 MUST-PASS: the window opens ON its effective date (lower bound from inside); the message has no doubled period", () => {
+  const f = njRun("2026-08-17");
+  assert.equal(f?.severity, "callout");
+  assert.ok(!/\.;|\.\./.test(f!.message), f!.message);
+});
+
+check("#216 MUST-PASS: two codes of ONE family each in their own window -> each line in grace (not a blocker)", () => {
+  // IBC and IEBC are both "building": editionsInEffect picks one current entry per family, so the
+  // question must be asked per code, or only one of them sees its previous edition.
+  const plan = project({ planSetExtractedText: "GOVERNING CODES: 2021 IRC, 2021 IBC, 2021 IEBC, 2020 NEC. SYSTEM SIZE: 8 kW DC" }, { state: "NJ", ahj: "Township of Testfield" } as Partial<ProjectRecord>);
+  const ctx = buildCodeContext("NJ", "Township of Testfield", njProfile({ adoptedCodes: [
+    { family: "residential", code: "IRC", edition: "2024", previousEdition: "2021", ...njWindow },
+    { family: "building", code: "IBC", edition: "2024", previousEdition: "2021", ...njWindow },
+    { family: "building", code: "IEBC", edition: "2024", previousEdition: "2021", ...njWindow },
+    { family: "electrical", code: "NEC", edition: "2023", previousEdition: "2020", ...njWindow },
+  ] }));
+  const f = get(evaluateDesignCriteriaFindings(plan, ctx, { roofMounted: true, asOf: "2026-10-05" }), BASIS);
+  assert.ok(f);
+  assert.match(f!.message, /IEBC 2021/, "the IEBC line is compared");
+  assert.equal(f!.severity, "callout", f!.message);
+});
+
+check("#216 MUST-PASS: a state code's printed model base is in grace when its state-code pair is", () => {
+  // Plan on the previous state edition and its base, inside a recorded window for the new state
+  // edition (whose base is the newer model code).
+  const plan = project({ planSetExtractedText: "GOVERNING CODES: 2023 OREGON RESIDENTIAL SPECIALTY CODE (2021 IRC), 2023 OREGON ELECTRICAL SPECIALTY CODE. SYSTEM SIZE: 8 kW DC" });
+  const ctx = ctxFor({ confidence: "verified", verifiedBy: "operator", adoptedCodes: [
+    { family: "residential", code: "ORSC", edition: "2026", title: "2026 Oregon Residential Specialty Code, based on the 2024 IRC", basedOn: "2024 IRC", previousEdition: "2023", ...njWindow },
+    { code: "OESC", edition: "2023" },
+  ] });
+  const fs = evaluateDesignCriteriaFindings(plan, ctx, { roofMounted: true, asOf: "2026-10-05" });
+  const f = get(fs, BASIS);
+  assert.ok(f, "both lines are compared");
+  assert.match(f!.message, /IRC 2021/, f!.message);
+  assert.equal(f!.severity, "callout", f!.message);
+  // After the mandatory date both lines block again.
+  assert.equal(get(evaluateDesignCriteriaFindings(plan, ctx, { roofMounted: true, asOf: "2027-03-01" }), BASIS)?.severity, "blocker");
+});
+
+check("#216 MUST-EXCLUDE: Utah-shaped rows (no mandatoryDate) are unchanged -> blocker", () => {
+  const f = get(evaluateDesignCriteriaFindings(utah, utCtx({ confidence: "verified", adoptedCodes: [
+    { code: "IRC", edition: "2021", effectiveDate: "2021-07-01", previousEdition: "2018" }, { code: "IBC", edition: "2021" },
+    { code: "NEC", edition: "2023", effectiveDate: "2025-07-01", previousEdition: "2020" }, { code: "IFC", edition: "2021" },
+  ] }), { roofMounted: true, asOf: "2026-10-05" }), BASIS);
+  assert.equal(f?.severity, "blocker");
+});
+
 check("#108 MUST-PASS: vision may never relax either code-basis finding", () => {
   assert.equal(visionMayRelax({ id: BASIS } as ReviewerFinding), false);
   assert.equal(visionMayRelax({ id: BASIS_UNVERIFIED } as ReviewerFinding), false);
@@ -910,6 +1026,86 @@ check("#111 not on file: the plan's SDC / frost depth / risk category ride along
   // On file -> not repeated as unchecked.
   const onFile = get(run(p, ctxFor({ designCriteria: { seismicDesignCategory: "D1" } })), UNKNOWN);
   assert.doesNotMatch(String(onFile?.message), /seismic design category —/);
+});
+
+// ---------------------------------------------------------------------------------------
+// Issue #211 — ROOF SNOW against the AHJ's stated roof snow load. Generic rule; the 30 psf / 25 psf
+// values below are a fixture only. Roof snow with roof snow (never Pg); a SLOPED ps is never compared.
+// ---------------------------------------------------------------------------------------
+const ROOF_PLAN = "STRUCTURAL NOTES: GROUND SNOW LOAD = 25 PSF WIND SPEED = 110 MPH EXPOSURE CATEGORY = C";
+const roofDocs = (letter: string): DesignTextSource[] => [
+  { label: "Plan set", text: ROOF_PLAN },
+  { label: "Structural letter", text: `Design loads: ${letter}` },
+];
+const roofCtx = (verified: boolean) => ctxFor({ ...(verified ? VERIFIED : {}), designCriteria: { ...MET, roofSnowLoadPsf: 30 } });
+
+check("#211 roof snow: verified 30 psf, the structural letter states 25 psf -> BLOCKER with the arithmetic", () => {
+  const f = get(run(project({}), roofCtx(true), roofDocs("ROOF SNOW LOAD = 25 PSF")), BELOW);
+  assert.equal(f?.severity, "blocker", f?.message);
+  assert.match(f!.message, /Roof snow load: stated 25 psf .* requires 30 psf/);
+  assert.match(f!.message, /25 psf < 30 psf/);
+  assert.match(f!.cityFeedback, /roof snow 30 psf/);
+  assert.equal(visionMayRelax(f!), false, "below-ahj is measured: vision never relaxes it");
+  assert.ok(MEASURED_FINDING_IDS.has(BELOW));
+});
+
+check("#211 roof snow: the letter states 30 psf (at the AHJ's) -> nothing", () => {
+  assert.ok(!get(run(project({}), roofCtx(true), roofDocs("ROOF SNOW LOAD = 30 PSF")), BELOW));
+  assert.ok(!get(run(project({}), roofCtx(true), roofDocs("Flat roof snow load, pf = 35 psf")), BELOW));
+});
+
+check("#211 roof snow: only the PARSER's reading says 25 psf -> a WARNING, never a blocker", () => {
+  const p = project({ structuralCalcText: "Roof snow load = 25 psf per the letter." });
+  const f = get(run(p, roofCtx(true), [{ label: "Plan set", text: ROOF_PLAN }]), BELOW);
+  assert.equal(f?.severity, "warning", f?.message);
+  assert.match(f!.message, /25 psf < 30 psf/);
+  assert.match(f!.message, /only the parser's reading states it/);
+});
+
+check("#211 roof snow: a SEEDED AHJ value -> a WARNING that says it is not verified", () => {
+  const f = get(run(project({}), roofCtx(false), roofDocs("ROOF SNOW LOAD = 25 PSF")), BELOW);
+  assert.equal(f?.severity, "warning", f?.message);
+  assert.match(f!.message, /25 psf < 30 psf/);
+  assert.match(f!.message, /not human-verified/);
+});
+
+check("#211 roof snow MUST-EXCLUDE: a sloped ps below the flat minimum, or no roof snow value on file, raises nothing", () => {
+  // ps = Cs x pf: a steep roof's sloped snow is legitimately below the flat minimum.
+  assert.ok(!get(run(project({}), roofCtx(true), roofDocs("Total Snow Load, ps = 22 psf")), BELOW));
+  // No roofSnowLoadPsf on the profile: a 25 psf roof snow is not compared with anything (never Pg).
+  assert.ok(!get(run(project({}), ctxFor({ ...VERIFIED, designCriteria: { ...MET } }), roofDocs("ROOF SNOW LOAD = 25 PSF")), BELOW));
+});
+
+check("#211 roof snow MUST-EXCLUDE: the pf/pm/ps calc template — pm is a minimum, not the governing load", () => {
+  // Review probe: pm 20 against a verified 25 read as a BLOCKER "20 psf < 25 psf"; the governing load is 33.
+  const ctx = ctxFor({ ...VERIFIED, designCriteria: { ...MET, roofSnowLoadPsf: 25 } });
+  for (const letter of [
+    "Ground snow load, Pg: 25 psf; Minimum roof snow load, Pm: 20 psf (not reducible); Total Snow Load ps = 33 psf",
+    "Ground snow load pg = 25 psf. pm = 20 psf. Flat roof snow load, pf = 25.2 psf. ps = 24 psf",
+    "Roof snow load, ps = 22 psf",
+    "Roof Snow Load, ps: 22 psf",
+    "Flat Roof Snow Load pf = 17.64 psf ... minimum governs ... Flat Roof Snow Load pf = 25.00 psf",
+  ]) {
+    const f = get(run(project({}), ctx, roofDocs(letter)), BELOW);
+    assert.ok(!f, `"${letter}" -> ${f?.severity}: ${f?.message}`);
+  }
+  // A governing flat pf below the AHJ's still is.
+  assert.equal(get(run(project({}), ctx, roofDocs("pm = 20 psf. Flat roof snow load, pf = 21 psf")), BELOW)?.severity, "blocker");
+});
+
+check("#211 extractor: the printed symbol decides the roof snow qualifier", () => {
+  const q = (text: string) => extractStatedDesignCriteria(project({ planSetExtractedText: text })).criteria
+    .filter((c) => c.criterion === "roofSnowPsf").map((c) => `${c.value}:${c.qualifier}`);
+  assert.deepEqual([...new Set(q("Roof snow load, ps = 22 psf"))], ["22:sloped"]);
+  assert.deepEqual([...new Set(q("Minimum roof snow load, Pm: 20 psf"))], ["20:minimum"]);
+  assert.deepEqual([...new Set(q("pm = 20 psf"))], ["20:minimum"]);
+  assert.deepEqual([...new Set(q("ROOF SNOW LOAD: 25 PSF"))], ["25:roof"]);
+});
+
+check("#211 weathering is informational: a profile with weathering / termite / soil bearing raises no finding", () => {
+  const ctx = ctxFor({ ...VERIFIED, designCriteria: { ...MET, weathering: "severe", termite: "slight to moderate", soilBearingPsf: 1500 } });
+  const fs = run(project({}), ctx, roofDocs("WEATHERING: NEGLIGIBLE SOIL BEARING 1000 PSF"));
+  assert.ok(!get(fs, BELOW), get(fs, BELOW)?.message);
 });
 
 // #142: fire access dimensions ride the same rule-3 policy as the design criteria. Full coverage

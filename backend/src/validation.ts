@@ -87,11 +87,18 @@ export const codeProfileVerifySchema = z.object({
   })).max(30).default([]),
   designCriteria: z.object({
     groundSnowLoadPsf: z.number().finite().optional(),
+    // Allowable-stress pg(asd): the type always had it; the verify panel dropped it (#211).
+    groundSnowLoadAsdPsf: z.number().finite().optional(),
+    roofSnowLoadPsf: z.number().finite().optional(),
     windSpeedMph: z.number().finite().optional(),
     windExposure: z.string().max(8).optional(),
+    specialWindRegion: z.boolean().optional(),
     seismicDesignCategory: z.string().max(8).optional(),
     frostDepthIn: z.number().finite().optional(),
     riskCategory: z.string().max(8).optional(),
+    weathering: z.enum(["negligible", "moderate", "severe"]).optional(),
+    termite: z.string().max(120).optional(),
+    soilBearingPsf: z.number().finite().optional(),
     sourceUrl: z.string().max(500).optional(),
   }).default({}),
   prescriptive: z.object({

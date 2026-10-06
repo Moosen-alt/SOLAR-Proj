@@ -469,13 +469,21 @@ export function isPermitPlatformUrl(url: string | null | undefined): boolean {
 //   - the permit software's own install signature (a first host label or first path segment the
 //     product installs under): CityView (cvportal. / /CityViewPortal), Tyler EnerGov (energov. /
 //     /EnerGov_Prod …), CentralSquare eTRAKiT (etrakit. / /eTRAKiT3), self-hosted Accela Citizen
-//     Access (/CitizenAccess);
+//     Access (/CitizenAccess), Trimble Cityworks Public Access (cityworks. / /PublicAccess,
+//     /Cityworks…), Granicus SmartGov (smartgov. / /SmartGov) — issue #237. Audited against the
+//     platforms permitPlatformCatalog names: iWorQ, Citizenserve, ViewPoint/OpenGov,
+//     MyGovernmentOnline, Cloudpermit and Clariti are vendor-cloud only (PERMIT_PLATFORM_HOSTS).
+//     Deliberately NOT signatures: Click2Gov (CentralSquare's utility-billing product) and a bare
+//     /SelfService segment — a municipal utility's own customer portal lives under both. A
+//     /PublicAccess segment counts on ANY host (a library catalogue's included): the signal only
+//     ever REFUSES a URL on the NEM track, where no interconnection is filed on such a page, and a
+//     utility that really files there is let through by its own verified record (step 1 below);
 //   - a portal an AHJ row (seeded or verified KB row, an AHJ recipe) names as the city's permit
 //     portal: PortalEntity.permitPortals, built by portalRecipes.portalEntityEvidence.
 // The ONE way such a portal opens on the NEM track is unchanged: the utility's own human-VERIFIED
 // record names that host and tenant (hostFitsTrackAndEntity step 1).
-const SELF_HOSTED_PERMIT_HOST_LABEL = /^(?:cvportal|cityview(?:portal)?|energov\w*|etrakit\d*|citizenaccess)$/i;
-const SELF_HOSTED_PERMIT_PATH_SEGMENT = /^(?:cityviewportal|cityview|energov\w*|etrakit\d*|citizenaccess)$/i;
+const SELF_HOSTED_PERMIT_HOST_LABEL = /^(?:cvportal|cityview(?:portal)?|energov\w*|etrakit\d*|citizenaccess|cityworks|smartgov)$/i;
+const SELF_HOSTED_PERMIT_PATH_SEGMENT = /^(?:cityviewportal|cityview|energov\w*|etrakit\d*|citizenaccess|publicaccess|cityworks\w*|smartgov)$/i;
 export function isSelfHostedPermitPortalUrl(url: string | null | undefined): boolean {
   const host = portalHostOf(url);
   if (!host) return false;
@@ -717,6 +725,29 @@ function isAgencyContentPage(raw: string, host: string, segs: string[]): boolean
     const bare = seg.replace(/\.[a-z0-9]+$/i, "");
     if (APP_PATH_WORD.test(bare.replace(/[-_\s]/g, ""))) return false;
     return !bare.split(/[-_\s]+/).some((t) => APP_PATH_TOKEN.test(t));
+  });
+}
+/**
+ * IS THIS URL SHAPED LIKE AN APPLICATION PORTAL — judged from the URL alone, as the application-row
+ * waiver needs it (issue #205 review: a seeded lookup citing the AHJ's homepage or a building info page
+ * must not waive a blocking application row). Never an information page (isInformationalPageUrl); then
+ * a permit-software vendor's host or a self-hosted install of one, or a host label / path segment that
+ * names an application system (aca., epermits., portal, CitizenAccess, apply, login …). A bare
+ * homepage or a plain content page ("/building/permits") is not one.
+ */
+export function isApplicationPortalShapedUrl(url: string | null | undefined): boolean {
+  const raw = String(url ?? "").trim();
+  const host = portalHostOf(raw);
+  if (!host || isInformationalPageUrl(raw)) return false;
+  if (isPermitPlatformUrl(raw) || isSelfHostedPermitPortalUrl(raw)) return true;
+  const labels = host.replace(/^www\./, "").split(".");
+  const sub = labels.slice(0, Math.max(0, labels.length - registrableDomain(host).split(".").length));
+  if (sub.some((l) => APP_HOST_LABEL.test(l))) return true;
+  let segs: string[] = [];
+  try { segs = decodeURIComponent(new URL(raw).pathname).split("/").filter(Boolean); } catch { return false; }
+  return segs.some((seg) => {
+    const bare = seg.replace(/\.[a-z0-9]+$/i, "");
+    return APP_PATH_WORD.test(bare.replace(/[-_\s]/g, "")) || bare.split(/[-_\s]+/).some((t) => APP_PATH_TOKEN.test(t));
   });
 }
 /** The interconnection SOFTWARE hosts (not the utilities' marketing domains) — the part of the

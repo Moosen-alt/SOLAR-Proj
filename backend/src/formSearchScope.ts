@@ -39,6 +39,18 @@ export function stateScopedFormQueries(ahj: string, state: string, formType = "p
   return wants.map((w) => `${where} ${w}`);
 }
 
+/** The dead-link retry's queries (issue #205): one per document the per-job lookup names, each naming
+ *  the AHJ, the state's full name and abbreviation (#162) and, when known, the issuer's own host
+ *  ("Plan Submittal Checklist" "City of X" Utah UT site:www.x.gov). [] for an unknown state. */
+export function documentNameQueries(ahj: string, state: string, documentNames: string[], issuerHost = ""): string[] {
+  const s = stateScopeOf(state);
+  const name = String(ahj ?? "").trim();
+  if (!s || !name) return [];
+  const site = /^[a-z0-9.-]+$/i.test(issuerHost) ? ` site:${issuerHost.toLowerCase()}` : "";
+  return documentNames.map((d) => String(d ?? "").replace(/"/g, "").trim()).filter(Boolean).slice(0, 3)
+    .map((d) => `"${d}" "${name}" ${s.name} ${s.abbr}${site}`);
+}
+
 /** The AHJ's place name without its type ("City of Monroe" -> "monroe", "Monroe Township" -> "monroe"). */
 function placeOf(ahj: string): string {
   return String(ahj ?? "").toLowerCase()

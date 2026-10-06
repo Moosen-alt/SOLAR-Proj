@@ -13,6 +13,7 @@
 
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { StandardFontEmbedder, StandardFonts } from "pdf-lib";
+import { pdfjsDocumentOptions } from "./pdfjsOptions";
 
 export interface LabelItem {
   page: number;
@@ -45,7 +46,7 @@ const asPlainBytes = (bytes: Uint8Array): Uint8Array => new Uint8Array(bytes);
 
 export async function extractLabels(pdfBytes: Uint8Array): Promise<LabelItem[]> {
   try {
-    const doc = await getDocument({ data: asPlainBytes(pdfBytes), useSystemFonts: true }).promise;
+    const doc = await getDocument(pdfjsDocumentOptions({ data: asPlainBytes(pdfBytes), useSystemFonts: true })).promise;
     const out: LabelItem[] = [];
     for (let n = 1; n <= doc.numPages; n++) {
       const page = await doc.getPage(n);
@@ -121,7 +122,7 @@ export function splitBlankRuns(items: LabelItem[]): LabelItem[] {
  *  reason phrase can be matched to the right box. Empty on any failure. */
 export async function checkboxLabels(pdfBytes: Uint8Array): Promise<Record<string, string>> {
   try {
-    const doc = await getDocument({ data: asPlainBytes(pdfBytes), useSystemFonts: true }).promise;
+    const doc = await getDocument(pdfjsDocumentOptions({ data: asPlainBytes(pdfBytes), useSystemFonts: true })).promise;
     const out: Record<string, string> = {};
     for (let n = 1; n <= doc.numPages; n++) {
       const page = await doc.getPage(n);

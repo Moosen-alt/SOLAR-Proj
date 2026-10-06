@@ -45,7 +45,7 @@ import { findAhjProcessProfile, ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE
 import { findKnowledgeForLearn, isVerifiedKnowledge } from "./knowledgeBase";
 import { HttpError } from "./httpError";
 import { applicationProfiles, findApplicationProfile, namedApplicationForm, permitStructureForProject } from "./applicationDocs";
-import { normalizeAhjName, permitProcessFor, stateIssuerFormsFor, stateRulesFor } from "./permitProcess";
+import { lookupPortalOnlyFor, normalizeAhjName, permitProcessFor, portalOnlyCardSentence, stateIssuerFormsFor, stateRulesFor } from "./permitProcess";
 import { namesPvWorksheet, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import {
   agencyApplicationForms, applicationSlotFor, agencyListNamesDocument, agencyListReplacesLine, agencyRowAppliesToJob, anchorSitesOnce, issuingAgencyDocumentList, prerequisiteSettled, rowBelongsToAuthority, tracksIssuedByOther, TRACK_FORM_TYPES,
@@ -53,7 +53,7 @@ import {
 } from "./applicationDocsAgency";
 import { filledApplicationForms, heldUnfillableAgencyBlanks } from "./ahjForms";
 import { requirementSlots } from "./requirementSlots";
-import { stageAcquiresForm, stageAcquisitionFor, type StageAcquiredForm, type StageAcquisition } from "./formAcquisitionPlan";
+import { deadLinkSentence, stageAcquiresForm, stageAcquisitionFor, type StageAcquiredForm, type StageAcquisition } from "./formAcquisitionPlan";
 import {
   designText, INVERTER_LISTING_PATTERNS, LOAD_SIDE_CALC_PATTERNS, MODULE_LISTING_PATTERNS, POWER_SOURCE_DIRECTORY_PATTERNS, RAPID_SHUTDOWN_PATTERNS, SUPPLY_SIDE_DETAIL_PATTERNS,
 } from "./codeReviewRules";
@@ -551,7 +551,18 @@ export function requiredApplicationDocs(
     if (i.forms.length) return `${i.agency}: ${i.forms.map((f) => f.formName.replace(new RegExp(`^${i.agency.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*`, "i"), "")).join(" / ")}, filled`;
     return `${i.agency}'s ${fallback.charAt(0).toLowerCase()}${fallback.slice(1)}`;
   };
-  const rowPortalOnly = (track: FormTrack): boolean => (issuer(track)?.forms.length ? false : portalOnly);
+  // THE PER-JOB LOOKUP'S PORTAL ANSWER (issue #205): a track whose permit the lookup cites a portal for,
+  // naming no PDF blank among its documents, is taken in that portal — no missing-blank hold.
+  // Only a portal-shaped URL, or a person-verified lookup, waives the hold (lookupPortalOnlyFor.waives).
+  const lookupPortal = (track: FormTrack): { portalUrl: string } | null => {
+    try { const lp = lookupPortalOnlyFor(project, track); return lp?.waives ? lp : null; } catch { return null; }
+  };
+  const rowPortalOnly = (track: FormTrack): boolean => (issuer(track)?.forms.length ? false : portalOnly || Boolean(lookupPortal(track)));
+  const rowPortalNote = (track: FormTrack): string => {
+    if (portalOnly) return portalNote;
+    const lp = lookupPortal(track);
+    return lp ? ` NOTE: ${portalOnlyCardSentence({ ahj: where }, lp.portalUrl)} The staged portal run enters these answers; nothing is owed as a file here.` : portalNote;
+  };
   const out: RequiredApplicationDoc[] = [];
 
   if (wantsBuilding) {
@@ -585,7 +596,7 @@ export function requiredApplicationDocs(
       // not demanding a file that already exists under another name.
       altDocTypes: ["permit_application"],
       label: buildingPortalOnly ? `${buildingLabel.replace(/, filled$/, "")} — entered in the portal at staging` : buildingLabel,
-      why: buildingPortalOnly ? buildingWhy + portalNote : buildingWhy,
+      why: buildingPortalOnly ? buildingWhy + rowPortalNote("building") : buildingWhy,
       lane: "permit",
       // An unconfirmed path is ALREADY a hard block at repository.ts (staging
       // refuses until the operator picks). Blocking here too would only replace
@@ -613,7 +624,7 @@ export function requiredApplicationDocs(
         : electricalLabel,
       why: issuerWhy("electrical", "electrical") + (separate
         ? `${where} files SEPARATE building and electrical permits, so the ${oregon ? "renewable-energy " : ""}electrical application is required in addition to the building-side one — on either permit path, on every interconnection.${statute}`
-        : `${where}'s process profile records that an electrical permit application is required. Confirm it before filing.`) + (electricalPortalOnly ? portalNote : ""),
+        : `${where}'s process profile records that an electrical permit application is required. Confirm it before filing.`) + (electricalPortalOnly ? rowPortalNote("electrical") : ""),
       lane: "permit",
       blocking: separate && !electricalPortalOnly,
       discipline: "electrical",
@@ -1473,9 +1484,11 @@ export function isApplicationFormRow(d: Pick<DocPresence, "docType" | "altDocTyp
  * county's application). Anything else (a plan sheet, a PE letter, a spec, a bill) is attached or
  * split out of the plan set.
  */
-export function owedDocumentAction(d: Pick<DocPresence, "docType" | "altDocTypes" | "lane">): string {
+export function owedDocumentAction(d: Pick<DocPresence, "docType" | "altDocTypes" | "lane">, deadLinks: string[] = []): string {
+  // FOUND, DEAD LINK (issue #205): the search found the blank and its link answered 404 — said so, with
+  // the URL, so the operator looks for where the AHJ moved the file rather than for a form "none exists".
   return d.lane === "permit" && isApplicationFormRow(d)
-    ? "find the official form (App Docs → Find missing official forms) or upload the blank"
+    ? `${deadLinks.length ? `${deadLinkSentence(deadLinks)}; ` : ""}find the official form (App Docs → Find missing official forms) or upload the blank`
     : "attach it or split it out of the plan set";
 }
 
