@@ -19,7 +19,7 @@ const MPU_SCOPE = "Install roof-mounted PV system, 12 modules. Main panel upgrad
 const project = (ahj: string, state: string, description = MPU_SCOPE, extra: Record<string, unknown> = {}): ProjectRecord =>
   ({
     id: "p-mpu", name: "Example", homeownerName: "Example Owner", address: "1 Example St", city: ahj, state, ahj, utility: "Example Utility",
-    parserSnapshot: { projectDescriptionText: description, ...extra },
+    parserSnapshot: { electricalCalcText: description, ...extra },
   }) as unknown as ProjectRecord;
 
 // The shipped AHJ process profiles (backend/data/reference-ahj-processes.json) are the notes read.
