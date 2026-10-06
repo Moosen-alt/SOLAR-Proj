@@ -205,7 +205,8 @@ export function buildReviewerReport(
     const ahjName = project.ahj || "AHJ";
     const processRecord = `${ahjName} permit process (who issues, single or separate permits, portal, forms)`;
     const lookupStatus = looked?.confidence === "verified"
-      ? `verified${looked.verifiedBy ? ` by ${looked.verifiedBy}` : ""}`
+      // verified_by is often an email — print a name, never the address.
+      ? `verified by ${looked.verifiedBy && !looksLikeEmail(looked.verifiedBy) ? looked.verifiedBy : "a person"}`
       : "seeded, not yet verified";
     const codeRecord = profileMissingCodeRecordNote(opts.codeContext, opts.codeProfileRow);
     const lookedMessage = (lk: NonNullable<typeof looked>): string => {
@@ -320,7 +321,8 @@ function profileMissingCodeRecordNote(
   const tail = "verifying it does not clear this finding.";
   const status = (c: "seeded" | "verified") => (c === "verified" ? "verified" : "seeded, not verified");
   if (own) return `${lead} ${status(own.confidence)} (${own.ahj}'s code profile); ${tail}`;
-  if (own === undefined && !ctx) return `${lead} not read by this check.`;
+  // Not read (no db, or the read failed): never guess "no AHJ row" from the merged context.
+  if (own === undefined) return `${lead} not read by this check.`;
   if (ctx?.profile) return `${lead} no ${ctx.ahj || "AHJ"}-specific row; the ${ctx.profile.state || ctx.state} state default is ${status(ctx.profile.confidence)}; ${tail}`;
   return `${lead} not on file (model-code defaults); ${tail}`;
 }
@@ -346,7 +348,9 @@ export function topicForFinding(finding: ReviewerFinding): EvidenceTopic | null 
   if (/label|placard|directory/.test(idTitle)) return "labels";
   if (/inverter settings|1741|smart inverter/.test(idTitle)) return "inverterSettings";
   if (/equipment schedule|spec package|equipment.*spec|spec.*sheet|dc.size|equipment field/.test(idTitle)) return "sld";
-  if (/battery|ess|powerwall/.test(idTitle)) return "batteryMode";
+  // "ess" as a WORD: a bare /ess/ matched "process" / "access", routing the permit-process
+  // finding to the battery topic (its evidence then read "Battery operating mode — not found").
+  if (/battery|\bess\b|powerwall/.test(idTitle)) return "batteryMode";
   if (/utility approval|interconnection approval/.test(idTitle)) return "utilityApproval";
   if (/signature|owner authorization|customer authorization/.test(idTitle)) return "ownerAuthorization";
   return null;

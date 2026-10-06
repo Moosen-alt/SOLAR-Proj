@@ -208,8 +208,9 @@ export function buildReviewerReportFor(db: AppDb, project: ProjectRecord): Revie
   const uploadedDocTypes = Object.keys(projectDocsByType(db, project.id));
   // The AHJ's OWN code-profile row (not the merged context, whose confidence is the weaker of the
   // AHJ and state layers): reviewer.profile.missing names its status as a separate record (#217).
-  let codeProfileRow: { ahj: string; confidence: "seeded" | "verified" } | null = null;
-  try { const own = ownCodeProfileRow(db, project.state, project.ahj); codeProfileRow = own ? { ahj: own.profile.ahj, confidence: own.profile.confidence } : null; } catch { codeProfileRow = null; }
+  // undefined = not read (the note says so); null = read, and the AHJ has no row of its own.
+  let codeProfileRow: { ahj: string; confidence: "seeded" | "verified" } | null | undefined;
+  try { const own = ownCodeProfileRow(db, project.state, project.ahj); codeProfileRow = own ? { ahj: own.profile.ahj, confidence: own.profile.confidence } : null; } catch { codeProfileRow = undefined; }
   return buildReviewerReport(project, { codeContext, codeProfileRow, uploadedDocTypes, documentTexts: designDocumentTexts(db, project.id), pvWorksheet: filedPvWorksheetInput(db, project) });
 }
 

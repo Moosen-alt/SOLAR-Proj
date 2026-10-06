@@ -25,6 +25,7 @@ const db = await (await import("../src/db")).openDatabase();
 const repo = await import("../src/repository");
 const pp = await import("../src/permitProcess");
 const cp = await import("../src/codeProfiles");
+const re = await import("../src/reviewerEngine");
 
 let failures = 0;
 const check = (name: string, fn: () => void) => { try { fn(); console.log(`  ok   - ${name}`); } catch (e) { failures++; console.error(`  FAIL - ${name}\n         ${(e as Error).message}`); } };
@@ -86,6 +87,24 @@ check("(c4) #217: a VERIFIED code profile with no process profile is named as th
   assert.match(f.title, /permit process .*per-job lookup found it \(seeded, not yet verified\)/);
   assert.match(f.message, /Adopted code editions are a separate record \(jurisdiction code profile\): verified \(City of Saltmere's code profile\); verifying it does not clear this finding\./);
   assert.match(f.message, /source: https:\/\/example\.gov\/saltmere/);
+});
+check("(c5) #230 review: the permit-process finding is not routed to the battery topic ('ess' inside 'process')", () => {
+  for (const r of [report({}), report({ state: "WA", zip: "98000", ahj: "City of Hollowmere WA" })]) {
+    const f = r.findings.find((x) => x.id === "reviewer.profile.missing")!;
+    assert.equal(re.topicForFinding(f), null, f.title);
+    assert.ok(!(f.evidenceFound ?? []).some((e) => /Battery operating mode/.test(e.label)), "battery evidence attached");
+  }
+  assert.equal(re.topicForFinding({ id: "x.ess-mode", title: "ESS operating mode" } as never), "batteryMode");
+});
+check("(c6) #230 review: a verified lookup's verifier prints as a name, never an email address", () => {
+  pp.savePermitProcessLookup(db, {
+    state: "OR", ahj: "City of Quillmere", lookedUpAt: new Date().toISOString(), confidence: "verified",
+    issuingAgency: { value: "City of Quillmere", sourceUrl: "https://example.gov/q", quote: "the City issues", origin: "lookup" },
+    permitStructure: { value: "combo", sourceUrl: "https://example.gov/q", quote: "one permit", origin: "lookup" }, permits: [],
+  }, { verifiedBy: "op@example.test" });
+  const f = report({ ahj: "City of Quillmere", city: "Quillmere" }).findings.find((x) => x.id === "reviewer.profile.missing")!;
+  assert.match(f.title, /per-job lookup found it \(verified by a person\)/);
+  assert.doesNotMatch(f.title + f.message, /op@example\.test/);
 });
 check("(d1) MUST-EXCLUDE: final-preview / installer-scope / prescriptive-upload reminders are not findings — they are on the submit checklist", () => {
   const r = report({});
