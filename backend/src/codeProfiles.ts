@@ -2397,6 +2397,10 @@ export function mergeResearchedDesignCriteria(
     if (v.criterion === "windExposure") value = /^[BCD]$/i.test(String(v.value).trim()) ? String(v.value).trim().toUpperCase() : null;
     else if (v.criterion === "seismicDesignCategory") value = /^(?:A|B|C|D[012]?|E|F)$/i.test(String(v.value).trim()) ? String(v.value).trim().toUpperCase() : null;
     else if (v.criterion === "riskCategory") value = /^(?:I|II|III|IV)$/i.test(String(v.value).trim()) ? String(v.value).trim().toUpperCase() : null;
+    else if (v.criterion === "weathering") value = /^(?:negligible|moderate|severe)$/i.test(String(v.value).trim()) ? String(v.value).trim().toLowerCase() : null;
+    else if (v.criterion === "termite") value = typeof v.value === "string" && v.value.trim() && v.value.trim().length <= 120 ? v.value.trim() : null;
+    // Soil bearing is published in the thousands (1,500 psf): its own bounds, not the load cap below.
+    else if (v.criterion === "soilBearingPsf") value = typeof v.value === "number" && Number.isFinite(v.value) && v.value >= 500 && v.value <= 20000 ? v.value : null;
     else value = typeof v.value === "number" && Number.isFinite(v.value) && v.value > 0 && v.value < 400 ? v.value : null;
     if (value == null) { skipped.push(`${v.criterion} (unusable value)`); continue; }
     // pg(asd) is ANOTHER quantity (allowable-stress, ~0.7 x Pg): stored in its own field, never in

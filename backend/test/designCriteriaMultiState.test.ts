@@ -80,9 +80,9 @@ check("MUST-PASS: the qualifier AFTER a value-first speed ('120 MPH ultimate win
 check("MUST-PASS: 'Minimum roof snow load, Pm: 20 psf' and calc-table 'p f [psf]: 21' / 'p s [psf]: 19'", () => {
   const t = "Ground snow load, Pg : 28 psf; Pg(asd): 20 psf Minimum roof snow load, Pm: 20 psf (not reducible) Seismic design category: D "
     + "Flat Roof Snow Load, p f [psf]: 21 ASCE 7-22, Equation 7.3-1 Minimum Roof Snow Load, p m [psf]: 0 ASCE 7-22 Sloped Roof Snow Load, p s [psf]: 19 ASCE 7-22";
-  assert.deepEqual(stated(t, "roofSnowPsf"), ["roofSnowPsf=19/sloped", "roofSnowPsf=20/roof", "roofSnowPsf=21/flat"]);
+  assert.deepEqual(stated(t, "roofSnowPsf"), ["roofSnowPsf=19/sloped", "roofSnowPsf=20/minimum", "roofSnowPsf=21/flat"]);
   assert.deepEqual(stated(t, "groundSnowPsf"), ["groundSnowPsf=20/ground_asd", "groundSnowPsf=28/ground"]);
-  assert.deepEqual(stated("Minimum Snow Load pm (ASCE 7-16 Table 7.3.4) p m = 20 psf.", "roofSnowPsf"), ["roofSnowPsf=20/roof"]);
+  assert.deepEqual(stated("Minimum Snow Load pm (ASCE 7-16 Table 7.3.4) p m = 20 psf.", "roofSnowPsf"), ["roofSnowPsf=20/minimum"]);
 });
 check("MUST-EXCLUDE: a bracketed-unit calc cell with no separator, and a 0 psf 'not applicable'", () => {
   // The measured template repeats Pg under a "(asd)" label in this cell; reading it would put a
