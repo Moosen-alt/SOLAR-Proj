@@ -1,5 +1,6 @@
 // UTAH SEED DATA (issue #109): the four shipped Utah AHJ process rows in
-// backend/data/reference-ahj-processes.json (Salt Lake City, Provo, Lehi, Spanish Fork).
+// backend/data/reference-ahj-processes.json (Salt Lake City, Provo, Lehi, Spanish Fork; City of
+// Saratoga Springs from issue #228).
 // Utah is the next test jurisdiction and had ZERO process rows, so findAhjProcessProfile
 // answered null for every Utah project. Pins:
 //   - each row resolves for its own city (and only its own: Salt Lake COUNTY is not the city);
@@ -41,11 +42,11 @@ const run = async (label: string, fn: () => void | Promise<void>) => {
 };
 
 const file = JSON.parse(fs.readFileSync(path.join(REPO, "backend", "data", "reference-ahj-processes.json"), "utf8")) as { count: number; profiles: AhjProcessProfile[] };
-const UT_CITIES = ["Salt Lake City", "Provo", "Lehi", "Spanish Fork"];
+const UT_CITIES = ["Salt Lake City", "Provo", "Lehi", "Spanish Fork", "City of Saratoga Springs"];
 const utRows = file.profiles.filter((p) => p.state === "UT");
 const project = (ahj: string) => ({ state: "UT", ahj, city: ahj }) as unknown as ProjectRecord;
 
-await run("the reference ships exactly the four researched Utah process rows; count stays true", () => {
+await run("the reference ships exactly the five researched Utah process rows; count stays true", () => {
   assert.deepEqual(utRows.map((r) => r.ahj).sort(), [...UT_CITIES].sort());
   assert.equal(file.count, file.profiles.length, "header count matches the rows");
   assert.equal(ahjProcessKnowledgeStatus().status, "resolved");
@@ -68,9 +69,9 @@ await run("every Utah row is seeded, cites official city sources, and names a po
     assert.match(r.reviewerNotes, /NOT verified/, `${r.ahj}: notes say not verified`);
     const urls = r.reviewerNotes.match(/https:\/\/[^\s;]+/g) ?? [];
     assert.ok(urls.length > 0, `${r.ahj}: at least one source URL`);
-    for (const u of urls) assert.match(new URL(u).hostname, /(^|\.)(slc|provo|lehi-ut|spanishfork)\.gov$/, `${r.ahj}: official source ${u}`);
+    for (const u of urls) assert.match(new URL(u).hostname, /(^|\.)(slc|provo|lehi-ut|spanishfork|saratogasprings-ut)\.gov$/, `${r.ahj}: official source ${u}`);
     // Hard rule 5: the submission method names the permit platform, not a city information page.
-    assert.match(r.submissionMethod, /\b(accela|cityview|iworq|citizenserve)\b/i, `${r.ahj}: platform named`);
+    assert.match(r.submissionMethod, /\b(accela|cityview|iworq|citizenserve|cityworks)\b/i, `${r.ahj}: platform named`);
     assert.doesNotMatch(r.submissionMethod, /https?:\/\//i, `${r.ahj}: no bare URL as the method`);
     for (const u of urls) {
       const page = new URL(u);
@@ -128,7 +129,7 @@ await run("every Utah row carries a cited documents block: items, an official ht
     const d = r.documents;
     assert.ok(d, `${r.ahj}: documents`);
     assert.ok(d!.items.length > 0 || d!.notFound, `${r.ahj}: items or notFound`);
-    assert.match(new URL(d!.sourceUrl).hostname, /(^|\.)(slc|provo|lehi-ut|spanishfork)\.gov$/, `${r.ahj}: official page`);
+    assert.match(new URL(d!.sourceUrl).hostname, /(^|\.)(slc|provo|lehi-ut|spanishfork|saratogasprings-ut)\.gov$/, `${r.ahj}: official page`);
     assert.ok(d!.quote.trim().length >= 20, `${r.ahj}: a quote`);
     assert.match(d!.observedAt, /^\d{4}-\d{2}-\d{2}$/, `${r.ahj}: observedAt`);
   }
