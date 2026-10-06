@@ -70,6 +70,9 @@
       <button class="page-tab" data-page="dashboard" aria-selected="true"><span>Dashboard</span></button>
       <button class="page-tab" data-page="projects" aria-selected="false"><span>Projects</span></button>
       <button class="page-tab" data-page="team" aria-selected="false"><span>Team Workload</span></button>
+      <!-- #209: the plan-review page, where jurisdiction code profiles are researched and verified
+           (the KB tab's "Review / verify" opens the same flow inline). A plain link, like Parser. -->
+      <a class="page-link" href="/review" title="Plan review gate and jurisdiction code profiles"><span>Review</span></a>
     </nav>
 
     <div class="topbar-end">
@@ -1497,6 +1500,7 @@
   <script src="/correction-notice.js"></script>
   <!-- The pending edition proposals on a code-profile KB card (window.EditionProposals, #172). -->
   <script src="/edition-proposals.js"></script>
+  <script src="/code-profile-verify.js"></script>
   <script src="/parser-review.js?v=10"></script>
   <script type="module" src="/dashboard.js"></script>
 </body>

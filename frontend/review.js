@@ -255,58 +255,31 @@ async function loadProfiles() {
       </div>`).join("") || '<span class="rv-muted">No profiles yet — research one above.</span>';
     document.querySelectorAll("[data-edit]").forEach((btn) => btn.addEventListener("click", () => {
       editingProfile = profiles[Number(btn.dataset.edit)];
-      const editable = {
-        state: editingProfile.state, ahj: editingProfile.ahj,
-        adoptedCodes: editingProfile.adoptedCodes, amendments: editingProfile.amendments,
-        designCriteria: editingProfile.designCriteria, prescriptive: editingProfile.prescriptive,
-        fireSetbacks: editingProfile.fireSetbacks, citations: editingProfile.citations,
-      };
+      const editable = CPV.editablePayload(editingProfile);
       // The raw JSON is still what the PUT sends (and what an operator edits under "Edit raw");
       // the readable summary above it is display only.
       $("verifyEditor").value = JSON.stringify(editable, null, 2);
       $("verifyRaw").open = false;
       $("verifyTitle").textContent = `Verify ${profileName(editingProfile)}`;
       $("verifySummary").innerHTML = profileSummaryHtml(editingProfile);
-      const sources = (editingProfile.citations || []).length;
-      $("verifyStatus").textContent = `Check every value against ${sources === 1 ? "its cited source" : `its ${sources} cited sources`} before verifying.`;
+      $("verifyStatus").textContent = CPV.sourcesLine(editingProfile);
       // Open directly under the row that was clicked, not at the bottom of a 25-row list.
       btn.closest(".rv-profile-row").after($("verifyPanel"));
       $("verifyPanel").style.display = "";
       $("verifyPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
     }));
+    // Deep link (#209): /review#profile=<key> opens that row's verify panel.
+    const want = new URLSearchParams(location.hash.replace(/^#/, "")).get("profile");
+    const at = want ? profiles.findIndex((p) => p.key === want) : -1;
+    if (at >= 0) document.querySelector(`[data-edit="${at}"]`)?.click();
   } catch { $("profiles").textContent = "Could not load profiles."; }
 }
 
-function profileName(p) {
-  return `${p.state}${p.ahj ? ` · ${p.ahj}` : " (state default)"}`;
-}
-const httpUrl = (u) => (/^https?:\/\//i.test(String(u || "")) ? String(u) : "");
-const sourceLink = (u) => (httpUrl(u) ? ` <a href="${esc(httpUrl(u))}" target="_blank" rel="noopener">source</a>` : "");
-const KEY_WORDS = { kw: "kW", dc: "DC", ac: "AC", psf: "psf", mph: "mph", pv: "PV", ahj: "AHJ", nec: "NEC", ibc: "IBC", irc: "IRC", ifc: "IFC" };
-const humanKey = (k) => String(k).replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/_/g, " ").toLowerCase()
-  .split(" ").map((w) => KEY_WORDS[w] || w).join(" ").replace(/^[a-z]/, (c) => c.toUpperCase());
-const plainValue = (v) => (v == null ? "" : typeof v === "object" ? Object.entries(v).filter(([, x]) => x !== "" && x != null).map(([k, x]) => `${humanKey(k)}: ${typeof x === "object" ? JSON.stringify(x) : x}`).join("; ") : String(v));
-
-// A readable table of what the operator is about to lock as human-verified.
-function profileSummaryHtml(p) {
-  const rows = [];
-  const section = (title, items) => rows.push(`<div class="rv-vsec"><h4>${esc(title)}</h4>${items.length
-    ? `<ul>${items.join("")}</ul>` : '<p class="rv-muted">None recorded.</p>'}</div>`);
-  section("Adopted codes", (p.adoptedCodes || []).map((c) =>
-    `<li><b>${esc(c.code)} ${esc(c.edition)}</b>${c.title ? ` — ${esc(c.title)}` : ""}${c.basedOn ? ` <span class="rv-muted">(based on ${esc(c.basedOn)})</span>` : ""}${c.effectiveDate ? ` <span class="rv-muted">effective ${esc(c.effectiveDate)}</span>` : ""}${sourceLink(c.sourceUrl)}</li>`));
-  section("Amendments", (p.amendments || []).map((a) =>
-    `<li><b>${esc([a.code, a.section].filter(Boolean).join(" "))}</b>${a.summary ? ` — ${esc(a.summary)}` : ""}${sourceLink(a.sourceUrl)}</li>`));
-  const kv = (obj) => Object.entries(obj || {}).filter(([k, v]) => k !== "sourceUrl" && v !== "" && v != null)
-    .map(([k, v]) => `<li><b>${esc(humanKey(k))}:</b> ${esc(plainValue(v))}</li>`);
-  const dc = kv(p.designCriteria);
-  if (dc.length && httpUrl(p.designCriteria?.sourceUrl)) dc.push(`<li class="rv-muted">Design criteria${sourceLink(p.designCriteria.sourceUrl)}</li>`);
-  section("Design criteria", dc);
-  section("Prescriptive limits", kv(p.prescriptive));
-  section("Fire setbacks", (p.fireSetbacks || []).map((f) => `<li>${esc(plainValue(f))}</li>`));
-  section("Citations", (p.citations || []).map((c) =>
-    `<li>${esc(c.label || httpUrl(c.sourceUrl) || "Source")}${sourceLink(c.sourceUrl)}</li>`));
-  return rows.join("");
-}
+// The summary, payload, name and rule-3 confirm text are shared with the dashboard's KB card
+// (frontend/code-profile-verify.js, #209), so both doors show and send the same thing.
+const CPV = window.CodeProfileVerify;
+const profileName = CPV.profileName;
+const profileSummaryHtml = CPV.profileSummaryHtml;
 
 function closeVerifyPanel() {
   $("verifyPanel").style.display = "none";
@@ -340,10 +313,24 @@ $("verifyBtn").addEventListener("click", async () => {
   const name = profileName({ state: payload.state || "", ahj: payload.ahj || "" });
   // Verifying locks the profile against automatic overwrite (hard rule 3) — one stray click
   // used to do that with no confirmation.
-  if (!window.confirm(`Mark ${name} verified?\n\nThis locks it from automatic overwrite: later research will not change it. Only confirm after checking every value against its cited source.`)) return;
+  if (!window.confirm(CPV.confirmMessage(name))) return;
+  // A verification is a NAMED person's attestation (#209): with sign-in on the server records the
+  // signed-in user; with it off the person types their name, and a blank one is refused.
+  let verifiedBy = "";
+  let auth = { enabled: false };
+  try { auth = await (await api("/api/auth/me")).json(); } catch { /* treated as auth off */ }
+  if (!auth || !auth.enabled) {
+    let last = "";
+    try { last = localStorage.getItem("feeConfirmName") || ""; } catch { last = ""; }
+    const typed = window.prompt("Your name (recorded as the person who verified this profile):", last);
+    if (typed == null) return;
+    verifiedBy = String(typed).trim();
+    if (!verifiedBy) { $("verifyStatus").textContent = "Enter your name — a profile is verified by a named person."; return; }
+    try { localStorage.setItem("feeConfirmName", verifiedBy); } catch { /* per-viewer convenience only */ }
+  }
   $("verifyBtn").disabled = true;
   try {
-    await api("/api/code-profiles/verify", { method: "PUT", body: JSON.stringify(payload) });
+    await api("/api/code-profiles/verify", { method: "PUT", body: JSON.stringify({ ...payload, verifiedBy }) });
     closeVerifyPanel();
     // Written OUTSIDE the panel it just closed, so the operator actually sees it.
     $("cpStatus").textContent = `${name} verified — its citations are now authoritative.`;

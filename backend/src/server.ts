@@ -937,18 +937,6 @@ app.post("/api/code-profiles/research", asyncHandler(async (req, res) => {
   res.json({ profile: saved, webGrounded: research.webGrounded, notes: research.notes, needsHumanVerification: true });
 }));
 
-app.put("/api/code-profiles/verify", (req, res) => {
-  const b = validate(codeProfileVerifySchema, req.body);
-  const saved = saveVerifiedCodeProfile(db, {
-    key: "", confidence: "verified", updatedAt: "",
-    state: b.state, ahj: b.ahj,
-    adoptedCodes: b.adoptedCodes, amendments: b.amendments,
-    designCriteria: b.designCriteria, prescriptive: b.prescriptive,
-    fireSetbacks: b.fireSetbacks.map((f) => ({ ...f })), citations: b.citations,
-  }, currentUser(db, req)?.email || "operator");
-  res.json({ profile: saved });
-});
-
 // EDITION PROPOSALS (#172): a due verify check on a HUMAN-VERIFIED row stores a proposal, never a
 // write (rule 3); these are the person's two answers, under the existing code-profiles path (rule 6:
 // shared knowledge, no new top-level route). Approve re-verifies the row through
@@ -957,16 +945,37 @@ app.put("/api/code-profiles/verify", (req, res) => {
 // THE DECIDER IS A NAMED PERSON: the signed-in user when auth is on (a body name is ignored — it
 // would let a caller put someone else's name on a verification); with auth off, the name the
 // dashboard sends, and no name is a 400 — "operator" is not a person.
-const editionProposalDecider = (req: Request): string => {
+// The same named person verifies a seeded code profile (#209): PUT /api/code-profiles/verify, from
+// /review or the dashboard's KB card, stamps verified_by the same way (body field `verifiedBy`).
+const namedPersonDecider = (req: Request, field: "decidedBy" | "verifiedBy", signIn: string, nameIt: string): string => {
   if (AUTH_ENABLED) {
     const user = currentUser(db, req);
-    if (!user) throw new HttpError(401, "Sign in to decide an edition proposal.");
+    if (!user) throw new HttpError(401, signIn);
     return String(user.name || user.email || "").trim() || "authenticated user";
   }
-  const named = String(req.body?.decidedBy || "").trim().slice(0, 120);
-  if (!named) throw new HttpError(400, "Name the person deciding: an edition proposal is approved or dismissed by a named person.");
+  const named = String(req.body?.[field] || "").trim().slice(0, 120);
+  if (!named) throw new HttpError(400, nameIt);
   return named;
 };
+const editionProposalDecider = (req: Request): string => namedPersonDecider(req, "decidedBy",
+  "Sign in to decide an edition proposal.",
+  "Name the person deciding: an edition proposal is approved or dismissed by a named person.");
+
+app.put("/api/code-profiles/verify", (req, res) => {
+  const b = validate(codeProfileVerifySchema, req.body);
+  // Named BEFORE anything is written: a blank name (auth off) is a 400 that verifies nothing.
+  const verifiedBy = namedPersonDecider(req, "verifiedBy",
+    "Sign in to verify a code profile.",
+    "Name the person verifying: a code profile is verified by a named person.");
+  const saved = saveVerifiedCodeProfile(db, {
+    key: "", confidence: "verified", updatedAt: "",
+    state: b.state, ahj: b.ahj,
+    adoptedCodes: b.adoptedCodes, amendments: b.amendments,
+    designCriteria: b.designCriteria, prescriptive: b.prescriptive,
+    fireSetbacks: b.fireSetbacks.map((f) => ({ ...f })), citations: b.citations,
+  }, verifiedBy);
+  res.json({ profile: saved });
+});
 const editionProposalFingerprint = (req: Request): string => {
   const fp = String(req.body?.fingerprint || "").trim();
   if (!fp || fp.length > 400) throw new HttpError(400, "fingerprint is required.");
