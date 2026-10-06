@@ -987,8 +987,14 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   }
 
   // ROOF SNOW — a different quantity (Pf/Ps = f(Pg, Ce, Ct, Is, Cs)); never compared to Pg.
-  const roofQual = (word: string | undefined): StatedDesignCriterionQualifier =>
-    !word ? "roof" : /flat/i.test(word) ? "flat" : /sloped|total/i.test(word) ? "sloped" : "roof";
+  // The SYMBOL decides when one is printed ("Roof snow load, ps = 22 psf" is a sloped ps, whatever
+  // word leads); then the leading word. pm / "minimum roof snow" is ASCE 7's low-slope minimum, a
+  // formula intermediate, never the governing load: qualified "minimum" so no rule reads it as one.
+  const roofQual = (word: string | undefined, symbol?: string): StatedDesignCriterionQualifier => {
+    const sym = /\bp\s?([fsm])\b/i.exec(symbol ?? "")?.[1]?.toLowerCase();
+    if (sym) return sym === "f" ? "flat" : sym === "s" ? "sloped" : "minimum";
+    return !word ? "roof" : /flat/i.test(word) ? "flat" : /sloped|total/i.test(word) ? "sloped" : /minimum/i.test(word) ? "minimum" : "roof";
+  };
   // "ROOF SNOW LOAD: 20 PSF", "Minimum roof snow load, Pm: 20 psf", and a calc table's unit-first
   // "Flat Roof Snow Load, p f [psf]: 21" (bracketed unit + separator, as for ground snow).
   const roofLabel = new RegExp(String.raw`\b(flat|sloped|total|design|balanced|minimum)?\s*roof\s+snow(?:\s+load)?(?:\s*,?\s*p\s?[fsm]\b)?\s*(?:(\[\s*psf\s*\])\s*[:=]|${SEP})?\s*(\d+(?:\.\d+)?)\s*(psf)?`, "gid");
@@ -996,7 +1002,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
     if (!m[2] && !m[4]) continue;
     // ":"/"=" assign outright; a spaced dash, like no separator, only where the run's layout agrees.
     if (!/[:=]/.test(m[0]) && labelFirstIsNextLabels(m, 3)) continue;
-    push("roofSnowPsf", roofQual(m[1]), m[3], m);
+    push("roofSnowPsf", roofQual(m[1], m[0].slice(0, valueStartOf(m, 3) - m.index)), m[3], m);
   }
   const roofAfter = new RegExp(String.raw`${NOT_NEGATIVE}(\d+(?:\.\d+)?)\s*psf\b\s*(${SEP}\s*)?(flat|sloped|total|design)?\s*roof\s+snow`, "gi");
   while ((m = roofAfter.exec(text))) {
@@ -1007,7 +1013,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   while ((m = pf.exec(text))) push("roofSnowPsf", "flat", m[1], m);
   // The minimum roof snow load symbol: "p m = 20 psf".
   const pm = /\bp\s?m\s*=\s*(\d+(?:\.\d+)?)\s*psf/gi;
-  while ((m = pm.exec(text))) push("roofSnowPsf", "roof", m[1], m);
+  while ((m = pm.exec(text))) push("roofSnowPsf", "minimum", m[1], m);
   const ps = /\b(?:total\s+snow\s+load\s*,?\s*)?p\s?s\s*=?\s*(\d+(?:\.\d+)?)\s*psf/gi;
   while ((m = ps.exec(text))) {
     // "ps 20.00 psf" alone is too short to trust; require the "=" or the "Total Snow Load" label.
@@ -2839,14 +2845,20 @@ export function evaluateDesignCriteriaFindings(
       (c) => c.criterion === "groundSnowPsf" && c.qualifier === "ground_asd" && typeof c.value === "number",
       (c) => (c.value as number) < ahjSnowAsd);
   }
-  // (#211) ROOF SNOW against the AHJ's stated (minimum) roof snow load — roof snow with roof snow,
-  // never with Pg. Flat (pf), minimum (pm) and unqualified/design roof snow are compared; a SLOPED
-  // ps is not: ps = Cs x pf is legitimately lower than a flat minimum on a steep or slippery roof,
-  // so comparing it would raise a false below-ahj on a correct design. Same per-line policy as
-  // above, with the arithmetic in the line so the examiner's question is answered on its face.
+  // (#211) ROOF SNOW against the AHJ's stated roof snow load — roof snow with roof snow, never with
+  // Pg. What is compared is each document's GOVERNING roof snow: the largest flat (pf) or
+  // unqualified/design roof snow it states. Never a SLOPED ps (ps = Cs x pf is legitimately lower
+  // than a flat value on a steep or slippery roof) and never the pm minimum (a formula intermediate:
+  // "pm = 20 psf … ps = 33 psf" governs at 33). The largest per document also reads a progressive
+  // calc ("pf = 17.64 psf … pf = 20.00 psf") at its result. Same per-line policy as above, with the
+  // arithmetic in the line so the examiner's question is answered on its face.
   if (ahjRoofSnow != null) {
+    const roofReadings = stated.criteria.filter((c) => c.criterion === "roofSnowPsf" && (c.qualifier === "flat" || c.qualifier === "roof") && typeof c.value === "number");
+    const governingBySource = new Map<string, number>();
+    for (const c of roofReadings) governingBySource.set(c.source, Math.max(governingBySource.get(c.source) ?? -Infinity, c.value as number));
+    const governing = new Set(roofReadings.filter((c) => c.value === governingBySource.get(c.source)));
     compareMore("Roof snow load", " psf", `${ahjRoofSnow} psf`, "roofSnowLoadPsf",
-      (c) => c.criterion === "roofSnowPsf" && c.qualifier !== "sloped" && typeof c.value === "number",
+      (c) => governing.has(c),
       (c) => (c.value as number) < ahjRoofSnow,
       (hits) => [...new Set(hits.map((c) => c.value as number))].sort((a, b) => a - b).map((v) => `${v} psf < ${ahjRoofSnow} psf`).join("; "));
   }

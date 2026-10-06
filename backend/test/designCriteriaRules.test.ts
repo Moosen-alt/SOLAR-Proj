@@ -960,6 +960,32 @@ check("#211 roof snow MUST-EXCLUDE: a sloped ps below the flat minimum, or no ro
   assert.ok(!get(run(project({}), ctxFor({ ...VERIFIED, designCriteria: { ...MET } }), roofDocs("ROOF SNOW LOAD = 25 PSF")), BELOW));
 });
 
+check("#211 roof snow MUST-EXCLUDE: the pf/pm/ps calc template — pm is a minimum, not the governing load", () => {
+  // Review probe: pm 20 against a verified 25 read as a BLOCKER "20 psf < 25 psf"; the governing load is 33.
+  const ctx = ctxFor({ ...VERIFIED, designCriteria: { ...MET, roofSnowLoadPsf: 25 } });
+  for (const letter of [
+    "Ground snow load, Pg: 25 psf; Minimum roof snow load, Pm: 20 psf (not reducible); Total Snow Load ps = 33 psf",
+    "Ground snow load pg = 25 psf. pm = 20 psf. Flat roof snow load, pf = 25.2 psf. ps = 24 psf",
+    "Roof snow load, ps = 22 psf",
+    "Roof Snow Load, ps: 22 psf",
+    "Flat Roof Snow Load pf = 17.64 psf ... minimum governs ... Flat Roof Snow Load pf = 25.00 psf",
+  ]) {
+    const f = get(run(project({}), ctx, roofDocs(letter)), BELOW);
+    assert.ok(!f, `"${letter}" -> ${f?.severity}: ${f?.message}`);
+  }
+  // A governing flat pf below the AHJ's still is.
+  assert.equal(get(run(project({}), ctx, roofDocs("pm = 20 psf. Flat roof snow load, pf = 21 psf")), BELOW)?.severity, "blocker");
+});
+
+check("#211 extractor: the printed symbol decides the roof snow qualifier", () => {
+  const q = (text: string) => extractStatedDesignCriteria(project({ planSetExtractedText: text })).criteria
+    .filter((c) => c.criterion === "roofSnowPsf").map((c) => `${c.value}:${c.qualifier}`);
+  assert.deepEqual([...new Set(q("Roof snow load, ps = 22 psf"))], ["22:sloped"]);
+  assert.deepEqual([...new Set(q("Minimum roof snow load, Pm: 20 psf"))], ["20:minimum"]);
+  assert.deepEqual([...new Set(q("pm = 20 psf"))], ["20:minimum"]);
+  assert.deepEqual([...new Set(q("ROOF SNOW LOAD: 25 PSF"))], ["25:roof"]);
+});
+
 check("#211 weathering is informational: a profile with weathering / termite / soil bearing raises no finding", () => {
   const ctx = ctxFor({ ...VERIFIED, designCriteria: { ...MET, weathering: "severe", termite: "slight to moderate", soilBearingPsf: 1500 } });
   const fs = run(project({}), ctx, roofDocs("WEATHERING: NEGLIGIBLE SOIL BEARING 1000 PSF"));

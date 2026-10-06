@@ -38,7 +38,7 @@ const check = async (label: string, fn: () => void | Promise<void>): Promise<voi
   catch (err) { failures++; console.error(`  FAIL - ${label}\n         ${err instanceof Error ? err.message : String(err)}`); }
 };
 
-const NEW_FIELDS = { roofSnowLoadPsf: 30, weathering: "severe" as const, termite: "slight to moderate", soilBearingPsf: 1500 };
+const NEW_FIELDS = { roofSnowLoadPsf: 30, weathering: "severe" as const, termite: "Slight to Moderate", soilBearingPsf: 1500 };
 const row = (state: string, ahj: string, over: Partial<JurisdictionCodeProfile> = {}): JurisdictionCodeProfile => ({
   key: "", state, ahj, confidence: "seeded", adoptedCodes: [], amendments: [], designCriteria: {}, prescriptive: {},
   fireSetbacks: [], citations: [], updatedAt: "", ...over,
@@ -77,13 +77,28 @@ const lookup = {
 await check("the parser keeps quote-bound values; a ground snow number is never a roof snow load", () => {
   const r = parseDesignCriteriaLookup(lookup, true, false, JUR);
   const got = Object.fromEntries(r.values.map((v) => [v.criterion, v.value]));
-  assert.deepEqual(got, { roofSnowLoadPsf: 30, weathering: "severe", termite: "slight to moderate", soilBearingPsf: 1500 });
+  assert.deepEqual(got, { roofSnowLoadPsf: 30, weathering: "severe", termite: "Slight to Moderate", soilBearingPsf: 1500 }, "termite is kept as published");
   const bad = parseDesignCriteriaLookup({
     roofSnowLoadPsf: { value: 43, sourceUrl: TABLE, quote: "Ground snow load 43 psf; Roof snow load 30 psf" },
     weathering: { value: "severe", sourceUrl: TABLE, quote: "Seismic Design Category D1" },
     soilBearingPsf: { value: 30, sourceUrl: TABLE, quote: "Roof snow load 30 psf" },
   }, true, false, JUR);
   assert.deepEqual(bad.values, [], bad.notes);
+  // #211 review: a bare "roof" (live / dead load), a sloped ps, and a weathering RANGE are never kept
+  // — they would seed shared knowledge as the AHJ's value.
+  for (const [key, value, quote] of [
+    ["roofSnowLoadPsf", 20, "Roof live load 20 psf"],
+    ["roofSnowLoadPsf", 15, "Roof dead load: 15 psf"],
+    ["roofSnowLoadPsf", 40, "Ground snow 25; Roof 40 (live)"],
+    ["roofSnowLoadPsf", 22, "Sloped roof snow load, ps = 22 psf"],
+    ["roofSnowLoadPsf", 22, "Roof snow load, ps = 22 psf"],
+    ["weathering", "Moderate", "Weathering: Moderate to Severe"],
+  ] as const) {
+    const r = parseDesignCriteriaLookup({ [key]: { value, sourceUrl: TABLE, quote } }, true, false, JUR);
+    assert.deepEqual(r.values, [], `kept "${quote}" as ${key}`);
+  }
+  // pf / pm are roof snow symbols the AHJ's own table may print.
+  assert.equal(parseDesignCriteriaLookup({ roofSnowLoadPsf: { value: 30, sourceUrl: TABLE, quote: "Flat roof snow load pf = 30 psf" } }, true, false, JUR).values[0]?.value, 30);
 });
 
 await check("mergeResearchedDesignCriteria lands them on a seeded row, each cited", () => {
@@ -95,6 +110,20 @@ await check("mergeResearchedDesignCriteria lands them on a seeded row, each cite
   assert.equal(saved?.confidence, "seeded");
   assert.deepEqual({ ...saved!.designCriteria, sourceUrl: undefined }, { ...NEW_FIELDS, sourceUrl: undefined });
   assert.ok(saved!.citations.some((c) => c.field === "designCriteria.roofSnowLoadPsf" && c.sourceUrl === TABLE));
+});
+
+await check("a VERIFIED row is never filled by the lookup, for the new fields too (rule 3)", () => {
+  const r = CP.mergeResearchedDesignCriteria(db, { state: "ZZ", ahj: "City of Testfield" }, parseDesignCriteriaLookup({
+    ...lookup, roofSnowLoadPsf: { value: 50, sourceUrl: TABLE, quote: "Roof snow load 50 psf" },
+  }, true, false, JUR));
+  assert.equal(r.saved, false);
+  assert.match(String(r.reason), /human-verified/);
+  const still = CP.listCodeProfiles(db).find((p) => p.state === "ZZ" && p.ahj === "City of Testfield");
+  assert.equal(still?.designCriteria.roofSnowLoadPsf, 30);
+});
+
+await check("the verify schema also keeps specialWindRegion", () => {
+  assert.equal(codeProfileVerifySchema.parse({ state: "ZZ", designCriteria: { specialWindRegion: true } }).designCriteria.specialWindRegion, true);
 });
 
 console.log("4. the cards show them, escaped");
@@ -136,7 +165,7 @@ await check("KB card shows roof snow, weathering, termite and soil bearing", () 
   const t = text(kbDesignCriteriaHtml(cardProfile({ groundSnowLoadPsf: 43, ...NEW_FIELDS })));
   assert.match(t, /Roof snow load \(AHJ-stated minimum\): 30 psf/);
   assert.match(t, /Weathering \(informational\): severe/);
-  assert.match(t, /Termite \(informational\): slight to moderate/);
+  assert.match(t, /Termite \(informational\): Slight to Moderate/);
   assert.match(t, /Soil bearing \(informational\): 1500 psf/);
 });
 
@@ -152,7 +181,7 @@ await check("/review verify summary shows them with units", () => {
   assert.match(t, /Roof snow load: 30 psf/);
   assert.match(t, /Ground snow load pg\(asd\): 30 psf/);
   assert.match(t, /Weathering \(informational\): severe/);
-  assert.match(t, /Termite \(informational\): slight to moderate/);
+  assert.match(t, /Termite \(informational\): Slight to Moderate/);
   assert.match(t, /Soil bearing \(informational\): 1500 psf/);
 });
 

@@ -1147,8 +1147,10 @@ export function parseDesignCriteriaLookup(
       // A risk category answered as "2" is Risk Category II.
       const romanRisk: Record<string, string> = { "1": "I", "2": "II", "3": "III", "4": "IV" };
       const rawText = String(v.value ?? "").trim().toUpperCase();
-      // Weathering and termite are WORDS as published ("Severe", "Slight to moderate"), kept lower-case.
-      const value = criterion === "weathering" || criterion === "termite" ? String(v.value ?? "").trim().toLowerCase().replace(/\s+/g, " ").slice(0, 80)
+      // Weathering is one of three words, stored lower-case; termite is kept as published ("Slight
+      // to Moderate"), whitespace collapsed — too long for the field is dropped below, never cut.
+      const value = criterion === "weathering" ? String(v.value ?? "").trim().toLowerCase()
+        : criterion === "termite" ? String(v.value ?? "").trim().replace(/\s+/g, " ")
         : isText ? (criterion === "riskCategory" ? romanRisk[rawText] ?? rawText : rawText) : typeof v.value === "number" ? v.value : Number.NaN;
       if (!sourceUrl || (typeof value === "number" && !Number.isFinite(value)) || value === "") continue;
       let why = "";
@@ -1179,9 +1181,12 @@ export function parseDesignCriteriaLookup(
         const label = quote.match(/weathering/i);
         const tail = label ? quote.slice((label.index ?? 0) + label[0].length).split(/[.;]/)[0].slice(0, 30) : "";
         if (!/^(?:negligible|moderate|severe)$/.test(String(value)) || !new RegExp(`^[^A-Za-z]*(?:probability\\s*)?[:=-]?\\s*${value}\\b`, "i").test(tail)) why = "quote does not name the weathering probability";
+        // "Moderate to Severe" is a range, not one probability.
+        else if (/\b(?:negligible|moderate|severe)\s*(?:to|or|and|-|–|\/)\s*(?:negligible|moderate|severe)\b/i.test(tail)) why = "quote gives a range of weathering probabilities";
       } else if (criterion === "termite") {
         // Informational: the quote names termite and carries the words given.
-        if (!/termite/i.test(quote) || !quote.toLowerCase().replace(/\s+/g, " ").includes(String(value))) why = "quote does not state the termite probability";
+        if (!/termite/i.test(quote) || !quote.toLowerCase().replace(/\s+/g, " ").includes(String(value).toLowerCase())) why = "quote does not state the termite probability";
+        else if (String(value).length > 120) why = "termite wording longer than the field";
       } else {
         // Soil bearing is published with a thousands separator ("1,500 psf"): read as one number,
         // not a "1, 500" list. Only there — a comma between two loads is a list.
@@ -1198,9 +1203,14 @@ export function parseDesignCriteriaLookup(
           });
           if (!bound) why = "quote does not bind the value to frost depth";
         } else if (criterion === "roofSnowLoadPsf") {
-          // A ROOF snow load (pf / pm / "roof snow load") — never a ground snow number re-labelled.
-          const classes = hits.filter((h) => !inRangeOrList(q, h.at, h.end)).map((h) => snowClass(labelOf(q, nums, h.i)));
-          if (!classes.includes("roof")) why = "quote does not bind the value to roof snow";
+          // A ROOF SNOW label (roof snow / pf / pm) right before the number — never a bare "roof"
+          // (roof live / dead load), never a sloped ps, never a ground snow number re-labelled.
+          const bound = hits.filter((h) => !inRangeOrList(q, h.at, h.end)).some((h) => {
+            const l = labelOf(q, nums, h.i);
+            return snowClass(l) === "roof" && /roof\s+snow|\bp\s?[fm]\b/i.test(l.before)
+              && !/\blive\b|\bdead\b|\bsloped\b|\btotal\b|\bp\s?s\b/i.test(l.before);
+          });
+          if (!bound) why = "quote does not bind the value to roof snow";
         } else if (criterion === "soilBearingPsf") {
           const bound = hits.filter((h) => !inRangeOrList(q, h.at, h.end)).some((h) => /soil|bearing/i.test(labelOf(q, nums, h.i).before));
           if (!bound) why = "quote does not bind the value to soil bearing";

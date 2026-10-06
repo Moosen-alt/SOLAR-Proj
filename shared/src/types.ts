@@ -1913,6 +1913,9 @@ export type StatedDesignCriterionQualifier =
   | "roof"
   | "flat"
   | "sloped"
+  /** ASCE 7 pm / "minimum roof snow load": the non-reducible low-slope minimum, a formula
+   *  intermediate — never a design's governing roof snow (#211 review). */
+  | "minimum"
   | "unspecified";
 
 export interface StatedDesignCriterion {
