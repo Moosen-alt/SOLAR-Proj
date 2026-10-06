@@ -765,7 +765,7 @@
           <button id="saveToSystemBtn" onclick="saveToSystem()" class="primary" style="width:100%;justify-content:center">Save to project</button>
         </div>
       </div>
-      <div id="clientGateHint" class="ps-note" style="display:none">Choose the <strong>Client / Contractor</strong> above before saving a new project &mdash; the permit application carries that client&rsquo;s <span id="clientGateLicence">contractor licence</span> and the portal logs in as them, so a project cannot be created without one.</div>
+      <div id="clientGateHint" class="ps-note" style="display:none">Choose the <strong>Client / Contractor</strong> above before saving a new project &mdash; the permit application carries that client&rsquo;s contractor licence and the portal logs in as them, so a project cannot be created without one.</div>
       <!-- WHICH COMPANY IS THIS? Filled from the plan set's title block by the backend
            resolver (backend/src/clientMatch.ts) on the parse response. An exact CCB match
            selects the client outright; anything weaker fills the picker but leaves the
@@ -868,8 +868,6 @@ const state = {
   // human has agreed with it. `clientConfirmed` starts true so an operator who never
   // runs a parse is never gated by a suggestion that was never made.
   clientResolution:null,
-  // The picked client's record (loadContractorInfo): its state names its licence (#202).
-  selectedClient:null,
   clientConfirmed:true,
   // Has a parse ever run in this session? A collapsed group reading "0 of 27 read" before
   // any parse would be a finding about documents nobody has submitted yet; before a parse
@@ -5345,9 +5343,6 @@ function refreshClientGate() {
       : '';
   const hint = $('clientGateHint');
   if (hint) hint.style.display = missing ? '' : 'none';
-  // The licence is the CLIENT's, named by its state (#202) — textContent, never markup.
-  const words = $('clientGateLicence');
-  if (words) words.textContent = ParserReview.licenceWords(ParserReview.clientLicenceState(missing ? null : state.selectedClient));
 }
 
 // True while the picker still holds a client that the RESOLVER put there on weaker
@@ -5913,7 +5908,7 @@ async function uploadIntakeDocs(projectId){
 // info. Auto-fill every contractor field from that client (and clear them when no
 // client is selected) so a project is never staged with another client's data.
 const CONTRACTOR_FIELDS = ['installerCompany','installerEmail','installerPhone','installerLine1','installerCity','installerState','installerZip','electricalLicenseNumber','contractorLicenseNumber','metroCityLicenseNumber','supervisingElectrician','electricianLicenseNumber','contractorLicenseNotes'];
-function clearContractorFields(){ state.selectedClient = null; CONTRACTOR_FIELDS.forEach(id => setVal(id, '')); updateGroupSummaries(); }
+function clearContractorFields(){ CONTRACTOR_FIELDS.forEach(id => setVal(id, '')); updateGroupSummaries(); }
 
 async function loadContractorInfo(clientId) {
   clearContractorFields();
@@ -5923,7 +5918,6 @@ async function loadContractorInfo(clientId) {
     if (!res.ok) return;
     const c = await res.json();
     const client = c.client || c;
-    state.selectedClient = client;
     setVal('installerCompany', client.legalBusinessName || client.companyName || '');
     setVal('installerEmail', client.businessEmail || client.contactEmail || '');
     setVal('installerPhone', client.businessPhone || client.phone || '');
@@ -5940,9 +5934,10 @@ async function loadContractorInfo(clientId) {
     // licence is labelled by the client's state (#202): DOPL for a Utah client, never Oregon's CCB.
     setVal('contractorLicenseNotes', ParserReview.clientLicenceNote(client));
     updateGroupSummaries(); // setVal fires no input event; the installer fold's count would go stale
-    refreshClientGate();
-    if (!client.ccbLicenseNumber) {
-      const s = $('saveStatus'); if (s) s.textContent = `⚠ ${client.companyName || 'This client'} has no ${ParserReview.licenceWords(ParserReview.clientLicenceState(client))} on file — add it in the Clients tab before submitting.`;
+    // The client's licence for ITS state: a typed DOPL row for a Utah client, the CCB for an Oregon one.
+    const missingLicence = ParserReview.clientLicenceMissing(client);
+    if (missingLicence) {
+      const s = $('saveStatus'); if (s) s.textContent = missingLicence;
     }
   } catch (e) {
     console.warn('Could not load contractor info:', e);
