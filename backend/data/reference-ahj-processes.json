@@ -1,7 +1,7 @@
 {
   "generatedFrom": "Permit Processes.xlsx",
   "redaction": "Credential/contact columns and credential-like values removed; credential-bearing notes dropped. Customer-specific files excluded.",
-  "count": 385,
+  "count": 386,
   "profiles": [
     {
       "state": "NJ",
@@ -7759,6 +7759,36 @@
       },
       "reviewerNotes": "Seeded 2026-10-04 from the city's public information pages (worker-60 web research, issue #109); NOT verified - confirm before relying on it. Information pages are sources, not the portal. Sources: https://www.spanishfork.gov/living-in-our-community/building/building-permits-inspections ; https://www.spanishfork.gov/living-in-our-community/power-light/net-metering",
       "sourceSheet": "UT seeded (web research 2026-10-04)"
+    },
+    {
+      "state": "UT",
+      "ahj": "City of Saratoga Springs",
+      "submissionMethod": "Saratoga Springs CityWorks Public Access portal (Cityworks, cityworks.saratogasprings-ut.gov/publicaccess; also linked as cityworks.saratogaspringscity.com/publicaccess): paperless — submittals, re-submittals and payments online",
+      "timeline": "",
+      "requiresElectricianSign": false,
+      "requiresElectricalStamp": false,
+      "requiresStructuralStamp": false,
+      "requiresElectricalPermitApplication": false,
+      "requiresBuildingPermitApplication": false,
+      "requiresSolarChecklist": false,
+      "requiresPlanSet": true,
+      "requiresUtilityApproval": false,
+      "requiresCustomerSignature": false,
+      "requiresFloodplainCheck": false,
+      "requiresJurisdictionCheck": false,
+      "otherRequirements": "Issuer: City of Saratoga Springs Building Department. Paperless: applications and required items go through the CityWorks Public Portal (Public Access Portal user guide: https://www.saratogasprings-ut.gov/DocumentCenter/View/11819/Public-Access-Portal-Guide-4202023). No solar-specific application blank: the city's solar application PDFs are retired (DocumentCenter/View/152 'Solar-Application-PDF' and View/12292 'Solar-Application-2023' both return 404 as of 2026-10-06) and /209 Applications & Forms lists no solar or electrical form — do not re-chase them. The only live application blank is the GENERIC 'Building Permit Application – Electronic Version' (https://www.saratogasprings-ut.gov/DocumentCenter/View/8000): a scanned image PDF with no text layer (needs vision to map), not a solar form, and not confirmed as required for PV. Documents: plans and specifications with every application, as a digital copy via the portal; non-refundable $200 deposit for a single-family residence, applied to the permit. Prerequisites: a Saratoga Springs business licence for any person doing business in the city (City Code Title 5 §5.01.02; contractor-level, not solar-specific); a SWPPP permit via Utah DEQ only if the work disturbs ground (not rooftop PV). Not prerequisites: Planning and Zoning, Public Works and Fire approvals are the city's INTERNAL routing before issuance; the digital copy of approved plans is provided AFTER issuance. Design criteria: https://www.saratogasprings-ut.gov/213/Design-Criteria. Adopted codes: Title 18 Building and Construction (https://www.saratogasprings-ut.gov/DocumentCenter/View/536/Title-18---Building-and-Construction). Land use (Title 19.05.12 Solar Panels, https://www.saratogasprings-ut.gov/DocumentCenter/View/697/1905-Supplementary-Regulations): residential-grade roof panels only; ground mounts in the rear or interior side yard, at most 15 ft high, behind a 6-ft opaque fence; reflection minimised; grid-tied systems installed by a licensed PV contractor per the NEC. Fees: https://www.saratogasprings-ut.gov/DocumentCenter/View/156/Building-Permit-Fee-Schedule-PDF (not parsed). Electric utility: Rocky Mountain Power (the city is not the utility).",
+      "documents": {
+        "items": [
+          "Plans and specifications (required with all applications)",
+          "Digital copy of plans and all required submittals, uploaded through the CityWorks Public Portal",
+          "Non-refundable $200 deposit for a single-family residence (credited toward the permit)"
+        ],
+        "sourceUrl": "https://www.saratogasprings-ut.gov/220/Obtaining-a-Building-Permit",
+        "quote": "Plans and specification are required with all applications.",
+        "observedAt": "2026-10-06"
+      },
+      "reviewerNotes": "Seeded 2026-10-06 from the city's public information pages (issue #228; read-only sweep, the Cityworks portal itself was never opened); NOT verified - confirm before relying on it. Information pages are sources, not the portal. Retired solar application IDs: DocumentCenter/View/152 and View/12292 (404) — no solar-specific blank expected; generic application View/8000 is a scanned blank. Sources: https://www.saratogasprings-ut.gov/201/Building ; https://www.saratogasprings-ut.gov/221/Additional-Building-Permit-Requirements ; https://www.saratogasprings-ut.gov/265/Permits-Forms ; https://www.saratogasprings-ut.gov/220/Obtaining-a-Building-Permit ; https://www.saratogasprings-ut.gov/209/Applications-Forms ; https://www.saratogasprings-ut.gov/213/Design-Criteria",
+      "sourceSheet": "UT seeded (web research 2026-10-06)"
     }
   ]
 }

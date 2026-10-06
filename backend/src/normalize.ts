@@ -69,6 +69,48 @@ function confidenceSummary(payload: ParserPayload): string {
   return lines.join("; ") || "parser completed without explicit review flags";
 }
 
+// Canonical keys that canonicalizeSnapshot fills FROM A DIFFERENT parser field (first non-empty
+// source wins). Kept as one table because two places must agree on it: the derivation here, and
+// updateProject's re-derivation on edit (staleDerivedKeys below). Identity copies (moduleModel,
+// batteryModel, serviceType…) have no separate source, so an edit can't leave them stale.
+export const CANONICAL_ALIAS_SOURCES: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ["homeownerPhone", ["ownerPhone"]],
+  ["moduleManufacturer", ["moduleMake"]],
+  ["moduleWatts", ["moduleWattage"]],
+  ["moduleQuantity", ["moduleQty"]],
+  ["inverterManufacturer", ["invMake", "pvMicroMake"]],
+  ["inverterModel", ["invModel", "pvMicroModel"]],
+  ["inverterQuantity", ["invQty", "pvMicroQty"]],
+  ["batteryManufacturer", ["batteryMake"]],
+  ["batteryQuantity", ["batteryQty"]],
+  ["essKwh", ["batteryCapacityKwh"]],
+  ["mainServiceRating", ["busRating", "mainBreaker"]],
+];
+
+// A DERIVED ALIAS IS AN ECHO OF ITS EVIDENCE, NOT A FACT OF ITS OWN (#225). canonicalizeSnapshot
+// never clobbers a present key, so once `inverterModel` is stored it outlives an edit to `invModel`:
+// a design corrected from Enphase micros to a Sunny Boy string inverter kept the micro alias, and
+// readers that join both fields (codeReviewRules.isMlpeDesign) kept softening its rapid-shutdown
+// blocker. Returns the keys of `snapshot` whose stored value is exactly what canonicalization would
+// derive from the OTHER evidence in it — those carry no information beyond their sources and must be
+// dropped before an edit is merged, so they are re-derived from the merged evidence. A stored value
+// that differs from its derivation was provided on its own (the parser emitted the canonical name,
+// or an operator set it) and is kept. pvArrays is the same shape: built from moduleQty/moduleModel/
+// tilt/azimuth when absent, so a stored copy equal to that build is an echo too.
+export function staleDerivedKeys(snapshot: ParserPayload): string[] {
+  const out: string[] = [];
+  const has = (key: string): boolean => snapshot[key] !== undefined && snapshot[key] !== null && snapshot[key] !== "";
+  for (const [key, sources] of CANONICAL_ALIAS_SOURCES) {
+    if (has(key) && str(snapshot, key) === first(snapshot, [...sources])) out.push(key);
+  }
+  if (Array.isArray(snapshot["pvArrays"])) {
+    const { pvArrays: stored, ...rest } = snapshot;
+    const rebuilt = canonicalizeSnapshot(rest as ParserPayload)["pvArrays"];
+    if (rebuilt !== undefined && JSON.stringify(rebuilt) === JSON.stringify(stored)) out.push("pvArrays");
+  }
+  return out;
+}
+
 // Produces the canonical snapshot keys that portal adapters and the AHJ PDF
 // form engine read, mapping the parser's short field names to canonical names
 // and building a structured pvArrays list. Additive and idempotent: existing
@@ -91,19 +133,9 @@ export function canonicalizeSnapshot(payload: ParserPayload): ParserPayload {
   // when present: a non-email in it is not a value worth keeping.
   const email = firstEmail(payload["homeownerEmail"], payload["ownerEmail"]);
   if (email || has("homeownerEmail")) canonical["homeownerEmail"] = email;
-  set("homeownerPhone", pick(["homeownerPhone", "ownerPhone"]));
-  set("moduleManufacturer", pick(["moduleManufacturer", "moduleMake"]));
+  for (const [key, sources] of CANONICAL_ALIAS_SOURCES) set(key, pick([key, ...sources]));
   set("moduleModel", pick(["moduleModel"]));
-  set("moduleWatts", pick(["moduleWatts", "moduleWattage"]));
-  set("moduleQuantity", pick(["moduleQuantity", "moduleQty"]));
-  set("inverterManufacturer", pick(["inverterManufacturer", "invMake", "pvMicroMake"]));
-  set("inverterModel", pick(["inverterModel", "invModel", "pvMicroModel"]));
-  set("inverterQuantity", pick(["inverterQuantity", "invQty", "pvMicroQty"]));
-  set("batteryManufacturer", pick(["batteryManufacturer", "batteryMake"]));
   set("batteryModel", pick(["batteryModel"]));
-  set("batteryQuantity", pick(["batteryQuantity", "batteryQty"]));
-  set("essKwh", pick(["essKwh", "batteryCapacityKwh"]));
-  set("mainServiceRating", pick(["mainServiceRating", "busRating", "mainBreaker"]));
   set("serviceType", pick(["serviceType"]));
   set("jobValue", pick(["jobValue"]));
   set("pgeSchedule", pick(["pgeSchedule"]));
