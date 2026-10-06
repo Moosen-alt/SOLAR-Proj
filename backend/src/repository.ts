@@ -74,7 +74,7 @@ import { notServedInResult } from "../../shared/src/portalNotServed";
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 // detectPlatform moved with the target INSERT into submittalTracks.ts's ensureCheckTarget.
 import { publicPermitStatusCheck } from "./publicPermitStatus";
-import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES } from "./projectDocuments";
+import { planSetTextForProject, projectDocsByType, structuralCertificationOnFile, DOCS_DIR, PLAN_TEXT_DOC_TYPES } from "./projectDocuments";
 import type { DesignTextSource } from "./designCriteria";
 import { describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor, isStatewidePortalUrl, permitProcessKey, projectForTrack, refuseTrackIssuerValue, trackIssuer } from "./permitProcess";
 import { statewideDecisionFor, statewideUrlRefusal } from "./statewideEvidence";
@@ -206,7 +206,7 @@ export function buildReviewerReportFor(db: AppDb, project: ProjectRecord): Revie
   // The reviewer's plan-set requirement is about whether the package EXISTS; give it the
   // attached document types so it cannot block a project that has them.
   const uploadedDocTypes = Object.keys(projectDocsByType(db, project.id));
-  return buildReviewerReport(project, { codeContext, uploadedDocTypes, documentTexts: designDocumentTexts(db, project.id), pvWorksheet: filedPvWorksheetInput(db, project) });
+  return buildReviewerReport(project, { codeContext, uploadedDocTypes, documentTexts: designDocumentTexts(db, project.id), pvWorksheet: filedPvWorksheetInput(db, project), structuralCertification: structuralCertificationOnFile(db, project.id) });
 }
 
 /** The newest filed PV worksheet read by position (project_documents.form_reading_json, written

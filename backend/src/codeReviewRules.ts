@@ -686,6 +686,9 @@ export function evaluateDesignCodeFindings(
   /** Per-document text (one source per uploaded document), so a design-criteria conflict
    *  can name "plan set vs engineer's letter" rather than one merged text blob. */
   documentTexts: DesignTextSource[] = [],
+  /** An engineer's certification is on file as a `structural` document (#198): the letter is in
+   *  the package and only its seal — an image the text layer cannot read — is unconfirmed. */
+  structuralCertification = false,
 ): ReviewerFinding[] {
   const out: ReviewerFinding[] = [];
   const all = designText(project);
@@ -869,7 +872,24 @@ export function evaluateDesignCodeFindings(
   const claimsEngineered = resolvedPath !== "prescriptive" && (
     pathWordingScope(str(project, "permitPath")) === "engineered"
     || hasAny(all, [/stamped structural/i, /structural letter/i, /sealed by/i, /\bP\.?E\.?\b/, /engineering (calc|letter|review|analysis)/i]));
-  if (roofMounted && claimsEngineered && !hasStampedEngineering) {
+  if (roofMounted && claimsEngineered && !hasStampedEngineering && structuralCertification) {
+    // THE LETTER IS IN THE PACKAGE; ONLY ITS SEAL IS UNSEEN (#198). The engineer's certification
+    // came in bound into the plan set (split as `structural`), so the engineering this design
+    // leans on IS attached. The seal is an image — "no stamp seen" in the text layer is unknown,
+    // not absent — so a person verifies it; that is a warning, never a hold. Saratoga Springs
+    // approved exactly this packet. Same id, so the tile rule below does not raise it again.
+    out.push(finding({
+      id: "city.struct.stamped-engineering-missing",
+      severity: "warning",
+      category: "structural",
+      title: "Engineer's structural certification attached — verify the seal on the structural pages",
+      message: "The package carries an engineer's structural certification (in the plan set, split as the structural document). The text layer cannot see a PE seal, so whether it is sealed is unconfirmed, not missing.",
+      cityFeedback: "The structural calculations or engineer's letter must carry the engineer's wet or digital seal.",
+      designTeamAction: "Open the structural pages and confirm the engineer's seal and signature are on the certification before submittal.",
+      evidenceNeeded: ["PE seal and signature on the engineer's structural certification"],
+      codeReferences: [...oregonWorksheetRefs, roofLoadsRef],
+    }));
+  } else if (roofMounted && claimsEngineered && !hasStampedEngineering) {
     out.push(finding({
       id: "city.struct.stamped-engineering-missing",
       // The design DEPENDS on it when it declares the engineered path — that is a blocker,
@@ -1011,7 +1031,8 @@ export function evaluateDesignCodeFindings(
     if (needsStamp && !hasStampedEngineering && !out.some((f) => f.id === "city.struct.stamped-engineering-missing")) {
       out.push(finding({
         id: "city.struct.tile-stamped-engineering-missing",
-        severity: "blocker",
+        // An engineer's certification in the package (#198) leaves only its seal to verify.
+        severity: structuralCertification ? "warning" : "blocker",
         category: "structural",
         title: "Tile roof on the engineered path with no stamped engineering",
         message: `The roof is ${roofLabel}; ${project.state.toUpperCase() === "OR" ? "Oregon's prescriptive roofing row does not admit tile, so" : "the resolved permit path is engineered, so"} the job files the engineered/structural application and needs a stamped structural calculation — none is in the package.`,

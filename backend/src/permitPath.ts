@@ -277,6 +277,37 @@ export function hasStampedStructuralEvidence(project: PermitPathInputs): boolean
   return affirmed;
 }
 
+// AN ENGINEER'S CERTIFICATION IS A STRUCTURAL DOCUMENT THE TEXT LAYER CAN RECOGNISE (#198).
+//
+// The splitter files an engineering firm's certification bound into the plan set (letterhead,
+// "STRUCTURAL CERTIFICATION", the per-array calcs, a signature line) as doc type `structural` —
+// the same type as a bare framing sheet, which is NOT the sealed letter (stampedEngineering
+// test). What tells them apart is the document's own words: a certification / letter / report /
+// calculation heading that is not negated or hedged, from an engineer. The seal is an IMAGE and
+// the text layer never sees it, so this says nothing about the seal — "no stamp seen" is unknown,
+// not absent, and the consumers word it as "verify the seal", never as a stamp in hand.
+// Saratoga Springs approved exactly such a packet; the gate held it twice for want of the letter
+// it carried.
+const CERTIFICATION_HEADING = /\bstructural\s+(?:engineering\s+)?(?:certification|certificate|letter|report|analysis|calculations?|calcs)\b|\bengineering\s+(?:certification|letter|report|calculations?)\b|\bcertification\s+letter\b|\b(?:hereby|do)\s+certif(?:y|ies)\b|\bthis\s+is\s+to\s+certify\b/i;
+/** An engineer wrote it: the word (any case) or the P.E. credential (case-sensitive — "pe" is not one). */
+const PE_CREDENTIAL = /\bP\.\s?E\.|\bPE\b/;
+/** A one-line reference ("SEE STRUCTURAL LETTER") is not a letter; a certification has a body. */
+const MIN_CERTIFICATION_CHARS = 300;
+
+export function readsAsEngineerCertification(text: string): boolean {
+  const body = String(text || "");
+  if (body.length < MIN_CERTIFICATION_CHARS || body === "[no text layer]") return false;
+  if (!/\bengineer/i.test(body) && !PE_CREDENTIAL.test(body)) return false;
+  // The heading has to stand in a clause of its own words: "structural letter: not provided" and
+  // "a structural letter is required" are a framing sheet's notes ABOUT a letter, not one.
+  return body.split(CLAUSE_BREAK).some((piece) => {
+    const clause = (piece || "").trim();
+    return CERTIFICATION_HEADING.test(clause)
+      && !NEGATOR.test(withoutNumberAbbreviation(clause))
+      && !HEDGED.test(clause);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // SEALED STRUCTURAL STAMP — the single authority.
 //

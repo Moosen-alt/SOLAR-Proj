@@ -105,6 +105,9 @@ export function buildReviewerReport(
     documentTexts?: DesignTextSource[];
     /** A filed state PV worksheet read by position + upload times (pvWorksheetGate). */
     pvWorksheet?: PvWorksheetGateInput;
+    /** An engineer's structural certification is on file as a `structural` document (the plan
+     *  set's own letter, split out) — projectDocuments.structuralCertificationOnFile (#198). */
+    structuralCertification?: boolean;
   } = {},
 ): ReviewerReport {
   const profile = findAhjProcessProfile(project);
@@ -115,7 +118,7 @@ export function buildReviewerReport(
   // Valuation, homeowner email/phone and company assignment feed the portal APPLICATION; the
   // standalone gate files nothing and its form has none of those fields.
   if (!standalone) addSubmittalDataFindings(project, findings);
-  findings.push(...evaluateDesignCodeFindings(project, profile, opts.codeContext, opts.uploadedDocTypes ?? [], opts.documentTexts ?? []));
+  findings.push(...evaluateDesignCodeFindings(project, profile, opts.codeContext, opts.uploadedDocTypes ?? [], opts.documentTexts ?? [], opts.structuralCertification ?? false));
   // What issued permits in this AHJ already carried (#147): a callout on a reused product, a
   // warning — never a blocker — on a departure along a dimension the AHJ has corrected before.
   if (opts.codeContext) findings.push(...evaluatePermitPrecedentFindings(project, opts.codeContext));

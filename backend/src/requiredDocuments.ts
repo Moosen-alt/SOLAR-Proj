@@ -36,7 +36,7 @@
 
 import type { AppDb } from "./db";
 import type { CodeEdition, ProjectRecord } from "../../shared/src/types";
-import { projectDocsByType } from "./projectDocuments";
+import { projectDocsByType, structuralCertificationOnFile } from "./projectDocuments";
 import { duplicateUploads, uploadedSubmissionDocuments } from "./submissionDocuments";
 import { filledFormsByDocType, applicationKindForPath, loadStoredTemplates, formAllowedForPath, formContradictsPath } from "./ahjForms";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
@@ -965,6 +965,13 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
     const p = sameAs && uploads[sameAs]
       ? { present: true, via: `same file as ${sameAs.replace(/_/g, " ")} — attached once; confirm it covers the ${item.docType.replace(/_spec$/, "").replace(/_/g, " ")}` }
       : present(item, project, docsByType, uploads, filledApplications);
+    // THE ENGINEER'S CERTIFICATION BOUND INTO THE PLAN SET IS THE LETTER (#198). The splitter files
+    // it as `structural`, not under a stamped-letter type, so the row read it as missing while the
+    // same letter decided the job was engineered. Credited from its own text; the seal is an image
+    // the text layer cannot see, so the row asks for it to be verified rather than calling it absent.
+    if (item.docType === "structural_letter" && !p.present && structuralCertificationOnFile(db, project.id)) {
+      return { ...item, present: true, via: "engineer's structural certification in the plan set (split as structural) — verify the seal on its pages" };
+    }
     // HONESTY CHECK on the sealed letter: presence only proves a FILE is in the
     // slot — a placeholder PDF satisfies the gate identically (live-tested with a
     // file literally named "FAKE STAMPS.pdf"). We can't verify a real PE seal
