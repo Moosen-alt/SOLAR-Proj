@@ -2148,6 +2148,15 @@ export function approvedDesignsNote(ctx: EffectiveCodeContext, criteria: Array<"
 // --- findings ------------------------------------------------------------------
 
 const EXPOSURE_RANK: Record<string, number> = { B: 1, C: 2, D: 3 };
+
+/** A wind exposure as stored: one category ("C"), or a published list of two ("B or C" — from
+ *  "B or C", "B/C", "B, C", "B & C"). Anything else is null. Pure. */
+export function exposureValue(v: unknown): string | null {
+  const s = String(v ?? "").trim().toUpperCase();
+  if (/^[BCD]$/.test(s)) return s;
+  const m = s.match(/^([BCD])\s*(?:,|\/|&|\bOR\b|\bAND\b)\s*([BCD])$/);
+  return m && m[1] !== m[2] ? `${m[1]} or ${m[2]}` : null;
+}
 const RISK_RANK: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4 };
 
 /** "D1", "sdc d1", "Category D1" -> "D1"; anything that is not one category -> null. */
@@ -2670,6 +2679,16 @@ function designLookupWording(
   const items = lk.items ?? [];
   const site = items.filter((i) => i.status === "site_specific" && ((snowMissing && i.item === "groundSnowLoad") || (windMissing && i.item === "windSpeed")));
   const siteNote = site.map((i) => `${i.item === "groundSnowLoad" ? "ground snow load" : "wind speed"} is published per site${i.note ? ` (${i.note})` : ""}${i.sourceUrl ? ` — ${i.sourceUrl}` : ""}`);
+  // The AHJ's own design-criteria page was found and its table did not parse (#210): that page is
+  // the answer's source — never "no jurisdiction-wide value".
+  const candidate = items.find((i) => i.status === "candidate_unparsed" && i.sourceUrl && ((snowMissing && i.item === "groundSnowLoad") || (windMissing && i.item === "windSpeed")));
+  if (candidate) {
+    return {
+      title: "Jurisdiction design criteria looked up — candidate page found, not parsed",
+      lead: `A lookup${day ? ` on ${day}` : ""} found ${who}'s own design-criteria page but could not read its ${what} from it (candidate page found, not parsed: ${candidate.sourceUrl})`,
+      tail: " Read the values from that page.",
+    };
+  }
   return {
     title: "Jurisdiction design criteria looked up — no jurisdiction-wide value found",
     lead: `A lookup${day ? ` on ${day}` : ""} found no jurisdiction-wide ${what} for ${who} on an official page`,

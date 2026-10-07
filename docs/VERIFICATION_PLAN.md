@@ -93,7 +93,11 @@ must be green before starting; this list is what the suites CANNOT prove alone.
   confidently wrong filing.
 - Verify: for each state you actually file in NEXT (not all 15): open the profile,
   check code editions + `engineerStampOverKwDc` + snow/wind against the official
-  source URL stored on the row, then `PUT /api/code-profiles/verify`.
+  source URL stored on the row, then verify it: the KB tab's **Review / verify** on the row (or
+  /review), which confirms and calls `PUT /api/code-profiles/verify`. The PUT names a person: with
+  sign-in on it records the signed-in user (a body name is ignored; no session, e.g. an API key, is
+  a 401); with sign-in off the body must carry `verifiedBy` (your name), or it is a 400 that
+  verifies nothing.
 - Pass: every jurisdiction you file in this quarter is `verified`. Never bulk-verify.
 
 **2.2 Parser accuracy on each NEW design vendor.**

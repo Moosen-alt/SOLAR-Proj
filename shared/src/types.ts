@@ -1733,7 +1733,8 @@ export interface PermitPrecedentItem {
 }
 
 export interface DesignCriteriaResearchResult {
-  provider: "claude" | "stub";
+  /** "issuer_page": read from the AHJ's own design-criteria page, no model and no web search (#210). */
+  provider: "claude" | "stub" | "issuer_page";
   /** Only values found on a page the search actually returned; each carries its citation. */
   values: Array<{
     criterion: "groundSnowLoadPsf" | "windSpeedMph" | "windExposure" | "seismicDesignCategory" | "frostDepthIn" | "riskCategory"
@@ -1757,6 +1758,10 @@ export interface DesignCriteriaResearchResult {
     sourceUrl: string;
     note: string;
   }>;
+  /** The AHJ's own design-criteria page the issuer-site probe found (#210): parsed = its table gave
+   *  values; unparsed = a candidate page whose table did not parse — a criterion still missing is
+   *  "candidate page found, not parsed", never "no jurisdiction-wide value". */
+  issuerPage?: { url: string; parsed: boolean };
   notes: string;
 }
 
@@ -1780,8 +1785,9 @@ export interface DesignCriteriaLookupRecord {
     /** not_found: a grounded, complete lookup found no citable value. not_researched: the lookup
      *  did not run, failed, or was cut off. weak_source: found, but on a page that is not a
      *  jurisdiction-wide design value. site_specific: the jurisdiction publishes it only per site
-     *  (elevation bands, an address lookup) — sourceUrl is that table/tool. */
-    status: "found" | "weak_source" | "not_found" | "not_researched" | "site_specific";
+     *  (elevation bands, an address lookup) — sourceUrl is that table/tool. candidate_unparsed: the
+     *  AHJ's own site has a design-criteria page (sourceUrl) whose table did not parse (#210). */
+    status: "found" | "weak_source" | "not_found" | "not_researched" | "site_specific" | "candidate_unparsed";
     sourceUrl?: string;
     note?: string;
   }>;
@@ -2217,6 +2223,9 @@ export interface ReviewerFinding {
   evidenceFound?: ReviewerFindingEvidence[];
   /** Optional Claude-vision confirmation of this finding against the rendered sheet. */
   visionVerification?: ReviewerVisionVerdict;
+  /** The text severity a vision verdict relaxed to a callout (reviewerVision.applyVerdict); absent
+   *  when vision relaxed nothing. "blocker" = staging and Approve proceed past it on a vision read. */
+  visionRelaxedFrom?: "warning" | "blocker";
   /** On city.fire.pathway-unmeasured only: what the roof plan must show, so the vision pass can
    *  compare a measured sheet against the same requirement the text rule used. */
   roofPlanRequired?: RoofPlanRequiredDimension[];
@@ -3307,7 +3316,12 @@ export interface LLMProvider {
   /** NARROW design-criteria lookup (ground snow, ultimate wind, exposure) for ONE AHJ whose
    *  profile has none on file. Web-grounded values only, each with its citation. Optional so
    *  test doubles of LLMProvider need not implement it. */
-  researchDesignCriteria?(input: { ahj: string; state: string }): Promise<DesignCriteriaResearchResult>;
+  researchDesignCriteria?(input: {
+    ahj: string; state: string;
+    /** The AHJ's OWN design-criteria page, found on its own site but not parsed (#210): its text
+     *  is handed to the model as grounding (data, never instructions). */
+    issuerPage?: { url: string; text: string };
+  }): Promise<DesignCriteriaResearchResult>;
   /** ONE web-grounded lookup with a caller-owned prompt (the per-job permit-process lookup,
    *  backend/src/permitProcessLookup.ts). Transport only: the caller parses and validates. */
   webLookup?(input: { label: string; system: string; user: string; maxTokens?: number; maxSearches?: number; readPages?: boolean; maxFetches?: number; timeoutMs?: number }): Promise<WebLookupResult>;

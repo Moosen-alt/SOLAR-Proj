@@ -1862,6 +1862,7 @@ function renderKnowledgeProfile(profile) {
       ${profile.notes ? kbNotesHtml(profile.notes) : ""}
       ${kbDesignCriteriaHtml(codeProfileForKb(profile, state.codeProfiles || [], state.designLookups || []))}
       ${typeof window !== "undefined" && window.EditionProposals ? window.EditionProposals.renderEditionProposals(codeProfileForKb(profile, state.codeProfiles || [], state.designLookups || [])) : ""}
+      ${typeof window !== "undefined" && window.CodeProfileVerify ? window.CodeProfileVerify.renderVerifyControl(codeProfileForKb(profile, state.codeProfiles || [], state.designLookups || [])) : ""}
       ${kbDeleteButtonHtml(profile)}
     </article>
   `;
@@ -1894,6 +1895,110 @@ async function deleteKnowledgeEntry(profileKey, verified) {
   return true;
 }
 
+// A NAMED PERSON decides (edition proposals #172, code-profile verification #209). With sign-in on,
+// the server records the signed-in user and ignores any name sent, so the person only confirms;
+// with it off, the person types their name. Returns the name to send ("" with auth on), or null
+// when the person backed out / left it blank (nothing is sent then).
+async function authForDecision() {
+  if (state.authMe) return state.authMe;
+  try { state.authMe = await api("/api/auth/me"); } catch { return { enabled: false, user: null }; }
+  return state.authMe;
+}
+function namedPersonConsent(auth, lede, verb, blankWarning) {
+  if (auth && auth.enabled) {
+    return confirm(`${lede}\n\nRecorded as: ${(auth.user && (auth.user.name || auth.user.email)) || "you"}`) ? "" : null;
+  }
+  let last = "";
+  try { last = localStorage.getItem("feeConfirmName") || ""; } catch { last = ""; }
+  const typed = window.prompt(`${lede}\n\nYour name (recorded as the person who ${verb}):`, last);
+  if (typed == null) return null;
+  const name = String(typed).trim();
+  if (!name) { showMessage(`Enter your name — ${blankWarning}.`, "warning"); return null; }
+  try { localStorage.setItem("feeConfirmName", name); } catch { /* per-viewer convenience only */ }
+  return name;
+}
+
+// VERIFY A SEEDED CODE PROFILE FROM THE KB TAB (#209): the same flow as /review — the readable
+// summary and raw JSON (code-profile-verify.js) open under the row's "Review / verify" button, and
+// Mark verified asks the rule-3 confirm (and, with sign-in off, the person's name) before the PUT.
+// Nothing is verified without that confirm: a verification is a person's attestation (rule 3).
+function bindCodeProfileVerifyButtons(root) {
+  const CPV = typeof window !== "undefined" ? window.CodeProfileVerify : null;
+  if (!CPV) return;
+  const rowFor = (key) => (state.codeProfiles || []).find((c) => c.key === key);
+  const slotFor = (btn, key) => btn.closest(".cp-verify")?.querySelector(`[data-code-profile-verify-slot="${CSS.escape(key)}"]`);
+  const open = (btn) => {
+    const key = btn.getAttribute("data-code-profile-verify");
+    const row = rowFor(key);
+    const slot = slotFor(btn, key);
+    if (!row || !slot) return null;
+    slot.innerHTML = CPV.renderVerifyPanel(row);
+    btn.style.display = "none";
+    slot.querySelector("[data-code-profile-verify-cancel]")?.addEventListener("click", () => { slot.innerHTML = ""; btn.style.display = ""; });
+    const confirmBtn = slot.querySelector("[data-code-profile-verify-confirm]");
+    confirmBtn?.addEventListener("click", () => verifyCodeProfileFromKb(slot, confirmBtn));
+    return slot;
+  };
+  root.querySelectorAll("[data-code-profile-verify]").forEach((btn) => btn.addEventListener("click", () => open(btn)));
+  return open;
+}
+
+// The KB tab re-renders on any server-sent event; an open verify panel (and the person's unsaved
+// raw-JSON edits) must survive that. Capture each open panel before the innerHTML swap, reopen it
+// after binding. A row that is no longer seeded (verified meanwhile) has no button, so its panel
+// is not restored — there is nothing left to verify.
+function captureVerifyDrafts(root) {
+  if (!root || !root.querySelectorAll) return [];
+  return Array.from(root.querySelectorAll("[data-code-profile-verify-panel]")).map((panel) => ({
+    key: panel.getAttribute("data-code-profile-verify-panel"),
+    json: panel.querySelector("[data-code-profile-verify-json]")?.value ?? null,
+    rawOpen: !!panel.querySelector("details")?.open,
+  }));
+}
+function restoreVerifyDrafts(root, drafts, open) {
+  if (!open || !drafts || !drafts.length) return;
+  for (const d of drafts) {
+    const btn = Array.from(root.querySelectorAll("[data-code-profile-verify]")).find((b) => b.getAttribute("data-code-profile-verify") === d.key);
+    const slot = btn ? open(btn) : null;
+    if (!slot) continue;
+    const ta = slot.querySelector("[data-code-profile-verify-json]");
+    if (ta && d.json != null) ta.value = d.json;
+    const raw = slot.querySelector("details");
+    if (raw) raw.open = d.rawOpen;
+  }
+}
+
+async function verifyCodeProfileFromKb(slot, btn) {
+  const CPV = window.CodeProfileVerify;
+  let payload;
+  try { payload = JSON.parse(slot.querySelector("[data-code-profile-verify-json]").value); } catch (err) {
+    const raw = slot.querySelector("details");
+    if (raw) raw.open = true;
+    showMessage(`The raw profile is not valid JSON: ${err.message}`, "error");
+    return;
+  }
+  const name = CPV.profileName({ state: payload.state || "", ahj: payload.ahj || "" });
+  const auth = await authForDecision();
+  const verifiedBy = namedPersonConsent(auth, CPV.confirmMessage(name), "verified this profile", "a profile is verified by a named person");
+  if (verifiedBy == null) return;
+  btn.disabled = true;
+  try {
+    await api("/api/code-profiles/verify", { method: "PUT", body: JSON.stringify({ ...payload, verifiedBy }) });
+    slot.innerHTML = ""; // done: the re-render below must not restore this panel as a draft
+    showMessage(`${name} verified — its citations are now authoritative.`);
+  } catch (err) {
+    btn.disabled = false;
+    showMessage(`Verify failed: ${err.message}`, "error");
+    return;
+  }
+  try {
+    const cp = await api("/api/code-profiles");
+    state.codeProfiles = cp.profiles || [];
+    state.designLookups = cp.designLookups || [];
+  } catch { /* the message above says what happened */ }
+  renderKnowledgeBase();
+}
+
 // EDITION PROPOSALS (#172): a person approves (re-verifies the row with the proposed editions under
 // their name — rule 3) or dismisses a proposal a verify check stored. With sign-in on, the server
 // records the signed-in user and ignores any name sent; with it off, the person types their name
@@ -1901,26 +2006,13 @@ async function deleteKnowledgeEntry(profileKey, verified) {
 // shows what now stands (the row re-verified, or the proposal gone).
 async function decideEditionProposal(action, fingerprint, btn) {
   if (!fingerprint) return;
-  let auth = state.authMe;
-  if (!auth) {
-    try { auth = await api("/api/auth/me"); state.authMe = auth; } catch { auth = { enabled: false, user: null }; }
-  }
+  const auth = await authForDecision();
   const lede = action === "approve"
     ? "Approve this edition proposal? The code profile is RE-VERIFIED with the proposed editions under your name — check them against the cited source first."
     : "Dismiss this edition proposal? The row stays as it is, and the same finding is not proposed again.";
-  let decidedBy = "";
+  const decidedBy = namedPersonConsent(auth, lede, "decided", "an edition proposal is decided by a named person");
+  if (decidedBy == null) return;
   let reason = "";
-  if (auth && auth.enabled) {
-    if (!confirm(`${lede}\n\nRecorded as: ${(auth.user && (auth.user.name || auth.user.email)) || "you"}`)) return;
-  } else {
-    let last = "";
-    try { last = localStorage.getItem("feeConfirmName") || ""; } catch { last = ""; }
-    const typed = window.prompt(`${lede}\n\nYour name (recorded as the person who decided):`, last);
-    if (typed == null) return;
-    decidedBy = String(typed).trim();
-    if (!decidedBy) { showMessage("Enter your name — an edition proposal is decided by a named person.", "warning"); return; }
-    try { localStorage.setItem("feeConfirmName", decidedBy); } catch { /* per-viewer convenience only */ }
-  }
   if (action === "dismiss") {
     const why = window.prompt("Why dismiss it? (optional, kept in the audit trail)", "");
     if (why == null) return;
@@ -2028,8 +2120,10 @@ function kbDesignCriteriaHtml(codeProfile) {
     const rec = lookup ? lookup.items.find((x) => x && x.item === item) : null;
     const when = lookup && lookup.at ? ` (lookup ${String(lookup.at).slice(0, 10)})` : "";
     const status = rec && rec.status === "not_found" ? `not found${when}`
-      : rec && rec.status === "site_specific" ? `site-specific${when}` : "not researched";
-    const link = rec && rec.status === "site_specific" && rec.sourceUrl ? ` <span class="muted">${esc(rec.note || "")} — ${esc(rec.sourceUrl)}</span>` : "";
+      : rec && rec.status === "site_specific" ? `site-specific${when}`
+      : rec && rec.status === "candidate_unparsed" ? `candidate page found, not parsed${when}` : "not researched";
+    const link = rec && rec.status === "site_specific" && rec.sourceUrl ? ` <span class="muted">${esc(rec.note || "")} — ${esc(rec.sourceUrl)}</span>`
+      : rec && rec.status === "candidate_unparsed" && rec.sourceUrl ? ` <span class="muted">${esc(rec.sourceUrl)}</span>` : "";
     gaps.push(`<li>${esc(label)}: <span class="badge badge-warning">${esc(status)} — verify</span>${link}</li>`);
   }
   const obs = Array.isArray(codeProfile.approvedDesignSummary) ? codeProfile.approvedDesignSummary : [];
@@ -2118,8 +2212,14 @@ function bindEditionProposalButtons(root) {
 function renderStateCodeProposals() {
   const el = $("kbStateProposals");
   if (!el) return;
-  el.innerHTML = typeof window !== "undefined" && window.EditionProposals ? window.EditionProposals.renderStateProposals(state.codeProfiles || []) : "";
+  const drafts = captureVerifyDrafts(el);
+  const listOpen = !!el.querySelector?.("details.state-code-verify")?.open;
+  el.innerHTML = (typeof window !== "undefined" && window.EditionProposals ? window.EditionProposals.renderStateProposals(state.codeProfiles || []) : "")
+    + (typeof window !== "undefined" && window.CodeProfileVerify ? window.CodeProfileVerify.renderStateVerifyRows(state.codeProfiles || []) : "");
   bindEditionProposalButtons(el);
+  const listEl = el.querySelector?.("details.state-code-verify");
+  if (listEl && listOpen) listEl.open = true;
+  restoreVerifyDrafts(el, drafts, bindCodeProfileVerifyButtons(el));
 }
 
 function renderKnowledgeBase() {
@@ -2167,12 +2267,14 @@ function renderKnowledgeBase() {
       html += `<button type="button" id="kbShowMore" class="secondary" style="font-size:12px;margin-top:6px">Show ${Math.min(KB_PAGE_SIZE, matches.length - shown.length)} more (${matches.length - shown.length} left)</button>`;
     }
   }
+  const drafts = captureVerifyDrafts(container);
   container.innerHTML = html;
 
   container.querySelectorAll("[data-kb-delete]").forEach((btn) => {
     btn.addEventListener("click", () => deleteKnowledgeEntry(btn.getAttribute("data-kb-delete"), btn.getAttribute("data-kb-verified") === "1"));
   });
   bindEditionProposalButtons(container);
+  restoreVerifyDrafts(container, drafts, bindCodeProfileVerifyButtons(container));
 
   const moreBtn = $("kbShowMore");
   if (moreBtn) {
