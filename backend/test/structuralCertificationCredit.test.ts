@@ -86,6 +86,10 @@ check("predicate: an engineering firm's structural certification with calcs read
 const LETTER_BODY = LETTER_PAGES.flat().filter((l) => !/Jane Example/.test(l)).join("\n");
 check("predicate: a licence-number credential (\"PE No. 12345\") still credits",
   readsAsEngineerCertification(`${LETTER_BODY}\nJane Example\nPE No. 12345`));
+check("predicate: an engineer label with a licence field on the same line still credits",
+  readsAsEngineerCertification(`${LETTER_BODY}\nPROFESSIONAL ENGINEER: LICENSE NO. 12345`));
+check("predicate: an ALL-CAPS name before a dotted P.E. still credits",
+  readsAsEngineerCertification(`${LETTER_BODY}\nJANE EXAMPLE, P.E.`));
 check("predicate: a FILLED engineer signature block still credits",
   readsAsEngineerCertification(`${LETTER_BODY}\nREGISTERED ENGINEER SIGNATURE: Jane Example`));
 check("predicate: a framing sheet's note that the letter is NOT PROVIDED is not a letter",
@@ -134,7 +138,16 @@ const CITING_LINES: Record<string, string> = {
   // …and a blank signature / stamp block names nobody.
   "blank engineer signature": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nREGISTERED ENGINEER SIGNATURE: ______",
   "engineer stamp here": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nLICENSED PROFESSIONAL ENGINEER STAMP HERE",
-  "engineer (sign and seal)": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nPROFESSIONAL ENGINEER (SIGN AND SEAL)",
+  "engineer (sign and seal)": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nPROFESSIONAL ENGINEER (SIGN AND SEAL)",  // Fourth review on #218 (root cause: credit only a credential that NAMES someone). Blank or
+  // label-only blocks in any arrangement, a dotted compass point, and a pipe grade written with "#".
+  "signature blank then DATE blank": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nPROFESSIONAL ENGINEER SIGNATURE: ________ DATE: ________",
+  "engineer SEAL at end of line": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nLICENSED PROFESSIONAL ENGINEER SEAL",
+  "engineer SIGNATURE at end of line": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nREGISTERED ENGINEER SIGNATURE",
+  "engineer STAMP / DATE": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nPROFESSIONAL ENGINEER STAMP / DATE",
+  "engineer blank with blank LIC #": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nLICENSED PROFESSIONAL ENGINEER: ____ LIC #: ____",
+  "engineer NAME blank": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nPROFESSIONAL ENGINEER NAME: ____",
+  "dotted compass S.E.": "ROOF 1: TILT 20, AZIMUTH 135, S.E.\nEXISTING RAFTERS ARE ADEQUATE FOR THE ADDED PV LOAD.",
+  "pipe grade PE #4710": "HDPE PIPE PE #4710. EXISTING ROOF IS ADEQUATE.",
 };
 for (const [name, line] of Object.entries(CITING_LINES)) {
   check(`MUST-EXCLUDE predicate: a framing sheet + "${name}" is not a certification`,
