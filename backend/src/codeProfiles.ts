@@ -18,6 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AppDb } from "./db";
+import type { PageReader } from "./agencyPageReader";
 import type {
   ApprovedDesignObservation,
   CommonCorrectionPattern,
@@ -46,7 +47,7 @@ import type {
 import { knowledgeProfileKey, knowledgeNameMatchScore, isLearningExcluded } from "./knowledgeBase";
 import { extractPermitPrecedents, listAhjCorrectionPatterns } from "./permitPrecedents";
 import { addAuditLog } from "./audit";
-import { extractStatedDesignCriteria, normCodeToken } from "./designCriteria";
+import { exposureValue, extractStatedDesignCriteria, normCodeToken } from "./designCriteria";
 import { amendmentSourceKey } from "./amendmentChecks";
 import { reviewRuleFromRow } from "./ahjReviewRules";
 import {
@@ -240,7 +241,7 @@ function designCriteriaLookupOf(v: unknown): DesignCriteriaLookupRecord | undefi
   if (!r || typeof r !== "object" || typeof r.at !== "string" || !Array.isArray(r.items)) return undefined;
   const items = (r.items as Array<Record<string, unknown> | null>)
     .filter((i): i is Record<string, unknown> => !!i && (DESIGN_CRITERIA_CHECKLIST as readonly string[]).includes(String(i.item))
-      && ["found", "weak_source", "not_found", "not_researched", "site_specific"].includes(String(i.status)))
+      && ["found", "weak_source", "not_found", "not_researched", "site_specific", "candidate_unparsed"].includes(String(i.status)))
     .map((i) => ({
       item: i.item as DesignCriteriaChecklistItem,
       status: i.status as DesignCriteriaLookupRecord["items"][number]["status"],
@@ -2394,7 +2395,8 @@ export function mergeResearchedDesignCriteria(
     const url = String(v.sourceUrl || "").trim();
     if (!/^https?:\/\//i.test(url)) { skipped.push(`${v.criterion} (no source URL)`); continue; }
     let value: number | string | null = null;
-    if (v.criterion === "windExposure") value = /^[BCD]$/i.test(String(v.value).trim()) ? String(v.value).trim().toUpperCase() : null;
+    // One category, or a published two-category list ("B or C", #210): llm.exposureValue.
+    if (v.criterion === "windExposure") value = exposureValue(v.value);
     else if (v.criterion === "seismicDesignCategory") value = /^(?:A|B|C|D[012]?|E|F)$/i.test(String(v.value).trim()) ? String(v.value).trim().toUpperCase() : null;
     else if (v.criterion === "riskCategory") value = /^(?:I|II|III|IV)$/i.test(String(v.value).trim()) ? String(v.value).trim().toUpperCase() : null;
     else if (v.criterion === "weathering") value = /^(?:negligible|moderate|severe)$/i.test(String(v.value).trim()) ? String(v.value).trim().toLowerCase() : null;
@@ -2535,6 +2537,11 @@ export function buildDesignCriteriaChecklist(
       // Published only per site (an elevation-banded table, an address lookup): a page for a person.
       const site = research?.webGrounded ? (research.siteSpecific ?? []).find((x) => SITE_SPECIFIC_ITEM[x.criterion] === item) : undefined;
       if (site) return { item, status: "site_specific", sourceUrl: site.sourceUrl, note: site.note || "published per site (elevation band / address lookup), not one jurisdiction-wide value" };
+      // The AHJ's own design-criteria page was found but its table did not give this (#210): that
+      // page is where a person reads it — never "no jurisdiction-wide value".
+      const page = research?.issuerPage;
+      if (page && !page.parsed) return { item, status: "candidate_unparsed", sourceUrl: page.url, note: `candidate page found, not parsed: ${page.url}` };
+      if (page && lookupComplete) return { item, status: "not_found", sourceUrl: page.url, note: `not stated on the jurisdiction's own design-criteria page (${page.url})` };
       return lookupComplete ? { item, status: "not_found", note: "no jurisdiction-wide value found on an official page" } : { item, status: "not_researched", note: whyNot };
     }
     const have = item === "fireSetbacks" ? (profile?.fireSetbacks ?? []).length > 0 : (profile?.amendments ?? []).length > 0;
@@ -2554,11 +2561,14 @@ export function saveDesignCriteriaLookupRecord(db: AppDb, target: { state: strin
   return true;
 }
 
-/** The design_criteria_research job body. `provider` is a test seam. */
+/** The design_criteria_research job body. `provider` is a test seam; so is `reader`, the page reader
+ *  the issuer-site probe uses (#210) — undefined = the production reader (on only when a model key
+ *  is set and page reads are allowed), null = no probe. */
 export async function runDesignCriteriaResearch(
   db: AppDb,
   payload: { state?: unknown; ahj?: unknown; profileKey?: unknown; placementOnly?: unknown },
   provider?: LLMProvider,
+  reader?: PageReader | null,
 ): Promise<Record<string, unknown>> {
   const state = String(payload.state || "");
   const ahj = String(payload.ahj || "");
@@ -2570,7 +2580,7 @@ export async function runDesignCriteriaResearch(
   // so the gate read "retrying" while ensureDesignCriteriaResearched queued nothing until a restart.
   let mergedKey: string | undefined;
   try {
-    return await designCriteriaResearchBody(db, state, ahj, profileKey, placementOnly, provider, (k) => { mergedKey = k; });
+    return await designCriteriaResearchBody(db, state, ahj, profileKey, placementOnly, provider, (k) => { mergedKey = k; }, reader);
   } finally {
     if (mergedKey) inFlightDesignResearch.delete(mergedKey);
     if (profileKey) inFlightDesignResearch.delete(profileKey);
@@ -2579,7 +2589,7 @@ export async function runDesignCriteriaResearch(
 
 async function designCriteriaResearchBody(
   db: AppDb, state: string, ahj: string, profileKey: string | undefined, placementOnly: boolean, provider: LLMProvider | undefined,
-  onMerged: (key: string) => void,
+  onMerged: (key: string) => void, reader?: PageReader | null,
 ): Promise<Record<string, unknown>> {
   const llm = provider ?? (await import("./llm")).createLLMProvider();
   // THE AHJ'S OWN PLACEMENT RULES ride the same job (it runs for every AHJ, a uniform-state one
@@ -2631,13 +2641,63 @@ async function designCriteriaResearchBody(
     const placement = await placementHalf();
     return { saved: false, reason: criteriaAnswered ? "design criteria already on file" : "provider has no design-criteria lookup", placement, checklist: checklist(null, placement).items };
   }
-  const research = await llm.researchDesignCriteria({ state, ahj });
+  const research = await researchWithIssuerPage(db, llm as LLMProvider & Required<Pick<LLMProvider, "researchDesignCriteria">>, state, ahj, own, reader);
   const merged = mergeResearchedDesignCriteria(db, { state, ahj, profileKey }, research);
   onMerged(merged.profileKey);
   const placement = await placementHalf();
   // The lookup's own notes (truncated, pages read, what was dropped and why) reach the job result.
   return {
     ...merged, webGrounded: research.webGrounded, ...(research.truncated ? { truncated: true } : {}),
+    ...(research.issuerPage ? { issuerPage: research.issuerPage } : {}),
     found: research.values?.length ?? 0, notes: String(research.notes || "").slice(0, 1000), placement, checklist: checklist(research, placement).items,
+  };
+}
+
+/**
+ * THE AHJ'S OWN SITE FIRST, THEN THE WEB (#210). The issuer-site probe (issuerDesignCriteria.ts)
+ * reads the AHJ's own host for its design-criteria page; its table goes through the SAME parser the
+ * model's answer does (llm.parseDesignCriteriaLookup). When it answers the core criteria (ground
+ * snow and wind) no web-search round is spent. Otherwise the web lookup runs as before — handed the
+ * candidate page's text as grounding when there is one — and the page's own values come first (the
+ * merge fills blanks, first value wins). No issuer host on file, or no reader: exactly the old lookup.
+ */
+async function researchWithIssuerPage(
+  db: AppDb,
+  llm: LLMProvider & Required<Pick<LLMProvider, "researchDesignCriteria">>,
+  state: string, ahj: string,
+  own: CriteriaWriteRow | null,
+  reader: PageReader | null | undefined,
+): Promise<DesignCriteriaResearchResult> {
+  const probeMod = await import("./issuerDesignCriteria");
+  // Every URL the AHJ's own row cites (its adopted codes, its citations, its criteria page).
+  const cited = own && own.kind !== "create" ? probeMod.urlsIn(own.profile) : [];
+  const host = probeMod.issuerHostFor(db, state, ahj, cited);
+  const pageReader = !host ? null : reader !== undefined ? reader : (await import("./permitProcessLookup")).defaultLookupReader(probeMod.ISSUER_PROBE_MAX_READS);
+  let probe: Awaited<ReturnType<typeof probeMod.probeIssuerDesignCriteria>> | null = null;
+  if (host && pageReader) {
+    try { probe = await probeMod.probeIssuerDesignCriteria(pageReader, { host, ahj, state }); }
+    catch (err) { logger.warn("code-profiles", `issuer-site probe failed for ${state}/${ahj}`, { err: err instanceof Error ? err.message : String(err) }); }
+  }
+  const url = probe?.candidateUrl ?? "";
+  if (!url) return llm.researchDesignCriteria({ state, ahj });
+  const { parseDesignCriteriaLookup } = await import("./llm");
+  const fromPage = parseDesignCriteriaLookup(probe!.raw ?? {}, true, false, { ahj, state });
+  const answered = fromPage.values.some((v) => v.criterion === "groundSnowLoadPsf") && fromPage.values.some((v) => v.criterion === "windSpeedMph");
+  const read = `${probe!.pagesRead.length} page${probe!.pagesRead.length === 1 ? "" : "s"} read on ${host}`;
+  const dropped = /Dropped: [^]*?\.(?= |$)/.exec(fromPage.notes)?.[0] ?? "";
+  if (answered) {
+    return {
+      provider: "issuer_page", values: fromPage.values, webGrounded: true, issuerPage: { url, parsed: true },
+      notes: `Read from the jurisdiction's own design-criteria page ${url} (${read}); no web search spent.${dropped ? ` ${dropped}` : ""}`,
+    };
+  }
+  const web = await llm.researchDesignCriteria({ state, ahj, issuerPage: { url, text: probe!.candidateText ?? "" } });
+  const same = (a: DesignCriteriaResearchResult["values"][number], b: DesignCriteriaResearchResult["values"][number]) => a.criterion === b.criterion && (a.qualifier ?? "") === (b.qualifier ?? "");
+  return {
+    ...web,
+    values: [...fromPage.values, ...(web.values ?? []).filter((v) => !fromPage.values.some((p) => same(p, v)))],
+    webGrounded: web.webGrounded || fromPage.values.length > 0,
+    issuerPage: { url, parsed: false },
+    notes: `Candidate page found on the jurisdiction's own site, not parsed: ${url} (${read}; ${fromPage.values.length} value${fromPage.values.length === 1 ? "" : "s"} read from it). ${web.notes ?? ""}`.trim(),
   };
 }
