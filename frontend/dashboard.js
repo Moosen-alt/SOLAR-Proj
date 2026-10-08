@@ -4803,6 +4803,19 @@ function trackPrerequisitesHtml(t) {
     <ol style="margin:2px 0 0 18px;padding:0">${steps.map((p) => { const urls = [p.sourceUrl, ...(Array.isArray(p.alsoSourceUrls) ? p.alsoSourceUrls : [])].map(httpUrl).filter(Boolean); return `<li>${esc(p.step)}${urls.length ? ` — ${urls.map((u) => linkifyText(u)).join(", ")}` : ""}</li>`; }).join("")}</ol></div>`;
 }
 
+// BATTERY / ESS (#246): the fire review / separate ESS permit as the AHJ's records on file say it —
+// cited, a seeded note (unverified), or "not on file, verify". Present only on a battery job's
+// permit card. Untrusted text: esc() everything; URLs only through httpUrl + linkifyText.
+const ESS_STEP_BASIS = { lookup_permit: "per-job lookup, cited", lookup_prerequisite: "per-job lookup, cited", process_note: "seeded process note, unverified" };
+function trackEssStepHtml(t) {
+  const e = t && t.essStep;
+  if (!e || !e.summary) return "";
+  const entries = Array.isArray(e.entries) ? e.entries.filter((x) => x && x.step) : [];
+  const badge = e.status === "cited" ? "badge-info" : "badge-none";
+  return `<div class="track-ess" style="margin:0 0 6px;font-size:12px"><span class="badge ${badge}">ESS</span> ${esc(e.summary)}${entries.length ? `
+    <ul style="margin:2px 0 0 18px;padding:0">${entries.map((x) => { const u = httpUrl(x.sourceUrl); return `<li>${esc(x.step)} <span class="muted">(${esc(ESS_STEP_BASIS[x.basis] || "on file")})</span>${u ? ` — ${linkifyText(u)}` : ""}</li>`; }).join("")}</ul>` : ""}</div>`;
+}
+
 function trackNextActionText(t) {
   const next = String(t.nextAction || "");
   const listed = Array.isArray(t.prerequisites) && t.prerequisites.some((p) => p && p.step);
@@ -4924,6 +4937,7 @@ function trackCardHtml(t) {
     ${offToolChannelHtml(t)}
     ${trackChannelHtml(t)}
     ${trackPrerequisitesHtml(t)}
+    ${trackEssStepHtml(t)}
     <p style="margin:0 0 6px;font-size:12px">→ ${linkifyText(trackNextActionText(t))}</p>
     ${captured ? `<p style="margin:0 0 4px">${captured} ${trackLink ? "&nbsp;·&nbsp; " + trackLink : ""}</p>` : (trackLink ? `<p style="margin:0 0 4px">${trackLink}</p>` : "")}
     ${t.recipeId && (t.recipeStatus === "complete" || t.recipeStatus === "recording")

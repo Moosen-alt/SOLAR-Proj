@@ -35,6 +35,7 @@ import { statewideDecisionFor, statewideUrlRefusal } from "./statewideEvidence";
 import { utilityTrackPresentation } from "./utilityFilingLookup";
 import { nowIso } from "./time";
 import { hasMpuScope } from "./serviceScope";
+import { essPermitStep, type EssPermitStep } from "./essRequirements";
 import { randomUUID } from "node:crypto";
 
 /** Words that claim the statewide portal ("Oregon ePermitting", "OR E-permitting") with no URL —
@@ -82,6 +83,8 @@ export interface SubmittalTrackView extends SubmittalTrack {
   prerequisites?: PermitPrerequisiteStep[];
   /** How the channel is known: "cited" (per-job lookup), "verified", "profile", "researched", "unknown". */
   channelBasis?: string;
+  /** Battery jobs only (#246): the fire review / separate ESS permit as the records on file say it. */
+  essStep?: EssPermitStep;
 }
 
 /** Every submittal track, derived from the label Record so it cannot go stale: adding a
@@ -704,6 +707,8 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
   const required = requiredTracks(project);
   const answer = permitStructureAnswer(project);
   const utility = required.includes("nem") ? utilityTrackPresentation(db, project) : null;
+  // A step on the permit card, never a track of its own (#246): null unless the job has a battery.
+  const essStep = essPermitStep(project);
   return required.map((type) => {
     const state = readTrackState(db, project.id, type, required);
     const status = deriveStatus(state);
@@ -800,6 +805,8 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
       channelBasis: resolved.basis,
       channelKind: channelKindOf(resolved),
       ...(category === "permit" ? { structureBasis: answer.basis, prerequisites } : {}),
+      // On the card the prerequisites ride (the building-side filing, or the one permit).
+      ...(essStep && category === "permit" && type !== "electrical" && type !== "mpu" ? { essStep } : {}),
       status,
       // The portal's own words — unless they say "issued" of a track isTrackDone did not accept
       // (one pooled target cannot finish two tracks), where they would contradict the status.
