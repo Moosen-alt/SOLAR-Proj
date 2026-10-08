@@ -70,10 +70,14 @@ export function mountKind(project: MountInputs, allText: string): MountKind {
   const mounting = str(project, "mounting") || str(project, "mountType");
   const probe = mounting || `${project.interconnectionMethod}\n${allText}`;
   if (/carport|canopy|awning|patio cover/i.test(probe)) return "carport";
-  // The mounting FIELD may say just "Ground" / "Pole" (mountType's vocabulary); only the free text
-  // needs the longer phrase, where a bare "ground" is a grounding note.
-  if (/ground[-\s]?mount|ground.?mounted|ground.?array|pole[-\s]?mount/i.test(probe) || (mounting && /\b(?:ground|pole)\b/i.test(mounting))) return "ground";
-  if (mounting) return "roof";
+  // The mounting FIELD answers through groundMountFromField, the same reading the blocking consumers
+  // use (#269): it used to take any bare "ground" / "pole" in the field as a ground array, so "Roof mount
+  // w/ ground lugs", "Pole barn roof" or "Roof mount - not a ground mount" dropped the advisory roof
+  // rules while the required set kept the roof rows. A roof + ground combination stays "ground" here,
+  // as it always has — the field cannot say which array a roof rule would be about.
+  if (mounting) return groundMountFromField(project) ? "ground" : "roof";
+  // Only the free text needs the longer phrase, where a bare "ground" is a grounding note.
+  if (/ground[-\s]?mount|ground.?mounted|ground.?array|pole[-\s]?mount/i.test(probe)) return "ground";
   // Silence means roof, which is the conservative direction: the roof rules are the stricter
   // set, so an unknown mount is over-reviewed rather than under-reviewed.
   return "unknown";
@@ -99,12 +103,16 @@ export function mountKindForProject(project: MountInputs): MountKind {
 // rack") or as a whole segment once the value is split on , ; + & / and "and" ("Ground", "Roof and
 // Ground") — never "ground lugs", "ground-level inverter", "ground floor garage", "ground fault" or
 // "non-ground". "pole" likewise: "pole mount", "top of pole", or a whole segment — "Pole barn roof"
-// is a roof. "... not a ground mount" is not a ground vote.
+// is a roof. "... not a ground mount" and "non-ground-mount" are not a ground vote (#269).
+// GROUND-MOUNTED EQUIPMENT IS NOT AN ARRAY (#269): "Roof mount with ground-mounted inverter" names
+// where the inverter / disconnect / meter / battery stands, not a second array — a ground or pole
+// mount phrase whose noun (within two words) is equipment is cut out before the field is read.
 export type MountFieldGround = "ground" | "combination";
-const NEGATED_MOUNT = /\b(?:not|no)\s+(?:an?\s+)?(?:ground|pole)[-\s]?(?:mount\w*|array)/gi;
+const NEGATED_MOUNT = /\b(?:(?:not|no)\s+(?:an?\s+)?|non[-\s]?)(?:ground|pole)[-\s]?(?:mount\w*|array)/gi;
+const MOUNTED_EQUIPMENT = /\b(?:ground|pole)[-\s]?mount\w*\s+(?:[\w/]+\s+){0,2}?(?:inverters?|disconnects?|meters?|batter(?:y|ies)|ess|transformers?|pedestals?)\b/gi;
 const GROUND_MOUNT_NOUN = /\bground[-\s]?(?:mount\w*|arrays?|rack\w*)|\bpole[-\s]?mount\w*|\btop[-\s]?of[-\s]?pole\b/i;
 const mountSegments = (m: string) => m.split(/\s*(?:[,;+&/]|\band\b)\s*/i).map((x) => x.trim().toLowerCase());
-const fieldOf = (project: MountInputs) => (str(project, "mounting") || str(project, "mountType")).replace(NEGATED_MOUNT, " ");
+const fieldOf = (project: MountInputs) => (str(project, "mounting") || str(project, "mountType")).replace(NEGATED_MOUNT, " ").replace(MOUNTED_EQUIPMENT, " ");
 export function groundMountFromField(project: MountInputs): MountFieldGround | null {
   const m = fieldOf(project);
   if (!m.trim() || /carport|canopy|awning|patio cover/i.test(m)) return null;
