@@ -191,6 +191,7 @@ const ROOFTOP_PROSE: Array<[string, string, Record<string, string>]> = [
   ["Roof mount, ground-mounted battery", "", {}],
   ["Roof mount w/ ground mount ESS", "", {}],
   ["Roof; pole-mounted transformer", "", {}],
+  ["Roof; ground inverter", "", {}],
 ];
 for (const where of [OREGON, NO_LOOKUP]) {
   for (const [mounting, text, extra] of ROOFTOP_PROSE) {
@@ -229,13 +230,29 @@ check("advisory mountKind agrees with groundMountFromField on every rooftop fiel
     assert.equal(reviewerMountKind(p), "roof", mounting);
   }
 });
-for (const [mounting, field] of [["Ground", "ground"], ["Roof and Ground", "combination"], ["Roof + Ground", "combination"], ["Ground mount", "ground"], ["Top of pole", "ground"], ["Ground-mounted array with ground-mounted inverter", "ground"]] as const) {
-  check(`MUST PASS: field "${mounting}" is unchanged — ${field} by the field, ground to the reviewer rules, engineered`, () => {
+// Each must read exactly as "Ground mount" (or "Roof + ground mount" for a combination) does: the same
+// required set, path and stamp row. #272 review: a ground array whose field also names its equipment
+// ("w/ battery", "on concrete pedestals") is still a ground array, and a bare ground with a qualifier
+// ("Ground (ballasted)", "On ground") is one to the blocking and the advisory rules alike.
+const MUST_PASS_GROUND: Array<[string, "ground" | "combination"]> = [
+  ["Ground", "ground"], ["Roof and Ground", "combination"], ["Roof + Ground", "combination"], ["Ground mount", "ground"], ["Top of pole", "ground"],
+  ["Ground-mounted array with ground-mounted inverter", "ground"],
+  ["Ground mount with battery", "ground"], ["Ground mount w/ inverter", "ground"], ["Ground mount on concrete pedestals", "ground"],
+  ["Pole mount w/ disconnect", "ground"], ["Roof + ground mount w/ battery", "combination"],
+  ["Ground (ballasted)", "ground"], ["Ground - fixed tilt", "ground"], ["Ground based", "ground"], ["Ground-based rack", "ground"],
+  ["Ground install", "ground"], ["Ground mtd", "ground"], ["On ground", "ground"], ["Ground (piers)", "ground"],
+];
+for (const [mounting, field] of MUST_PASS_GROUND) {
+  check(`MUST PASS: field "${mounting}" — ${field} by the field, ground to the reviewer rules, the same set and path as a plain ${field}`, () => {
     for (const where of [OREGON, NO_LOOKUP]) {
       const p = job(where, mounting);
+      const ref = job(where, field === "ground" ? "Ground mount" : "Roof + ground mount");
       assert.equal(groundMountFromField(p), field);
       assert.equal(mountKindForProject(p), "ground");
+      assert.equal(reviewerMountKind(p), "ground");
+      assert.deepEqual(requiredDocuments(p), requiredDocuments(ref));
       assert.equal(resolvePermitPath(p).path, "engineered");
+      assert.deepEqual(resolvePermitPath(p).basis, resolvePermitPath(ref).basis);
       assert.ok(types(p).includes("ground_footing"));
     }
   });
