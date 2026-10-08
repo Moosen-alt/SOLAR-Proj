@@ -98,6 +98,13 @@ try {
     assert.equal(res.status, 200, await res.text());
     cookie = String(res.headers.get("set-cookie") || "").split(";")[0];
     assert.ok(cookie.includes("sa_session"));
+    // This session creates a tenant org and mints its key below: cross-org administration,
+    // superadmin-only since #275. The seeded login is a plain admin, so promote it as an
+    // operator does (VERIFICATION_PLAN 1.3), against the SERVER's db file.
+    const Database = (await import("better-sqlite3")).default;
+    const sdb = new Database(env.AUTOPILOT_DB_PATH);
+    sdb.prepare("UPDATE users SET role = 'superadmin' WHERE email = ?").run("admin@review.test");
+    sdb.close();
   });
 
   let submissionId = "";

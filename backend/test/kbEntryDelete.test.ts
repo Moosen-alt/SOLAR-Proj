@@ -125,6 +125,9 @@ const readDb = async <T>(fn: (db: import("../src/db").AppDb) => T): Promise<T> =
 try {
   await waitForServer();
   const owner = as(await loginAs("owner@operator.test", "owner-test-password-1"));
+  // Creating a tenant org is cross-org administration: superadmin-only since #275. The
+  // seeded login is a plain admin, so promote it as an operator does (VERIFICATION_PLAN 1.3).
+  await readDb((db) => db.run("UPDATE users SET role = 'superadmin' WHERE email = ?", ["owner@operator.test"]));
 
   // A tenant org that holds the autopilot, with an ordinary (non-admin) user.
   let tenant: ReturnType<typeof as> | null = null;

@@ -73,12 +73,13 @@ const UNSCOPED_BY_DESIGN: Record<string, string> = {
   "/api/auth/logout": "ends the session",
   "/api/auth/me": "reports the current session",
 
-  // Org/licence administration. Gated by requireAdmin (role + autopilot entitlement),
-  // which is a stronger check than org scoping.
-  "/api/orgs": "admin-gated org administration",
-  "/api/orgs/:id/users": "admin-gated org administration",
-  "/api/orgs/:id/api-keys": "admin-gated org administration",
-  "/api/orgs/:id/products": "admin-gated licence administration",
+  // Org/licence administration. Gated by requireAdmin (role + autopilot entitlement) AND
+  // the /api/orgs org-admin guard (#275): the collection is superadmin-only, and
+  // /api/orgs/:id/* is superadmin or an admin whose own org is :id (404 otherwise).
+  "/api/orgs": "superadmin-only org administration",
+  "/api/orgs/:id/users": "org-admin guard: superadmin, or admin of :id",
+  "/api/orgs/:id/api-keys": "org-admin guard: superadmin, or admin of :id",
+  "/api/orgs/:id/products": "org-admin guard: superadmin, or admin of :id",
   "/api/products": "admin-gated product registry",
   "/api/admin/backup": "admin-gated operations",
   "/api/admin/backups": "admin-gated operations",

@@ -137,6 +137,20 @@ try {
   const ownerCookie = await loginAs("owner@operator.test", "owner-test-password-1");
   const owner = as(ownerCookie);
 
+  // The operator who creates tenant orgs and administers them is the SUPERADMIN: since
+  // #275 cross-org administration is theirs alone, and a plain admin may administer only
+  // its own org. The seeded login is a plain admin, so promote it the way an operator does
+  // (VERIFICATION_PLAN 1.3), directly against the SERVER's db file: openDatabase() reads
+  // AUTOPILOT_DB_PATH, which is set for the child process and not for this one. The role
+  // is read from the users row on every request, so the session cookie picks it up.
+  const promoteToSuperadmin = async (email: string) => {
+    const Database = (await import("better-sqlite3")).default;
+    const sdb = new Database(env.AUTOPILOT_DB_PATH);
+    sdb.prepare("UPDATE users SET role = 'superadmin' WHERE email = ?").run(email);
+    sdb.close();
+  };
+  await promoteToSuperadmin("owner@operator.test");
+
   // Two autopilot-licensed tenants, each with its own user.
   let orgA = "", orgB = "", aCookie = "", bCookie = "";
   await run("two full-product orgs can be created with their own users", async () => {
@@ -388,19 +402,13 @@ try {
     const usersA = await (await owner("/api/users")).json();
     const ownerRow = (Array.isArray(usersA) ? usersA : usersA.users || []).find((u: { email: string }) => u.email === "owner@operator.test");
     assert.ok(ownerRow, "owner row found");
-    const promote = await owner(`/api/users/${ownerRow.id}`, { method: "PUT", body: JSON.stringify({ role: "superadmin" }) });
-    // Nobody edits their own role — not even the owner. Grant via a second admin instead.
-    assert.equal(promote.status, 403, "self role-edit is refused even for admin");
+    // Nobody edits their own role, not even the owner (it is already superadmin here, so ask
+    // for a DIFFERENT role: asking for the one you hold is a no-op, not an edit).
+    const selfEdit = await owner(`/api/users/${ownerRow.id}`, { method: "PUT", body: JSON.stringify({ role: "admin" }) });
+    assert.equal(selfEdit.status, 403, "self role-edit is refused even for the superadmin");
 
-    // Seed the superadmin directly against the SERVER's database file. (openDatabase()
-    // reads AUTOPILOT_DB_PATH from the environment, which is set for the child process
-    // and not for this one, so it would silently open a different db.)
-    const Database = (await import("better-sqlite3")).default;
-    const sdb = new Database(env.AUTOPILOT_DB_PATH);
-    sdb.prepare("UPDATE users SET role = 'superadmin' WHERE email = ?").run("owner@operator.test");
-    sdb.close();
-    // The role is read from the users row on every request, so the existing session
-    // cookie picks it up without a re-login.
+    // The superadmin was seeded directly against the server's db at the top of the file
+    // (promoteToSuperadmin): a role-edit route cannot do it, as just asserted.
     const all = await (await owner("/api/projects")).json();
     assert.ok(all.projects.length >= 2, `superadmin saw ${all.projects.length} projects, expected both tenants'`);
     assert.equal((await owner(`/api/projects/${projA}`)).status, 200);

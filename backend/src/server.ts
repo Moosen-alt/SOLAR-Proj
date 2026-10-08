@@ -55,7 +55,7 @@ import { startMonitorScheduler } from "./scheduler";
 import { startAhjFormRefreshScheduler, startKbLinkCheckScheduler } from "./ahjFormRefresh";
 import { startCecSyncScheduler, primeCecCache, syncCecEquipment } from "./cecEquipment";
 import { extractZipToWorkdir } from "./batchZip";
-import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser, entitlementGate, requestOrg, createApiKey, ADMIN_ROLES } from "./auth";
+import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser, entitlementGate, requestOrg, createApiKey, ADMIN_ROLES, ROLE_SUPERADMIN } from "./auth";
 import { PRODUCTS, PRODUCT_KEYS, grantProduct, revokeProduct, orgEntitlements, productsForEdition } from "./entitlements";
 import { requestScope, orgFilter, orgClause, reqOrgFilter, assertInScope, auditCrossOrgAccess } from "./scope";
 import type { RequestScope } from "./scope";
@@ -1091,6 +1091,30 @@ function requireAdmin(req: Request): void {
     throw new HttpError(403, "Admin access required.");
   }
 }
+
+// ONE ORG-ADMIN GUARD for everything under /api/orgs (issue #275, rule 6). requireAdmin
+// alone asks "is this an admin?" and never "of WHICH org?", so a plain admin of any
+// autopilot tenant could list every org, mint an API key into another org, create a login
+// there, or rewrite its licence. Cross-org administration is the superadmin's alone:
+//   - the collection itself (GET/POST /api/orgs: list every tenant, create a new one) is
+//     superadmin-only;
+//   - /api/orgs/:id/* is superadmin, or a plain admin whose own org IS :id.
+// Anything else is 404, never 403, so a tenant cannot probe which org ids exist. Mounted
+// as middleware, ahead of the routes, so a new /api/orgs/:id/* route inherits the check
+// rather than having to remember it. The routes still call requireAdmin themselves.
+app.use("/api/orgs", (req, _res, next) => {
+  requireAdmin(req); // non-admins keep their 403
+  if (!AUTH_ENABLED) return next(); // local single-operator use, as requireAdmin
+  const user = currentUser(db, req);
+  if (user?.role === ROLE_SUPERADMIN) return next();
+  // req.path is relative to the mount: "/" for the collection, "/<id>/..." below it. Read
+  // exactly the segment Express binds to :id (no skipping empties: "//<id>" is no org).
+  const segment = req.path.split("/")[1];
+  let targetOrgId: string | null = null;
+  try { targetOrgId = segment ? decodeURIComponent(segment) : null; } catch { /* malformed: no org */ }
+  if (user && targetOrgId !== null && targetOrgId === user.orgId) return next();
+  throw new HttpError(404, "Org not found.");
+});
 
 app.get("/api/orgs", (req, res) => {
   requireAdmin(req);
