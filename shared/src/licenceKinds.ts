@@ -35,6 +35,24 @@ export const LICENCE_KINDS: readonly LicenceKindInfo[] = [
 
 export const LICENCE_KIND_SET: ReadonlySet<string> = new Set(LICENCE_KINDS.map((k) => k.kind));
 
+/** EACH STATE'S CONTRACTOR-LICENCE BOARD LABEL — the one label table (#208). Oregon's is the CCB;
+ *  the dashboard and /parser read frontend/parser-review.js LICENSE_LABELS, a copy of this table
+ *  (vanilla JS), and backend/test/clientLicenceLabel.test.ts fails when the two drift. */
+export const LICENCE_BOARD_LABELS: Readonly<Record<string, string>> = {
+  OR: "CCB", WA: "L&I contractor registration", CA: "CSLB", AZ: "ROC", TX: "TDLR/TECL", MA: "HIC", PA: "HIC",
+  NV: "NSCB", FL: "DBPR/CVC", UT: "DOPL", NJ: "HIC", CT: "HIC", NM: "CID", HI: "DCCA", MD: "MHIC", VA: "DPOR",
+  NC: "NCLBGC", SC: "LLR", MN: "DLI", ID: "PWC registration", MT: "contractor registration",
+};
+
+/** A state's CONTRACTOR licence label: the state's board ("CCB" for Oregon, "DOPL" for Utah); a known
+ *  state with no board label "<ST> contractor licence"; an unknown state the generic "contractor
+ *  licence" — never Oregon's. */
+export function contractorLicenceLabel(state: string | null | undefined): string {
+  const st = String(state ?? "").trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(st)) return "contractor licence";
+  return LICENCE_BOARD_LABELS[st] || `${st} contractor licence`;
+}
+
 /** Short words for messages ("construction supervisor licence"). */
 export function licenceKindWords(kind: LicenceKind | ""): string {
   switch (kind) {
