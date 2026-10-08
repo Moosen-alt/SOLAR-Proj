@@ -14,6 +14,8 @@
 //                 "structural", so the report cleared itself on a statement of ignorance.
 //   ESS         — the suppression list held /fire/i (now on every plan set, thanks to the
 //                 fire-pathway work) and /ESS/i, which matches "addrESS" and "procESS".
+//                 Even word-bounded, the acronym also TRIGGERED the rule, so it cleared its
+//                 own review (#245); suppression now takes 706/R328/1207/clearance only.
 //   truss span  — /truss/i on framingType granted the span exemption even for "rafter/truss"
 //                 or "not truss", dropping the very demand that caught the overspan Portland
 //                 bounced Trask for.
@@ -114,6 +116,32 @@ check("MUST EXCLUDE: a project with no battery raises no ESS finding at all", ()
   assert.equal(has("city.ess.details-missing", BASE), false,
     "a system with no storage was asked for battery clearances");
 });
+// #245: /\bESS\b/i sat in BOTH the trigger list and the suppression list, so the acronym that
+// raised the review also cleared it. A set whose only storage mention is an equipment-schedule
+// line could never warn. Run on two synthetic jurisdictions so no single AHJ fixture carries it.
+const SCHEDULE_ESS = "EQUIPMENT SCHEDULE: (1) ESS 13.5 KWH, (24) PV MODULES, (1) INVERTER.";
+for (const [label, over] of [
+  ["jurisdiction A", { state: "OR", ahj: "City of Sample Falls" }],
+  ["jurisdiction B", { state: "AZ", ahj: "Town of Example Mesa" }],
+] as const) {
+  check(`MUST PASS: 'ESS' in the equipment schedule with no detail still warns (${label})`, () => {
+    assert.equal(has("city.ess.details-missing", `${BASE} ${SCHEDULE_ESS}`, over), true,
+      "the bare acronym 'ESS' cleared the battery-detail review it had just raised");
+  });
+  check(`MUST PASS: a battery project whose only ESS mention is the acronym still warns (${label})`, () => {
+    assert.equal(has("city.ess.details-missing", `${BASE} ${SCHEDULE_ESS}`, { ...BATT, ...over }), true,
+      "the bare acronym 'ESS' cleared a Powerwall's detail review");
+  });
+}
+for (const [label, detail] of [
+  ["NEC 706 detail", "ESS DETAIL SHEET E-5: INSTALLATION PER NEC 706."],
+  ["IRC R328 detail", "ESS DETAIL SHEET E-5: LOCATION PER IRC R328.4, GARAGE WALL."],
+] as const) {
+  check(`MUST EXCLUDE: an ESS detail sheet citing ${label} satisfies it`, () => {
+    assert.equal(has("city.ess.details-missing", `${BASE} ${SCHEDULE_ESS} ${detail}`), false,
+      `a package with an ESS detail (${label}) was still told the detail is missing`);
+  });
+}
 
 console.log("\n4. TRUSS SPAN EXEMPTION — only an unambiguous truss earns it");
 // Trusses are pre-engineered, so the truss arm asks for spacing but not clear span. That
