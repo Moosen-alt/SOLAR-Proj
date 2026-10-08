@@ -74,7 +74,10 @@ const project = (snapshot: Record<string, unknown>): ProjectRecord =>
   }) as unknown as ProjectRecord;
 
 const NEGATED = project({
-  projectDescriptionText: "7.2 kW roof mount, supply-side breaker at the existing 240 V/125 A meter-main; no MSP upgrade and no main breaker derate. no batteries.",
+  // "no main panel upgrade" is here on purpose: the KB's pre-#219 regex (/main panel upgrade|\bMPU\b/i over
+  // parserText(), which reads projectDescriptionText but never electricalCalcText) matches it, so the kbTag
+  // assertion below pins extractProjectFeatureTags to the one predicate (#239).
+  projectDescriptionText: "7.2 kW roof mount, supply-side breaker at the existing 240 V/125 A meter-main; no MSP upgrade, no main panel upgrade and no main breaker derate. no batteries.",
   electricalCalcText: "SLD E-1: supply-side tap, 40 A breaker; MPU: none.",
   sitePlanNotesText: "Site plan PV-2: N/A - no panel upgrade.",
 });
