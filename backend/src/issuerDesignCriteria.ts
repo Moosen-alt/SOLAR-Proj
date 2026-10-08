@@ -259,9 +259,11 @@ export async function probeIssuerDesignCriteria(reader: PageReader, input: { hos
     // nothing was found. Two hubs read back to back left one read for a candidate, and the first
     // criteria-looking link (a bare "Snow Load Map") spent it before the "Design Criteria" table.
     // The FIRST hub is always read: a page found before the hubs (an image-only snow-load map) is
-    // not the table, and the hub may link it.
+    // not the table, and the hub may link it. "Found" for the second hub means a page that PARSED
+    // (a value read from it): an unparsed image-only page is not the table either.
     for (const [i, hub] of hubs.slice(0, 2).entries()) {
-      if (done || left() <= 0 || (i > 0 && best)) break;
+      const parsed = best as { raw: Record<string, unknown> } | null;
+      if (done || left() <= 0 || (i > 0 && parsed && Object.keys(parsed.raw).length > 0)) break;
       await visitAll([hub]);
       await visitAll(rankedCandidates(candidates, candidateWords));
     }
