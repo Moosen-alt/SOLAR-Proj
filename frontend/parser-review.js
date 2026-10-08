@@ -1010,28 +1010,49 @@
     if (!label) return 'contractor licence';
     return /registration|licen[cs]e/i.test(label) ? label : `${label} licence`;
   }
+  /** A state's CONTRACTOR licence label — the one label rule (#208), mirrored by shared
+   *  licenceKinds.contractorLicenceLabel for the backend (clientLicenceLabel.test pins the two equal):
+   *  the state's board from LICENSE_LABELS ("CCB" for Oregon, "DOPL" for Utah); a known state with no
+   *  board label "<ST> contractor licence"; an unknown state the generic "contractor licence". */
+  function contractorLicenceLabel(state) {
+    const st = clean(state).toUpperCase();
+    if (!/^[A-Z]{2}$/.test(st)) return 'contractor licence';
+    return LICENSE_LABELS[st] || `${st} contractor licence`;
+  }
+  // THE CANONICAL LICENCE KINDS (shared/src/licenceKinds.ts LICENCE_KINDS; clientLicenceLabel.test
+  // fails when the two drift). The API serves a kind it could not recognise as the operator's own
+  // text ("" or free text): such a row is UNTYPED, and backend clients.licenceFor never offers it to
+  // any slot (#240).
+  const LICENCE_KINDS_KNOWN = ['contractor', 'electrical_contractor', 'construction_supervisor', 'home_improvement_contractor',
+    'solar_contractor', 'master_electrician', 'business_registration'];
   /** One typed licence's label: a contractor licence is the state's board ("DOPL"); any other kind
-   *  is the state + the kind ("UT electrical contractor"), never the board's contractor label. */
+   *  is the state + the kind ("UT electrical contractor"), never the board's contractor label; an
+   *  untyped row is "<ST> licence (unclassified)" — never the board's contractor licence. */
   function typedLicenceLabel(state, kind) {
     const k = clean(kind).toLowerCase();
-    if (!k || k === 'contractor') return LICENSE_LABELS[state] || `${state} contractor licence`;
+    if (!LICENCE_KINDS_KNOWN.includes(k)) return `${state} licence (unclassified)`;
+    if (k === 'contractor') return contractorLicenceLabel(state);
     return `${state} ${k.replace(/_/g, ' ')}`;
   }
-  /** The client's licences for its own state, labelled: [{label, number}]. business_registration is
-   *  never a contractor licence. The Oregon CCB column only when the client is Oregon's or unplaced. */
+  /** The client's licences, labelled: [{label, number, untyped}]. A placed client: its own state's
+   *  typed rows. An UNPLACED client (no licence/business state): every typed row, each labelled by
+   *  its own row's state (#240) — the operator sees what is on file, never one state's label on
+   *  another's number. business_registration is never a contractor licence. The Oregon CCB column
+   *  only when the client is Oregon's or unplaced. An untyped row is listed (unclassified) but is
+   *  never the contractor licence (clientLicenceMissing). */
   function clientLicences(client) {
     const c = client || {};
     const st = clientLicenceState(c);
     const out = [];
     const ccb = clean(c.ccbLicenseNumber);
-    if (ccb && (!st || st === 'OR')) out.push({ label: 'CCB', number: ccb });
-    if (st) {
-      for (const l of Array.isArray(c.stateLicenses) ? c.stateLicenses : []) {
-        const number = clean(l && l.number);
-        if (!number || clean(l.state).toUpperCase() !== st || clean(l.kind).toLowerCase() === 'business_registration') continue;
-        if (out.some((o) => o.number === number)) continue; // an OR typed twin of the CCB column
-        out.push({ label: typedLicenceLabel(st, l.kind), number });
-      }
+    if (ccb && (!st || st === 'OR')) out.push({ label: 'CCB', number: ccb, untyped: false });
+    for (const l of Array.isArray(c.stateLicenses) ? c.stateLicenses : []) {
+      const number = clean(l && l.number);
+      const rowState = clean(l && l.state).toUpperCase();
+      const kind = clean(l && l.kind).toLowerCase();
+      if (!number || !/^[A-Z]{2}$/.test(rowState) || (st && rowState !== st) || kind === 'business_registration') continue;
+      if (out.some((o) => o.number === number)) continue; // an OR typed twin of the CCB column
+      out.push({ label: typedLicenceLabel(rowState, kind), number, untyped: !LICENCE_KINDS_KNOWN.includes(kind) });
     }
     return out;
   }
@@ -1041,7 +1062,7 @@
   }
   /** The "no licence on file" warning for a picked client, or "" when it has one for its state. */
   function clientLicenceMissing(client) {
-    if (clientLicences(client).length) return '';
+    if (clientLicences(client).some((l) => !l.untyped)) return '';
     const c = client || {};
     return `⚠ ${c.companyName || 'This client'} has no ${licenceWords(clientLicenceState(c))} on file — add it in the Clients tab before submitting.`;
   }
@@ -1445,7 +1466,7 @@
     structureBasis, structureFromPlan, structureOption, STRUCTURE_OPTIONS,
     otherStructureEvidence, outbuildingBesideWork, otherBuildingWords,
     licenseLabel, installerLine, identifyUtility,
-    clientLicenceState, licenceWords, clientLicences, clientGatePrompt, clientLicenceMissing, clientLicenceNote,
+    clientLicenceState, licenceWords, contractorLicenceLabel, LICENCE_KINDS_KNOWN, clientLicences, clientGatePrompt, clientLicenceMissing, clientLicenceNote,
     locatesDecision, EXCAVATION_TYPES,
     filterTapEvidence, isNoteMention,
     formatReviewList,
