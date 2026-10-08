@@ -2014,7 +2014,7 @@ export function resolveRecipeFieldValues(
     // Operator policy: participate in the utility's battery programme only when the job
     // actually has storage. Answering yes on a PV-only system invites battery requirements
     // for equipment that is not there.
-    wattsmartBatteryProgram: /^(yes|true|y)$/i.test(String(snapshotFlat.hasBattery ?? "").trim()) ? "Yes" : "No",
+    wattsmartBatteryProgram: batteryStatus(snapshotFlat as Record<string, unknown>) === "yes" ? "Yes" : "No",
     ubAccountHolderFirstName: ubFirstName,
     ubAccountHolderLastName: ubLastName,
     // The account holder's own contact details when the bill carries them; otherwise the
@@ -2155,12 +2155,10 @@ export function resolveRecipeFieldValues(
     // hasBattery is set by normalize.ts, so it is present on real projects — but fall back
     // to the same inputs normalize derives it from, so this cannot silently answer "no
     // battery" for a snapshot that simply never went through normalisation.
-    // THE ONE BATTERY PREDICATE (batteryServiceFeeder.batteryStatus — the fee line reads it too), so a
-    // placeholder model ("N/A") is not a battery here either (#246); and an EXPLICIT hasBattery "No"
-    // is honoured, as the portal's own battery declaration and the utility programme answer are.
-    energySource: !/^(no|false|none|n)$/i.test(String(snapshotFlat.hasBattery ?? "").trim())
-      && batteryStatus(snapshotFlat as Record<string, unknown>) === "yes"
-      ? "Solar PV and Battery" : "Solar PV",
+    // THE ONE BATTERY PREDICATE (batteryServiceFeeder.batteryStatus — the fee line reads it too, #246):
+    // a placeholder model ("N/A") is not a battery, and a real model or a quantity outranks a bare
+    // hasBattery "No" — the design evidence is the plan set (operator ruling on #256).
+    energySource: batteryStatus(snapshotFlat as Record<string, unknown>) === "yes" ? "Solar PV and Battery" : "Solar PV",
     // PER-JOB PORTAL ANSWERS, resolved above. ALWAYS emitted — even empty — so
     // deadFieldBindings sees the keys as resolvable (an empty value for THIS project is
     // fine; a key that cannot exist at all is dead) and the post-learn binder can offer

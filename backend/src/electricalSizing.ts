@@ -25,6 +25,7 @@
 import type { CodeReference, ElectricalSizingInput, ElectricalSizingInputKey, ProjectRecord, ReviewerFinding } from "../../shared/src/types";
 import { sheetTextSources, type DesignTextSource } from "./designCriteria";
 import { dcDcConverterEvidence, essOutputCurrent, nextStandardOcpd, table6907AFactor } from "./iowaPvWorksheet";
+import { batteryStatus } from "./batteryServiceFeeder";
 
 export const SIZING_FINDING_IDS = [
   "city.elec.sizing-busbar-120",
@@ -323,7 +324,8 @@ type EssOnBus =
 function essOnBus(project: ProjectRecord, sheetText: string, micro: boolean): EssOnBus {
   const s = (project.parserSnapshot ?? {}) as Record<string, unknown>;
   const str = (k: string) => String(s[k] ?? "").trim();
-  const battery = Boolean(str("batteryMake") || str("batteryModel") || (snapshotNumber(project, "batteryQty") ?? 0) > 0);
+  // THE ONE BATTERY PREDICATE (batteryServiceFeeder.batteryStatus, #246): a placeholder model is not an ESS.
+  const battery = batteryStatus(s) === "yes";
   if (!battery) return { kind: "none", why: "no battery" };
   // Coupling: the sheets' own word wins; otherwise a micro system's battery can only be AC-coupled
   // (micros put out AC — what iowaPvWorksheet assumes). A string/hybrid inverter's battery with no

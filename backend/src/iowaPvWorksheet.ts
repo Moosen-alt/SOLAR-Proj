@@ -27,6 +27,7 @@
 // Field ids are the fill key's (.probe/kin/ia/roesler/worksheet-fill-key.json).
 import type { ProjectRecord } from "../../shared/src/types";
 import { parseRating } from "./codeReviewRules";
+import { batteryStatus } from "./batteryServiceFeeder";
 import { evidenceForTopic } from "./projectEvidence";
 import { moduleLevelElectronicsEquipment } from "./moduleLevelElectronics";
 import { structureAnswerOf, structureDescriptionOf, structureMeaningOf } from "./applicationDocsAgency";
@@ -311,7 +312,8 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   // ── inverters, battery, DC-DC ─────────────────────────────────────────────────────────
   const unitQty = micro ? n("pvMicroQty") : n("invQty");
   set("p2.numInverters", unitQty != null ? String(unitQty) : "", micro ? `pvMicroQty "${str("pvMicroQty")}"` : `invQty "${str("invQty")}"`);
-  const battery = Boolean(str("batteryMake") || str("batteryModel") || (n("batteryQty") ?? 0) > 0);
+  // THE ONE BATTERY PREDICATE (batteryServiceFeeder.batteryStatus, #246): a placeholder model is not a battery.
+  const battery = batteryStatus(s) === "yes";
   set("p2.battery", battery ? "Y" : "N", battery ? `battery listed (${str("batteryMake")} ${str("batteryModel")})`.trim() : "derived: no battery/ESS in the parsed plan set");
   set("p2.dcdc", micro && !optimizer ? "N/A" : optimizer ? "Yes" : "", micro && !optimizer ? "derived: microinverter system, no DC-DC converter (optimizer) in the equipment"
     : optimizer ? `derived: DC-DC converters (optimizers) in the equipment — ${dcdc.basis}`
