@@ -13,13 +13,20 @@
 // part of the report (divergedAliases skips it).
 import "dotenv/config";
 
+// A BARE --org IS A MISTAKE, NOT "EVERY ORG" (#270). It used to map to null, which reads across all
+// tenants — the opposite of what the operator asked for. Refused before the database is opened.
+const argv = process.argv.slice(2);
+const orgIndex = argv.indexOf("--org");
+const orgArg = orgIndex >= 0 ? argv[orgIndex + 1] : undefined;
+if (orgIndex >= 0 && (orgArg === undefined || orgArg.trim() === "" || orgArg.startsWith("--"))) {
+  console.error("usage: npx tsx scripts/diverged-aliases.ts [--org <id>]   (--org needs an org id; omit it for every org)");
+  process.exit(2);
+}
+const orgId: string | null = orgIndex >= 0 ? orgArg!.trim() : null;
+
 process.env.AUTOPILOT_DB_PATH = process.env.AUTOPILOT_DB_PATH || "backend/data/autopilot.sqlite";
 const { openDatabase } = await import("../backend/src/db");
 const { listDivergedAliasProjects } = await import("../backend/src/repository");
-
-const argv = process.argv.slice(2);
-const orgIndex = argv.indexOf("--org");
-const orgId = orgIndex >= 0 ? argv[orgIndex + 1] || null : null;
 
 const db = await openDatabase();
 const rows = listDivergedAliasProjects(db, orgId);

@@ -9850,8 +9850,9 @@ export function listDivergedAliasProjects(
   orgId: string | null = DEFAULT_ORG_ID,
 ): Array<{ projectId: string; status: string; aliases: Array<{ key: string; stored: string; derived: string }> }> {
   const rows = db.query<{ id: string; status: string; parser_json: string }>(
-    `SELECT id, status, parser_json FROM projects${orgId ? " WHERE org_id = ?" : ""} ORDER BY created_at ASC`,
-    orgId ? [orgId] : [],
+    // null — and only null — reads every org (#270): '' is an org id that matches nothing, never "all".
+    `SELECT id, status, parser_json FROM projects${orgId !== null ? " WHERE org_id = ?" : ""} ORDER BY created_at ASC`,
+    orgId !== null ? [orgId] : [],
   );
   const out: Array<{ projectId: string; status: string; aliases: Array<{ key: string; stored: string; derived: string }> }> = [];
   for (const row of rows) {

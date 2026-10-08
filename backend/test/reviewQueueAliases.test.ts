@@ -4,6 +4,7 @@
 // and survived every later edit. Also pins the read-only report of snapshots diverged before the fix.
 // Run:
 //   tsx backend/test/reviewQueueAliases.test.ts
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -165,6 +166,60 @@ const forceSnapshot = (pid: string, patch: Record<string, unknown>) => {
   check("other-org filter sees only its own row", byOther.length === 1 && byOther[0] === other, byOther);
   const all = ids(listDivergedAliasProjects(db, null));
   check("null filter includes both orgs", all.includes(pid) && all.includes(other), all);
+}
+
+// 6) #270 — a micro-PARSED design (pvMicro*, no inv*): the verify/edit writes the canonical key, the
+//    parser's pvMicro* evidence stays on file, and the canonical key is what answers MLPE.
+const MICRO = { ...base, pvMicroMake: "Enphase", pvMicroModel: "IQ8PLUS-72-2-US", pvMicroQty: "20" };
+const SUNNY = "Sunny Boy SB7.7-1SP-US-41";
+{
+  const created = createProject(db, MICRO);
+  const pid = created.project.id;
+  check("micro setup: inverterModel derives from pvMicroModel", created.project.parserSnapshot.inverterModel === "IQ8PLUS-72-2-US", created.project.parserSnapshot.inverterModel);
+  check("micro setup: design is MLPE", isMlpeDesignForProject(created.project));
+  const itemId = queueReview(pid, "inverterModel", "IQ8PLUS-72-2-US");
+  const v = humanVerify(db, pid, { reviewItemId: itemId, action: "edit", fieldValue: SUNNY });
+  check("MUST-PASS: micro-parsed design verified to Sunny Boy is no longer MLPE", !isMlpeDesignForProject(v.project), v.project.parserSnapshot);
+  check("…the parser's pvMicro* evidence is kept", v.project.parserSnapshot.pvMicroModel === "IQ8PLUS-72-2-US" && v.project.parserSnapshot.pvMicroQty === "20", v.project.parserSnapshot);
+  // A later quantity verify on the same project keeps it off (pvMicroQty must not re-answer).
+  const qtyItem = queueReview(pid, "inverterQty", "20");
+  const v2 = humanVerify(db, pid, { reviewItemId: qtyItem, action: "edit", fieldValue: "1" });
+  check("…and a later inverterQty verify keeps it off", !isMlpeDesignForProject(v2.project), v2.project.parserSnapshot);
+}
+for (const [door, edit] of [["inverterModel", { inverterModel: SUNNY }], ["invModel", { invModel: SUNNY }]] as const) {
+  // The updateProject door, both ways an operator can name the inverter.
+  const pid = createProject(db, MICRO).project.id;
+  const edited = updateProject(db, pid, edit);
+  check(`MUST-PASS: updateProject ${door} → Sunny Boy on a micro-parsed design is no longer MLPE`, !isMlpeDesignForProject(edited.project), edited.project.parserSnapshot);
+  check(`…pvMicroModel kept on the ${door} edit`, edited.project.parserSnapshot.pvMicroModel === "IQ8PLUS-72-2-US", edited.project.parserSnapshot.pvMicroModel);
+}
+{
+  // MUST-EXCLUDE: a real micro design nobody verified stays MLPE, through an unrelated edit and a
+  // verify that confirms the micro model.
+  const pid = createProject(db, MICRO).project.id;
+  const unrelated = updateProject(db, pid, { zip: "97002" });
+  check("MUST-EXCLUDE: unverified micro design stays MLPE after an unrelated edit", isMlpeDesignForProject(unrelated.project), unrelated.project.parserSnapshot);
+  const itemId = queueReview(pid, "inverterModel", "IQ8PLUS-72-2-US");
+  const v = humanVerify(db, pid, { reviewItemId: itemId, action: "approve" });
+  check("MUST-EXCLUDE: approving the micro model keeps it MLPE", isMlpeDesignForProject(v.project), v.project.parserSnapshot);
+  // pvMicroQty alone (no model) still reads as a microinverter design.
+  const qtyOnly = createProject(db, { ...base, pvMicroQty: "20" }).project;
+  check("MUST-EXCLUDE: pvMicroQty alone stays MLPE", isMlpeDesignForProject(qtyOnly), qtyOnly.parserSnapshot);
+}
+
+// 7) #270 — '' is an org id that matches nothing, never "every org"; the script refuses a bare --org.
+{
+  check("empty-string org filter matches nothing", listDivergedAliasProjects(db, "").length === 0, listDivergedAliasProjects(db, "").length);
+  check("…while null still reads every org", listDivergedAliasProjects(db, null).length >= 2);
+  const script = path.resolve(import.meta.dirname, "../../scripts/diverged-aliases.ts");
+  const scratchDb = path.join(tmpDir, "script-must-not-open.sqlite");
+  for (const args of [["--org"], ["--org", ""], ["--org", "--verbose"]]) {
+    const run = spawnSync(process.execPath, ["--import", "tsx", script, ...args], {
+      encoding: "utf8", env: { ...process.env, AUTOPILOT_DB_PATH: scratchDb }, timeout: 60_000,
+    });
+    check(`script ${JSON.stringify(args)} exits with a usage error`, run.status === 2 && /usage:/.test(run.stderr), { status: run.status, stderr: run.stderr.slice(0, 300) });
+    check(`script ${JSON.stringify(args)} never opens the database`, !fs.existsSync(scratchDb));
+  }
 }
 
 db.close();

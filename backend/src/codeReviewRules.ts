@@ -256,11 +256,30 @@ function mlpeDesign(project: ProjectRecord, allText: string, texts: DesignTextSo
   return { mlpe: equipment.present || isMicroOrMlpeInverter(project, allText), equipment };
 }
 
+// THE CANONICAL INVERTER KEY OUTRANKS THE RAW MICRO EVIDENCE (#270). Both edit doors (the review
+// queue's verify, updateProject) write the canonical key and its first source (inverterModel/invModel)
+// but keep the parser's pvMicro* fields — evidence is never deleted. Joined here, a micro-parsed
+// design verified to "Sunny Boy …" still read pvMicroModel "IQ8…" and kept its rapid-shutdown blocker
+// softened. A canonical key that no longer echoes its pvMicro* counterpart was set by something
+// other than the micro parse (a person, or an invModel the parser also read), so the micro fields
+// stop answering. This can only turn MLPE off — the blocker stays hard — never on.
+const MICRO_EVIDENCE_PAIRS: ReadonlyArray<readonly [string, string]> = [
+  ["inverterModel", "pvMicroModel"],
+  ["inverterQuantity", "pvMicroQty"],
+  ["inverterManufacturer", "pvMicroMake"],
+];
+function microEvidenceSuperseded(project: ProjectRecord): boolean {
+  return MICRO_EVIDENCE_PAIRS.some(([canonical, micro]) => {
+    const value = str(project, canonical);
+    return value !== "" && value !== str(project, micro);
+  });
+}
+
 function isMicroOrMlpeInverter(project: ProjectRecord, allText: string): boolean {
-  const microModel = str(project, "pvMicroModel");
+  const superseded = microEvidenceSuperseded(project);
   const inverterText = [
-    microModel,
-    str(project, "pvMicroQty") ? "microinverter" : "",
+    superseded ? "" : str(project, "pvMicroModel"),
+    !superseded && str(project, "pvMicroQty") ? "microinverter" : "",
     str(project, "invModel"),
     str(project, "inverterModel"),
   ].filter(Boolean).join("\n");
