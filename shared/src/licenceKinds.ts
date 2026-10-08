@@ -9,7 +9,9 @@
 // the submit gate, the dashboard editor) speaks this list; clients.licenceFor is the one answer.
 //
 // The dashboard (frontend/dashboard.js LICENCE_KIND_OPTIONS) carries a copy of the kinds + labels
-// because it is vanilla JS; backend/test/licencesByType.test.ts fails when the two drift.
+// because it is vanilla JS; backend/test/licencesByType.test.ts fails when the two drift. /parser
+// (frontend/parser-review.js LICENCE_KIND_TABLE) carries a copy of the kinds + words +
+// contractorLicence; backend/test/licenceLabelByState.test.ts §0 fails when those drift.
 // ---------------------------------------------------------------------------------------------
 import type { LicenceKind } from "./types";
 
@@ -19,25 +21,29 @@ export interface LicenceKindInfo {
   label: string;
   /** A PERSON's licence (it carries a holder's name), not the company's. */
   person: boolean;
-  /** May a contractor-licence slot take it? business_registration is never one. */
+  /** May a contractor-licence slot take it? business_registration is never one. It is also the one
+   *  answer to "is a contractor licence on file" for /parser's warning (#259). */
   contractorLicence: boolean;
+  /** Short words for messages and labels ("construction supervisor licence"). The form, /parser
+   *  and the Clients card all label a typed row that is not the board's licence "<ST> <words>". */
+  words: string;
 }
 
 export const LICENCE_KINDS: readonly LicenceKindInfo[] = [
-  { kind: "contractor", label: "Contractor (general / building / residential)", person: false, contractorLicence: true },
-  { kind: "electrical_contractor", label: "Electrical contractor", person: false, contractorLicence: true },
-  { kind: "construction_supervisor", label: "Construction supervisor", person: true, contractorLicence: true },
-  { kind: "home_improvement_contractor", label: "Home improvement contractor", person: false, contractorLicence: true },
-  { kind: "solar_contractor", label: "Solar contractor", person: false, contractorLicence: true },
-  { kind: "master_electrician", label: "Master / supervising electrician", person: true, contractorLicence: false },
-  { kind: "business_registration", label: "Business registration (not a contractor licence)", person: false, contractorLicence: false },
+  { kind: "contractor", label: "Contractor (general / building / residential)", person: false, contractorLicence: true, words: "contractor licence" },
+  { kind: "electrical_contractor", label: "Electrical contractor", person: false, contractorLicence: true, words: "electrical contractor licence" },
+  { kind: "construction_supervisor", label: "Construction supervisor", person: true, contractorLicence: true, words: "construction supervisor licence" },
+  { kind: "home_improvement_contractor", label: "Home improvement contractor", person: false, contractorLicence: true, words: "home improvement contractor registration" },
+  { kind: "solar_contractor", label: "Solar contractor", person: false, contractorLicence: true, words: "solar contractor licence" },
+  { kind: "master_electrician", label: "Master / supervising electrician", person: true, contractorLicence: false, words: "master / supervising electrician licence" },
+  { kind: "business_registration", label: "Business registration (not a contractor licence)", person: false, contractorLicence: false, words: "business registration" },
 ] as const;
 
 export const LICENCE_KIND_SET: ReadonlySet<string> = new Set(LICENCE_KINDS.map((k) => k.kind));
 
 /** EACH STATE'S CONTRACTOR-LICENCE BOARD LABEL — the one label table (#208). Oregon's is the CCB;
  *  the dashboard and /parser read frontend/parser-review.js LICENSE_LABELS, a copy of this table
- *  (vanilla JS), and backend/test/clientLicenceLabel.test.ts fails when the two drift. */
+ *  (vanilla JS), and backend/test/licenceLabelByState.test.ts §0 fails when the two drift. */
 export const LICENCE_BOARD_LABELS: Readonly<Record<string, string>> = {
   OR: "CCB", WA: "L&I contractor registration", CA: "CSLB", AZ: "ROC", TX: "TDLR/TECL", MA: "HIC", PA: "HIC",
   NV: "NSCB", FL: "DBPR/CVC", UT: "DOPL", NJ: "HIC", CT: "HIC", NM: "CID", HI: "DCCA", MD: "MHIC", VA: "DPOR",
@@ -53,18 +59,9 @@ export function contractorLicenceLabel(state: string | null | undefined): string
   return LICENCE_BOARD_LABELS[st] || `${st} contractor licence`;
 }
 
-/** Short words for messages ("construction supervisor licence"). */
+/** Short words for messages ("construction supervisor licence") — the kind's LICENCE_KINDS words. */
 export function licenceKindWords(kind: LicenceKind | ""): string {
-  switch (kind) {
-    case "contractor": return "contractor licence";
-    case "electrical_contractor": return "electrical contractor licence";
-    case "construction_supervisor": return "construction supervisor licence";
-    case "home_improvement_contractor": return "home improvement contractor registration";
-    case "solar_contractor": return "solar contractor licence";
-    case "master_electrician": return "master / supervising electrician licence";
-    case "business_registration": return "business registration";
-    default: return "licence";
-  }
+  return LICENCE_KINDS.find((k) => k.kind === kind)?.words ?? "licence";
 }
 
 /**
