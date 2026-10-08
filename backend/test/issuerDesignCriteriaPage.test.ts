@@ -525,6 +525,43 @@ await check("MUST-PASS: an unparsed snow-load map does not skip the second hub; 
   }
 });
 
+// The home page links a "Snow Loads" table that PARSES (pg and roof snow) but does not answer (no
+// wind), "Building" and "Permits"; the table is under Permits (Helm's #263 third review).
+const snowTableTwoHubSite = (origin: string, head: string, hubs: [string, string]) => {
+  serve(`${origin}/`, { contentType: "text/html", text: html(`<h1>City Home</h1><a href="/snow-loads">Snow Loads</a><a href="${hubs[0]}">Building</a><a href="${hubs[1]}">Permits</a>`, head) });
+  serve(`${origin}/snow-loads`, { contentType: "text/html", text: html(`<h1>Snow Loads</h1><table>
+<tr><td>Ground Snow Load, Pg</td><td>40 psf</td></tr>
+<tr><td>Roof Snow Load</td><td>30 psf</td></tr>
+</table>`, head) });
+  serve(`${origin}${hubs[0]}`, { contentType: "text/html", text: html(`<h1>Building</h1><a href="${hubs[0]}/inspections">Schedule an Inspection</a>`, head) });
+  serve(`${origin}${hubs[1]}`, { contentType: "text/html", text: html(`<h1>Permits</h1><a href="${hubs[1]}/criteria">Design Criteria</a>`, head) });
+  serve(`${origin}${hubs[1]}/criteria`, { contentType: "text/html", text: html(`<h1>Design Criteria</h1><table>
+<tr><td>Ground Snow Load, Pg</td><td>40 psf</td></tr>
+<tr><td>Ultimate Design Wind Speed</td><td>105 mph</td></tr>
+</table>`, head) });
+  return `${origin}${hubs[1]}/criteria`;
+};
+const SP1 = { state: "UT", ahj: "City of Thornridge" };
+const SP1_PAGE = snowTableTwoHubSite("https://www.thornridgeut.gov", CIVICPLUS_HEAD, ["/150/Building", "/160/Permits"]);
+const SP2 = { state: "WA", ahj: "City of Alderbay" };
+const SP2_PAGE = snowTableTwoHubSite("https://www.alderbaywa.gov", GOVACCESS_HEAD, ["/departments/building", "/departments/permits"]);
+seedProcess(SP1, "https://www.thornridgeut.gov/");
+seedProcess(SP2, "https://www.alderbaywa.gov/");
+
+await check("MUST-PASS: a snow table that parses (pg + roof, no wind) does not skip the second hub; the table under it answers with no web round (CivicPlus and govAccess)", async () => {
+  for (const [who, page] of [[SP1, SP1_PAGE], [SP2, SP2_PAGE]] as const) {
+    calls.length = 0;
+    const rd = reader();
+    const r = await CP.runDesignCriteriaResearch(db, who, fakeLlm(), rd);
+    assert.equal(calls.length, 0, `${who.ahj}: a web-search round was spent (read ${rd.log.map((l) => l.url).join(", ")})`);
+    assert.deepEqual(r.issuerPage, { url: page, parsed: true });
+    const row = ownRow(who)!;
+    assert.equal(row.profile.confidence, "seeded");
+    assert.equal(row.profile.designCriteria.groundSnowLoadPsf, 40);
+    assert.equal(row.profile.designCriteria.windSpeedMph, 105);
+  }
+});
+
 // The home page links an ASD-only table that has MORE rows first, then a strength-level one. The
 // probe stops on the second; it must return that one, not the first (Helm's #263 review).
 const asdThenPgSite = (origin: string, head: string) => {
