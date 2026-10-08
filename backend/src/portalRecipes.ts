@@ -19,6 +19,7 @@ import { isHarnessAbort, looksBotBlocked } from "./runAbort";
 import { NOT_SERVED_FLAG_PREFIX } from "../../shared/src/portalNotServed";
 import { certifiedModelFor } from "./cecEquipment";
 import { nowIso } from "./time";
+import { batteryStatus } from "./batteryServiceFeeder";
 import { projectForTrack, sameRecordType } from "./permitProcess";
 import { parseStreetNumber, parseStreetName, parseStreetLine } from "../../portal-bot/src/addressParse";
 import { feeBracketFieldForLabel, feeBracketQuantityFields } from "./feeBracketFields";
@@ -2154,11 +2155,12 @@ export function resolveRecipeFieldValues(
     // hasBattery is set by normalize.ts, so it is present on real projects — but fall back
     // to the same inputs normalize derives it from, so this cannot silently answer "no
     // battery" for a snapshot that simply never went through normalisation.
-    energySource: (
-      /^y/i.test(String(snapshotFlat.hasBattery ?? "").trim())
-      || String(snapshotFlat.batteryModel ?? "").trim() !== ""
-      || Number(snapshotFlat.batteryQty ?? 0) > 0
-    ) ? "Solar PV and Battery" : "Solar PV",
+    // THE ONE BATTERY PREDICATE (batteryServiceFeeder.batteryStatus — the fee line reads it too), so a
+    // placeholder model ("N/A") is not a battery here either (#246); and an EXPLICIT hasBattery "No"
+    // is honoured, as the portal's own battery declaration and the utility programme answer are.
+    energySource: !/^(no|false|none|n)$/i.test(String(snapshotFlat.hasBattery ?? "").trim())
+      && batteryStatus(snapshotFlat as Record<string, unknown>) === "yes"
+      ? "Solar PV and Battery" : "Solar PV",
     // PER-JOB PORTAL ANSWERS, resolved above. ALWAYS emitted — even empty — so
     // deadFieldBindings sees the keys as resolvable (an empty value for THIS project is
     // fine; a key that cannot exist at all is dead) and the post-learn binder can offer

@@ -22,20 +22,14 @@
 
 import type { ProjectRecord } from "../../shared/src/types";
 import type { RequiredDocItem } from "./requiredDocuments";
-import { batteryStatus, isPlaceholderBatteryModel } from "./batteryServiceFeeder";
+import { batteryStatus } from "./batteryServiceFeeder";
 import { permitProcessFor } from "./permitProcess";
 import { findAhjProcessProfile } from "./processProfiles";
 
-/** Does this project carry battery storage? The one predicate (batteryStatus "yes"), except that a
- *  placeholder model (isPlaceholderBatteryModel) with no positive hasBattery and no quantity is not a
- *  battery: batteryStatus reads any non-empty model as "yes", and here the row BLOCKS. */
+/** Does this project carry battery storage? The one predicate, batteryStatus() === "yes" (which
+ *  already reads a placeholder model as no evidence — isPlaceholderBatteryModel). */
 export function projectHasBattery(project: Pick<ProjectRecord, "parserSnapshot">): boolean {
-  const s = (project.parserSnapshot ?? {}) as Record<string, unknown>;
-  const str = (v: unknown) => (v == null ? "" : String(v).trim());
-  const qty = Number(str(s.batteryQuantity) || str(s.batteryQty) || 0);
-  const affirmed = /^(yes|true|y)$/i.test(str(s.hasBattery)) || (Number.isFinite(qty) && qty > 0);
-  if (!affirmed && isPlaceholderBatteryModel(s.batteryModel)) return false;
-  return batteryStatus(s) === "yes";
+  return batteryStatus(project.parserSnapshot as Record<string, unknown> | undefined) === "yes";
 }
 
 /** The two rows a storage job adds to the required set. The spec sheet blocks like the module and

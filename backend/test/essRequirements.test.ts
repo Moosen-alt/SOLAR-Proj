@@ -10,7 +10,8 @@
 //   K2 essRequirements: gate on batteryStatus() !== "no"             → (x2) fails.
 //   K3 submittalTracks: drop the essStep spread                      → (c1)-(c4) and (c6) fail.
 //   K4 normalize.ts: derive hasBattery from a placeholder model again → (x3) fails; so does
-//      essRequirements without its placeholder guard (batteryStatus still reads the model).
+//      batteryStatus reading any non-empty model as evidence again → (x3) (x4) fail.
+//   K7 portalRecipes: energySource back to its own model test           → (x4) fails.
 //   K5 essRequirements: a fire-only cite counts as "cited"             → (c7) fails.
 //   K6 dashboard.js: drop the listed-above filter                      → (r1) fails.
 //
@@ -47,6 +48,8 @@ const permitProcess = await import("../src/permitProcess");
 const rd = await import("../src/requiredDocuments");
 const { createClient } = await import("../src/clients");
 const repo = await import("../src/repository");
+const { resolveRecipeFieldValues } = await import("../src/portalRecipes");
+const { batteryStatus } = await import("../src/batteryServiceFeeder");
 const { createProject } = repo;
 
 let failures = 0;
@@ -207,7 +210,7 @@ await check("(x3) MUST-EXCLUDE: a placeholder battery model saved through create
   const client = createClient(db, { companyName: "ESS Placeholder Solar", ccbLicenseNumber: "246247" });
   const save = (o: Record<string, unknown>) => createProject(db, { clientId: client.id, owner: "ESS Owner", street: "3 Test Way", city: "Sagebrush", state: "CO", ahj: "Sagebrush", utility: "Example Mountain Electric", dcKw: "6", acKw: "5", ...o } as never).project;
   const owes = (p: unknown) => docTypes(p as never).includes("battery_spec") || cards(p as never).some((t) => "essStep" in t);
-  for (const model of ["N/A", "N.A.", "None", "(none)", "None proposed", "Not included", "Not in scope", "No ESS", "-"]) {
+  for (const model of ["N/A", " N / A ", "N.A.", "None", "(none)", "None proposed", "Not included", "Not in scope", "No ESS", "-"]) {
     const created = save({ batteryModel: model });
     assert.equal(created.parserSnapshot?.hasBattery, "No", `createProject derived hasBattery from "${model}"`);
     assert.ok(!owes(created), `createProject: "${model}" owes battery rows`);
@@ -220,7 +223,28 @@ await check("(x3) MUST-EXCLUDE: a placeholder battery model saved through create
   assert.ok(!owes(updateProject(db, parsed.id, { ...(parsed.parserSnapshot as object), acKw: "5.2" } as never).project), "a parser-made {hasBattery:false, batteryModel:'N/A'} became a battery on update");
   assert.ok(owes(save({ batteryModel: "EX-13" })), "a real model is a battery");
   assert.ok(owes(save({ batteryModel: "None", batteryQty: "2" })), "a quantity is a battery");
-  assert.ok(docTypes(cedar({ hasBattery: "Yes", batteryModel: "N/A" })).includes("battery_spec"), "an affirmed battery stays one");
+  // Operator ruling on #256: an undecided model is still a battery — it owes its spec sheet, and
+  // declaring "no storage" to the utility for it would be false.
+  const tbd = save({ batteryModel: "TBD" });
+  assert.equal(tbd.parserSnapshot?.hasBattery, "Yes");
+  assert.ok(owes(tbd), "'TBD' is a battery");
+  assert.ok(owes(updateProject(db, tbd.id, { ...(tbd.parserSnapshot as object), dcKw: "6.5" } as never).project), "'TBD' stays a battery on update");
+});
+await check("(x4) MUST-EXCLUDE: a saved {batteryModel:'N/A'} job — the flag, the fee predicate, the portal's energy source, the utility programme and the required set all say no battery", () => {
+  const client = createClient(db, { companyName: "ESS Agree Solar", ccbLicenseNumber: "246248" });
+  const p = createProject(db, { clientId: client.id, owner: "ESS Owner", street: "4 Test Way", city: "Sagebrush", state: "CO", ahj: "Sagebrush", utility: "Example Mountain Electric", dcKw: "6", acKw: "5", batteryModel: "N/A" } as never).project;
+  const snap = p.parserSnapshot as Record<string, unknown>;
+  const fields = resolveRecipeFieldValues(db, p, "powerclerk");
+  assert.equal(snap.hasBattery, "No");
+  assert.notEqual(batteryStatus(snap), "yes");
+  assert.equal(fields.energySource, "Solar PV");
+  assert.equal(fields.wattsmartBatteryProgram, "No");
+  assert.ok(!docTypes(p as never).includes("battery_spec"));
+  // MUST-PASS: the same agreement for a real battery, and an explicit "No" is honoured by the energy source.
+  const real = createProject(db, { clientId: client.id, owner: "ESS Owner", street: "5 Test Way", city: "Sagebrush", state: "CO", ahj: "Sagebrush", utility: "Example Mountain Electric", dcKw: "6", acKw: "5", batteryModel: "EX-13" } as never).project;
+  assert.equal(batteryStatus(real.parserSnapshot as Record<string, unknown>), "yes");
+  assert.equal(resolveRecipeFieldValues(db, real, "powerclerk").energySource, "Solar PV and Battery");
+  assert.equal(resolveRecipeFieldValues(db, { ...(real as object), parserSnapshot: { ...(real.parserSnapshot as object), hasBattery: "No" } } as never, "powerclerk").energySource, "Solar PV");
 });
 await check("(c7) MUST-EXCLUDE: a cited fire-only permit or review is never presented as the cited ESS requirement", () => {
   lookup("Town of Mesa Verde Springs", {

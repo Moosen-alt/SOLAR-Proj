@@ -71,9 +71,11 @@ export type BatteryStatus = "yes" | "no" | "unknown";
  *  "No ESS", "Not in scope", "-"). One answer for the two places a placeholder must not become a
  *  battery: normalize.ts, where hasBattery is DERIVED from the model, and essRequirements, where the
  *  required set grows a blocking spec-sheet row (#246). Normalized first (case, dots, parentheses,
- *  spacing), so the spellings an operator actually types all read the same. */
+ *  spacing, " / "), so the spellings an operator actually types all read the same. "TBD" is NOT a
+ *  placeholder (operator ruling on #256): a battery whose model is undecided is still a battery, and
+ *  declaring "no storage" to the utility for it would be false. */
 export function isPlaceholderBatteryModel(value: unknown): boolean {
-  const v = String(value ?? "").toLowerCase().replace(/[().]/g, "").replace(/\s+/g, " ").trim();
+  const v = String(value ?? "").toLowerCase().replace(/[().]/g, "").replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").trim();
   return /^(?:n\/?a|none(?: proposed| planned| installed)?|no(?: battery| batteries| ess| storage)?|nil|null|not (?:included|applicable|used|proposed|in scope)|0|[-\u2013\u2014]+)$/.test(v);
 }
 
@@ -103,7 +105,10 @@ export function batteryStatus(snapshot: Record<string, unknown> | null | undefin
   const s = (snapshot ?? {}) as Record<string, unknown>;
   const flag = str(s.hasBattery);
   const qty = Number(str(s.batteryQuantity) || str(s.batteryQty) || 0);
-  if (/^(yes|true|y)$/i.test(flag) || str(s.batteryModel) !== "" || (Number.isFinite(qty) && qty > 0)) return "yes";
+  // A placeholder model ("N/A", "None") is not battery evidence — the ONE predicate normalize.ts
+  // derives hasBattery with, so the fee line and the portal's declaration agree with the flag (#246).
+  const model = str(s.batteryModel);
+  if (/^(yes|true|y)$/i.test(flag) || (model !== "" && !isPlaceholderBatteryModel(model)) || (Number.isFinite(qty) && qty > 0)) return "yes";
   if (/^(no|false|none|n)$/i.test(flag)) return "no";
   return "unknown";
 }
