@@ -13,7 +13,7 @@ process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
 process.env.SEED_TEST_INSTALLER = "false";
 process.env.AUTOPILOT_AUTO_START = "0";
 
-const { openDatabase } = await import("../src/db");
+const { openDatabase, DEFAULT_ORG_ID } = await import("../src/db");
 const { createProject, updateProject, humanVerify, listDivergedAliasProjects } = await import("../src/repository");
 const { isMlpeDesignForProject } = await import("../src/codeReviewRules");
 const db = await openDatabase();
@@ -93,26 +93,78 @@ let healthyPid = "";
   check("verified canonical value is not overwritten by its derivation", v2.project.parserSnapshot.inverterQuantity === "18", v2.project.parserSnapshot.inverterQuantity);
 }
 
-// 4) The read-only report of snapshots diverged by the old bug: listed, never rewritten.
+// Rewrite a stored snapshot behind the edit doors' back — the shape the pre-#225/#238 bug left.
+const forceSnapshot = (pid: string, patch: Record<string, unknown>) => {
+  const row = db.get<{ parser_json: string }>("SELECT parser_json FROM projects WHERE id = ?", [pid])!;
+  db.run("UPDATE projects SET parser_json = ? WHERE id = ?", [JSON.stringify({ ...JSON.parse(row.parser_json), ...patch }), pid]);
+};
+
+// 4) MUST-PASS — Helm ruling on #238: a human verify on a field wins on that field. A canonical alias
+//    that diverged from its source (operator-set, or a legacy row) must not outvote the verify.
+{
+  // a) operator-set canonical inverterModel
+  const created = createProject(db, { ...base, invModel: "Enphase IQ8M-72-2-US", invQty: "20", inverterModel: "Enphase IQ8M (operator)" });
+  const pid = created.project.id;
+  check("ruling setup: operator-set inverterModel is stored", created.project.parserSnapshot.inverterModel === "Enphase IQ8M (operator)", created.project.parserSnapshot.inverterModel);
+  const itemId = queueReview(pid, "inverterModel", "Enphase IQ8M-72-2-US");
+  const v = humanVerify(db, pid, { reviewItemId: itemId, action: "edit", fieldValue: "Sunny Boy SB7.7-1SP-US-41" });
+  check("verify overrides an operator-set inverterModel", v.project.parserSnapshot.inverterModel === "Sunny Boy SB7.7-1SP-US-41", v.project.parserSnapshot.inverterModel);
+  check("…and MLPE is no longer softened", !isMlpeDesignForProject(v.project));
+}
+{
+  // b) legacy pre-#225 row: invModel edited, inverterModel left behind on Enphase
+  const created = createProject(db, { ...base, invModel: "Enphase IQ8M-72-2-US", invQty: "20" });
+  const pid = created.project.id;
+  forceSnapshot(pid, { invModel: "Sunny Boy SB7.7-1SP-US-41" });
+  const itemId = queueReview(pid, "inverterModel", "Sunny Boy SB7.7-1SP-US-41");
+  const v = humanVerify(db, pid, { reviewItemId: itemId, action: "approve", fieldValue: "Sunny Boy SB7.7-1SP-US-41" });
+  check("verify heals a legacy diverged inverterModel", v.project.parserSnapshot.inverterModel === "Sunny Boy SB7.7-1SP-US-41", v.project.parserSnapshot.inverterModel);
+  check("…and the legacy row is no longer MLPE", !isMlpeDesignForProject(v.project));
+}
+{
+  // c) the inverterMake → invMake → inverterManufacturer class
+  const created = createProject(db, { ...base, invMake: "Enphase", invModel: "IQ8M-72-2-US", inverterManufacturer: "Enphase Energy (operator)" });
+  const pid = created.project.id;
+  const itemId = queueReview(pid, "inverterMake", "Enphase");
+  const v = humanVerify(db, pid, { reviewItemId: itemId, action: "edit", fieldValue: "SMA" });
+  check("verify on inverterMake writes inverterManufacturer", v.project.parserSnapshot.inverterManufacturer === "SMA", v.project.parserSnapshot.inverterManufacturer);
+  // MUST-EXCLUDE: a SECONDARY source is not a statement about the alias (mainServiceRating ← busRating first).
+  const mb = queueReview(pid, "mainBreaker", "200");
+  const v2 = humanVerify(db, pid, { reviewItemId: mb, action: "edit", fieldValue: "150" });
+  check("verify on mainBreaker leaves mainServiceRating on busRating", v2.project.parserSnapshot.mainServiceRating === "200", v2.project.parserSnapshot.mainServiceRating);
+}
+
+// 5) The read-only report of snapshots diverged by the old bug: listed, never rewritten.
 {
   const created = createProject(db, { ...base, invModel: "Enphase IQ8M-72-2-US", invQty: "20", ownerPhone: "555-0100" });
   const pid = created.project.id;
-  // Simulate a pre-#238 snapshot: source edited, alias left behind (and a stale phone alias).
-  const row = db.get<{ parser_json: string; updated_at: string }>("SELECT parser_json, updated_at FROM projects WHERE id = ?", [pid])!;
-  const legacy = { ...JSON.parse(row.parser_json), invModel: "Sunny Boy SB7.7-1SP-US-41", ownerPhone: "555-0199" };
-  db.run("UPDATE projects SET parser_json = ? WHERE id = ?", [JSON.stringify(legacy), pid]);
+  // Simulate a pre-#238 snapshot: source edited, alias left behind (and a changed phone).
+  forceSnapshot(pid, { invModel: "Sunny Boy SB7.7-1SP-US-41", ownerPhone: "555-0199" });
   const before = db.get<{ parser_json: string; updated_at: string }>("SELECT parser_json, updated_at FROM projects WHERE id = ?", [pid])!;
 
   const report = listDivergedAliasProjects(db, null);
   const hit = report.find((r) => r.projectId === pid);
   const inv = hit?.aliases.find((a) => a.key === "inverterModel");
   check("report lists the diverged inverterModel", inv?.stored === "Enphase IQ8M-72-2-US" && inv?.derived === "Sunny Boy SB7.7-1SP-US-41", hit);
-  const phone = hit?.aliases.find((a) => a.key === "homeownerPhone");
-  check("report names the phone alias without its value", !!phone && !JSON.stringify(phone).includes("555-"), phone);
+  check("report leaves the phone alias out entirely", !hit?.aliases.some((a) => a.key === "homeownerPhone") && !JSON.stringify(report).includes("555-"), hit);
   check("report skips a project whose aliases agree", !!healthyPid && !report.some((r) => r.projectId === healthyPid), report.map((r) => r.projectId));
   const after = db.get<{ parser_json: string; updated_at: string }>("SELECT parser_json, updated_at FROM projects WHERE id = ?", [pid])!;
   check("report writes nothing", after.parser_json === before.parser_json && after.updated_at === before.updated_at);
-  check("org-scoped report sees only that org", listDivergedAliasProjects(db, "no-such-org").length === 0);
+
+  // Org filter: a diverged project in a SECOND org.
+  const otherOrg = "org-238-other";
+  db.run("INSERT INTO orgs (id, name, edition, created_at) VALUES (?, ?, ?, ?)", [otherOrg, "Other Test Org", "full", new Date().toISOString()]);
+  const other = createProject(db, { ...base, invModel: "Enphase IQ8M-72-2-US", invQty: "20" }, otherOrg).project.id;
+  forceSnapshot(other, { invModel: "Sunny Boy SB6.0-1SP-US-41" });
+  const ids = (rows: Array<{ projectId: string }>) => rows.map((r) => r.projectId);
+  const byDefault = ids(listDivergedAliasProjects(db));
+  check("default call includes the default-org row", byDefault.includes(pid), byDefault);
+  check("default call excludes the other org's row", !byDefault.includes(other), byDefault);
+  check("explicit default-org filter matches the default call", JSON.stringify(ids(listDivergedAliasProjects(db, DEFAULT_ORG_ID))) === JSON.stringify(byDefault));
+  const byOther = ids(listDivergedAliasProjects(db, otherOrg));
+  check("other-org filter sees only its own row", byOther.length === 1 && byOther[0] === other, byOther);
+  const all = ids(listDivergedAliasProjects(db, null));
+  check("null filter includes both orgs", all.includes(pid) && all.includes(other), all);
 }
 
 db.close();

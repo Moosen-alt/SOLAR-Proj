@@ -134,7 +134,7 @@ import {
   isVerifiedKnowledge,
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
-import { canonicalizeSnapshot, compactAlnum, divergedAliases, existingSystemFromSnapshot, fieldAliases, mergeEditOverSnapshot, normalizeProject, normalizeTokens, TRACK_ISSUER_SNAPSHOT_KEYS, withTrackIssuers } from "./normalize";
+import { canonicalAliasForVerifiedField, canonicalizeSnapshot, compactAlnum, divergedAliases, existingSystemFromSnapshot, fieldAliases, mergeEditOverSnapshot, normalizeProject, normalizeTokens, TRACK_ISSUER_SNAPSHOT_KEYS, withTrackIssuers } from "./normalize";
 import {
   classificationDrift, classifyPermitStatusText, effectiveCheckDays, extractStatusDate, isAuthWallText, isNemApprovalOutcome, nextCheckIso, outcomeTrack, portalStatedStatus,
   readingMayFinishTrack, shouldRecordStatusCheck, trackKind, UNCONFIRMED_READING_LABEL,
@@ -9804,8 +9804,12 @@ function applyVerifiedField(db: AppDb, projectId: string, stored: ParserPayload,
   // echoing the OLD value — and, now differing from its source, it read as operator-set, so every
   // later edit kept it (QC's critical.inverter_model blocker sends the operator exactly here). The
   // same merge updateProject uses drops the echoes, then canonicalization re-derives them from the
-  // verified value. The verified value itself is the edit, so nothing derived overwrites it.
-  const payload = canonicalizeSnapshot(mergeEditOverSnapshot(stored, { [aliases[0]]: value }));
+  // verified value. The verified value itself is the edit, so nothing derived overwrites it — and
+  // when the field is (or primarily feeds) a canonical alias, that alias is part of the edit too, so
+  // a diverged stored copy can't outvote the person (canonicalAliasForVerifiedField).
+  const canonicalKey = canonicalAliasForVerifiedField(fieldName, aliases[0]);
+  const edit: ParserPayload = { [aliases[0]]: value, ...(canonicalKey ? { [canonicalKey]: value } : {}) };
+  const payload = canonicalizeSnapshot(mergeEditOverSnapshot(stored, edit));
   const numeric = Number.parseFloat(value.replace(/[^0-9.-]/g, ""));
   const numberValue = Number.isFinite(numeric) ? numeric : null;
 
@@ -9839,8 +9843,8 @@ function applyVerifiedField(db: AppDb, projectId: string, stored: ParserPayload,
 // SNAPSHOTS DIVERGED BEFORE #225/#238 NEVER SELF-HEAL — so list them for a person (#238). A stored
 // alias that differs from its source is kept by every edit door (it reads as operator-set), and the
 // snapshot carries no provenance to tell legacy staleness from intent. READ-ONLY: it never rewrites a
-// snapshot; the operator fixes a row through the normal edit (sending the alias itself). The phone
-// alias is reported by key only — its values are a homeowner's contact details.
+// snapshot; the operator fixes a row through the normal edit (sending the alias itself), or by
+// verifying the field in the review queue. Phone aliases never appear (divergedAliases skips them).
 export function listDivergedAliasProjects(
   db: AppDb,
   orgId: string | null = DEFAULT_ORG_ID,
@@ -9851,8 +9855,7 @@ export function listDivergedAliasProjects(
   );
   const out: Array<{ projectId: string; status: string; aliases: Array<{ key: string; stored: string; derived: string }> }> = [];
   for (const row of rows) {
-    const aliases = divergedAliases(parseJson<ParserPayload>(row.parser_json, {}))
-      .map((a) => (a.key === "homeownerPhone" ? { ...a, stored: "(differs)", derived: "(differs)" } : a));
+    const aliases = divergedAliases(parseJson<ParserPayload>(row.parser_json, {}));
     if (aliases.length) out.push({ projectId: row.id, status: text(row.status), aliases });
   }
   return out;

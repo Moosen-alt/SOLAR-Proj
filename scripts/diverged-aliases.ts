@@ -9,8 +9,8 @@
 // This lists them for a person to review. READ-ONLY: it never writes. To fix a row, edit the
 // project and send the alias itself (or the source, after clearing the alias).
 //
-// Prints 8-char project ids and equipment/rating values only; the homeowner phone alias is
-// reported by key, never its value.
+// Prints 8-char project ids and equipment/rating values only; the homeowner phone alias is not
+// part of the report (divergedAliases skips it).
 import "dotenv/config";
 
 process.env.AUTOPILOT_DB_PATH = process.env.AUTOPILOT_DB_PATH || "backend/data/autopilot.sqlite";
