@@ -8,7 +8,10 @@
 //      bound to the document's id + sha256, and the audit trail has the confirm;
 //   3. MUST-EXCLUDE: another org's project → 404 (never 403), for confirm AND withdraw, nothing
 //      written there; a document of another project → 404; a project that does not exist → 404;
-//   4. withdraw → 200 and audited; withdrawing again → 409.
+//   4. withdraw → 200 and audited; withdrawing again → 409;
+//   5. an org API key alone (no session) → 401 and nothing written: a key names an org, never a person;
+//   6. a signed-in account with a person's display name is recorded by that name (and its user id);
+//   7. ?inline=1 sends nosniff, and opens inline only a file whose bytes are a PDF.
 // The gate behaviour (held without a confirmation, released with one, voided on re-upload) is pinned
 // in structuralCertificationCredit.test.ts.
 //
@@ -42,7 +45,10 @@ const { openDatabase } = await import("../src/db");
 const { createClient } = await import("../src/clients");
 const { createProject } = await import("../src/repository");
 const { saveProjectDocument } = await import("../src/projectDocuments");
+const { createApiKey } = await import("../src/auth");
+const { DEFAULT_ORG_ID } = await import("../src/db");
 const db = await openDatabase();
+const apiKey = createApiKey(db, DEFAULT_ORG_ID, "letter-route key").key;
 
 const OTHER_ORG = "org-letter-beta";
 db.run("INSERT OR IGNORE INTO orgs (id, name, edition, created_at) VALUES (?, ?, 'full', ?)", [OTHER_ORG, "Beta Solar", new Date().toISOString()]);
@@ -66,6 +72,14 @@ const mk = async (owner: string) => {
 const mine = await mk("Jane Example");
 const theirs = await mk("John Example");
 db.run("UPDATE projects SET org_id = ? WHERE id = ?", [OTHER_ORG, theirs.projectId]);
+// A document whose content type says PDF but whose bytes are HTML: ?inline=1 must not open it.
+const fakePdfPath = path.join(tmpDir, "not-a-pdf.pdf");
+fs.writeFileSync(fakePdfPath, "<html><script>alert(1)</script></html>");
+const fakePdfId = "doc-not-a-pdf";
+db.run(
+  "INSERT INTO project_documents (id, project_id, doc_type, original_filename, stored_path, content_type, size_bytes, source, uploaded_at) VALUES (?, ?, 'site_photo', 'not-a-pdf.pdf', ?, 'application/pdf', 40, 'upload', ?)",
+  [fakePdfId, mine.projectId, fakePdfPath, new Date().toISOString()],
+);
 // Text extraction runs in the background after each save; let it land before the handle closes.
 for (let i = 0; i < 200; i++) {
   if (!db.get<{ n: number }>("SELECT COUNT(*) AS n FROM project_documents WHERE COALESCE(extracted_text, '') = ''")?.n) break;
@@ -100,9 +114,12 @@ try {
     if (i === 89) throw new Error(`server never came up:\n${serverLog.slice(-1500)}`);
     await new Promise((r) => setTimeout(r, 1000));
   }
-  const post = (projectId: string, action: string, body: unknown, cookie = "") => fetch(`${BASE}/api/projects/${projectId}/structural-letter/${action}`, {
-    method: "POST", headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body),
+  const post = (projectId: string, action: string, body: unknown, cookie = "", extra: Record<string, string> = {}) => fetch(`${BASE}/api/projects/${projectId}/structural-letter/${action}`, {
+    method: "POST", headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}), ...extra }, body: JSON.stringify(body),
   });
+
+  const keyOnly = await post(mine.projectId, "confirm", { documentId: mine.docId, page: 1, confirmedBy: "Jane Example" }, "", { "x-api-key": apiKey });
+  check("5. an org API key alone (no session): 401, and nothing written", keyOnly.status === 401 && rowsFor(mine.projectId).length === 0, String(keyOnly.status));
 
   const anon = await post(mine.projectId, "confirm", { documentId: mine.docId, page: 1, confirmedBy: "Mallory Forger" });
   check("1. signed out: 401, and nothing written", anon.status === 401 && rowsFor(mine.projectId).length === 0, String(anon.status));
@@ -143,6 +160,30 @@ try {
     `${w.status} ${JSON.stringify(wAudit)}`);
   const again = await post(mine.projectId, "withdraw", {}, cookie);
   check("4b. withdrawing with nothing standing → 409", again.status === 409, String(again.status));
+
+  // 6. The account gets a person's display name: that name is recorded (and the user id), not the email.
+  const rw = new Database(dbPath);
+  try { rw.prepare("UPDATE users SET name = 'Jane Example' WHERE email = 'admin@letter.test'").run(); } finally { rw.close(); }
+  const named = await post(mine.projectId, "confirm", { documentId: mine.docId, page: 1, confirmedBy: "Mallory Forger" }, cookie);
+  const namedBody = await named.json().catch(() => ({})) as { confirmation?: { confirmedBy?: string } };
+  const namedRow = rowsFor(mine.projectId).find((r) => !r.withdrawn_at);
+  const adminId = String(read("SELECT id FROM users WHERE email = 'admin@letter.test'")[0]?.id ?? "");
+  const namedAudit = read("SELECT actor_name, details FROM audit_logs WHERE project_id = ? AND action = 'structural_letter.confirmed' ORDER BY created_at DESC LIMIT 1", [mine.projectId]);
+  check("6. a signed-in account named like a person is recorded by its name and user id, never the body's name",
+    named.status === 200 && namedBody.confirmation?.confirmedBy === "Jane Example" && namedRow?.confirmed_by === "Jane Example"
+    && namedRow?.confirmed_by_user_id === adminId && namedAudit[0]?.actor_name === "Jane Example"
+    && (JSON.parse(String(namedAudit[0]?.details ?? "{}")) as { userId?: string }).userId === adminId,
+    `${named.status} ${JSON.stringify(namedBody).slice(0, 200)} ${JSON.stringify(namedRow)}`);
+
+  // 7. ?inline=1: nosniff, and inline only for real PDF bytes.
+  const pdfInline = await fetch(`${BASE}/api/projects/${mine.projectId}/documents/${mine.docId}?inline=1`, { headers: { cookie } });
+  check("7a. ?inline=1 on a PDF: inline, with nosniff",
+    pdfInline.status === 200 && /^inline;/.test(String(pdfInline.headers.get("content-disposition"))) && pdfInline.headers.get("x-content-type-options") === "nosniff",
+    `${pdfInline.status} ${pdfInline.headers.get("content-disposition")} ${pdfInline.headers.get("x-content-type-options")}`);
+  const fakeInline = await fetch(`${BASE}/api/projects/${mine.projectId}/documents/${fakePdfId}?inline=1`, { headers: { cookie } });
+  check("7b. ?inline=1 on HTML bytes labelled application/pdf: still a download, with nosniff",
+    fakeInline.status === 200 && /^attachment;/.test(String(fakeInline.headers.get("content-disposition"))) && fakeInline.headers.get("x-content-type-options") === "nosniff",
+    `${fakeInline.status} ${fakeInline.headers.get("content-disposition")} ${fakeInline.headers.get("x-content-type-options")}`);
 } finally {
   server.kill("SIGTERM");
 }
