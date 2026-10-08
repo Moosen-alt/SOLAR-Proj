@@ -67,6 +67,16 @@ export const SERVICE_FEEDER_400A_LABEL = "Services or feeders: 201 amps to 400 a
 
 export type BatteryStatus = "yes" | "no" | "unknown";
 
+/** A battery MODEL field that says there is NO battery ("N/A", "N.A.", "(none)", "None proposed",
+ *  "No ESS", "Not in scope", "-"). One answer for the two places a placeholder must not become a
+ *  battery: normalize.ts, where hasBattery is DERIVED from the model, and essRequirements, where the
+ *  required set grows a blocking spec-sheet row (#246). Normalized first (case, dots, parentheses,
+ *  spacing), so the spellings an operator actually types all read the same. */
+export function isPlaceholderBatteryModel(value: unknown): boolean {
+  const v = String(value ?? "").toLowerCase().replace(/[().]/g, "").replace(/\s+/g, " ").trim();
+  return /^(?:n\/?a|none(?: proposed| planned| installed)?|no(?: battery| batteries| ess| storage)?|nil|null|not (?:included|applicable|used|proposed|in scope)|0|[-\u2013\u2014]+)$/.test(v);
+}
+
 function str(value: unknown): string {
   return value == null ? "" : String(value).trim();
 }

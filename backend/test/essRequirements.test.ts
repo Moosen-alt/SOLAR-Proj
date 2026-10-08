@@ -9,7 +9,8 @@
 //   K1 requiredDocuments: drop the essDocumentRows() push           → (d1) (d2) fail.
 //   K2 essRequirements: gate on batteryStatus() !== "no"             → (x2) fails.
 //   K3 submittalTracks: drop the essStep spread                      → (c1)-(c4) and (c6) fail.
-//   K4 essRequirements: drop the placeholder-model guard               → (x3) fails.
+//   K4 normalize.ts: derive hasBattery from a placeholder model again → (x3) fails; so does
+//      essRequirements without its placeholder guard (batteryStatus still reads the model).
 //   K5 essRequirements: a fire-only cite counts as "cited"             → (c7) fails.
 //   K6 dashboard.js: drop the listed-above filter                      → (r1) fails.
 //
@@ -45,7 +46,8 @@ const tracks = await import("../src/submittalTracks");
 const permitProcess = await import("../src/permitProcess");
 const rd = await import("../src/requiredDocuments");
 const { createClient } = await import("../src/clients");
-const { createProject } = await import("../src/repository");
+const repo = await import("../src/repository");
+const { createProject } = repo;
 
 let failures = 0;
 const check = async (name: string, fn: () => void | Promise<void>) => {
@@ -198,14 +200,27 @@ await check("(d5) MUST-PASS: the upload control offers battery_spec and ess_deta
   assert.match(select, /value="battery_spec"/);
   assert.match(select, /value="ess_detail"/);
 });
-await check("(x3) MUST-EXCLUDE: a placeholder battery model is not a battery; MUST-PASS: an affirmed battery with a placeholder model still is", () => {
-  for (const snap of [{ batteryModel: "N/A" }, { batteryModel: "None" }, { batteryModel: "Not included" }, { batteryModel: "-" }, { hasBattery: "No", batteryModel: "None" }]) {
-    const p = cedar(snap);
-    assert.ok(!docTypes(p).includes("battery_spec"), JSON.stringify(snap));
-    assert.ok(cards(p).every((t) => !("essStep" in t)), JSON.stringify(snap));
+await check("(x3) MUST-EXCLUDE: a placeholder battery model saved through createProject / updateProject is not a battery; MUST-PASS: a real model or a quantity still is", () => {
+  // Through the SAVE path: normalize.ts derives hasBattery from the model, so a literal snapshot
+  // would skip the very derivation that turned "N/A" into a battery.
+  const { getProjectDetail, updateProject } = repo;
+  const client = createClient(db, { companyName: "ESS Placeholder Solar", ccbLicenseNumber: "246247" });
+  const save = (o: Record<string, unknown>) => createProject(db, { clientId: client.id, owner: "ESS Owner", street: "3 Test Way", city: "Sagebrush", state: "CO", ahj: "Sagebrush", utility: "Example Mountain Electric", dcKw: "6", acKw: "5", ...o } as never).project;
+  const owes = (p: unknown) => docTypes(p as never).includes("battery_spec") || cards(p as never).some((t) => "essStep" in t);
+  for (const model of ["N/A", "N.A.", "None", "(none)", "None proposed", "Not included", "Not in scope", "No ESS", "-"]) {
+    const created = save({ batteryModel: model });
+    assert.equal(created.parserSnapshot?.hasBattery, "No", `createProject derived hasBattery from "${model}"`);
+    assert.ok(!owes(created), `createProject: "${model}" owes battery rows`);
+    // An unrelated update re-derives hasBattery (updateProject drops the stored flag) — still not a battery.
+    const updated = updateProject(db, created.id, { ...(created.parserSnapshot as object), dcKw: "6.5" } as never).project;
+    assert.equal(updated.parserSnapshot?.hasBattery, "No", `updateProject re-derived hasBattery from "${model}"`);
+    assert.ok(!owes(getProjectDetail(db, created.id).project), `updateProject: "${model}" owes battery rows`);
   }
-  assert.ok(docTypes(cedar({ hasBattery: "Yes", batteryModel: "N/A" })).includes("battery_spec"));
-  assert.ok(docTypes(cedar({ batteryModel: "TBD", batteryQty: "2" })).includes("battery_spec"));
+  const parsed = save({ hasBattery: false, batteryModel: "N/A" });
+  assert.ok(!owes(updateProject(db, parsed.id, { ...(parsed.parserSnapshot as object), acKw: "5.2" } as never).project), "a parser-made {hasBattery:false, batteryModel:'N/A'} became a battery on update");
+  assert.ok(owes(save({ batteryModel: "EX-13" })), "a real model is a battery");
+  assert.ok(owes(save({ batteryModel: "None", batteryQty: "2" })), "a quantity is a battery");
+  assert.ok(docTypes(cedar({ hasBattery: "Yes", batteryModel: "N/A" })).includes("battery_spec"), "an affirmed battery stays one");
 });
 await check("(c7) MUST-EXCLUDE: a cited fire-only permit or review is never presented as the cited ESS requirement", () => {
   lookup("Town of Mesa Verde Springs", {

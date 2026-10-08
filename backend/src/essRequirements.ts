@@ -22,23 +22,19 @@
 
 import type { ProjectRecord } from "../../shared/src/types";
 import type { RequiredDocItem } from "./requiredDocuments";
-import { batteryStatus } from "./batteryServiceFeeder";
+import { batteryStatus, isPlaceholderBatteryModel } from "./batteryServiceFeeder";
 import { permitProcessFor } from "./permitProcess";
 import { findAhjProcessProfile } from "./processProfiles";
 
-// A battery MODEL field that says there is none ("N/A", "None", "Not included", "-") is not a
-// battery. batteryStatus() reads any non-empty model as "yes" (the fee line and the portal's
-// declaration share that reading); here the row BLOCKS, so a placeholder must not create it.
-const PLACEHOLDER_MODEL = /^(?:n\/?a|none|no|nil|null|tbd|not\s+(?:included|applicable|used)|no\s+battery|[-\u2013\u2014]+|0)$/i;
-
 /** Does this project carry battery storage? The one predicate (batteryStatus "yes"), except that a
- *  placeholder model with no positive hasBattery and no quantity is not a battery. */
+ *  placeholder model (isPlaceholderBatteryModel) with no positive hasBattery and no quantity is not a
+ *  battery: batteryStatus reads any non-empty model as "yes", and here the row BLOCKS. */
 export function projectHasBattery(project: Pick<ProjectRecord, "parserSnapshot">): boolean {
   const s = (project.parserSnapshot ?? {}) as Record<string, unknown>;
   const str = (v: unknown) => (v == null ? "" : String(v).trim());
   const qty = Number(str(s.batteryQuantity) || str(s.batteryQty) || 0);
   const affirmed = /^(yes|true|y)$/i.test(str(s.hasBattery)) || (Number.isFinite(qty) && qty > 0);
-  if (!affirmed && PLACEHOLDER_MODEL.test(str(s.batteryModel))) return false;
+  if (!affirmed && isPlaceholderBatteryModel(s.batteryModel)) return false;
   return batteryStatus(s) === "yes";
 }
 
