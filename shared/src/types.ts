@@ -4137,6 +4137,10 @@ export interface PermitProcessLookup {
   /** The COUNTY office that reviews zoning for an address in the unincorporated county around this
    *  city/village (read when the incorporatedStatus answer is "Unincorporated county"). */
   unincorporatedZoning?: CitedFact<string>;
+  /** How this AHJ permits a residential GROUND-MOUNTED array (#247): "required" when a page says it
+   *  needs a zoning / land-use approval beside the building permit, "not_required" when a page says it
+   *  does not. Cited or absent — never inferred (requiredDocuments.groundMountDocItems reads it). */
+  groundMountZoning?: CitedFact<"required" | "not_required">;
   /** Adopted codes the lookup found (display only; the gate reads jurisdiction_code_profiles). */
   codes?: CitedFact<string[]>;
   /** Pages the lookup READ ITSELF (agency pages, the portal's public catalog, fee schedules), each

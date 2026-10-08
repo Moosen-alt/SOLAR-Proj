@@ -184,6 +184,17 @@ await check("(p3) MUST-PASS, ec5c36d3-shaped (engineered, PE letter missing): el
     "…and so must a combination permit");
 });
 
+await check("(gm1) a ground array's sheets ride every AHJ run; its zoning / land-use approval rides the BUILDING run only — never the utility's (#247)", () => {
+  const p = mk("engineered");
+  for (const t of [...PLAN_SET_FAMILY, "ground_footing", "trench_detail", "zoning_approval"]) save(p.id, t);
+  const bld = repo.packagedDocumentsByType(db, p, "building");
+  for (const t of ["ground_footing", "trench_detail", "zoning_approval"]) assert.ok(bld[t], `the BUILDING run lost ${t}`);
+  const ele = repo.packagedDocumentsByType(db, p, "electrical");
+  assert.ok(ele.ground_footing && ele.trench_detail, "the shared ground sheets ride the electrical run");
+  assert.equal(ele.zoning_approval, undefined, "the ELECTRICAL run was handed the zoning approval");
+  assert.equal(repo.packagedDocumentsByType(db, p, "nem").zoning_approval, undefined, "the NEM run was handed the zoning approval");
+});
+
 // ---------------------------------------------------------------------------------------------
 // POWERCLERK NEM (29cd57b5-shaped, Pacific Power)
 // ---------------------------------------------------------------------------------------------

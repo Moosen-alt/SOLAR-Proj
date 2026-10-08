@@ -18,6 +18,8 @@ import {
 } from "./designCriteria";
 import { adoptedNecEdition, necEditionRequirements, NEC_EDITION_REQUIREMENTS } from "./necEditions";
 import { moduleLevelElectronicsEquipment, type ModuleLevelElectronicsEvidence } from "./moduleLevelElectronics";
+import { designText, mountKind, type MountKind } from "./mountKind";
+export { designText, engineeredGroundMount, groundMountFromField, isGroundMount, mountKind, mountKindForProject, type MountKind } from "./mountKind";
 
 const oregonElectrical2023: CodeReference = {
   code: "2023 OESC / 2023 NEC",
@@ -170,28 +172,6 @@ function num(project: ProjectRecord, keys: string[]): number | null {
   return null;
 }
 
-export function designText(project: ProjectRecord): string {
-  const keys = [
-    // Text extracted from the uploaded plan-set-family PDFs (overlaid on the snapshot
-    // by getProjectDetail) — so rules check the ACTUAL sheets, not only parser output.
-    "planSetExtractedText",
-    "splitPagesText",
-    "packetReadinessText",
-    "utilityDownloadChecklistText",
-    "utilityUploadNotesText",
-    "projectDescriptionText",
-    "sitePlanNotesText",
-    "roofPlanNotesText",
-    "structuralCalcText",
-    "electricalCalcText",
-    "labelsText",
-    "reviewFlags",
-    "stampRecommendation",
-    "locateCalloutText",
-  ];
-  return keys.map((key) => str(project, key)).join("\n");
-}
-
 function hasAny(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
@@ -203,45 +183,9 @@ function isOregon(project: ProjectRecord, _profile: AhjProcessProfile | null): b
   return usStateCode(project.state) === "OR";
 }
 
-// IS THIS ON A ROOF? Everything downstream hangs on the answer: fire access pathways, roof
-// framing, and racking attachment/flashing are all ROOF rules, and a ground array has none of
-// those things — it has piers, a foundation and a trench.
-//
-// This used to read `project.interconnectionMethod` and the plan-text blob, and never the
-// parser's own `mounting` field — the one place the answer is actually recorded. A ground-mount
-// project therefore collected three roof blockers (fire pathways, roof framing, roof
-// attachment) unless the words "ground mount" happened to appear in its extracted text, which
-// on a freshly uploaded set has not been extracted yet. Found 2026-09-22 while stress-testing
-// the gate. It also did not know "pole mount", which permitPath.ts has always recognised — two
-// modules answering the same question with different vocabularies.
-//
-// The mounting FIELD is authoritative when present; the text stays as the fallback for a parse
-// that did not capture it. Silence still means roof, which is the conservative direction: roof
-// rules are the stricter set, so an unknown mount is over-reviewed rather than under-reviewed.
-// CARPORT IS NOT GROUND, for one rule. A carport/canopy has no dwelling roof, so the fire
-// access pathway, roof framing and flashing rules do not apply to it — but NEC 690.12 rapid
-// shutdown governs PV "on buildings", and whether a carport counts is an AHJ call, not ours.
-// So the predicate answers THREE ways and the RSD rule reads the distinction: ground and pole
-// are exempt, a carport keeps its rapid-shutdown requirement. Decided deliberately 2026-09-22;
-// the reasoning is pinned in groundMountScope.test.ts so a later reader can overturn it on
-// purpose rather than by accident.
-export type MountKind = "roof" | "ground" | "carport" | "unknown";
-
-export function mountKind(project: ProjectRecord, allText: string): MountKind {
-  // The parser's own field is `mounting`; `mountType` is the older name a few fixtures and the
-  // benchmark snapshots still carry (leak sweep 2026-09-28: the portal description read ONLY the
-  // dead mountType key, so every job was "Roof-mounted"). Both answer here, mounting first.
-  const mounting = str(project, "mounting") || str(project, "mountType");
-  const probe = mounting || `${project.interconnectionMethod}\n${allText}`;
-  if (/carport|canopy|awning|patio cover/i.test(probe)) return "carport";
-  // The mounting FIELD may say just "Ground" / "Pole" (mountType's vocabulary); only the free text
-  // needs the longer phrase, where a bare "ground" is a grounding note.
-  if (/ground[-\s]?mount|ground.?mounted|ground.?array|pole[-\s]?mount/i.test(probe) || (mounting && /\b(?:ground|pole)\b/i.test(mounting))) return "ground";
-  if (mounting) return "roof";
-  // Silence means roof, which is the conservative direction: the roof rules are the stricter
-  // set, so an unknown mount is over-reviewed rather than under-reviewed.
-  return "unknown";
-}
+// IS THIS ON A ROOF? — the one mount predicate (mountKind / mountKindForProject) lives in
+// mountKind.ts, so permitPath and requiredDocuments ask the same question without importing this
+// module (which imports permitPath). Re-exported here for the callers that always read it from here.
 
 /** The mount, as the scope-of-work sentence names it — "" when the mount is not known: an unknown
  *  mount is never written as "roof-mounted" on an application (leak sweep 2026-09-28). */
@@ -258,13 +202,6 @@ export function isRoofMounted(project: ProjectRecord, allText: string): boolean 
 /** NEC 690.12 governs PV on BUILDINGS — a ground/pole array is not on one; a carport may be. */
 export function rapidShutdownApplies(project: ProjectRecord, allText: string): boolean {
   return mountKind(project, allText) !== "ground";
-}
-
-// The one entry point other modules should use. It derives the design text itself, so a second
-// caller cannot reach a different answer by feeding the predicate a different blob — which is
-// precisely how the reviewer engine and this module came to disagree about the same array.
-export function mountKindForProject(project: ProjectRecord): MountKind {
-  return mountKind(project, designText(project));
 }
 
 // Same reasoning, same shape: the engine's plan-set pass raises its own rapid-shutdown finding
