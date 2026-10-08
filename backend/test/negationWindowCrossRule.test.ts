@@ -79,6 +79,19 @@ for (const [state, ahj] of JURISDICTIONS) {
       assert.ok(get(runIn(state, ahj, `(1) TESLA POWERWALL 3\n${row}`), "city.ess.details-missing"));
     });
   }
+  // Helm re-review: a dash before "NO <word>" is a clause about something else, not a denial.
+  check(`MUST-PASS ${state}: 'EXISTING MOBILE HOME - NO BASEMENT' is still a manufactured home`, () => {
+    const project = { id: "mh", state, ahj, parserSnapshot: { mounting: "Roof mount", planSetExtractedText: "EXISTING MOBILE HOME - NO BASEMENT" } } as unknown as ProjectRecord;
+    assert.equal(structureType(project).kind, "manufactured_home");
+  });
+  check(`MUST-PASS ${state}: 'RAPID SHUTDOWN INITIATOR - NO ACCESS RESTRICTIONS' still answers 690.12(C)`, () => {
+    const f = get(runIn(state, ahj, `${RSD_BASE}.\nLISTED PV HAZARD CONTROL SYSTEM.\nRAPID SHUTDOWN INITIATOR - NO ACCESS RESTRICTIONS`), "city.elec.rapid-shutdown-edition-evidence");
+    assert.ok(!sections(f).includes("690.12(C)"), f?.message);
+  });
+  check(`MUST-PASS ${state}: 'POWERWALL - NO GENERATOR' still raises the ESS review; 'POWERWALL - NO.' does not`, () => {
+    assert.ok(get(runIn(state, ahj, "(1) POWERWALL - NO GENERATOR"), "city.ess.details-missing"));
+    assert.ok(!get(runIn(state, ahj, "POWERWALL - NO."), "city.ess.details-missing"));
+  });
   // The direct denials #242 / #257 asked for still deny.
   check(`MUST-EXCLUDE ${state}: a denial DIRECTLY after the mention still denies it`, () => {
     assert.ok(!get(runIn(state, ahj, "POWERWALL: NOT USED"), "city.ess.details-missing"), "POWERWALL: NOT USED");

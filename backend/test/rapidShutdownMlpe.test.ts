@@ -238,6 +238,19 @@ for (const [state, ahj] of JURISDICTIONS) {
       });
     }
   }
+  // Helm re-review: a parenthesised or "IS NOT USED" rejection is a rejection under every edition —
+  // never the gap answered (2017/2020), never "relies on the removed option" (2023).
+  for (const note of ["690.12(B)(2)(3) NO EXPOSED WIRING METHODS (NOT USED).", "690.12(B)(2)(3) IS NOT USED."]) {
+    for (const edition of ["2017", "2020", "2023"]) {
+      check(`MUST-EXCLUDE: NEC ${edition}, ${state}: '${note}' is a rejection → blocker, not the option`, () => {
+        const f = get(runIn(state, ahj, edition, `${PLACARD} ${note}`), RSD_EDITION);
+        assert.ok(f, "the inside-boundary gap is owed");
+        assert.deepEqual(sections(f), [`${edition} NEC 690.12(B)(2)`]);
+        assert.equal(f.severity, "blocker", f.message);
+        assert.doesNotMatch(f.title, /removed/);
+      });
+    }
+  }
   check(`2023, ${state}: '690.12(B)(2)(3) NO EXPOSED WIRING METHODS' is a citation of the deleted option, not a denial`, () => {
     const f = get(runIn(state, ahj, "2023", `${PLACARD} INSIDE ARRAY BOUNDARY: 690.12(B)(2)(3) NO EXPOSED WIRING METHODS.`), RSD_EDITION);
     assert.ok(f);

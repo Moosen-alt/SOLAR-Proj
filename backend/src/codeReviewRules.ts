@@ -283,10 +283,12 @@ function isMicroOrMlpeInverter(project: ProjectRecord, allText: string): boolean
 // "not a manufactured home", "not listed to UL 2703") — a wider window read "engineered, not
 // prescriptive, for a manufactured home" as a denial.
 const NEGATION_BEFORE = /(?:\b(?:not|no|never|without|missing|lacks?|lacking|other\s+than|excluding|except|isn'?t)\s+(?:[a-z]+\s+){0,2}|\bnon[-\s]?)$/i;
-// "NOT USED" denies only DIRECTLY after the mention (#242: "690.12(B)(2)(3) - NOT USED"), like
-// "N/A" and "NONE". Never in the 30-character window: affirmedIn joins whitespace, so the next
-// schedule row ("EV CHARGER: N/A", "HOA: N/A") would deny a real mention before it.
-const NEGATION_AFTER = /^[^.;]{0,30}?\b(?:not\s+(?:provided|shown|found|included|listed|evaluated|verified|checked|analy[sz]ed|addressed|applicable)|missing|by\s+others|excluded)\b|^\s*[?:\u2013\u2014-]?\s*(?:no|n\/a|none|not\s+used)\b/i;
+// "NOT USED" denies only DIRECTLY after the mention (#242: "690.12(B)(2)(3) - NOT USED",
+// "… (NOT USED)", "… IS NOT USED"), like "N/A" and "NONE". Never in the 30-character window:
+// affirmedIn joins whitespace, so the next schedule row ("EV CHARGER: N/A", "HOA: N/A") would
+// deny a real mention before it. A dash before a bare "NO" denies only when the NO stands alone:
+// "MOBILE HOME - NO BASEMENT" and "RSD INITIATOR - NO ACCESS RESTRICTIONS" affirm the mention.
+const NEGATION_AFTER = /^[^.;]{0,30}?\b(?:not\s+(?:provided|shown|found|included|listed|evaluated|verified|checked|analy[sz]ed|addressed|applicable)|missing|by\s+others|excluded)\b|^\s*[?:]?\s*(?:no|n\/a|none|not\s+used)\b|^\s*[?:\u2013\u2014-]?\s*\(?\s*(?:is\s+)?(?:n\/a|none|not\s+used)\b|^\s*[\u2013\u2014-]\s*no(?=\s*(?:$|[.;,)]))/i;
 
 interface Affirmed {
   source: string;
@@ -527,7 +529,7 @@ function withoutRsdOptionTitle(sources: DesignTextSource[]): DesignTextSource[] 
 /** city.ess.details-missing's trigger: a mention of storage scope. */
 const ESS_TRIGGER_PATTERNS: RegExp[] = [/battery/i, /\bESS\b/i, /powerwall/i, /encharge/i, /backup/i];
 const STORAGE_WORD = String.raw`(?:batter(?:y|ies)|ESS|backup|powerwall|encharge|energy\s+storage(?:\s+system)?|storage)`;
-const STORAGE_RUN_THEN_DENIAL = new RegExp(String.raw`^(?:\s*(?:\/|&|,|\+|and|or)?\s*${STORAGE_WORD}\b)*\s*\)?\s*[?:\u2013\u2014-]?\s*(?:no|none|n\/a|not\s+(?:used|applicable|included|proposed|provided))\b`, "i");
+const STORAGE_RUN_THEN_DENIAL = new RegExp(String.raw`^(?:\s*(?:\/|&|,|\+|and|or)?\s*${STORAGE_WORD}\b)*\s*\)?\s*(?:[?:]?\s*(?:no|none|n\/a|not\s+(?:used|applicable|included|proposed|provided))\b|[\u2013\u2014-]\s*(?:(?:none|n\/a|not\s+(?:used|applicable|included|proposed|provided))\b|no(?=\s*(?:$|[.;,)]))))`, "i");
 const DENIAL_THEN_STORAGE_RUN = new RegExp(String.raw`\b(?:no|without)\s+(?:${STORAGE_WORD}\s*(?:\/|&|,|\+|and|or)\s*)+$`, "i");
 /** "BATTERY / ESS: NONE", "(BATTERY BACKUP): NOT USED": the denial sits after the next storage
  *  word (or its closing parenthesis), past NEGATION_AFTER's reach. */
