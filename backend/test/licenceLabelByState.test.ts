@@ -56,6 +56,9 @@ const unknown = { ...base, licenseState: "", businessState: "" };
     ok(kinds.contractorLicenceLabel("OR") === "CCB" && kinds.contractorLicenceLabel("UT") === "DOPL" && kinds.contractorLicenceLabel("") === "contractor licence",
       "contractorLicenceLabel: CCB for Oregon, the board for Utah, the generic words for an unknown state");
     ok(JSON.stringify([...PR.LICENCE_KINDS_KNOWN].sort()) === JSON.stringify([...kinds.LICENCE_KIND_SET].sort()), "parser-review.js LICENCE_KINDS_KNOWN == shared LICENCE_KINDS");
+    // #259: the page's kind table (kind, words, contractorLicence) is the shared one, row for row.
+    ok(JSON.stringify(PR.LICENCE_KIND_TABLE) === JSON.stringify(kinds.LICENCE_KINDS.map((k) => ({ kind: k.kind, words: k.words, contractorLicence: k.contractorLicence }))),
+      "parser-review.js LICENCE_KIND_TABLE == shared LICENCE_KINDS (kind, words, contractorLicence)");
   }
 
   // ── 1. #240: an untyped row is never the contractor licence ─────────────────────────────────────
@@ -84,7 +87,7 @@ const unknown = { ...base, licenseState: "", businessState: "" };
       { state: "UT", kind: "business_registration", number: "UT-B4" },
     ] };
     const labels = PR.clientLicences(c).map((l: { label: string; number: string }) => `${l.label} ${l.number}`);
-    ok(labels.includes("DOPL UT-1") && labels.includes("CID NM-2") && labels.includes("IA electrical contractor IA-3"), "MUST-PASS unplaced: every typed row, labelled by its own state", labels);
+    ok(labels.includes("DOPL UT-1") && labels.includes("CID NM-2") && labels.includes("IA electrical contractor licence IA-3"), "MUST-PASS unplaced: every typed row, labelled by its own state", labels);
     ok(!labels.some((l: string) => /UT-B4|^CCB /.test(l)), "MUST-EXCLUDE unplaced: no business registration, and no row called CCB", labels);
     ok(PR.clientLicenceMissing(c) === "", "unplaced: a typed contractor row is a contractor licence on file");
     const placed = PR.clientLicences({ ...c, licenseState: "UT" }).map((l: { number: string }) => l.number);
@@ -133,6 +136,39 @@ const unknown = { ...base, licenseState: "", businessState: "" };
     // A hand-built context with no licence book reads the overlay's CCB column — Oregon's CCB (L5).
     const bare = { project: { state: "OR" }, client: { installerCompanyName: "Sample Solar Co", ccbLicenseNumber: "900001" }, snapshot: {} } as unknown as Ctx;
     ok(resolveSource("computed.installerBlock", bare) === "Sample Solar Co — CCB 900001", "no licence book: the CCB column still says CCB");
+  }
+
+  // ── 5. #259: only a CONTRACTOR kind silences the "no contractor licence" warning ────────────────
+  // A master electrician's licence is a person's (contractorLicence:false) and clients.licenceFor
+  // never offers it to a contractor slot, so it is not the contractor licence on file — placed or
+  // unplaced. Two states (one with a board label, one without), synthetic numbers.
+  {
+    const kinds = await import("../../shared/src/licenceKinds");
+    for (const st of ["UT", "IA"]) {
+      for (const placed of [true, false]) {
+        const where = placed ? `${st} client` : `unplaced client with a ${st} row`;
+        const c = { ...(placed ? { ...base, licenseState: st } : unknown), stateLicenses: [{ state: st, kind: "master_electrician", number: `${st}-ME1` }] };
+        const w = PR.clientLicenceMissing(c);
+        ok(w.includes(`has no ${PR.licenceWords(placed ? st : "")} on file`), `MUST-PASS ${where}: a master_electrician-only client still warns`, w);
+        const labels = PR.clientLicences(c).map((l: { label: string; number: string }) => `${l.label} ${l.number}`);
+        ok(labels.includes(`${st} master / supervising electrician licence ${st}-ME1`), `${where}: the electrician row is still listed, in the form's words`, labels);
+        for (const k of kinds.LICENCE_KINDS.filter((x) => x.contractorLicence)) {
+          const withK = { ...c, stateLicenses: [...c.stateLicenses, { state: st, kind: k.kind, number: `${st}-K1` }] };
+          ok(PR.clientLicenceMissing(withK) === "", `MUST-EXCLUDE ${where}: a ${k.kind} row is a contractor licence on file`);
+        }
+        for (const k of kinds.LICENCE_KINDS.filter((x) => !x.contractorLicence)) {
+          const only = { ...c, stateLicenses: [{ state: st, kind: k.kind, number: `${st}-N1` }] };
+          ok(PR.clientLicenceMissing(only) !== "", `MUST-PASS ${where}: a ${k.kind}-only client warns`);
+        }
+      }
+    }
+    // ONE WORDING: a typed row that is not the board's contractor licence reads "<ST> <words>" — the
+    // shared licenceKindWords the form uses — on /parser and the Clients card alike.
+    for (const k of kinds.LICENCE_KINDS.filter((x) => x.kind !== "contractor" && x.kind !== "business_registration")) {
+      const row = PR.clientLicences({ ...base, licenseState: "NM", stateLicenses: [{ state: "NM", kind: k.kind, number: "NM-W1" }] })[0];
+      assert.equal(row?.label, `NM ${kinds.licenceKindWords(k.kind)}`, `${k.kind}: /parser label == the form's words`);
+    }
+    ok(true, "one wording: every non-contractor kind's /parser label is the form's licenceKindWords");
   }
 
   console.log(`\nlicenceLabelByState: ${passed} checks passed`);
