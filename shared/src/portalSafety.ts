@@ -1752,7 +1752,10 @@ export function redactSecretValues(text: string, secrets: Iterable<string>, repl
       const pattern = digits.split("").join("[\\s\\-\\u2013.#/]*");
       out = out.replace(new RegExp(`(?<!\\d)${pattern}(?!\\d)`, "g"), (m) => replace(m));
     } else if (String(secret ?? "").length >= 6 && /\d/.test(String(secret))) {
-      out = out.replace(new RegExp(String(secret).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), (m) => replace(m));
+      // Whitespace inside the secret matches any whitespace run: text read off a page wraps "AB 1234"
+      // at its space as easily as it prints it on one line (#260 review).
+      const literal = String(secret).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+      out = out.replace(new RegExp(literal, "gi"), (m) => replace(m));
     }
   }
   return out;

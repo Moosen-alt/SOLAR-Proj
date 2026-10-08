@@ -125,3 +125,20 @@ export async function platformBPlanSet(): Promise<Buffer> {
   }
   return Buffer.from(await pdf.save());
 }
+
+/** The CAD layouts the #260 review reproduced regressions on, one per sheet: a fire note wrapped
+ *  between FIRE and SETBACK; a framing TABLE (header row over value row) and a "RAFTERS:" label
+ *  over its value; a two-line "ATTACHMENT / DETAIL" title; a period-free equipment schedule whose
+ *  every row is a digest topic; and a meter label on the line ABOVE its space-grouped digits. */
+export async function wrapLayoutPlanSet(): Promise<Buffer> {
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const sheet = (lines: string[]) => drawLines(pdf.addPage([792, 612]), font, lines, 36, 570, 9);
+  sheet(["PV-1 SITE PLAN", "ARRAY KEEPS A 36 IN CLEAR FIRE", "SETBACK FROM THE RIDGE AND EAVE"]);
+  sheet(["PV-2 ROOF FRAMING", "RAFTERS   SIZE   SPACING   SPAN", "ROOF 1   2X6   24 IN O.C.   12 FT", "RAFTERS:", "2X6 @ 24 IN O.C."]);
+  sheet(["PV-3", "ATTACHMENT", "DETAIL", "FLASHED STANDOFF INTO RAFTER, 48 IN O.C. MAX"]);
+  sheet(["PV-4 EQUIPMENT SCHEDULE", ...Array.from({ length: 30 }, (_, i) =>
+    [`AC DISCONNECT ${i + 1} 60A FUSED`, `BATTERY UNIT ${i + 1} 13 KWH`, `RAPID SHUTDOWN DEVICE ${i + 1}`][i % 3])]);
+  sheet(["PV-5 ELECTRICAL LINE DIAGRAM", "UTILITY METER NO.", SYNTHETIC_METER, "SEE ONE-LINE FOR TIE IN", "LOAD SIDE TAP, 200A BUS BAR"]);
+  return Buffer.from(await pdf.save());
+}

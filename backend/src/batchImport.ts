@@ -36,31 +36,10 @@ async function getPdfjs(): Promise<PdfjsModule> {
 // only affects IMAGE decoding, not the TEXT extraction we do here, so it's safe to drop.
 const PDFJS_WARN_RE = /^Warning: (TT: undefined function:|Font "[^"]+" is not available|getHexString|Indexing all PDF objects|#instantiateWasm|#getJsModule|Unable to decode image|Dependent image isn't ready|.*[Jj]Big2|.*JBIG2|.*wasmUrl|.*nulljbig2|.*OpenJPEG|.*JpxError)/;
 
-// ONE LINE OF THE PAGE IS ONE LINE OF TEXT (#260). The items used to be joined with a space, so a
-// page came out as one line and only page breaks were "\n": a consumer that reasons about "the same
-// line" (a title-block row, a note) saw the whole sheet as one row. pdf.js marks the item that ends
-// a line (`hasEOL`, from its own position test); that boundary is "\n", every other boundary the
-// " " it always was, so text within a line is byte-for-byte what it was before.
-export function pageTextFromItems(items: PdfjsTextItem[]): string {
-  let out = "";
-  items.forEach((item, i) => {
-    if (i > 0) out += items[i - 1].hasEOL ? "\n" : " ";
-    out += item.str ?? "";
-  });
-  return out;
-}
-
-// Whitespace cleanup that keeps the lines: a run of 3+ spaces is two (as it always was), and a run
-// of whitespace holding a line break is ONE break — the old `\s{3,}` would have folded a break and
-// the spaces around it into "  ", undoing the line.
-function tidyLines(text: string): string {
-  return text.replace(/[^\S\n]*\n\s*/g, "\n").replace(/[^\S\n]{3,}/g, "  ").trim();
-}
-
-// Shared pdfjs driver: open the PDF, suppress the harmless image-decode warnings, and
-// run `perPage` over each page's RAW text (pageTextFromItems), up to maxPages. The two
-// public extractors below differ only in how they post-process pages.
-async function withPdfPages<T>(filePath: string, maxPages: number, perPage: (rawPageText: string) => T): Promise<T[]> {
+// Shared pdfjs driver: open the PDF, suppress the harmless image-decode warnings, and run
+// `perPage` over each page's text items, up to maxPages. The extractors below differ only in how
+// they turn a page's items into text.
+async function withPdfPages<T>(filePath: string, maxPages: number, perPage: (items: PdfjsTextItem[]) => T): Promise<T[]> {
   const pdfjs = await getPdfjs();
   const data = new Uint8Array(fs.readFileSync(filePath));
   const origWarn = console.warn;
@@ -75,7 +54,7 @@ async function withPdfPages<T>(filePath: string, maxPages: number, perPage: (raw
     for (let i = 1; i <= pages; i++) {
       const page = await doc.getPage(i);
       const content = await page.getTextContent();
-      out.push(perPage(pageTextFromItems(content.items)));
+      out.push(perPage(content.items));
     }
     return out;
   } finally {
@@ -83,15 +62,51 @@ async function withPdfPages<T>(filePath: string, maxPages: number, perPage: (raw
   }
 }
 
+// ONE LINE PER PAGE: the page's items joined by a space. This is the text every stored and
+// model-bound consumer was tuned on (#260): the plan-set text, the design digest, the reviewer's
+// evidence windows, the splitter's sheet names. A sheet's wrapped phrase ("FIRE / SETBACK",
+// "ATTACHMENT / DETAIL", a framing table's header over its values) reads as one run here, and a
+// period-free schedule stays one long segment the digest skips. Kept byte-for-byte as it was.
+const onePageLine = (items: PdfjsTextItem[]) => items.map((item) => item.str ?? "").join(" ");
+
 export async function extractPdfText(filePath: string, maxPages = 30): Promise<string> {
-  // Whole-document cleanup: join raw pages with newlines, THEN tidy whitespace once.
-  return tidyLines((await withPdfPages(filePath, maxPages, (s) => s)).join("\n"));
+  // Whole-document cleanup: join raw pages with newlines, THEN collapse whitespace once.
+  return (await withPdfPages(filePath, maxPages, onePageLine)).join("\n").replace(/\s{3,}/g, "  ").trim();
 }
 
 // Per-page text (1-based index → text). Used by the plan-set splitter to map sheets
 // to page ranges. maxPages caps the work for very large sets.
 export async function extractPdfPages(filePath: string, maxPages = 60): Promise<string[]> {
-  return withPdfPages(filePath, maxPages, tidyLines);
+  return withPdfPages(filePath, maxPages, (items) => onePageLine(items).replace(/\s{3,}/g, "  ").trim());
+}
+
+// THE PAGE'S OWN LINES, for a reader that reasons about "the same line" (#260). pdf.js marks the
+// item that ends a line (`hasEOL`, from its own position test); that boundary is "\n", every other
+// boundary the " " it always was, so text within a line is what onePageLine gives. OPT-IN: a reader
+// moves to these only with a before/after on fixtures, because a line break splits what the
+// one-line readers above join (see onePageLine). Pages are joined by a blank line, so a reader can
+// tell a page break from a line break.
+export function pageTextFromItems(items: PdfjsTextItem[]): string {
+  let out = "";
+  items.forEach((item, i) => {
+    if (i > 0) out += items[i - 1].hasEOL ? "\n" : " ";
+    out += item.str ?? "";
+  });
+  return out;
+}
+
+// A run of 3+ spaces is two (as onePageLine's cleanup does), and a run of whitespace holding a line
+// break is ONE break: the one-line `\s{3,}` would fold a break and the spaces around it into "  ".
+function tidyLines(text: string): string {
+  return text.replace(/[^\S\n]*\n\s*/g, "\n").replace(/[^\S\n]{3,}/g, "  ").trim();
+}
+
+export async function extractPdfTextLines(filePath: string, maxPages = 30): Promise<string> {
+  return (await withPdfPages(filePath, maxPages, (items) => tidyLines(pageTextFromItems(items)))).join("\n\n").trim();
+}
+
+export async function extractPdfPageLines(filePath: string, maxPages = 60): Promise<string[]> {
+  return withPdfPages(filePath, maxPages, (items) => tidyLines(pageTextFromItems(items)));
 }
 
 // ---------------------------------------------------------------------------
@@ -345,7 +360,9 @@ export async function scanFolder(
       summary.scanned++;
 
       try {
-        const text = await extractPdfText(filePath, 12);
+        // Lines (#260): quickExtractCorrections reads numbered items one per line, and on one-line
+        // pages it never found any — a correction PDF taught nothing.
+        const text = await extractPdfTextLines(filePath, 12);
         const docType = classifyDoc(filePath, text);
         summary.byType[docType]++;
 

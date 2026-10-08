@@ -12,6 +12,7 @@ import { AMENDMENT_NOT_MET_ID } from "./amendmentChecks";
 import { PRIOR_CORRECTION_ID } from "./ahjReviewRules";
 import { PRECEDENT_DEPARTURE_ID } from "./permitPrecedents";
 import { nowIso } from "./time";
+import { redactSecretValues } from "../../shared/src/portalSafety";
 
 // ---------------------------------------------------------------------------
 // AHJ Reviewer Gate — vision verification pass.
@@ -163,12 +164,19 @@ function needsVision(finding: ReviewerFinding): EvidenceTopic | null {
   return topic;
 }
 
-function visionPrompt(finding: ReviewerFinding): string {
-  const items = (finding.evidenceNeeded || []).slice(0, 8).map((x) => `- ${x}`).join("\n");
+// RULE 2 AT THE VISION DOOR. A finding's text quotes the plan set, and a quote can carry the meter
+// or account number: a label on the line above its digits ("UTILITY METER NO." / "80 000 1234") puts
+// the digits at the head of an evidence excerpt, which lands in evidenceNeeded (#260 review). The
+// prompt is scrubbed with the project's own secrets before it is sent. The question hash
+// (visionQuestionFor) reads the unscrubbed prompt — it never leaves the process — so a cached
+// verdict still answers the same question.
+function visionPrompt(finding: ReviewerFinding, secrets: string[] = []): string {
+  const scrub = (text: string) => redactSecretValues(text, secrets);
+  const items = (finding.evidenceNeeded || []).slice(0, 8).map((x) => `- ${scrub(x)}`).join("\n");
   return `You are a solar plan reviewer inspecting a single sheet from a residential PV permit plan set (image attached).
 
 The automated text parser could not confirm the following item on this project, so it raised:
-"${finding.title}" — ${finding.cityFeedback || finding.message}
+"${scrub(finding.title)}" — ${scrub(finding.cityFeedback || finding.message)}
 
 Look at the sheet image and determine whether it actually SHOWS the required information below:
 ${items || "- The information described in the finding above."}
@@ -209,6 +217,7 @@ async function verifyOne(
   pages: string[],
   finding: ReviewerFinding,
   topic: EvidenceTopic,
+  secrets: string[] = [],
 ): Promise<ReviewerVisionVerdict> {
   const ev = finding.evidenceFound?.[0];
   const hint = ev?.pageHint || "";
@@ -235,7 +244,7 @@ async function verifyOne(
     }
     let raw: Record<string, unknown>;
     try {
-      raw = await llm.visionExtract({ imageBase64: base64, mimeType: "image/png", prompt: visionPrompt(finding) });
+      raw = await llm.visionExtract({ imageBase64: base64, mimeType: "image/png", prompt: visionPrompt(finding, secrets) });
     } catch (err) {
       return { checked: false, present: false, confidence: "low", page, observed: "", note: `Vision call failed: ${(err as Error).message || String(err)}` };
     }
@@ -381,6 +390,18 @@ export function visionRelaxedBlockers(report: ReviewerReport): ReviewerFinding[]
   return report.findings.filter((finding) => finding.visionRelaxedFrom === "blocker");
 }
 
+/** The project's account/meter values (autoLearn.projectSecretValues), loaded lazily: repository and
+ *  autoLearn both reach this module, so a static import would be a cycle. */
+async function projectSecrets(db: AppDb, projectId: string): Promise<string[]> {
+  const { getProjectDetail } = await import("./repository");
+  const { projectSecretValues } = await import("./autoLearn");
+  try {
+    return projectSecretValues(getProjectDetail(db, projectId).project);
+  } catch {
+    return []; // no project row (a standalone review subject): no project secrets to know
+  }
+}
+
 // Opt-in vision pass over an already-built reviewer report. Returns a new report
 // with vision-annotated findings (and recomputed installerCallouts). Safe no-op
 // when there is no plan set or no LLM configured.
@@ -405,6 +426,7 @@ export async function applyVisionToReviewerReport(
     return applyCachedVisionVerdicts(db, report);
   }
   const sig = sourceSig(pdfPath);
+  const secrets = await projectSecrets(db, report.projectId);
 
   let budget = opts.cacheOnly ? 0 : MAX_VISION_CHECKS;
   const findings: ReviewerFinding[] = [];
@@ -429,7 +451,7 @@ export async function applyVisionToReviewerReport(
     let verdict = cached && answersQuestion(cached, finding) ? cached : null;
     if (!verdict && budget > 0) {
       budget -= 1;
-      verdict = { ...(await verifyOne(llm, pdfPath, pages, finding, topic)), question: visionQuestionFor(finding) };
+      verdict = { ...(await verifyOne(llm, pdfPath, pages, finding, topic, secrets)), question: visionQuestionFor(finding) };
       if (verdict.checked) writeCache(db, report.projectId, finding.id, sig, verdict);
     }
     findings.push(verdict ? applyVerdict(finding, verdict) : finding);
