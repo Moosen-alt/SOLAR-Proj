@@ -459,6 +459,65 @@ await check("MUST-PASS: two hubs, \"Snow Load Map\" then \"Design Criteria\": th
   assert.equal(row.profile.designCriteria.windSpeedMph, 105);
 });
 
+// The home page links an image-only "Snow Load Map" AND a Building hub; the hub links the table.
+// The map is found before the hubs, and the first hub must still be read (Helm's #263 review).
+const mapThenHubSite = (origin: string, head: string, hub: string) => {
+  serve(`${origin}/`, { contentType: "text/html", text: html(`<h1>City Home</h1><a href="/snow-load-map">Snow Load Map</a><a href="${hub}">Building</a>`, head) });
+  serve(`${origin}/snow-load-map`, { contentType: "text/html", text: html(`<h1>Snow Load Map</h1><img src="/images/snow-map.png" alt="map">`, head) });
+  serve(`${origin}${hub}`, { contentType: "text/html", text: html(`<h1>Building</h1><a href="${hub}/criteria">Design Criteria</a>`, head) });
+  serve(`${origin}${hub}/criteria`, { contentType: "text/html", text: html(`<h1>Design Criteria</h1><table>
+<tr><td>Ground Snow Load, Pg</td><td>60 psf</td></tr>
+<tr><td>Ultimate Design Wind Speed</td><td>100 mph</td></tr>
+</table>`, head) });
+  return `${origin}${hub}/criteria`;
+};
+const MH1 = { state: "UT", ahj: "City of Mosspoint" };
+const MH1_PAGE = mapThenHubSite("https://www.mosspointut.gov", CIVICPLUS_HEAD, "/150/Building");
+const MH2 = { state: "CO", ahj: "Town of Wrenfield" };
+const MH2_PAGE = mapThenHubSite("https://www.wrenfieldco.gov", WP_HEAD, "/departments/building");
+seedProcess(MH1, "https://www.mosspointut.gov/");
+seedProcess(MH2, "https://www.wrenfieldco.gov/");
+
+await check("MUST-PASS: a snow-load map found before the hubs does not skip the first hub; its table is read with no web round (CivicPlus and WordPress)", async () => {
+  for (const [who, page] of [[MH1, MH1_PAGE], [MH2, MH2_PAGE]] as const) {
+    calls.length = 0;
+    const r = await CP.runDesignCriteriaResearch(db, who, fakeLlm(), reader());
+    assert.equal(calls.length, 0, `${who.ahj}: a web-search round was spent: ${JSON.stringify(calls)}`);
+    assert.deepEqual(r.issuerPage, { url: page, parsed: true });
+    const row = ownRow(who)!;
+    assert.equal(row.profile.confidence, "seeded");
+    assert.equal(row.profile.designCriteria.groundSnowLoadPsf, 60);
+    assert.equal(row.profile.designCriteria.windSpeedMph, 100);
+  }
+});
+
+// The home page links an ASD-only table that has MORE rows first, then a strength-level one. The
+// probe stops on the second; it must return that one, not the first (Helm's #263 review).
+const asdThenPgSite = (origin: string, head: string) => {
+  serve(`${origin}/`, { contentType: "text/html", text: html(`<h1>City Home</h1><a href="/design-criteria-asd">Design Criteria</a><a href="/climatic-table">Climatic and Geographic Design Criteria</a>`, head) });
+  serve(`${origin}/design-criteria-asd`, { contentType: "text/html", text: html(`<h1>Design Criteria</h1><table>
+<tr><td>Ground Snow Load, pg(asd)</td><td>30 psf</td></tr>
+<tr><td>Ultimate Design Wind Speed</td><td>110 mph</td></tr>
+<tr><td>Seismic Design Category</td><td>C</td></tr>
+<tr><td>Frost Line Depth</td><td>24 inches</td></tr>
+</table>`, head) });
+  serve(`${origin}/climatic-table`, { contentType: "text/html", text: html(`<h1>Climatic and Geographic Design Criteria</h1><table>
+<tr><td>Ground Snow Load, Pg</td><td>42 psf</td></tr>
+<tr><td>Ultimate Design Wind Speed</td><td>110 mph</td></tr>
+</table>`, head) });
+  return `${origin}/climatic-table`;
+};
+const AP1_PAGE = asdThenPgSite("https://www.oakvaleid.gov", REVIZE_HEAD);
+const AP2_PAGE = asdThenPgSite("https://www.elmcrestmt.gov", GOVACCESS_HEAD);
+
+await check("when the probe stops early, the page it returns answers (strength-level pg + wind), not an earlier ASD-only page with more rows (Revize and govAccess)", async () => {
+  for (const [host, ahj, state, page] of [["www.oakvaleid.gov", "City of Oakvale", "ID", AP1_PAGE], ["www.elmcrestmt.gov", "City of Elmcrest", "MT", AP2_PAGE]] as const) {
+    const probe = await P.probeIssuerDesignCriteria(reader(), { host, ahj, state });
+    assert.equal(probe.candidateUrl, page, `${host}: returned ${probe.candidateUrl}`);
+    assert.equal(P.probeAnswered(probe.raw), true, `${host}: the probe stopped but its page does not answer`);
+  }
+});
+
 await check("a link naming the table is read before a bare snow-load link (stable otherwise)", () => {
   const words = new Map([["a", "Snow Load Map"], ["b", "Climatic and Geographic Design Criteria"], ["c", "Ground Snow Loads"], ["d", "R301.2 table"]]);
   assert.deepEqual(P.rankedCandidates(["a", "b", "c", "d"], words), ["b", "d", "a", "c"]);

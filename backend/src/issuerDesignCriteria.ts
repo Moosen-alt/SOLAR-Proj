@@ -213,7 +213,11 @@ export async function probeIssuerDesignCriteria(reader: PageReader, input: { hos
   const consider = (pg: ReadPage): boolean => {
     if (!looksLikeCriteriaPage(pg)) return false;
     const raw = extractCriteriaTable(pg.text, pg.finalUrl || pg.url);
-    if (!best || coreCount(raw) > coreCount(best.raw) || (coreCount(raw) === coreCount(best.raw) && Object.keys(raw).length > Object.keys(best.raw).length)) {
+    // An ANSWERED page (strength-level pg and wind) beats any that is not (#258): the probe stops on
+    // it, so it must be the page returned, not an earlier ASD-only page with more rows.
+    const score = (r: Record<string, unknown>) => [probeAnswered(r) ? 1 : 0, coreCount(r), Object.keys(r).length];
+    const [a, b] = [score(raw), best ? score(best.raw) : null];
+    if (!b || a[0] > b[0] || (a[0] === b[0] && (a[1] > b[1] || (a[1] === b[1] && a[2] > b[2])))) {
       best = { url: pg.finalUrl || pg.url, text: pg.text, raw };
     }
     return probeAnswered(raw);
@@ -254,8 +258,10 @@ export async function probeIssuerDesignCriteria(reader: PageReader, input: { hos
     // ONE HUB AT A TIME (#258): a hub, then the candidates it named, and the next hub only when
     // nothing was found. Two hubs read back to back left one read for a candidate, and the first
     // criteria-looking link (a bare "Snow Load Map") spent it before the "Design Criteria" table.
-    for (const hub of hubs.slice(0, 2)) {
-      if (done || best || left() <= 0) break;
+    // The FIRST hub is always read: a page found before the hubs (an image-only snow-load map) is
+    // not the table, and the hub may link it.
+    for (const [i, hub] of hubs.slice(0, 2).entries()) {
+      if (done || left() <= 0 || (i > 0 && best)) break;
       await visitAll([hub]);
       await visitAll(rankedCandidates(candidates, candidateWords));
     }
