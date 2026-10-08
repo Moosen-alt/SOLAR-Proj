@@ -9,7 +9,7 @@
 //
 // Run: tsx backend/test/tenancy.test.ts
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -265,6 +265,12 @@ try {
       finally { sdb.close(); }
     };
     const auditBefore = auditRows();
+    const keyBLastUsed = (): string | null => {
+      const sdb = new Database(env.AUTOPILOT_DB_PATH, { readonly: true });
+      try { return (sdb.prepare("SELECT last_used_at FROM api_keys WHERE org_id = ?").get(orgB) as { last_used_at: string | null }).last_used_at; }
+      finally { sdb.close(); }
+    };
+    const lastUsedBefore = keyBLastUsed();
     const before = await (await b(`/api/projects/${projB}`)).json();
     const status = await mixed(`/api/projects/${projB}/status`, {
       method: "POST", body: JSON.stringify({ status: "blocked", reason: "mixed-credential probe" }),
@@ -280,6 +286,25 @@ try {
     assert.equal(after.project.assignedTo ?? null, before.project.assignedTo ?? null, "B's project was re-assigned");
     // No audit row landed on B's project either (a human action recorded under A's user).
     assert.equal(auditRows(), auditBefore, "an audit row was written on B's project by a refused request");
+    // A refused request is not a use of B's key.
+    assert.equal(keyBLastUsed(), lastUsedBefore, "a refused mixed-credential request stamped B's key last_used_at");
+  });
+
+  // Express routes case-insensitively, so /API/projects reaches the /api/projects handlers.
+  // The gate's prefix test must agree, or an upper-case path skips the refusal (#273 review).
+  await run("MUST-EXCLUDE: mixed credentials are refused on an UPPER-CASE /API path too", async () => {
+    const mixed = withKey(aCookie, keyB);
+    const before = await (await b(`/api/projects/${projB}`)).json();
+    const read = await mixed(`/API/projects/${projB}`);
+    const text = await read.text();
+    assert.equal(read.status, 404, `GET /API/projects/:B with mixed credentials returned ${read.status}`);
+    assert.ok(!text.includes("Bob B"), "the refusal leaked B's homeowner");
+    const write = await mixed(`/API/projects/${projB}/status`, {
+      method: "POST", body: JSON.stringify({ status: "blocked", reason: "upper-case mixed-credential probe" }),
+    });
+    assert.equal(write.status, 404, `POST /API/projects/:B/status with mixed credentials returned ${write.status}`);
+    const after = await (await b(`/api/projects/${projB}`)).json();
+    assert.equal(after.project.status, before.project.status, `B's project status moved to ${after.project.status}`);
   });
 
   await run("MUST-PASS: a key alone still works on its prefixes, and still gets 401 on the autopilot", async () => {
@@ -418,6 +443,19 @@ try {
     // Its own product answers (400 = reached the handler, which wants a PDF body).
     const tool = await f("/api/tools/form-fill/inspect", { method: "POST", headers: { "content-type": "application/pdf" }, body: "not-a-pdf" });
     assert.ok(tool.status !== 403, `form filler should be licensed, got ${tool.status}`);
+  });
+
+  await run("the licence gate is case-insensitive: a reviewer-only org cannot reach /API/projects", async () => {
+    // Express would route /API/projects to the autopilot handlers; the gate used to test
+    // the prefix case-sensitively and let the request through unlicensed (#273 review).
+    const org = (await (await owner("/api/orgs", { method: "POST", body: JSON.stringify({ name: "Reviewer Only", edition: "full", products: ["permit_reviewer"] }) })).json()).org;
+    await owner(`/api/orgs/${org.id}/users`, { method: "POST", body: JSON.stringify({ name: "R", email: "r@reviewer.test", password: "tenant-pass-12345" }) });
+    const r = as(await loginAs("r@reviewer.test", "tenant-pass-12345"));
+    assert.equal((await r("/api/projects")).status, 403, "lower-case: autopilot is not licensed");
+    assert.equal((await r("/API/projects")).status, 403, "UPPER-CASE path reached the unlicensed autopilot");
+    assert.equal((await r("/Api/Projects")).status, 403, "mixed-case path reached the unlicensed autopilot");
+    // Its own product still answers in any case.
+    assert.equal((await r("/API/review/work-types")).status, 200, "reviewer's own product broke on an upper-case path");
   });
 
   await run("revoking a product closes the door immediately", async () => {

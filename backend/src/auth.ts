@@ -185,14 +185,21 @@ export function createApiKey(db: AppDb, orgId: string, name: string): { id: stri
   return { id, key };
 }
 
-export function orgFromApiKey(db: AppDb, req: Request): OrgInfo | null {
+/** The org an x-api-key header resolves to, WITHOUT recording a use. Null when there is
+ *  no header or the key is unknown/revoked. */
+function apiKeyOrgId(db: AppDb, req: Request): { orgId: string; hash: string } | null {
   const key = String(req.headers["x-api-key"] || "").trim();
   if (!key) return null;
   const hash = crypto.createHash("sha256").update(key).digest("hex");
   const row = db.get<Row>("SELECT org_id FROM api_keys WHERE key_hash = ? AND active = 1", [hash]);
-  if (!row) return null;
-  db.run("UPDATE api_keys SET last_used_at = ? WHERE key_hash = ?", [new Date().toISOString(), hash]);
-  return getOrg(db, String(row.org_id));
+  return row ? { orgId: String(row.org_id), hash } : null;
+}
+
+export function orgFromApiKey(db: AppDb, req: Request): OrgInfo | null {
+  const found = apiKeyOrgId(db, req);
+  if (!found) return null;
+  db.run("UPDATE api_keys SET last_used_at = ? WHERE key_hash = ?", [new Date().toISOString(), found.hash]);
+  return getOrg(db, found.orgId);
 }
 
 /** The requesting org: the session user's org whenever there is a session, else the
@@ -228,8 +235,10 @@ export function requestOrg(db: AppDb, req: Request): OrgInfo {
 export function credentialsConflict(db: AppDb, req: Request): boolean {
   const user = currentUser(db, req);
   if (!user) return false;
-  const viaKey = orgFromApiKey(db, req);
-  return !!viaKey && viaKey.id !== user.orgId;
+  // The non-recording lookup: a refused request must not stamp the foreign key's
+  // last_used_at, as if the key had been used for something.
+  const viaKey = apiKeyOrgId(db, req);
+  return !!viaKey && viaKey.orgId !== user.orgId;
 }
 
 // Simple in-memory per-IP login throttle to blunt brute force on the internet-facing
@@ -294,7 +303,12 @@ export function requireAuth(db: AppDb) {
   const openPaths = new Set(["/login", "/login.html", "/health", "/api/auth/login", "/styles.css", "/favicon.ico"]);
   return (req: Request, res: Response, next: NextFunction) => {
     if (!AUTH_ENABLED) return next();
-    if (openPaths.has(req.path) || req.path.startsWith("/api/auth/")) return next();
+    // LOWERCASED for every prefix test below: Express routes case-insensitively, so
+    // /API/projects reaches the same handler as /api/projects. A case-sensitive test here
+    // sent /API/... down the page branch (redirect, not 401) and past the key-prefix check
+    // (#273 review). The static-asset regex keeps the raw path: files are case-sensitive.
+    const p = req.path.toLowerCase();
+    if (openPaths.has(p) || p.startsWith("/api/auth/")) return next();
     // The brand mark and the vendored Manrope font: static, non-tenant, and every logged-out page
     // (login, intake, status, credentials, portal) links them. Gated, they 302'd to /login — a
     // broken logo on the sign-in screen and the system font on the credential drop box. ONE path
@@ -302,9 +316,9 @@ export function requireAuth(db: AppDb) {
     // can reach past these two directories through express.static.
     if (PUBLIC_STATIC_ASSET.test(req.path)) return next();
     // Public client intake link (tokenized, no login) — the page and its API.
-    if (req.path === "/intake" || req.path.startsWith("/api/intake/")) return next();
+    if (p === "/intake" || p.startsWith("/api/intake/")) return next();
     // Public read-only client status page (tokenized, no login) — the page and its API.
-    if (req.path === "/status" || req.path.startsWith("/api/public/status/")) return next();
+    if (p === "/status" || p.startsWith("/api/public/status/")) return next();
     // Public one-time portal-credential drop box (tokenized, no login) — the page and its API.
     //
     // THIS WAS MISSING, and the shape of the miss is worth keeping. The /credentials PAGE is
@@ -318,21 +332,24 @@ export function requireAuth(db: AppDb) {
     // intake link uses". That blanket /api/public/ rule is real but lives in the ENTITLEMENT
     // gate (ALWAYS_OPEN_API_PREFIXES in entitlements.ts), not here. Two gates, one blanket, and
     // the comment describing the other one.
-    if (req.path === "/credentials" || req.path.startsWith("/api/public/credential-request/")) return next();
+    if (p === "/credentials" || p.startsWith("/api/public/credential-request/")) return next();
     // Public per-client tracking page (tokenized, no login) — the page and its API.
-    if (req.path === "/portal" || req.path.startsWith("/api/public/portal/")) return next();
+    if (p === "/portal" || p.startsWith("/api/public/portal/")) return next();
     // Public shared review report (tokenized, no login).
-    if (req.path.startsWith("/api/public/review/")) return next();
+    if (p.startsWith("/api/public/review/")) return next();
     // Programmatic access: an org API key authenticates the routes of products that
     // allow key auth (review gate, form filler) — never the autopilot, whose routes
     // stage real filings and need a human identity in the audit trail. The prefix
     // list is DERIVED from the product registry so it can't drift from the
     // entitlement gate below.
-    if (apiKeyAuthPrefixes().some((p) => req.path.startsWith(p)) && orgFromApiKey(db, req)) {
+    //
+    // A session is checked FIRST, so a request that also carries a key never records a use
+    // of that key here; whether the two agree is entitlementGate's question, not this one.
+    if (currentUser(db, req)) return next();
+    if (apiKeyAuthPrefixes().some((prefix) => p.startsWith(prefix)) && orgFromApiKey(db, req)) {
       return next();
     }
-    if (currentUser(db, req)) return next();
-    if (req.path.startsWith("/api/")) {
+    if (p.startsWith("/api/")) {
       res.status(401).json({ error: "Not authenticated." });
       return;
     }
@@ -351,9 +368,16 @@ export function requireAuth(db: AppDb) {
 // ---------------------------------------------------------------------------
 export function entitlementGate(db: AppDb) {
   return (req: Request, res: Response, next: NextFunction) => {
-    if (!req.path.startsWith("/api/")) return next(); // pages handle their own redirects
+    // CASE-INSENSITIVE, like Express routing: /API/projects reaches the /api/projects
+    // handlers, so a case-sensitive test here let /API/... skip this whole gate — the
+    // mixed-credential refusal below AND the licence check (a reviewer-only org reached
+    // the autopilot at /API/projects). Found in the #273 review.
+    const apiPath = req.path.toLowerCase();
+    if (!apiPath.startsWith("/api/")) return next(); // pages handle their own redirects
     // Mixed credentials (#268, hard rule 6): org A's session with org B's key. Refused
-    // here, ONCE, before any route or scope guard runs, so nothing is read or written.
+    // here, before any route or scope guard runs, so nothing is read or written. Every
+    // /api path in any letter case passes through this check (see above); requestOrg's
+    // session-first order is the second wall behind it.
     // 404 not 403 — "out-of-scope returns 404": the refusal must not confirm that the
     // path, or a row under it, exists in the key's org.
     if (credentialsConflict(db, req)) {
@@ -363,7 +387,7 @@ export function entitlementGate(db: AppDb) {
     const org = requestOrg(db, req);
     (req as Request & { org?: OrgInfo }).org = org;
     const products = orgEntitlements(db, org.id);
-    if (productsAllowPath(products, req.path)) return next();
+    if (productsAllowPath(products, apiPath)) return next();
     res.status(403).json({
       error: products.size === 0
         ? "This account has no active product licence."
