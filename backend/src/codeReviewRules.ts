@@ -18,6 +18,8 @@ import {
 } from "./designCriteria";
 import { adoptedNecEdition, necEditionRequirements, NEC_EDITION_REQUIREMENTS } from "./necEditions";
 import { moduleLevelElectronicsEquipment, type ModuleLevelElectronicsEvidence } from "./moduleLevelElectronics";
+import { designText, mountKind, type MountKind } from "./mountKind";
+export { designText, engineeredGroundMount, groundMountFromField, isGroundMount, mountKind, mountKindForProject, type MountKind } from "./mountKind";
 
 const oregonElectrical2023: CodeReference = {
   code: "2023 OESC / 2023 NEC",
@@ -170,28 +172,6 @@ function num(project: ProjectRecord, keys: string[]): number | null {
   return null;
 }
 
-export function designText(project: ProjectRecord, omit: readonly string[] = []): string {
-  const keys = [
-    // Text extracted from the uploaded plan-set-family PDFs (overlaid on the snapshot
-    // by getProjectDetail) — so rules check the ACTUAL sheets, not only parser output.
-    "planSetExtractedText",
-    "splitPagesText",
-    "packetReadinessText",
-    "utilityDownloadChecklistText",
-    "utilityUploadNotesText",
-    "projectDescriptionText",
-    "sitePlanNotesText",
-    "roofPlanNotesText",
-    "structuralCalcText",
-    "electricalCalcText",
-    "labelsText",
-    "reviewFlags",
-    "stampRecommendation",
-    "locateCalloutText",
-  ];
-  return keys.filter((key) => !omit.includes(key)).map((key) => str(project, key)).join("\n");
-}
-
 function hasAny(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
@@ -203,45 +183,9 @@ function isOregon(project: ProjectRecord, _profile: AhjProcessProfile | null): b
   return usStateCode(project.state) === "OR";
 }
 
-// IS THIS ON A ROOF? Everything downstream hangs on the answer: fire access pathways, roof
-// framing, and racking attachment/flashing are all ROOF rules, and a ground array has none of
-// those things — it has piers, a foundation and a trench.
-//
-// This used to read `project.interconnectionMethod` and the plan-text blob, and never the
-// parser's own `mounting` field — the one place the answer is actually recorded. A ground-mount
-// project therefore collected three roof blockers (fire pathways, roof framing, roof
-// attachment) unless the words "ground mount" happened to appear in its extracted text, which
-// on a freshly uploaded set has not been extracted yet. Found 2026-09-22 while stress-testing
-// the gate. It also did not know "pole mount", which permitPath.ts has always recognised — two
-// modules answering the same question with different vocabularies.
-//
-// The mounting FIELD is authoritative when present; the text stays as the fallback for a parse
-// that did not capture it. Silence still means roof, which is the conservative direction: roof
-// rules are the stricter set, so an unknown mount is over-reviewed rather than under-reviewed.
-// CARPORT IS NOT GROUND, for one rule. A carport/canopy has no dwelling roof, so the fire
-// access pathway, roof framing and flashing rules do not apply to it — but NEC 690.12 rapid
-// shutdown governs PV "on buildings", and whether a carport counts is an AHJ call, not ours.
-// So the predicate answers THREE ways and the RSD rule reads the distinction: ground and pole
-// are exempt, a carport keeps its rapid-shutdown requirement. Decided deliberately 2026-09-22;
-// the reasoning is pinned in groundMountScope.test.ts so a later reader can overturn it on
-// purpose rather than by accident.
-export type MountKind = "roof" | "ground" | "carport" | "unknown";
-
-export function mountKind(project: ProjectRecord, allText: string): MountKind {
-  // The parser's own field is `mounting`; `mountType` is the older name a few fixtures and the
-  // benchmark snapshots still carry (leak sweep 2026-09-28: the portal description read ONLY the
-  // dead mountType key, so every job was "Roof-mounted"). Both answer here, mounting first.
-  const mounting = str(project, "mounting") || str(project, "mountType");
-  const probe = mounting || `${project.interconnectionMethod}\n${allText}`;
-  if (/carport|canopy|awning|patio cover/i.test(probe)) return "carport";
-  // The mounting FIELD may say just "Ground" / "Pole" (mountType's vocabulary); only the free text
-  // needs the longer phrase, where a bare "ground" is a grounding note.
-  if (/ground[-\s]?mount|ground.?mounted|ground.?array|pole[-\s]?mount/i.test(probe) || (mounting && /\b(?:ground|pole)\b/i.test(mounting))) return "ground";
-  if (mounting) return "roof";
-  // Silence means roof, which is the conservative direction: the roof rules are the stricter
-  // set, so an unknown mount is over-reviewed rather than under-reviewed.
-  return "unknown";
-}
+// IS THIS ON A ROOF? — the one mount predicate (mountKind / mountKindForProject) lives in
+// mountKind.ts, so permitPath and requiredDocuments ask the same question without importing this
+// module (which imports permitPath). Re-exported here for the callers that always read it from here.
 
 /** The mount, as the scope-of-work sentence names it — "" when the mount is not known: an unknown
  *  mount is never written as "roof-mounted" on an application (leak sweep 2026-09-28). */
@@ -258,13 +202,6 @@ export function isRoofMounted(project: ProjectRecord, allText: string): boolean 
 /** NEC 690.12 governs PV on BUILDINGS — a ground/pole array is not on one; a carport may be. */
 export function rapidShutdownApplies(project: ProjectRecord, allText: string): boolean {
   return mountKind(project, allText) !== "ground";
-}
-
-// The one entry point other modules should use. It derives the design text itself, so a second
-// caller cannot reach a different answer by feeding the predicate a different blob — which is
-// precisely how the reviewer engine and this module came to disagree about the same array.
-export function mountKindForProject(project: ProjectRecord): MountKind {
-  return mountKind(project, designText(project));
 }
 
 // Same reasoning, same shape: the engine's plan-set pass raises its own rapid-shutdown finding
@@ -346,9 +283,10 @@ function isMicroOrMlpeInverter(project: ProjectRecord, allText: string): boolean
 // "not a manufactured home", "not listed to UL 2703") — a wider window read "engineered, not
 // prescriptive, for a manufactured home" as a denial.
 const NEGATION_BEFORE = /(?:\b(?:not|no|never|without|missing|lacks?|lacking|other\s+than|excluding|except|isn'?t)\s+(?:[a-z]+\s+){0,2}|\bnon[-\s]?)$/i;
-// "NOT USED" and "N/A" anywhere in the window too (#242): "690.12(B)(2)(3) NO EXPOSED WIRING
-// METHODS - NOT USED" names an option to reject it.
-const NEGATION_AFTER = /^[^.;]{0,30}?\b(?:not\s+(?:provided|shown|found|included|listed|evaluated|verified|checked|analy[sz]ed|addressed|applicable|used)|n\/a|missing|by\s+others|excluded)\b|^\s*[?:]?\s*(?:no|n\/a|none)\b/i;
+// "NOT USED" denies only DIRECTLY after the mention (#242: "690.12(B)(2)(3) - NOT USED"), like
+// "N/A" and "NONE". Never in the 30-character window: affirmedIn joins whitespace, so the next
+// schedule row ("EV CHARGER: N/A", "HOA: N/A") would deny a real mention before it.
+const NEGATION_AFTER = /^[^.;]{0,30}?\b(?:not\s+(?:provided|shown|found|included|listed|evaluated|verified|checked|analy[sz]ed|addressed|applicable)|missing|by\s+others|excluded)\b|^\s*[?:\u2013\u2014-]?\s*(?:no|n\/a|none|not\s+used)\b/i;
 
 interface Affirmed {
   source: string;
@@ -589,9 +527,10 @@ function withoutRsdOptionTitle(sources: DesignTextSource[]): DesignTextSource[] 
 /** city.ess.details-missing's trigger: a mention of storage scope. */
 const ESS_TRIGGER_PATTERNS: RegExp[] = [/battery/i, /\bESS\b/i, /powerwall/i, /encharge/i, /backup/i];
 const STORAGE_WORD = String.raw`(?:batter(?:y|ies)|ESS|backup|powerwall|encharge|energy\s+storage(?:\s+system)?|storage)`;
-const STORAGE_RUN_THEN_DENIAL = new RegExp(String.raw`^(?:\s*(?:\/|&|,|\+|and|or)?\s*${STORAGE_WORD}\b)*\s*[?:\u2013\u2014-]?\s*(?:no|none|n\/a|not\s+(?:used|applicable|included|proposed|provided))\b`, "i");
+const STORAGE_RUN_THEN_DENIAL = new RegExp(String.raw`^(?:\s*(?:\/|&|,|\+|and|or)?\s*${STORAGE_WORD}\b)*\s*\)?\s*[?:\u2013\u2014-]?\s*(?:no|none|n\/a|not\s+(?:used|applicable|included|proposed|provided))\b`, "i");
 const DENIAL_THEN_STORAGE_RUN = new RegExp(String.raw`\b(?:no|without)\s+(?:${STORAGE_WORD}\s*(?:\/|&|,|\+|and|or)\s*)+$`, "i");
-/** "BATTERY / ESS: NONE": the denial sits after the next storage word, past NEGATION_AFTER's reach. */
+/** "BATTERY / ESS: NONE", "(BATTERY BACKUP): NOT USED": the denial sits after the next storage
+ *  word (or its closing parenthesis), past NEGATION_AFTER's reach. */
 const essMentionDenied: MentionGuard = (text, index, matched) =>
   STORAGE_RUN_THEN_DENIAL.test(text.slice(index + matched.length, index + matched.length + 60))
   || DENIAL_THEN_STORAGE_RUN.test(text.slice(Math.max(0, index - 60), index));
@@ -1669,13 +1608,14 @@ export function evaluateDesignCodeFindings(
     }
   }
 
-  // The designer's sheets, not the parser's own labels (#257): the split map and the download
-  // checklist always print "07 Battery / ESS specs: not detected" / "OPTIONAL/MISSING - 07
-  // Battery / ESS Spec Sheet", so a no-battery project posted with that JSON raised this review.
+  // The designer's sheets, not the parser's own labels (#257): the split map, the download
+  // checklist and the packet-readiness list always print "07 Battery / ESS specs: not detected" /
+  // "OPTIONAL/MISSING - 07 Battery / ESS Spec Sheet" / "READY - Battery / ESS", so a no-battery
+  // project posted with that JSON raised this review.
   const batterySources: DesignTextSource[] = [
     { label: "batteryModel", text: str(project, "batteryModel") },
     { label: "batteryQty", text: str(project, "batteryQty") },
-    { label: "design text", text: designText(project, ["splitPagesText", "utilityDownloadChecklistText"]) },
+    { label: "design text", text: designText(project, ["splitPagesText", "utilityDownloadChecklistText", "packetReadinessText"]) },
   ];
   const batteryText = batterySources.map((s) => s.text).join("\n");
   // The suppression list held a bare /fire/i — and since the fire-pathway work every plan set

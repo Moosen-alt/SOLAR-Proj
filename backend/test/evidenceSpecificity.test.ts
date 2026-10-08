@@ -164,6 +164,10 @@ for (const [label, over] of [
   ["jurisdiction A", { state: "OR", ahj: "City of Sample Falls" }],
   ["jurisdiction B", { state: "AZ", ahj: "Town of Example Mesa" }],
 ] as const) {
+  check(`MUST EXCLUDE: the parser's packet-readiness 'READY - Battery / ESS' raises no ESS finding (${label})`, () => {
+    assert.equal(has("city.ess.details-missing", BASE, { packetReadinessText: "READY - Site plan\nREADY - Battery / ESS\nREADY - Gateway", ...over }), false,
+      "a no-battery project warned on the parser's packet-readiness label");
+  });
   check(`MUST EXCLUDE: the parser's split-map/checklist battery labels raise no ESS finding (${label})`, () => {
     assert.equal(has("city.ess.details-missing", BASE, { ...PARSER_LABELS, ...over }), false,
       "a no-battery project warned on the parser's own '07 Battery / ESS' labels");
