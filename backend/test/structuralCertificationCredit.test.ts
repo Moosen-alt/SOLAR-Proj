@@ -17,6 +17,13 @@
 //                second structural document of the same project);
 //   MUST-EXCLUDE a re-uploaded plan set, a re-split or replaced document, or changed bytes void it;
 //   MUST-EXCLUDE a withdrawal holds again (and is audited);
+//   MUST-PASS    re-running buildUtilityPackage on an unchanged plan set (a byte-identical re-cut)
+//                keeps the confirmation (Helm's review at fb160321);
+//   MUST-EXCLUDE a changed re-cut, or a standalone upload to the `structural` slot, voids it; deleting
+//                that newer row (or a newer plan set) never revives it;
+//   MUST-EXCLUDE a cut older than the newest plan set is never offered and cannot be confirmed (409);
+//   PAGES        the candidate's page and page count are the PDF's (scanned pages count), and the
+//                confirmed page is clamped; the audit carries the user id and the superseded id;
 //   TIMING       the detector stays linear on an unbroken capital run at the 150K text cap (round 4 M4).
 // The route (sign-in, cross-org 404) is pinned in structuralLetterConfirmRoute.test.ts; the card in
 // structuralLetterCardRender.test.ts.
