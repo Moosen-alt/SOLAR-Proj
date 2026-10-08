@@ -13,7 +13,8 @@ type PdfjsModule = {
   GlobalWorkerOptions: { workerSrc: string };
 };
 type PdfjsDoc = { numPages: number; getPage: (n: number) => Promise<PdfjsPage> };
-type PdfjsPage = { getTextContent: () => Promise<{ items: Array<{ str: string }> }> };
+type PdfjsTextItem = { str?: string; hasEOL?: boolean };
+type PdfjsPage = { getTextContent: () => Promise<{ items: PdfjsTextItem[] }> };
 
 let _pdfjs: PdfjsModule | null = null;
 async function getPdfjs(): Promise<PdfjsModule> {
@@ -35,9 +36,30 @@ async function getPdfjs(): Promise<PdfjsModule> {
 // only affects IMAGE decoding, not the TEXT extraction we do here, so it's safe to drop.
 const PDFJS_WARN_RE = /^Warning: (TT: undefined function:|Font "[^"]+" is not available|getHexString|Indexing all PDF objects|#instantiateWasm|#getJsModule|Unable to decode image|Dependent image isn't ready|.*[Jj]Big2|.*JBIG2|.*wasmUrl|.*nulljbig2|.*OpenJPEG|.*JpxError)/;
 
+// ONE LINE OF THE PAGE IS ONE LINE OF TEXT (#260). The items used to be joined with a space, so a
+// page came out as one line and only page breaks were "\n": a consumer that reasons about "the same
+// line" (a title-block row, a note) saw the whole sheet as one row. pdf.js marks the item that ends
+// a line (`hasEOL`, from its own position test); that boundary is "\n", every other boundary the
+// " " it always was, so text within a line is byte-for-byte what it was before.
+export function pageTextFromItems(items: PdfjsTextItem[]): string {
+  let out = "";
+  items.forEach((item, i) => {
+    if (i > 0) out += items[i - 1].hasEOL ? "\n" : " ";
+    out += item.str ?? "";
+  });
+  return out;
+}
+
+// Whitespace cleanup that keeps the lines: a run of 3+ spaces is two (as it always was), and a run
+// of whitespace holding a line break is ONE break — the old `\s{3,}` would have folded a break and
+// the spaces around it into "  ", undoing the line.
+function tidyLines(text: string): string {
+  return text.replace(/[^\S\n]*\n\s*/g, "\n").replace(/[^\S\n]{3,}/g, "  ").trim();
+}
+
 // Shared pdfjs driver: open the PDF, suppress the harmless image-decode warnings, and
-// run `perPage` over each page's RAW concatenated text (items joined by a space), up to
-// maxPages. The two public extractors below differ only in how they post-process pages.
+// run `perPage` over each page's RAW text (pageTextFromItems), up to maxPages. The two
+// public extractors below differ only in how they post-process pages.
 async function withPdfPages<T>(filePath: string, maxPages: number, perPage: (rawPageText: string) => T): Promise<T[]> {
   const pdfjs = await getPdfjs();
   const data = new Uint8Array(fs.readFileSync(filePath));
@@ -53,7 +75,7 @@ async function withPdfPages<T>(filePath: string, maxPages: number, perPage: (raw
     for (let i = 1; i <= pages; i++) {
       const page = await doc.getPage(i);
       const content = await page.getTextContent();
-      out.push(perPage(content.items.map((item) => item.str).join(" ")));
+      out.push(perPage(pageTextFromItems(content.items)));
     }
     return out;
   } finally {
@@ -62,14 +84,14 @@ async function withPdfPages<T>(filePath: string, maxPages: number, perPage: (raw
 }
 
 export async function extractPdfText(filePath: string, maxPages = 30): Promise<string> {
-  // Whole-document cleanup: join raw pages with newlines, THEN collapse whitespace once.
-  return (await withPdfPages(filePath, maxPages, (s) => s)).join("\n").replace(/\s{3,}/g, "  ").trim();
+  // Whole-document cleanup: join raw pages with newlines, THEN tidy whitespace once.
+  return tidyLines((await withPdfPages(filePath, maxPages, (s) => s)).join("\n"));
 }
 
 // Per-page text (1-based index → text). Used by the plan-set splitter to map sheets
 // to page ranges. maxPages caps the work for very large sets.
 export async function extractPdfPages(filePath: string, maxPages = 60): Promise<string[]> {
-  return withPdfPages(filePath, maxPages, (s) => s.replace(/\s{3,}/g, "  ").trim());
+  return withPdfPages(filePath, maxPages, tidyLines);
 }
 
 // ---------------------------------------------------------------------------
