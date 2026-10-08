@@ -19,6 +19,7 @@ import {
 import { namesWorkersComp, workersCompAffidavitItem } from "./formFieldChecks";
 import { HttpError } from "./httpError";
 import { firstEmail } from "../../shared/src/emailAddress";
+import { contractorLicenceLabel } from "../../shared/src/licenceKinds";
 import { logger } from "./logger";
 import type { PageFrame, PageGeometry, SnapLine } from "./formRowGeometry";
 import { isLicenceHolderRole, loadDefaultSignaturesByRole } from "./signatures";
@@ -886,10 +887,19 @@ function computed(name: string, ctx: FillContext): string {
         additionTail,
       ].join("");
     }
-    case "installerBlock":
-      return [ctx.client.installerCompanyName, ctx.client.ccbLicenseNumber ? `CCB ${ctx.client.ccbLicenseNumber}` : ""]
-        .filter(Boolean)
-        .join(" — ");
+    // THE LICENCE IS LABELLED BY THE JOB'S STATE (#208): it said "CCB <n>" on every job. Through
+    // licenceFor (the generic slot for this form's track — the number every other door fills): a
+    // contractor licence takes the state's board label (licenceKinds.contractorLicenceLabel — CCB in
+    // Oregon, DOPL in Utah), any other kind its own label; nothing on file (or an unknown state) = the
+    // company alone. A hand-built context (no licence book) reads the overlay's CCB column — Oregon's
+    // CCB and nothing else (licences ruling L5).
+    case "installerBlock": {
+      const a = ctx.licences ? licenceAnswerFor({ kind: "generic", field: "number" }, ctx) : null;
+      const licence = a
+        ? (a.number ? `${a.kind === "contractor" ? contractorLicenceLabel(a.state) : a.label} ${a.number}` : "")
+        : ctx.client.ccbLicenseNumber ? `CCB ${ctx.client.ccbLicenseNumber}` : "";
+      return [ctx.client.installerCompanyName, licence].filter(Boolean).join(" — ");
+    }
     // THE BUILDING DEPARTMENT THAT REVIEWS THIS PERMIT: the agency the per-job lookup cites as the
     // structural permit's issuer when that is not the AHJ (Marion County for a City of Jefferson
     // job), else the AHJ. BCD 5952's "Building department:" line printed "City of Jefferson" on a
