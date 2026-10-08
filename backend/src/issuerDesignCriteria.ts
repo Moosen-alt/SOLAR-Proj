@@ -32,12 +32,17 @@
 import type { AppDb } from "./db";
 import type { PageLink, PageReader, ReadPage } from "./agencyPageReader";
 import { isOfficialCodeSource } from "./llm";
+import { logger } from "./logger";
 import { getPermitProcessLookup } from "./permitProcess";
 import { isAgencyOwnDomain } from "./permitPlatformCatalog";
 import { isPermitPlatformUrl, portalHostOf, registrableDomain } from "./portalChannel";
 
 /** Reads one probe may spend on the issuer's site (the home page, a site search, a hub, candidates). */
 export const ISSUER_PROBE_MAX_READS = 8;
+/** Reads left for the HUB PHASE (#250): when the home page, the site search and the common page
+ *  names have named no candidate, the page most likely does not exist; the hubs and whatever they
+ *  link get this much (one hub and its candidate fit), not the rest of the full budget (~10 s a read). */
+export const ISSUER_PROBE_HUB_READS = 3;
 
 // ── 1. The issuer's host ─────────────────────────────────────────────────────────────────
 
@@ -156,6 +161,8 @@ export interface IssuerProbeResult {
   /** The lookup-shaped JSON the table yielded (extractCriteriaTable), for llm.parseDesignCriteriaLookup. */
   raw?: Record<string, unknown>;
   pagesRead: Array<{ url: string; ok: boolean; reason: string }>;
+  /** Set when no candidate was named before the hub reads and the smaller hub budget applied (#250). */
+  hubBudget?: number;
 }
 
 const CANDIDATE_TEXT_CAP = 12000;
@@ -172,8 +179,11 @@ export async function probeIssuerDesignCriteria(reader: PageReader, input: { hos
   const site = registrableDomain(input.host);
   const onSite = (u: string) => { const h = portalHostOf(u); return Boolean(h) && registrableDomain(h) === site; };
   const out: IssuerProbeResult = { host: input.host, platform: "unknown", pagesRead: [] };
+  // The probe's own cap (the reader's minus what the hub phase may not spend), see ISSUER_PROBE_HUB_READS.
+  let capAt: number | null = null;
+  const left = () => (capAt === null ? reader.readsLeft() : Math.min(reader.readsLeft(), capAt - out.pagesRead.length));
   const read = async (u: string): Promise<ReadPage | null> => {
-    if (reader.readsLeft() <= 0) return null;
+    if (left() <= 0) return null;
     const pg = await reader.read(u);
     out.pagesRead.push({ url: u, ok: pg.ok, reason: String(pg.reason || "").slice(0, 160) });
     return pg.ok ? pg : null;
@@ -220,16 +230,23 @@ export async function probeIssuerDesignCriteria(reader: PageReader, input: { hos
     () => siteSearchUrls(origin, out.platform).slice(0, 1),
     () => candidates,
     () => commonCriteriaPaths(origin).slice(0, 1),
-    () => (candidates.some((c) => !seen.has(key(c))) ? [] : hubs.slice(0, 2)),
+    () => {
+      if (candidates.some((c) => !seen.has(key(c))) || !hubs.length) return [];
+      // Nothing has named the table yet: the hub phase runs on a smaller budget, and says so.
+      capAt = out.pagesRead.length + ISSUER_PROBE_HUB_READS;
+      out.hubBudget = Math.min(ISSUER_PROBE_HUB_READS, reader.readsLeft());
+      logger.info("issuer-design-criteria", `no candidate page named on ${input.host} after ${out.pagesRead.length} read(s); hub reads capped at ${out.hubBudget}`);
+      return hubs.slice(0, 2);
+    },
     () => candidates,
   ];
   for (const step of steps) {
     for (const u of [...step()]) {
-      if (done || reader.readsLeft() <= 0) break;
+      if (done || left() <= 0) break;
       if (seen.has(key(u))) continue;
       done = await visit(u);
     }
-    if (done || reader.readsLeft() <= 0) break;
+    if (done || left() <= 0) break;
   }
   const found = best as { url: string; text: string; raw: Record<string, unknown> } | null;
   if (found) {

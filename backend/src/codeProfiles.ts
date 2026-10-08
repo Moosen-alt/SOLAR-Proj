@@ -2641,14 +2641,14 @@ async function designCriteriaResearchBody(
     const placement = await placementHalf();
     return { saved: false, reason: criteriaAnswered ? "design criteria already on file" : "provider has no design-criteria lookup", placement, checklist: checklist(null, placement).items };
   }
-  const research = await researchWithIssuerPage(db, llm as LLMProvider & Required<Pick<LLMProvider, "researchDesignCriteria">>, state, ahj, own, reader);
+  const { research, issuerProbe } = await researchWithIssuerPage(db, llm as LLMProvider & Required<Pick<LLMProvider, "researchDesignCriteria">>, state, ahj, own, reader);
   const merged = mergeResearchedDesignCriteria(db, { state, ahj, profileKey }, research);
   onMerged(merged.profileKey);
   const placement = await placementHalf();
   // The lookup's own notes (truncated, pages read, what was dropped and why) reach the job result.
   return {
     ...merged, webGrounded: research.webGrounded, ...(research.truncated ? { truncated: true } : {}),
-    ...(research.issuerPage ? { issuerPage: research.issuerPage } : {}),
+    ...(research.issuerPage ? { issuerPage: research.issuerPage } : {}), ...(issuerProbe ? { issuerProbe } : {}),
     found: research.values?.length ?? 0, notes: String(research.notes || "").slice(0, 1000), placement, checklist: checklist(research, placement).items,
   };
 }
@@ -2659,7 +2659,8 @@ async function designCriteriaResearchBody(
  * model's answer does (llm.parseDesignCriteriaLookup). When it answers the core criteria (ground
  * snow and wind) no web-search round is spent. Otherwise the web lookup runs as before — handed the
  * candidate page's text as grounding when there is one — and the page's own values come first (the
- * merge fills blanks, first value wins). No issuer host on file, or no reader: exactly the old lookup.
+ * merge fills blanks, first value wins). No issuer host on file, or no reader: exactly the old lookup,
+ * and `issuerProbe` says why no page was read (the job result carries it, #250).
  */
 async function researchWithIssuerPage(
   db: AppDb,
@@ -2667,7 +2668,7 @@ async function researchWithIssuerPage(
   state: string, ahj: string,
   own: CriteriaWriteRow | null,
   reader: PageReader | null | undefined,
-): Promise<DesignCriteriaResearchResult> {
+): Promise<{ research: DesignCriteriaResearchResult; issuerProbe?: string }> {
   const probeMod = await import("./issuerDesignCriteria");
   // Every URL the AHJ's own row cites (its adopted codes, its citations, its criteria page).
   const cited = own && own.kind !== "create" ? probeMod.urlsIn(own.profile) : [];
@@ -2679,25 +2680,35 @@ async function researchWithIssuerPage(
     catch (err) { logger.warn("code-profiles", `issuer-site probe failed for ${state}/${ahj}`, { err: err instanceof Error ? err.message : String(err) }); }
   }
   const url = probe?.candidateUrl ?? "";
-  if (!url) return llm.researchDesignCriteria({ state, ahj });
+  const pages = (n: number) => `${n} page${n === 1 ? "" : "s"} read on ${host}`;
+  if (!url) {
+    // Say why no page was read: a probe skipped in silence reads as a page that does not exist.
+    const issuerProbe = !host ? "no issuer host on file"
+      : !pageReader ? `issuer host ${host} on file; page reads off`
+        : !probe ? `issuer-site probe failed on ${host}`
+          : `no design-criteria page found (${pages(probe.pagesRead.length)}${probe.hubBudget !== undefined ? `; hub reads capped at ${probe.hubBudget}` : ""})`;
+    return { research: await llm.researchDesignCriteria({ state, ahj }), issuerProbe };
+  }
   const { parseDesignCriteriaLookup } = await import("./llm");
   const fromPage = parseDesignCriteriaLookup(probe!.raw ?? {}, true, false, { ahj, state });
-  const answered = fromPage.values.some((v) => v.criterion === "groundSnowLoadPsf") && fromPage.values.some((v) => v.criterion === "windSpeedMph");
-  const read = `${probe!.pagesRead.length} page${probe!.pagesRead.length === 1 ? "" : "s"} read on ${host}`;
+  // ANSWERED needs a STRENGTH-LEVEL ground snow (#250): a page giving only the ASD pg (qualifier
+  // pg_asd) still sends the web round to look for the strength-level one it does not state.
+  const answered = fromPage.values.some((v) => v.criterion === "groundSnowLoadPsf" && v.qualifier !== "pg_asd") && fromPage.values.some((v) => v.criterion === "windSpeedMph");
+  const read = pages(probe!.pagesRead.length);
   const dropped = /Dropped: [^]*?\.(?= |$)/.exec(fromPage.notes)?.[0] ?? "";
   if (answered) {
-    return {
+    return { research: {
       provider: "issuer_page", values: fromPage.values, webGrounded: true, issuerPage: { url, parsed: true },
       notes: `Read from the jurisdiction's own design-criteria page ${url} (${read}); no web search spent.${dropped ? ` ${dropped}` : ""}`,
-    };
+    } };
   }
   const web = await llm.researchDesignCriteria({ state, ahj, issuerPage: { url, text: probe!.candidateText ?? "" } });
   const same = (a: DesignCriteriaResearchResult["values"][number], b: DesignCriteriaResearchResult["values"][number]) => a.criterion === b.criterion && (a.qualifier ?? "") === (b.qualifier ?? "");
-  return {
+  return { research: {
     ...web,
     values: [...fromPage.values, ...(web.values ?? []).filter((v) => !fromPage.values.some((p) => same(p, v)))],
     webGrounded: web.webGrounded || fromPage.values.length > 0,
     issuerPage: { url, parsed: false },
     notes: `Candidate page found on the jurisdiction's own site, not parsed: ${url} (${read}; ${fromPage.values.length} value${fromPage.values.length === 1 ? "" : "s"} read from it). ${web.notes ?? ""}`.trim(),
-  };
+  } };
 }
