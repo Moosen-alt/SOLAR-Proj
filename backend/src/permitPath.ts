@@ -21,7 +21,7 @@
 
 import type { PrescriptiveLimits, ProjectRecord } from "../../shared/src/types";
 import { assumedRoofLayersNote, classifyRoofCovering, oregonRoofingRowQualifies } from "./roofCovering";
-import { groundMountFromField } from "./mountKind";
+import { engineeredGroundMount } from "./mountKind";
 
 export type PermitPath = "prescriptive" | "engineered" | "unknown";
 
@@ -659,9 +659,9 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
   }
 
   // 5. Default — a standard residential roof mount that clears the screen is prescriptive.
-  // The mounting FIELD only (mountKind.groundMountFromField): a pure ground array or a roof + ground
-  // combination. Plan prose about ground-mounted equipment never flips a rooftop job (#247 review).
-  if (groundMountFromField(project)) {
+  // The mounting FIELD only (mountKind.engineeredGroundMount): a ground array, a roof + ground
+  // combination, or a carport the field calls ground/pole-mounted. Plan prose never flips a rooftop job.
+  if (engineeredGroundMount(project)) {
     basis.push("Ground/pole mount — typically engineered (verify against the AHJ's prescriptive scope).");
     return finalize("engineered", "structural-screen");
   }

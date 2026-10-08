@@ -4,8 +4,10 @@
 // requiredDocuments demanded "Structural roof framing + attachment detail" of an array standing in a
 // field, and nothing ever asked whether the AHJ wants a zoning / land-use approval for it. Pinned:
 //
-//   ONE PREDICATE     — permitPath and requiredDocuments read mountKind.ts, the same answer the
-//                       reviewer rules give (a bare "Ground" field, a pole mount, the design text).
+//   ONE PREDICATE     — permitPath and requiredDocuments read mountKind.ts, and only the MOUNTING
+//                       FIELD (groundMountFromField): plan prose and parser flags never vote for a
+//                       blocking row or the engineered path. "ground" counts as a mount noun or a whole
+//                       field segment, never "ground lugs" / "ground floor" / "non-ground".
 //   MUST PASS         — a ground job on two permit platforms (Accela, Tyler EnerGov) gets footing/
 //                       racking + trench rows, no roof-framing row, and a zoning row read from the
 //                       per-job lookup: cited "required" names its source, cited "not_required" adds
@@ -81,7 +83,7 @@ const types = (p: ProjectRecord) => requiredDocuments(p).map((i) => i.docType);
 const row = (p: ProjectRecord, t: string) => requiredDocuments(p).find((i) => i.docType === t);
 
 console.log("\n1. ONE PREDICATE — the mounting FIELD drives permitPath and requiredDocuments, and agrees with the reviewer rules");
-for (const mounting of ["Ground", "Pole mount", "ground-mounted array", "Pole"]) {
+for (const mounting of ["Ground", "Pole mount", "ground-mounted array", "Pole", "Top of pole"]) {
   check(`field "${mounting}" is a ground mount everywhere`, () => {
     const p = job(ACCELA, mounting);
     assert.equal(mountKindForProject(p), "ground");
@@ -171,6 +173,13 @@ const ROOFTOP_PROSE: Array<[string, string, Record<string, string>]> = [
   ["", "ROOF MOUNT - NOT A GROUND MOUNT", {}],
   ["", "", { reviewFlags: "confirm roof mount vs ground mount" }],
   ["Pole barn roof", "", {}],
+  // Field values whose "ground" is not a mount (#247 re-review).
+  ["Roof mount w/ ground lugs", "", {}],
+  ["Flush roof; ground-level inverter", "", {}],
+  ["Roof mount, ground floor garage", "", {}],
+  ["Roof mount; not ground", "", {}],
+  ["Roof Mount (non-ground)", "", {}],
+  ["Roof mount, ground fault protection", "", {}],
   ["Roof mount - not a ground mount", "", {}],
 ];
 for (const where of [OREGON, NO_LOOKUP]) {
@@ -178,6 +187,7 @@ for (const where of [OREGON, NO_LOOKUP]) {
     check(`${where.state}: ${mounting ? `field "${mounting}"` : text ? `text "${text}"` : `flag "${extra.reviewFlags}"`} keeps the roof set and the roof path`, () => {
       const p = job(where, mounting, text, extra);
       const bare = job(where, /ground/i.test(mounting) ? "Roof mount" : mounting);
+      assert.deepEqual(requiredDocuments(p), requiredDocuments(bare));
       assert.equal(groundMountFromField(p), null);
       assert.deepEqual(types(p), types(bare));
       assert.ok(types(p).includes("structural") && !types(p).includes("ground_footing"));
@@ -185,6 +195,16 @@ for (const where of [OREGON, NO_LOOKUP]) {
       assert.equal(resolvePermitPath(p).path, resolvePermitPath(bare).path);
     });
   }
+}
+// A carport the field calls ground- or pole-MOUNTED keeps main's engineered path and PE-stamp row
+// (#247 re-review), while its document set stays the carport (roof) set.
+for (const mounting of ["Ground-mounted carport", "Carport (ground mount)", "Pole-mounted canopy", "Pole mount awning"]) {
+  check(`OR field "${mounting}": engineered with the stamp row, as on main; no ground rows`, () => {
+    const p = job(OREGON, mounting);
+    assert.equal(resolvePermitPath(p).path, "engineered");
+    assert.ok(types(p).includes("structural") && !types(p).includes("ground_footing"));
+    assert.equal(row(p, "structural_letter")?.blocking, true, "the blocking PE-stamp row");
+  });
 }
 check("rooftop permit path is not touched by the shared predicate", () => {
   assert.ok(!resolvePermitPath(job(ACCELA, "Roof mount")).basis.some((b) => /Ground\/pole mount/.test(b)));
@@ -215,6 +235,10 @@ check("polarity is the requirement phrase's: a height limit's 'not' never flips 
   assert.equal(groundZoningPolarity("Ground-mounted solar is exempt from zoning review."), "not_required");
   assert.equal(parseProcessPart(answer("required", "A zoning permit is required for ground-mounted arrays; arrays shall not exceed 15 feet"), [ACCELA.page], "end_turn").groundMountZoning?.value, "required");
   assert.equal(parseProcessPart(answer("not_required", "Ground-mounted systems not exceeding 6 feet in height require zoning approval."), [ACCELA.page], "end_turn").groundMountZoning?.value, null);
+});
+check("'not exempt' is a requirement; 'need(s) no' is not", () => {
+  assert.equal(groundZoningPolarity("Ground-mounted solar arrays are not exempt from zoning review."), "required");
+  assert.equal(groundZoningPolarity("Ground-mounted arrays need no zoning permit."), "not_required");
 });
 check("an unknown value or a quote from a page the search never returned is dropped", () => {
   assert.equal(parseProcessPart(answer("maybe", "Ground-mounted solar requires zoning approval."), [ACCELA.page], "end_turn").groundMountZoning?.value, null);

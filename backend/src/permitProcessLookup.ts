@@ -496,8 +496,8 @@ const GROUND_ZONING_WORDS = /\b(?:zoning|land[- ]use|planning|setbacks?|accessor
 // are cut out first; then a negation counts only within a few words BEFORE require / need, or as an
 // exemption. No requirement phrase and no negation -> null (not kept).
 const SIZE_LIMIT = /\b(?:not|no)\s+(?:to\s+)?(?:exceed(?:ing|s)?|more|greater|higher|taller|larger|over|less|closer)\b[^,;.]*?\d[\d.,]*\s*(?:feet|foot|ft|inch(?:es)?|in|square\s+feet|sq\.?\s*ft|%|percent)?/gi;
-const NEGATED_REQUIREMENT = /\b(?:no|not|never|without)\b(?:\W+\w+){0,3}?\W+(?:requires?|required|need(?:s|ed)?)\b|\b\w+n't\s+(?:\w+\s+){0,2}?(?:require|need)|\bexempt\b|\bnot\s+subject\s+to\b/i;
-const REQUIREMENT = /\b(?:requires?|required|need(?:s|ed)?|must\s+(?:obtain|apply|have|receive|get))\b/i;
+const NEGATED_REQUIREMENT = /\b(?:no|not|never|without)\b(?:\W+\w+){0,3}?\W+(?:requires?|required|need(?:s|ed)?)\b|\b\w+n't\s+(?:\w+\s+){0,2}?(?:require|need)|(?<!\bnot\s)\bexempt\b|\bnot\s+subject\s+to\b|\b(?:needs?|requires?)\s+no\b/i;
+const REQUIREMENT = /\b(?:requires?|required|need(?:s|ed)?|must\s+(?:obtain|apply|have|receive|get))\b|\bnot\s+exempt\b/i;
 export function groundZoningPolarity(quote: string): "required" | "not_required" | null {
   const q = quote.replace(SIZE_LIMIT, " ");
   if (NEGATED_REQUIREMENT.test(q)) return "not_required";

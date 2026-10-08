@@ -95,16 +95,29 @@ export function mountKindForProject(project: MountInputs): MountKind {
 //   "ground"      — a pure ground / pole array: its rows replace roof framing.
 //   "combination" — roof AND ground arrays: roof framing stays, the ground rows are added.
 //   null          — roof, carport, unknown, or anything else.
-// A bare "pole" counts only as the whole value (mountType's "Pole") or "pole mount": "Pole barn roof"
+// "ground" counts only as a MOUNT NOUN ("ground mount", "ground-mounted", "ground array", "ground
+// rack") or as a whole segment once the value is split on , ; + & / and "and" ("Ground", "Roof and
+// Ground") — never "ground lugs", "ground-level inverter", "ground floor garage", "ground fault" or
+// "non-ground". "pole" likewise: "pole mount", "top of pole", or a whole segment — "Pole barn roof"
 // is a roof. "... not a ground mount" is not a ground vote.
 export type MountFieldGround = "ground" | "combination";
+const NEGATED_MOUNT = /\b(?:not|no)\s+(?:an?\s+)?(?:ground|pole)[-\s]?(?:mount\w*|array)/gi;
+const GROUND_MOUNT_NOUN = /\bground[-\s]?(?:mount\w*|arrays?|rack\w*)|\bpole[-\s]?mount\w*|\btop[-\s]?of[-\s]?pole\b/i;
+const mountSegments = (m: string) => m.split(/\s*(?:[,;+&/]|\band\b)\s*/i).map((x) => x.trim().toLowerCase());
+const fieldOf = (project: MountInputs) => (str(project, "mounting") || str(project, "mountType")).replace(NEGATED_MOUNT, " ");
 export function groundMountFromField(project: MountInputs): MountFieldGround | null {
-  const raw = str(project, "mounting") || str(project, "mountType");
-  const m = raw.replace(/\b(?:not|no)\s+(?:an?\s+)?(?:ground|pole)[-\s]?(?:mount\w*|array)/gi, " ");
+  const m = fieldOf(project);
   if (!m.trim() || /carport|canopy|awning|patio cover/i.test(m)) return null;
-  const ground = /\bground\b/i.test(m) || /\bpole[-\s]?mount/i.test(m) || /^\s*poles?\s*$/i.test(m);
+  const ground = GROUND_MOUNT_NOUN.test(m) || mountSegments(m).some((x) => /^(?:ground|poles?)$/.test(x));
   if (!ground) return null;
-  return /\broof/i.test(m) ? "combination" : "ground";
+  return mountSegments(m).some((x) => /\broof/.test(x)) ? "combination" : "ground";
+}
+
+/** permitPath's ground default (#247 review): a ground array, a combination — or a carport / canopy the
+ *  field still calls ground- or pole-MOUNTED ("Ground-mounted carport", "Pole-mounted canopy"), which
+ *  main has always routed engineered. requiredDocuments keeps treating those as carports. */
+export function engineeredGroundMount(project: MountInputs): boolean {
+  return groundMountFromField(project) != null || GROUND_MOUNT_NOUN.test(fieldOf(project));
 }
 
 /** A PURE ground or pole array, by the mounting field (see groundMountFromField). */
