@@ -2883,6 +2883,7 @@ export interface StructuralLetterCandidate {
   source: string;
   /** 1-based page of that document that reads most like the letter (1 when nothing stands out). */
   page: number;
+  /** The document's PDF pages, as the background extraction read them (0 until it has run). */
   pageCount: number;
   /** 0–5 (permitPath.certificationScore); 0 = its text says nothing letter-like (or it has none). */
   score: number;
@@ -2900,7 +2901,8 @@ export interface StructuralLetterConfirmationView {
 
 export interface StructuralLetterState {
   candidate: StructuralLetterCandidate | null;
-  /** Set only while it still covers the document as it stands now (same id, same bytes, no newer plan set). */
+  /** Set only while it still covers the document as it stands now: same id, same bytes, no newer
+   *  `structural` row but a byte-identical re-cut, no newer plan set (structuralLetterVoid.ts). */
   confirmation: StructuralLetterConfirmationView | null;
   /** The latest confirmation that no longer covers what is on file, and why — so the card can say
    *  "re-confirm" rather than silently forgetting it. */

@@ -321,13 +321,6 @@ export function certificationScore(text: string): number {
     + (LETTER_HEADING.test(body) ? 1 : 0) + (DESIGN_BASIS.test(body) ? 1 : 0);
 }
 
-/** Reads like an engineer's certification: a certifying clause plus an engineer credential mention.
- *  A SUGGESTION for the gate's candidate card — it never credits a document or releases a hold. */
-export function readsAsEngineerCertification(text: string): boolean {
-  const body = String(text || "");
-  return CREDENTIAL_MENTION.test(body) && hasCertifyingClause(body);
-}
-
 // ---------------------------------------------------------------------------
 // SEALED STRUCTURAL STAMP — the single authority.
 //

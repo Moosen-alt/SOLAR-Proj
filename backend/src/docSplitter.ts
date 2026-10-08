@@ -395,7 +395,11 @@ export async function buildUtilityPackage(
     if (!wanted.includes(cat.docType)) continue;
     const pages = byCategory.get(cat.docType);
     if (!pages || pages.length === 0) continue;
-    const out = await PDFDocument.create();
+    // No save-time timestamp in the part (updateMetadata: false): an unchanged plan set re-cuts
+    // byte-identically, so the stage pass's repair re-split keeps the engineer's-letter
+    // confirmation standing (it is bound to the cut's sha256, structuralLetterVoid.ts), while a cut
+    // whose pages changed does not.
+    const out = await PDFDocument.create({ updateMetadata: false });
     const copied = await out.copyPages(source, pages);
     copied.forEach((p) => out.addPage(p));
     let bytes = Buffer.from(await out.save());
@@ -409,7 +413,7 @@ export async function buildUtilityPackage(
     // permit package would ship an incomplete filing with no error anywhere.
     const CAP = target === "nem" ? portalUploadCapBytes("split") : Number.POSITIVE_INFINITY;
     if (bytes.length > CAP && pages.length > 1) {
-      const lead = await PDFDocument.create();
+      const lead = await PDFDocument.create({ updateMetadata: false });
       const [first] = await lead.copyPages(source, [pages[0]]);
       lead.addPage(first);
       const leadBytes = Buffer.from(await lead.save());

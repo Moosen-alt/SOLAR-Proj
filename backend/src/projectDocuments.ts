@@ -6,7 +6,8 @@ import { addAuditLog } from "./audit";
 import { id } from "./ids";
 import { nowIso } from "./time";
 import { text as s } from "./json";
-import { extractPdfText } from "./batchImport";
+import { extractPdfPages, extractPdfText } from "./batchImport";
+import { stampStructuralLetterVoid } from "./structuralLetterVoid";
 import { parseFeeSummary, recordFeeSummary } from "./feeSummary";
 import { parsePaidFeeReceipt, recordPaidFeeReceipt } from "./feeReceipts";
 import { logger } from "./logger";
@@ -36,12 +37,18 @@ async function extractDocumentText(db: AppDb, docId: string, storedPath: string)
   if (extractionsInFlight.has(docId)) return;
   extractionsInFlight.add(docId);
   let extracted = "";
+  let pageTexts = "";
   try {
     extracted = (await extractPdfText(storedPath, 40)).slice(0, MAX_PLAN_TEXT_CHARS);
+    // A `structural` document's pages, one entry each (#198): extracted_text collapses a run of
+    // empty (scanned) pages, so the engineer's-letter candidate takes its page and page count here.
+    if (s(db.get<Row>("SELECT doc_type FROM project_documents WHERE id = ?", [docId])?.doc_type) === "structural") {
+      pageTexts = JSON.stringify((await extractPdfPages(storedPath, 200)).map((t) => t.slice(0, 20_000)));
+    }
   } catch { /* fall through to marker */ } finally {
     extractionsInFlight.delete(docId);
   }
-  db.run("UPDATE project_documents SET extracted_text = ? WHERE id = ?", [extracted || "[no text layer]", docId]);
+  db.run("UPDATE project_documents SET extracted_text = ?, page_texts_json = ? WHERE id = ?", [extracted || "[no text layer]", pageTexts, docId]);
   if (extracted) recordFeeSummaryIfPresent(db, docId, extracted);
   if (extracted && /PHOTOVOLTAIC WORKSHEET/i.test(extracted) && /PV SYSTEM OVERVIEW/i.test(extracted)) await recordFiledWorksheetReading(db, docId, storedPath);
 }
@@ -264,6 +271,9 @@ export function saveProjectDocument(
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [docId, projectId, s(input.docType), s(input.filename), stored, s(input.contentType), input.buffer.length, input.source || "upload", s(input.uploadedBy), nowIso()],
   );
+  // A newer `structural` row or plan set can void the engineer's-letter confirmation (#198): stamp it
+  // now, so deleting this row later never revives it.
+  stampStructuralLetterVoid(db, projectId, s(input.docType));
   // Extract PDF text in the background so the reviewer gate can check the actual sheets.
   // Keyed off the sniffed bytes, not the filename — a plan set saved as "plans" with no
   // extension is still a PDF we can read.

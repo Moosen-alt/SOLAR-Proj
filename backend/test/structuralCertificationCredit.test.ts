@@ -50,7 +50,7 @@ const { saveProjectDocument, deleteProjectDocument } = await import("../src/proj
 const { buildUtilityPackage } = await import("../src/docSplitter");
 const { createProject, getProjectDetail, getSubmitGateReport, buildReviewerReportFor } = await import("../src/repository");
 const { documentInventory } = await import("../src/requiredDocuments");
-const { readsAsEngineerCertification, certificationScore } = await import("../src/permitPath");
+const { certificationScore } = await import("../src/permitPath");
 const SL = await import("../src/structuralLetter");
 const fs = await import("node:fs");
 const { evaluateDesignCodeFindings } = await import("../src/codeReviewRules");
@@ -80,10 +80,10 @@ const LETTER_PAGES: string[][] = [
   ],
 ];
 const letterText = LETTER_PAGES.flat().join("\n");
-check("detector: an engineering firm's structural certification reads as a certification",
-  readsAsEngineerCertification(letterText));
+check("detector: an engineering firm's structural certification ranks high (certifying clause + credential + heading/basis)",
+  certificationScore(letterText) >= 4, String(certificationScore(letterText)));
 check("detector: the letter outranks a framing sheet", certificationScore(letterText) > certificationScore("S 1.1 Sheet Name ATTACHMENT DETAIL 2x4 TRUSS AT 24 IN O.C., FLASHED STANDOFF, 5/16 LAG"));
-check("detector: a scan with no text layer scores nothing", certificationScore("[no text layer]") === 0 && !readsAsEngineerCertification("[no text layer]"));
+check("detector: a scan with no text layer scores nothing", certificationScore("[no text layer]") === 0);
 
 // TIMING (round 4 M4): an unbroken capital run at the 150K text cap took 24s in the old NAME regex,
 // and the gate ran it five times a view. Every pattern is linear now.
@@ -93,7 +93,7 @@ for (const [name, run] of Object.entries({
   "a capital run ending in a credential": `${"EXAMPLE".repeat(21_000)} P.E.`,
 })) {
   const t0 = performance.now();
-  readsAsEngineerCertification(run); certificationScore(run);
+  certificationScore(run);
   const ms = performance.now() - t0;
   check(`TIMING: the detector reads ${name} at the 150K cap in under 1.5s`, ms < 1500, `${Math.round(ms)} ms`);
 }
@@ -271,14 +271,14 @@ const card = gate(withLetter).structuralLetter;
 check("the gate carries the candidate: the split structural document, at a letter page",
   card?.candidate?.documentId === split[0].id && (card?.candidate?.score ?? 0) >= 3 && (card?.candidate?.page ?? 0) >= 1 && card?.confirmation === null,
   JSON.stringify(card));
-const conf = confirmAs(withLetter, split[0].id, card?.candidate?.page ?? 1);
+const conf = await confirmAs(withLetter, split[0].id, card?.candidate?.page ?? 1);
 const after = released(withLetter);
 check("MUST-PASS: one confirmation → row present (\"confirmed by Jane Example <date>\", a warning: verify the seal), no hold", after.ok, after.detail);
 const confirmedAudit = audits(withLetter, "structural_letter.confirmed");
-const ca = confirmedAudit[0] ? JSON.parse(confirmedAudit[0].details) as { documentId?: string; page?: number } : {};
+const ca = confirmedAudit[0] ? JSON.parse(confirmedAudit[0].details) as { documentId?: string; page?: number; userId?: string } : {};
 check("MUST-PASS: …and the audit entry says who, when, which document and page",
   confirmedAudit.length === 1 && confirmedAudit[0].actor_name === "Jane Example" && confirmedAudit[0].actor_type === "human"
-  && ca.documentId === split[0].id && ca.page === conf.page && Boolean(confirmedAudit[0].created_at), JSON.stringify(confirmedAudit));
+  && ca.documentId === split[0].id && ca.page === conf.page && ca.userId === "user-jane" && Boolean(confirmedAudit[0].created_at), JSON.stringify(confirmedAudit));
 check("the gate card shows the standing confirmation", gate(withLetter).structuralLetter?.confirmation?.confirmedBy === "Jane Example");
 
 // ── MUST-EXCLUDE: a withdrawal holds again ────────────────────────────────────────────────────
@@ -294,12 +294,12 @@ check("withdrawing with nothing standing is refused (409)", refused === "409", r
 
 // ── MUST-EXCLUDE: a confirmation on document A does not credit document B ─────────────────────
 const other = await mk([FRAMING, ...LETTER_PAGES]);
-confirmAs(withLetter, split[0].id);
+await confirmAs(withLetter, split[0].id);
 check("fixture: project A is credited again after re-confirming", released(withLetter).ok, released(withLetter).detail);
 const otherHeld = heldLikeMain(other);
 check("MUST-EXCLUDE: A's confirmation does not credit project B's identical letter", otherHeld.ok, otherHeld.detail);
 let cross = "";
-try { SL.confirmStructuralLetter(db, other, { documentId: split[0].id, confirmedBy: "Jane Example" }); } catch (e) { cross = String((e as { status?: number }).status); }
+try { await SL.confirmStructuralLetter(db, other, { documentId: split[0].id, confirmedBy: "Jane Example" }); } catch (e) { cross = String((e as { status?: number }).status); }
 check("MUST-EXCLUDE: confirming project A's document on project B is 404, and B stays held", cross === "404" && heldLikeMain(other).ok, cross);
 // Two structural documents on ONE project: the confirmed one goes away; the other is not credited.
 const docB = saveProjectDocument(db, withLetter, { docType: "structural", filename: "letter-b.pdf", contentType: "application/pdf",
@@ -313,7 +313,7 @@ check("…and the card says the confirmation no longer covers what is on file, a
 
 // ── MUST-EXCLUDE: a re-upload, a re-split, or changed bytes void it ───────────────────────────
 const reup = await mk([FRAMING, ...LETTER_PAGES]);
-confirmAs(reup, structuralDocs(reup)[0].id);
+await confirmAs(reup, structuralDocs(reup)[0].id);
 check("fixture: the re-upload project is credited after its confirmation", released(reup).ok, released(reup).detail);
 await new Promise((r) => setTimeout(r, 5));
 const planRow = db.get<{ stored_path: string }>("SELECT stored_path FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set'", [reup])!;
@@ -324,7 +324,7 @@ check("…with the reason on the card", /new plan set/.test(gate(reup).structura
 
 const resplit = await mk([FRAMING, ...LETTER_PAGES]);
 const firstCut = structuralDocs(resplit)[0];
-confirmAs(resplit, firstCut.id);
+await confirmAs(resplit, firstCut.id);
 deleteProjectDocument(db, resplit, firstCut.id);
 db.run("DELETE FROM audit_logs WHERE project_id = ? AND action = 'project.document_deleted'", [resplit]); // a re-cut, not a person's ruling against the type
 await buildUtilityPackage(db, resplit, "permit");
@@ -335,10 +335,119 @@ check("MUST-EXCLUDE: a re-split document (new id) is not covered — held again"
 
 const changed = await mk([FRAMING, ...LETTER_PAGES]);
 const changedDoc = structuralDocs(changed)[0];
-confirmAs(changed, changedDoc.id);
+await confirmAs(changed, changedDoc.id);
 fs.appendFileSync(changedDoc.stored_path, "\n% replaced bytes\n");
 const changedHeld = heldLikeMain(changed);
 check("MUST-EXCLUDE: a replaced document (same id, new bytes) is not covered — held again", changedHeld.ok, changedHeld.detail);
+
+// ── Helm's review at fb160321: what ships is what was confirmed ───────────────────────────────
+// The splitter only APPENDS (buildUtilityPackage — the build-package route, auto-stage's repair
+// re-split), and the package ships the NEWEST `structural` row. So a newer row voids the
+// confirmation unless it is the same cut again (split, same newest plan set, same sha256).
+const { createHash } = await import("node:crypto");
+const sha = (p: string) => createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+const reasonOf = (pid: string) => gate(pid).structuralLetter?.voided?.reason ?? "";
+
+// MUST-PASS: re-running buildUtilityPackage on an unchanged plan set keeps the confirmation.
+const rerun = await mk([FRAMING, ...LETTER_PAGES]);
+const rerunCut = structuralDocs(rerun)[0];
+await confirmAs(rerun, rerunCut.id);
+// Past a second boundary: a PDF's save-time date has one-second grain, so a cut that stamps it
+// would differ from the first cut here.
+await new Promise((r) => setTimeout(r, 1100));
+await buildUtilityPackage(db, rerun, "permit");
+await buildUtilityPackage(db, rerun, "all");
+const rerunDocs = structuralDocs(rerun);
+check("fixture: the re-runs appended byte-identical structural cuts",
+  rerunDocs.length === 3 && new Set(rerunDocs.map((d) => sha(d.stored_path))).size === 1, JSON.stringify(rerunDocs.map((d) => d.id)));
+const rerunOk = released(rerun);
+check("MUST-PASS: re-running buildUtilityPackage on an unchanged plan set keeps the confirmation", rerunOk.ok, rerunOk.detail);
+
+// MUST-EXCLUDE: a changed re-cut (a classifier change cutting different pages) voids it…
+const recutChanged = await mk([FRAMING, ...LETTER_PAGES]);
+await confirmAs(recutChanged, structuralDocs(recutChanged)[0].id);
+await new Promise((r) => setTimeout(r, 5));
+const onePage = await PDFDocument.create();
+const f1 = await onePage.embedFont(StandardFonts.Helvetica);
+onePage.addPage([792, 612]).drawText(LETTER_PAGES[0][0], { x: 40, y: 560, size: 10, font: f1 });
+const changedCut = saveProjectDocument(db, recutChanged, { docType: "structural", filename: "plan-set - Structural.pdf", contentType: "application/pdf",
+  buffer: Buffer.from(await onePage.save()), source: "split" });
+const recutHeld = heldLikeMain(recutChanged);
+check("MUST-EXCLUDE: a re-split that cut a DIFFERENT structural document voids the confirmation — held again", recutHeld.ok, recutHeld.detail);
+check("…with the reason on the card", /re-split cut a different/.test(reasonOf(recutChanged)), reasonOf(recutChanged));
+// …and deleting that newer cut does not revive it (the void is stamped on the row).
+deleteProjectDocument(db, recutChanged, changedCut.id);
+const notRevived = heldLikeMain(recutChanged);
+check("MUST-EXCLUDE: deleting the newer cut does not silently revive the voided confirmation", notRevived.ok, notRevived.detail);
+
+// …a standalone upload to the slot voids it, even with the very same bytes…
+const standalone = await mk([FRAMING, ...LETTER_PAGES]);
+const standaloneCut = structuralDocs(standalone)[0];
+await confirmAs(standalone, standaloneCut.id);
+await new Promise((r) => setTimeout(r, 5));
+saveProjectDocument(db, standalone, { docType: "structural", filename: "framing-sheet.pdf", contentType: "application/pdf",
+  buffer: fs.readFileSync(standaloneCut.stored_path), source: "upload" });
+const standaloneHeld = heldLikeMain(standalone);
+check("MUST-EXCLUDE: a standalone upload to the `structural` slot voids the confirmation — held again", standaloneHeld.ok, standaloneHeld.detail);
+check("…with the reason on the card", /newer document was filed/.test(reasonOf(standalone)), reasonOf(standalone));
+
+// …and a re-uploaded plan set that is then deleted does not revive it either.
+const planGone = await mk([FRAMING, ...LETTER_PAGES]);
+await confirmAs(planGone, structuralDocs(planGone)[0].id);
+await new Promise((r) => setTimeout(r, 5));
+const planGoneRow = db.get<{ stored_path: string }>("SELECT stored_path FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set'", [planGone])!;
+const rev1 = saveProjectDocument(db, planGone, { docType: "plan_set", filename: "plan-set-rev1.pdf", contentType: "application/pdf", buffer: fs.readFileSync(planGoneRow.stored_path), source: "upload" });
+deleteProjectDocument(db, planGone, rev1.id);
+const planGoneHeld = heldLikeMain(planGone);
+check("MUST-EXCLUDE: deleting the newer plan set does not silently revive the voided confirmation", planGoneHeld.ok, planGoneHeld.detail);
+
+// MUST-EXCLUDE (medium): a cut of a superseded plan set is never offered and cannot be confirmed.
+const stale = await mk([FRAMING, ...LETTER_PAGES]);
+const staleCut = structuralDocs(stale)[0];
+await new Promise((r) => setTimeout(r, 5));
+const stalePlan = db.get<{ stored_path: string }>("SELECT stored_path FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set'", [stale])!;
+saveProjectDocument(db, stale, { docType: "plan_set", filename: "plan-set-rev1.pdf", contentType: "application/pdf", buffer: fs.readFileSync(stalePlan.stored_path), source: "upload" });
+check("MUST-EXCLUDE: a cut older than the newest plan set is not offered as the candidate",
+  gate(stale).structuralLetter?.candidate === null, JSON.stringify(gate(stale).structuralLetter?.candidate));
+let staleStatus = "";
+try { await confirmAs(stale, staleCut.id); } catch (e) { staleStatus = String((e as { status?: number }).status); }
+const staleHeld = heldLikeMain(stale);
+check("MUST-EXCLUDE: confirming a cut older than the newest plan set is refused (409), nothing written, still held",
+  staleStatus === "409" && staleHeld.ok && db.query("SELECT id FROM structural_letter_confirmations WHERE project_id = ?", [stale]).length === 0,
+  `${staleStatus} ${staleHeld.detail}`);
+// Re-splitting the new plan set offers the new cut, and that one can be confirmed.
+await buildUtilityPackage(db, stale, "permit");
+const freshCut = structuralDocs(stale).find((d) => d.id !== staleCut.id);
+check("…the re-split of the newest plan set is the candidate, and confirming it releases the hold",
+  Boolean(freshCut) && gate(stale).structuralLetter?.candidate?.documentId === freshCut?.id
+  && (await confirmAs(stale, freshCut!.id)).documentId === freshCut?.id && released(stale).ok, released(stale).detail);
+
+// Pages come from the PDF, not from extracted text: scanned (empty) pages still count, and the
+// confirmed page is clamped into the document.
+const scanned = await mk([]);
+const scanPdf = await PDFDocument.create();
+const scanFont = await scanPdf.embedFont(StandardFonts.Helvetica);
+for (let i = 0; i < 4; i++) scanPdf.addPage([612, 792]);
+const last = scanPdf.addPage([612, 792]);
+LETTER_PAGES[0].forEach((line, i) => last.drawText(line, { x: 40, y: 740 - i * 24, size: 10, font: scanFont }));
+const scanDoc = saveProjectDocument(db, scanned, { docType: "structural", filename: "scanned-letter.pdf", contentType: "application/pdf", buffer: Buffer.from(await scanPdf.save()), source: "upload" });
+for (let i = 0; i < 200; i++) {
+  if (db.get<{ t: string }>("SELECT extracted_text AS t FROM project_documents WHERE id = ?", [scanDoc.id])?.t) break;
+  await new Promise((r) => setTimeout(r, 25));
+}
+const scanCand = SL.structuralLetterCandidate(db, scanned);
+check("pages: four scanned pages then the letter → pageCount 5, page 5 (extracted text collapses the blank pages)",
+  scanCand?.documentId === scanDoc.id && scanCand.pageCount === 5 && scanCand.page === 5, JSON.stringify(scanCand));
+const clamped = await confirmAs(scanned, scanDoc.id, 999);
+const clampedLow = await confirmAs(scanned, scanDoc.id, -3);
+check("pages: a confirmed page is clamped into 1..pageCount", clamped.page === 5 && clampedLow.page === 1, `${clamped.page} ${clampedLow.page}`);
+const supersede = audits(scanned, "structural_letter.confirmed").map((a) => JSON.parse(a.details) as { userId?: string; confirmationId?: string; supersededConfirmationId?: string });
+check("audit: the confirm carries the user id, and a superseding confirm names the confirmation it superseded",
+  supersede.length === 2 && supersede.every((a) => a.userId === "user-jane") && !supersede[0].supersededConfirmationId
+  && supersede[1].supersededConfirmationId === clamped.id, JSON.stringify(supersede));
+SL.withdrawStructuralLetterConfirmation(db, scanned, "Jane Example", "user-jane");
+const wd = audits(scanned, "structural_letter.withdrawn").map((a) => JSON.parse(a.details) as { userId?: string });
+check("audit: the withdraw carries the user id", wd.length === 1 && wd[0].userId === "user-jane", JSON.stringify(wd));
 
 // ── MUST-EXCLUDE: an engineered project with no structural document has nothing to confirm ────
 const noStructural = await mk([]);

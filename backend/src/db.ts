@@ -2524,8 +2524,8 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       // #218). Text matching only suggests which split `structural` document is the letter; this
       // row is the ONLY thing that credits it and releases city.struct.stamped-engineering-missing
       // (structuralLetter.ts). Bound to the exact document: its id AND the sha256 of its stored
-      // bytes, so a replaced or re-split document (new id or new bytes) or a newer plan set voids
-      // it. Withdrawal stamps withdrawn_*; rows are never deleted, so the history stays readable
+      // bytes, so a replaced or re-split document (new id or new bytes), a newer `structural` row
+      // that is not a byte-identical re-cut, or a newer plan set voids it. Withdrawal stamps withdrawn_*; rows are never deleted, so the history stays readable
       // (the audit trail carries every confirm/withdraw too). A child of the project: it reaches
       // an org through projects.org_id, so no org_id column here (CLAUDE.md tenancy model).
       db.exec(`
@@ -2540,10 +2540,18 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
           confirmed_at TEXT NOT NULL,
           withdrawn_by TEXT NOT NULL DEFAULT '',
           withdrawn_at TEXT NOT NULL DEFAULT '',
+          voided_at TEXT NOT NULL DEFAULT '',
+          void_reason TEXT NOT NULL DEFAULT '',
           FOREIGN KEY (project_id) REFERENCES projects(id)
         );
         CREATE INDEX IF NOT EXISTS idx_structural_letter_confirmations_project ON structural_letter_confirmations(project_id);
       `);
+      // voided_*: stamped when a document write (a newer `structural` row, a newer plan set) voids
+      // the confirmation (structuralLetterVoid.stampStructuralLetterVoid), so deleting that newer
+      // row later never silently revives it. page_texts_json: a `structural` document's per-page
+      // text (JSON string[]), written by the background extraction — extracted_text collapses
+      // empty (scanned) pages, so the candidate's page and page count come from here.
+      addColumnIfMissing(db, "project_documents", "page_texts_json", "TEXT NOT NULL DEFAULT ''");
     },
   },
 ];

@@ -13,16 +13,20 @@
 //     and turns city.struct.stamped-engineering-missing from a hold into a warning ("verify the
 //     seal" — the seal is an image the text layer never sees, so it stays a person's check).
 //   - A confirmation covers EXACTLY the document the person looked at: its id and the sha256 of its
-//     stored bytes. A replaced or re-split document (new id, or new bytes) or a plan set uploaded
-//     after the confirmation voids it; the project holds again until someone re-confirms.
+//     stored bytes. A replaced document (gone, or new bytes), a newer `structural` row that is not a
+//     byte-identical re-cut of the same plan set, or a newer plan set voids it
+//     (structuralLetterVoid.ts); the project holds again until someone re-confirms. A write that
+//     voids it stamps the void on the row, so deleting that newer row never revives it.
+//   - The candidate is never a document whose confirmation would be void on arrival (a cut of a
+//     superseded plan set, a row a newer one replaced), and the confirm door refuses one.
 //   - It can be withdrawn. Every confirm and withdraw is an audit_logs entry: who, when, document
 //     id, page.
 //
 // With no standing confirmation the gate behaves exactly as before #198: held.
 // ---------------------------------------------------------------------------
 
-import crypto from "node:crypto";
 import fs from "node:fs";
+import { PDFDocument } from "pdf-lib";
 import type { AppDb } from "./db";
 import type { StructuralLetterCandidate, StructuralLetterConfirmationView, StructuralLetterState } from "../../shared/src/types";
 import { addAuditLog } from "./audit";
@@ -30,7 +34,8 @@ import { HttpError } from "./httpError";
 import { id } from "./ids";
 import { nowIso } from "./time";
 import { certificationScore } from "./permitPath";
-import { DOC_TYPE_ALIASES } from "./projectDocuments";
+import { sniffFileKind } from "./fileTypes";
+import { fileSha256, structuralDocumentVoidReason } from "./structuralLetterVoid";
 
 type Row = Record<string, unknown>;
 const s = (v: unknown): string => (v == null ? "" : String(v));
@@ -38,46 +43,34 @@ const s = (v: unknown): string => (v == null ? "" : String(v));
 export const STRUCTURAL_LETTER_CONFIRMED_ACTION = "structural_letter.confirmed";
 export const STRUCTURAL_LETTER_WITHDRAWN_ACTION = "structural_letter.withdrawn";
 
-/** A plan set uploaded after a confirmation voids it: the letter the person saw may not be in it. */
-const PLAN_SET_TYPES = ["plan_set", ...DOC_TYPE_ALIASES.plan_set];
-
-/** The stored bytes' sha256, memoised on (path, size, mtime) — the gate reads this several times a view. */
-const hashMemo = new Map<string, { key: string; sha: string }>();
-function fileSha256(storedPath: string): string | null {
+/** A document's pages as the background extraction stored them (page_texts_json, one entry per
+ *  PDF page, a scanned page as ""). [] until that has run, or for a non-PDF. */
+function pagesOf(pageTextsJson: unknown): string[] {
   try {
-    const st = fs.statSync(storedPath);
-    const key = `${st.size}:${st.mtimeMs}`;
-    const hit = hashMemo.get(storedPath);
-    if (hit && hit.key === key) return hit.sha;
-    const sha = crypto.createHash("sha256").update(fs.readFileSync(storedPath)).digest("hex");
-    hashMemo.set(storedPath, { key, sha });
-    return sha;
+    const v = JSON.parse(s(pageTextsJson) || "[]");
+    return Array.isArray(v) ? v.map((t) => s(t)) : [];
   } catch {
-    return null;
+    return [];
   }
 }
 
-/** Pages of a document's stored text: extractPdfText joins pages with "\n" (items within a page
- *  with spaces), so a newline is a page break. Approximate when a page carried no text at all. */
-function pagesOf(text: string): string[] {
-  const body = s(text);
-  if (!body.trim() || body === "[no text layer]") return [];
-  return body.split("\n");
-}
-
-/** THE CANDIDATE: of the project's `structural` documents whose file is on disk, the one whose text
- *  reads most like the engineer's letter (newest first on a tie), and its best page. Offered even
- *  when nothing reads letter-like (score 0, e.g. a scan with no text layer) — a person looking costs
- *  nothing, and a person, not the score, decides. null when the project has no structural document. */
+/** THE CANDIDATE: of the project's `structural` documents whose file is on disk and whose
+ *  confirmation would stand (structuralDocumentVoidReason — in practice the row the package ships,
+ *  or an identical earlier cut of it), the one whose text reads most like the engineer's letter
+ *  (newest first on a tie), and its best page. Offered even when nothing reads letter-like (score 0,
+ *  e.g. a scan with no text layer) — a person looking costs nothing, and a person, not the score,
+ *  decides. null when no structural document can be confirmed. */
 export function structuralLetterCandidate(db: AppDb, projectId: string): StructuralLetterCandidate | null {
   let best: StructuralLetterCandidate | null = null;
+  const at = nowIso();
   for (const row of db.query<Row>(
-    "SELECT id, original_filename, stored_path, source, extracted_text FROM project_documents WHERE project_id = ? AND doc_type = 'structural' ORDER BY uploaded_at DESC",
+    "SELECT id, original_filename, stored_path, source, extracted_text, page_texts_json FROM project_documents WHERE project_id = ? AND doc_type = 'structural' ORDER BY uploaded_at DESC, rowid DESC",
     [projectId],
   )) {
     const p = s(row.stored_path);
-    if (!p || !fs.existsSync(p)) continue;
-    const pages = pagesOf(s(row.extracted_text));
+    const sha = p ? fileSha256(p) : null;
+    if (!sha || structuralDocumentVoidReason(db, projectId, s(row.id), sha, at)) continue;
+    const pages = pagesOf(row.page_texts_json);
     let page = 1, pageScore = 0;
     pages.forEach((t, i) => { const sc = certificationScore(t); if (sc > pageScore) { pageScore = sc; page = i + 1; } });
     const score = Math.max(pageScore, certificationScore(s(row.extracted_text)));
@@ -95,34 +88,27 @@ interface ConfirmationRow {
   page: number;
   confirmed_by: string;
   confirmed_at: string;
+  void_reason: string;
 }
 
-/** Why a confirmation no longer covers what is on file, or null when it still does. */
+/** Why a confirmation no longer covers what is on file, or the filename when it still does. What is
+ *  on file now speaks first; a void a document write stamped (structuralLetterVoid) holds after. */
 function voidReason(db: AppDb, projectId: string, c: ConfirmationRow): { reason: string } | { filename: string } {
-  const doc = db.get<Row>(
-    "SELECT original_filename, stored_path, doc_type FROM project_documents WHERE id = ? AND project_id = ?",
-    [c.document_id, projectId],
-  );
-  if (!doc || s(doc.doc_type) !== "structural") return { reason: "the confirmed document was replaced or re-split" };
-  const sha = fileSha256(s(doc.stored_path));
-  if (!sha) return { reason: "the confirmed document's file is missing" };
-  if (sha !== c.content_sha256) return { reason: "the confirmed document's contents changed" };
-  const newerPlanSet = db.get<Row>(
-    `SELECT id FROM project_documents WHERE project_id = ? AND doc_type IN (${PLAN_SET_TYPES.map(() => "?").join(", ")}) AND uploaded_at > ? LIMIT 1`,
-    [projectId, ...PLAN_SET_TYPES, c.confirmed_at],
-  );
-  if (newerPlanSet) return { reason: "a new plan set was uploaded after it" };
-  return { filename: s(doc.original_filename) };
+  const live = structuralDocumentVoidReason(db, projectId, c.document_id, c.content_sha256, c.confirmed_at);
+  if (live) return { reason: live };
+  if (c.void_reason) return { reason: c.void_reason };
+  const doc = db.get<Row>("SELECT original_filename FROM project_documents WHERE id = ? AND project_id = ?", [c.document_id, projectId]);
+  return { filename: s(doc?.original_filename) };
 }
 
 function latestStanding(db: AppDb, projectId: string): ConfirmationRow | null {
   const row = db.get<Row>(
-    "SELECT id, document_id, content_sha256, page, confirmed_by, confirmed_at FROM structural_letter_confirmations WHERE project_id = ? AND withdrawn_at = '' ORDER BY confirmed_at DESC, rowid DESC LIMIT 1",
+    "SELECT id, document_id, content_sha256, page, confirmed_by, confirmed_at, void_reason FROM structural_letter_confirmations WHERE project_id = ? AND withdrawn_at = '' ORDER BY confirmed_at DESC, rowid DESC LIMIT 1",
     [projectId],
   );
   return row ? {
     id: s(row.id), document_id: s(row.document_id), content_sha256: s(row.content_sha256),
-    page: Number(row.page ?? 0), confirmed_by: s(row.confirmed_by), confirmed_at: s(row.confirmed_at),
+    page: Number(row.page ?? 0), confirmed_by: s(row.confirmed_by), confirmed_at: s(row.confirmed_at), void_reason: s(row.void_reason),
   } : null;
 }
 
@@ -156,27 +142,51 @@ export function confirmedByLine(c: Pick<StructuralLetterConfirmationView, "confi
   return `${c.confirmedBy} ${c.confirmedAt.slice(0, 10)}`;
 }
 
+/** How many pages the stored document has: a PDF (by its bytes, not its name or content type) is
+ *  counted by pdf-lib; anything else is one page. The confirmed page is clamped into 1..this. */
+async function storedPageCount(storedPath: string): Promise<number> {
+  try {
+    const bytes = fs.readFileSync(storedPath);
+    if (sniffFileKind(bytes) !== "pdf") return 1;
+    return Math.max(1, (await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false })).getPageCount());
+  } catch {
+    return 1;
+  }
+}
+
 /** CONFIRM: `confirmedBy` is a named person (the route passes the signed-in user, never a body
  *  field while auth is on). The document must be one of THIS project's `structural` documents with
- *  its file on disk (404 otherwise — never another project's). Supersedes any standing confirmation. */
-export function confirmStructuralLetter(
+ *  its file on disk (404 otherwise — never another project's), and one whose confirmation would
+ *  stand: never a cut of a superseded plan set, nor a row a newer one replaced (409). The page is
+ *  clamped into the document's pages. Supersedes any standing confirmation. */
+export async function confirmStructuralLetter(
   db: AppDb,
   projectId: string,
   input: { documentId: string; page?: number; confirmedBy: string; userId?: string },
-): StructuralLetterConfirmationView {
+): Promise<StructuralLetterConfirmationView> {
   const who = s(input.confirmedBy).replace(/\s+/g, " ").trim();
   if (!who) throw new HttpError(400, "A named person must confirm the structural letter.");
+  const found = db.get<Row>(
+    "SELECT id, stored_path FROM project_documents WHERE id = ? AND project_id = ? AND doc_type = 'structural'",
+    [s(input.documentId), projectId],
+  );
+  if (!found) throw new HttpError(404, "Structural document not found on this project.");
+  const pageCount = await storedPageCount(s(found.stored_path));
+  // Re-read after the await: the document may have gone, or a newer one landed, meanwhile.
   const doc = db.get<Row>(
     "SELECT id, original_filename, stored_path FROM project_documents WHERE id = ? AND project_id = ? AND doc_type = 'structural'",
-    [s(input.documentId), projectId],
+    [s(found.id), projectId],
   );
   if (!doc) throw new HttpError(404, "Structural document not found on this project.");
   const sha = fileSha256(s(doc.stored_path));
   if (!sha) throw new HttpError(404, "The structural document's file is missing on disk.");
-  const page = Math.max(0, Math.floor(Number(input.page ?? 0)) || 0);
   const at = nowIso();
+  const stale = structuralDocumentVoidReason(db, projectId, s(doc.id), sha, at);
+  if (stale) throw new HttpError(409, `This structural document cannot be confirmed: ${stale}. Confirm the current one.`);
+  const page = Math.min(pageCount, Math.max(1, Math.floor(Number(input.page ?? 1)) || 1));
   const confirmationId = id();
   db.transaction(() => {
+    const superseded = latestStanding(db, projectId);
     db.run(
       "UPDATE structural_letter_confirmations SET withdrawn_by = ?, withdrawn_at = ? WHERE project_id = ? AND withdrawn_at = ''",
       [`superseded by ${who}`, at, projectId],
@@ -187,9 +197,11 @@ export function confirmStructuralLetter(
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [confirmationId, projectId, s(doc.id), sha, page, who, s(input.userId), at],
     );
-    // The filename is left out on purpose: it can carry a homeowner's name.
+    // The filename is left out on purpose: it can carry a homeowner's name. The user id is there
+    // because a display name is editable.
     addAuditLog(db, projectId, "human", who, STRUCTURAL_LETTER_CONFIRMED_ACTION, {
-      confirmationId, documentId: s(doc.id), page, contentSha256: sha, confirmedAt: at,
+      confirmationId, documentId: s(doc.id), page, contentSha256: sha, confirmedAt: at, userId: s(input.userId),
+      ...(superseded ? { supersededConfirmationId: superseded.id } : {}),
     });
   });
   return { id: confirmationId, documentId: s(doc.id), filename: s(doc.original_filename), page, confirmedBy: who, confirmedAt: at };
@@ -197,7 +209,9 @@ export function confirmStructuralLetter(
 
 /** WITHDRAW the standing confirmation (a voided one too: it still stands in the table until a
  *  person withdraws or supersedes it). 409 when there is nothing to withdraw. */
-export function withdrawStructuralLetterConfirmation(db: AppDb, projectId: string, withdrawnBy: string): { withdrawn: true; documentId: string; page: number } {
+export function withdrawStructuralLetterConfirmation(
+  db: AppDb, projectId: string, withdrawnBy: string, userId = "",
+): { withdrawn: true; documentId: string; page: number } {
   const who = s(withdrawnBy).replace(/\s+/g, " ").trim();
   if (!who) throw new HttpError(400, "A named person must withdraw the confirmation.");
   const c = latestStanding(db, projectId);
@@ -206,7 +220,7 @@ export function withdrawStructuralLetterConfirmation(db: AppDb, projectId: strin
   db.transaction(() => {
     db.run("UPDATE structural_letter_confirmations SET withdrawn_by = ?, withdrawn_at = ? WHERE project_id = ? AND withdrawn_at = ''", [who, at, projectId]);
     addAuditLog(db, projectId, "human", who, STRUCTURAL_LETTER_WITHDRAWN_ACTION, {
-      confirmationId: c.id, documentId: c.document_id, page: c.page, withdrawnAt: at,
+      confirmationId: c.id, documentId: c.document_id, page: c.page, withdrawnAt: at, userId: s(userId),
     });
   });
   return { withdrawn: true, documentId: c.document_id, page: c.page };
