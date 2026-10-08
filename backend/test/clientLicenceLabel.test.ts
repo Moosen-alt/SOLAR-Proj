@@ -63,7 +63,7 @@ const newMexico = { ...base, licenseState: "NM", businessState: "AZ", stateLicen
     { state: "UT", kind: "business_registration", number: "UT-B3" },
   ] };
   const n3 = PR.clientLicenceNote(mixed);
-  ok(n3.includes("UT electrical contractor UT-E1") && !n3.includes("OR-T2") && !n3.includes("UT-B3"), "note: typed rows of the client's state only, by kind; never a business registration", n3);
+  ok(n3.includes("UT electrical contractor licence UT-E1") && !n3.includes("OR-T2") && !n3.includes("UT-B3"), "note: typed rows of the client's state only, by kind; never a business registration", n3);
   // #240: an unplaced client's typed rows are shown, each labelled by its OWN row's state — never
   // one state's board on another's number (licenceLabelByState.test pins it in full).
   const unplaced = PR.clientLicenceNote({ ...base, stateLicenses: [{ state: "UT", kind: "contractor", number: "UT-700002" }] });
