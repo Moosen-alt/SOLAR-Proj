@@ -10,7 +10,6 @@ import { extractPdfText } from "./batchImport";
 import { parseFeeSummary, recordFeeSummary } from "./feeSummary";
 import { parsePaidFeeReceipt, recordPaidFeeReceipt } from "./feeReceipts";
 import { logger } from "./logger";
-import { readsAsEngineerCertification } from "./permitPath";
 import { sniffFileKind, looksLikeCad, isImageKind, describeKind, type SniffedKind } from "./fileTypes";
 
 type Row = Record<string, unknown>;
@@ -362,22 +361,6 @@ export function projectDocsByType(db: AppDb, projectId: string): Record<string, 
     if (hit) out[canonical] = out[hit];
   }
   return out;
-}
-
-/** Is an engineer's structural certification on file as a `structural` document — most often the
- *  pages the splitter cut out of the plan set (#198)? Read from the document's own extracted text
- *  (readsAsEngineerCertification), so a bare framing sheet filed under the same type never counts.
- *  Says nothing about the seal: the text layer cannot see one, so consumers ask a person to verify
- *  it rather than calling it absent. */
-export function structuralCertificationOnFile(db: AppDb, projectId: string): boolean {
-  for (const row of db.query<Row>(
-    "SELECT stored_path, extracted_text FROM project_documents WHERE project_id = ? AND doc_type = 'structural' ORDER BY uploaded_at DESC",
-    [projectId],
-  )) {
-    const p = s(row.stored_path);
-    if (p && fs.existsSync(p) && readsAsEngineerCertification(s(row.extracted_text))) return true;
-  }
-  return false;
 }
 
 export const DOC_TYPE_ALIASES: Record<string, string[]> = {

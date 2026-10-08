@@ -1,4 +1,4 @@
-// THE ENGINEER'S LETTER BOUND INTO THE PLAN SET IS THE STAMPED-STRUCTURAL DOCUMENT (#198).
+// THE ENGINEER'S LETTER BOUND INTO THE PLAN SET: TEXT SUGGESTS, A NAMED PERSON CONFIRMS (#198).
 //
 // A Utah city approved a packet whose last pages were an engineering firm's structural
 // certification (IRC / ASCE 7 basis, per-array stress analysis, retrofits "none required",
@@ -6,22 +6,20 @@
 // engineered from the same letter — and the submit gate then held the job twice for want of it:
 //   document-inventory  MISSING "PE-stamped structural plans + sealed structural letter/calcs"
 //   permit-requirements HOLD    city.struct.stamped-engineering-missing
-// The text layer cannot see a seal image, so "no stamp seen" is unknown, not absent. Operator
-// ruling 2026-09-26: false stops on legitimate steps are bugs.
+// Four review rounds on #218 showed text matching cannot tell that letter from ordinary plan-set
+// wording. Owner ruling 2026-10-08: text matching only SUGGESTS the candidate (document + page);
+// only a named person's confirmation of that exact document credits it (structuralLetter.ts).
 //
-//   MUST-PASS    a plan set whose split `structural` document is an engineer's certification is
-//                not held: the inventory credits the row from the split, and the stamped-engineering
-//                finding is at most a warning asking a person to verify the seal;
-//   MUST-EXCLUDE an engineered project with NO structural document at all is still held (both);
-//   MUST-EXCLUDE a framing sheet split as `structural` (no certification text) is still held —
-//                the doc type alone is not the letter (stampedEngineering.test);
-//   MUST-EXCLUDE a sheet's NOTE about a letter ("STRUCTURAL LETTER: NOT PROVIDED", "required")
-//                is not a letter;
-//   MUST-EXCLUDE (review on #218) a sheet that CITES a letter or calcs it does not contain ("REFER TO
-//                STRUCTURAL LETTER BY …", "STRUCTURAL CALCULATIONS BY OTHERS", "ATTACHMENTS PER
-//                STRUCTURAL LETTER", "SEE ENGINEERING CALCULATIONS SHEET S-3"), an in-house unsealed
-//                calculation sheet, and a STRUCTURAL ANALYSIS table that says to contact an engineer —
-//                none of them certifies anything, end to end through the splitter and the gate.
+//   MUST-PASS    the #198-shaped packet + one confirmation: the inventory row is present ("confirmed by
+//                <name> <date>", a WARNING: verify the seal), no hold, and the audit entry is written;
+//   MUST-EXCLUDE with NO confirmation, every probe of review rounds 1–4 AND a genuine letter are held;
+//   MUST-EXCLUDE a confirmation on document A does not credit document B (another project, or a
+//                second structural document of the same project);
+//   MUST-EXCLUDE a re-uploaded plan set, a re-split or replaced document, or changed bytes void it;
+//   MUST-EXCLUDE a withdrawal holds again (and is audited);
+//   TIMING       the detector stays linear on an unbroken capital run at the 150K text cap (round 4 M4).
+// The route (sign-in, cross-org 404) is pinned in structuralLetterConfirmRoute.test.ts; the card in
+// structuralLetterCardRender.test.ts.
 //
 // Synthetic plan sets only (pdf-lib), no real plan set or homeowner data. Browser-free.
 // Run: tsx backend/test/structuralCertificationCredit.test.ts
@@ -48,15 +46,17 @@ const check = (name: string, ok: boolean, detail = ""): void => {
 
 const { openDatabase } = await import("../src/db");
 const { createClient } = await import("../src/clients");
-const { saveProjectDocument } = await import("../src/projectDocuments");
+const { saveProjectDocument, deleteProjectDocument } = await import("../src/projectDocuments");
 const { buildUtilityPackage } = await import("../src/docSplitter");
 const { createProject, getProjectDetail, getSubmitGateReport, buildReviewerReportFor } = await import("../src/repository");
 const { documentInventory } = await import("../src/requiredDocuments");
-const { readsAsEngineerCertification } = await import("../src/permitPath");
+const { readsAsEngineerCertification, certificationScore } = await import("../src/permitPath");
+const SL = await import("../src/structuralLetter");
+const fs = await import("node:fs");
 const { evaluateDesignCodeFindings } = await import("../src/codeReviewRules");
 const db = await openDatabase();
 
-// ── The predicate: an engineer's certification, not a note about one ─────────────────────────
+// ── The detector: it RANKS, it never credits ─────────────────────────────────────────────────
 const LETTER_PAGES: string[][] = [
   [
     "EXAMPLE STRUCTURAL ENGINEERS, PLLC",
@@ -80,24 +80,23 @@ const LETTER_PAGES: string[][] = [
   ],
 ];
 const letterText = LETTER_PAGES.flat().join("\n");
-check("predicate: an engineering firm's structural certification with calcs reads as a certification",
+check("detector: an engineering firm's structural certification reads as a certification",
   readsAsEngineerCertification(letterText));
-// The real credential forms still credit: a licence number, and a signature block that is filled in.
-const LETTER_BODY = LETTER_PAGES.flat().filter((l) => !/Jane Example/.test(l)).join("\n");
-check("predicate: a licence-number credential (\"PE No. 12345\") still credits",
-  readsAsEngineerCertification(`${LETTER_BODY}\nJane Example\nPE No. 12345`));
-check("predicate: an engineer label with a licence field on the same line still credits",
-  readsAsEngineerCertification(`${LETTER_BODY}\nPROFESSIONAL ENGINEER: LICENSE NO. 12345`));
-check("predicate: an ALL-CAPS name before a dotted P.E. still credits",
-  readsAsEngineerCertification(`${LETTER_BODY}\nJANE EXAMPLE, P.E.`));
-check("predicate: a FILLED engineer signature block still credits",
-  readsAsEngineerCertification(`${LETTER_BODY}\nREGISTERED ENGINEER SIGNATURE: Jane Example`));
-check("predicate: a framing sheet's note that the letter is NOT PROVIDED is not a letter",
-  !readsAsEngineerCertification(`${"ROOF FRAMING PLAN 2x6 RAFTERS AT 24 IN O.C. ATTACHMENT DETAIL FLASHED LAG. ".repeat(5)}\nSTRUCTURAL LETTER NOT PROVIDED BY ENGINEER`));
-check("predicate: a note that a structural letter is REQUIRED is not a letter",
-  !readsAsEngineerCertification(`${"ROOF FRAMING PLAN 2x6 RAFTERS AT 24 IN O.C. ATTACHMENT DETAIL FLASHED LAG. ".repeat(5)}\nSTRUCTURAL LETTER REQUIRED FROM ENGINEER OF RECORD`));
-check("predicate: a one-line reference is not a letter", !readsAsEngineerCertification("SEE STRUCTURAL LETTER BY ENGINEER"));
-check("predicate: a scan with no text layer says nothing", !readsAsEngineerCertification("[no text layer]"));
+check("detector: the letter outranks a framing sheet", certificationScore(letterText) > certificationScore("S 1.1 Sheet Name ATTACHMENT DETAIL 2x4 TRUSS AT 24 IN O.C., FLASHED STANDOFF, 5/16 LAG"));
+check("detector: a scan with no text layer scores nothing", certificationScore("[no text layer]") === 0 && !readsAsEngineerCertification("[no text layer]"));
+
+// TIMING (round 4 M4): an unbroken capital run at the 150K text cap took 24s in the old NAME regex,
+// and the gate ran it five times a view. Every pattern is linear now.
+for (const [name, run] of Object.entries({
+  "an unbroken capital run": "A".repeat(150_000),
+  "capital words separated by spaces": "JANE ".repeat(30_000),
+  "a capital run ending in a credential": `${"EXAMPLE".repeat(21_000)} P.E.`,
+})) {
+  const t0 = performance.now();
+  readsAsEngineerCertification(run); certificationScore(run);
+  const ms = performance.now() - t0;
+  check(`TIMING: the detector reads ${name} at the 150K cap in under 1.5s`, ms < 1500, `${Math.round(ms)} ms`);
+}
 
 // Review probes (#218): a framing sheet plus ONE line that cites a letter / calcs it does not contain.
 // Sheet-length on purpose (well past any "a letter has a body" floor): what tells these apart
@@ -110,7 +109,6 @@ const FRAMING_NOTES = [
   // Real plan sets say this; it also keeps every probe below within reach of an "engineer" signal.
   "RACKING: ENGINEERED RACKING SYSTEM, RAILS LISTED TO UL 2703",
 ];
-const FRAMING_TEXT = `S 1.1 Sheet Name ATTACHMENT DETAIL\n${FRAMING_NOTES.join("\n")}\n`;
 const CITING_LINES: Record<string, string> = {
   "refer to the letter": "REFER TO STRUCTURAL LETTER BY EXAMPLE STRUCTURAL ENGINEERS, PLLC FOR ATTACHMENT DESIGN",
   "calcs by others": "STRUCTURAL CALCULATIONS BY OTHERS. ENGINEERED RACKING",
@@ -149,24 +147,36 @@ const CITING_LINES: Record<string, string> = {
   "dotted compass S.E.": "ROOF 1: TILT 20, AZIMUTH 135, S.E.\nEXISTING RAFTERS ARE ADEQUATE FOR THE ADDED PV LOAD.",
   "pipe grade PE #4710": "HDPE PIPE PE #4710. EXISTING ROOF IS ADEQUATE.",
 };
-for (const [name, line] of Object.entries(CITING_LINES)) {
-  check(`MUST-EXCLUDE predicate: a framing sheet + "${name}" is not a certification`,
-    !readsAsEngineerCertification(`${FRAMING_TEXT}${line}`), line);
-}
-
-// The tile rule (review on #218): with the certification on file its words ask for the seal to be
-// verified — never "none is in the package … obtain the sealed engineering".
-const tileProject = { id: "tile", state: "OR", ahj: "City of Testville", utility: "PGE",
-  parserSnapshot: { roofMaterial: "Concrete Tile", framingType: "truss", roofRafterSpacing: 24, roofRafterSpan: 10, mounting: "Roof mount", snow: 25, deadLoad: 3, wind: "B" } } as never;
-const tileFinding = (cert: boolean) => evaluateDesignCodeFindings(tileProject, null, undefined, ["plan_set", "structural"], [], cert)
-  .find((x) => x.id === "city.struct.tile-stamped-engineering-missing");
-const tileCert = tileFinding(true);
-check("tile: with the certification on file the tile stamp finding is a warning that says to verify the seal",
-  tileCert?.severity === "warning" && /verify the seal/i.test(tileCert.title) && /verify the seal/i.test(tileCert.designTeamAction ?? "")
-  && !/none is in the package/i.test(tileCert.message) && !/^Obtain/i.test(tileCert.designTeamAction ?? ""),
-  JSON.stringify(tileCert && { severity: tileCert.severity, title: tileCert.title, message: tileCert.message, action: tileCert.designTeamAction }));
-check("tile: without it the tile stamp finding stays a blocker asking for the sealed engineering",
-  tileFinding(false)?.severity === "blocker" && /none is in the package/i.test(tileFinding(false)?.message ?? ""), JSON.stringify(tileFinding(false)?.severity));
+// Round 4 on #218 (B1–B6, M1–M3): ordinary plan-set wording that released the old auto-credit, and
+// common real signatures it held. Moot as release paths — with no confirmation EVERY one is held.
+const ROUND4_PROBES: Record<string, string> = {
+  "B1 blank stamp then the contractor": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD. PROFESSIONAL ENGINEER STAMP EXAMPLE SOLAR, LLC",
+  "B1 blank signature then the contractor licence": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD. REGISTERED ENGINEER SIGNATURE SOLAR CONTRACTOR, LIC 123456",
+  "B2 engineer of record: not required": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nENGINEER OF RECORD: NOT REQUIRED",
+  "B2 engineer of record: to be determined": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nENGINEER OF RECORD: TO BE DETERMINED",
+  "B2 engineer of record: see attached": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nENGINEER OF RECORD: SEE ATTACHED",
+  "B2 engineer of record: to follow": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nENGINEER OF RECORD: TO FOLLOW",
+  "B2 engineer of record: owner builder": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nENGINEER OF RECORD: OWNER BUILDER",
+  "B2 engineer of record: XXXXX XXXXX": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nENGINEER OF RECORD: XXXXX XXXXX",
+  "B3 modules face S.E.": "EXISTING ROOF FRAMING IS ADEQUATE.\nMODULES FACE S.E.",
+  "B3 panel on S.E. wall": "EXISTING ROOF FRAMING IS ADEQUATE.\nMAIN SERVICE PANEL ON S.E. WALL",
+  "B3 quadrant address": "EXISTING ROOF FRAMING IS ADEQUATE.\n123 EXAMPLE AVE S.E.",
+  "B4 attachments per P.E. letter": "EXISTING ROOF FRAMING IS ADEQUATE.\nATTACHMENTS PER P.E. LETTER",
+  "B4 P.E. stamp not included": "EXISTING ROOF FRAMING IS ADEQUATE.\nP.E. STAMP NOT INCLUDED IN THIS SET",
+  "B5 racking maker's rail letter": "EXAMPLE RAIL MEMBERS ARE ADEQUATE FOR 72 IN SPANS.\nThe Example Roof Mount System has been designed and evaluated per ASCE 7-16\nJane Roe, P.E.",
+  "B6 contractor note + electrical engineer": "CONTRACTOR NOTE: THE EXISTING ROOF FRAMING IS ADEQUATE.\nELECTRICAL ENGINEER: John Example, P.E.",
+  "M1 licence of zeros": "EXISTING ROOF STRUCTURE IS ADEQUATE FOR THE ADDED PV LOAD.\nPROFESSIONAL ENGINEER LICENSE NO. 000000",
+  "M1 pipe grade PE No.": "EXISTING ROOF IS ADEQUATE.\nHDPE PIPE SDR 11, PE No. 4710",
+};
+// …and GENUINE letters (M2/M3 signature forms, and the #198 letter itself): held too until a person confirms.
+const LETTER_BODY = LETTER_PAGES.flat().filter((l) => !/Jane Example/.test(l));
+const GENUINE_SIGNATURES: Record<string, string> = {
+  "M2 initial and surname": "J. Roe, P.E.",
+  "M2 accented name": "Jose Nunez, P.E.",
+  "M2 prepared by, all caps": "PREPARED BY JANE ROE, P.E.",
+  "M2 undotted PE": "Jane Example, PE",
+  "M3 professional engineer #": "Professional Engineer #12345",
+};
 
 // ── The gate, through the real splitter ───────────────────────────────────────────────────────
 const client = createClient(db, {
@@ -224,56 +234,145 @@ async function mk(extraPages: string[][]): Promise<string> {
 
 const letterRow = (pid: string) => documentInventory(db, getProjectDetail(db, pid).project).presence.find((p) => p.docType === "structural_letter");
 const stampFinding = (pid: string) => buildReviewerReportFor(db, getProjectDetail(db, pid).project).findings.find((f) => f.id === "city.struct.stamped-engineering-missing");
-const gate = (pid: string) => getSubmitGateReport(db, pid).checks;
-const holdLabels = (pid: string): string[] => gate(pid).find((c) => c.id === "permit-requirements")?.holds?.map((h) => h.label) ?? [];
+const gate = (pid: string) => getSubmitGateReport(db, pid);
+const holdLabels = (pid: string): string[] => gate(pid).checks.find((c) => c.id === "permit-requirements")?.holds?.map((h) => h.label) ?? [];
+const structuralDocs = (pid: string) => db.query<{ id: string; source: string; stored_path: string }>(
+  "SELECT id, source, stored_path FROM project_documents WHERE project_id = ? AND doc_type = 'structural' ORDER BY uploaded_at", [pid]);
+const audits = (pid: string, action: string) => db.query<{ actor_name: string; actor_type: string; details: string; created_at: string }>(
+  "SELECT actor_name, actor_type, details, created_at FROM audit_logs WHERE project_id = ? AND action = ?", [pid, action]);
+/** Held exactly as main holds it: row MISSING, finding a BLOCKER, a permit-requirements hold. */
+const heldLikeMain = (pid: string) => {
+  const r = letterRow(pid); const sev = stampFinding(pid)?.severity; const holds = holdLabels(pid);
+  return { ok: r?.present === false && sev === "blocker" && holds.some((l) => /stamped calculation/i.test(l)), detail: JSON.stringify({ present: r?.present, via: r?.via, sev, holds }) };
+};
+const released = (pid: string) => {
+  const r = letterRow(pid); const f = stampFinding(pid); const holds = holdLabels(pid);
+  const inv = gate(pid).checks.find((c) => c.id === "document-inventory");
+  return {
+    ok: r?.present === true && r.warning === "verify the seal" && /confirmed by Jane Example \d{4}-\d{2}-\d{2}/.test(r.via) && /verify the seal/i.test(r.via)
+      && f?.severity === "warning" && /verify the seal/i.test(f.title)
+      && !holds.some((l) => /stamped calculation|stamped engineering/i.test(l))
+      && inv?.status !== "pass" && !JSON.stringify(inv?.evidence ?? []).includes("MISSING (required): PE-stamped"),
+    detail: JSON.stringify({ present: r?.present, via: r?.via, warning: r?.warning, sev: f?.severity, holds, inv: inv?.status }),
+  };
+};
+const confirmAs = (pid: string, documentId: string, page = 1) => SL.confirmStructuralLetter(db, pid, { documentId, page, confirmedBy: "Jane Example", userId: "user-jane" });
 
-// MUST-PASS: the certification is split out of the plan set as `structural` and credited.
+// ── MUST-PASS: the #198-shaped packet clears with ONE confirmation ───────────────────────────
 const withLetter = await mk([FRAMING, ...LETTER_PAGES]);
-const split = db.query<{ doc_type: string; source: string }>("SELECT doc_type, source FROM project_documents WHERE project_id = ? AND doc_type = 'structural'", [withLetter]);
+const split = structuralDocs(withLetter);
 check("fixture: the splitter files the certification pages as a split `structural` document",
   split.length === 1 && split[0].source === "split", JSON.stringify(split));
 check("fixture: the project resolves to the engineered path and owes the sealed letter", Boolean(letterRow(withLetter)), JSON.stringify(letterRow(withLetter)));
-const row = letterRow(withLetter);
-check("MUST-PASS: the inventory shows the stamped-structural row PRESENT, from the split",
-  row?.present === true && /certification/i.test(row.via) && /structural document/i.test(row.via), JSON.stringify(row));
-check("…and its words ask a person to verify the seal (unknown, not absent)", /verify the seal/i.test(row?.via ?? ""), row?.via);
-const docGate = gate(withLetter).find((c) => c.id === "document-inventory");
-check("MUST-PASS: the document-inventory check does not list the stamped-structural row as missing",
-  !JSON.stringify(docGate?.evidence ?? []).includes("PE-stamped structural plans"), JSON.stringify(docGate?.evidence));
-const f = stampFinding(withLetter);
-check("MUST-PASS: the stamped-engineering finding is at most a WARNING when the packet carries the certification",
-  f?.severity === "warning", JSON.stringify(f && { severity: f.severity, title: f.title }));
-check("…saying to verify the seal on the structural pages", /verify the seal/i.test(f?.title ?? ""), f?.title);
-check("MUST-PASS: permit-requirements holds nothing for the stamped calculation",
-  !holdLabels(withLetter).some((l) => /stamped calculation|stamped engineering/i.test(l)), JSON.stringify(holdLabels(withLetter)));
+// No confirmation: exactly main — held — even though this IS the engineer's letter.
+const before = heldLikeMain(withLetter);
+check("MUST-EXCLUDE: the genuine #198 letter with NO confirmation is held exactly as on main", before.ok, before.detail);
+const card = gate(withLetter).structuralLetter;
+check("the gate carries the candidate: the split structural document, at a letter page",
+  card?.candidate?.documentId === split[0].id && (card?.candidate?.score ?? 0) >= 3 && (card?.candidate?.page ?? 0) >= 1 && card?.confirmation === null,
+  JSON.stringify(card));
+const conf = confirmAs(withLetter, split[0].id, card?.candidate?.page ?? 1);
+const after = released(withLetter);
+check("MUST-PASS: one confirmation → row present (\"confirmed by Jane Example <date>\", a warning: verify the seal), no hold", after.ok, after.detail);
+const confirmedAudit = audits(withLetter, "structural_letter.confirmed");
+const ca = confirmedAudit[0] ? JSON.parse(confirmedAudit[0].details) as { documentId?: string; page?: number } : {};
+check("MUST-PASS: …and the audit entry says who, when, which document and page",
+  confirmedAudit.length === 1 && confirmedAudit[0].actor_name === "Jane Example" && confirmedAudit[0].actor_type === "human"
+  && ca.documentId === split[0].id && ca.page === conf.page && Boolean(confirmedAudit[0].created_at), JSON.stringify(confirmedAudit));
+check("the gate card shows the standing confirmation", gate(withLetter).structuralLetter?.confirmation?.confirmedBy === "Jane Example");
 
-// MUST-EXCLUDE: an engineered project with no structural document at all is still held.
+// ── MUST-EXCLUDE: a withdrawal holds again ────────────────────────────────────────────────────
+SL.withdrawStructuralLetterConfirmation(db, withLetter, "Jane Example");
+const withdrawn = heldLikeMain(withLetter);
+check("MUST-EXCLUDE: a withdrawn confirmation holds again, exactly as main", withdrawn.ok, withdrawn.detail);
+const wa = audits(withLetter, "structural_letter.withdrawn");
+check("…and the withdrawal is audited (who, document, page)",
+  wa.length === 1 && wa[0].actor_name === "Jane Example" && (JSON.parse(wa[0].details) as { documentId?: string }).documentId === split[0].id, JSON.stringify(wa));
+let refused = "";
+try { SL.withdrawStructuralLetterConfirmation(db, withLetter, "Jane Example"); } catch (e) { refused = String((e as { status?: number }).status); }
+check("withdrawing with nothing standing is refused (409)", refused === "409", refused);
+
+// ── MUST-EXCLUDE: a confirmation on document A does not credit document B ─────────────────────
+const other = await mk([FRAMING, ...LETTER_PAGES]);
+confirmAs(withLetter, split[0].id);
+check("fixture: project A is credited again after re-confirming", released(withLetter).ok, released(withLetter).detail);
+const otherHeld = heldLikeMain(other);
+check("MUST-EXCLUDE: A's confirmation does not credit project B's identical letter", otherHeld.ok, otherHeld.detail);
+let cross = "";
+try { SL.confirmStructuralLetter(db, other, { documentId: split[0].id, confirmedBy: "Jane Example" }); } catch (e) { cross = String((e as { status?: number }).status); }
+check("MUST-EXCLUDE: confirming project A's document on project B is 404, and B stays held", cross === "404" && heldLikeMain(other).ok, cross);
+// Two structural documents on ONE project: the confirmed one goes away; the other is not credited.
+const docB = saveProjectDocument(db, withLetter, { docType: "structural", filename: "letter-b.pdf", contentType: "application/pdf",
+  buffer: fs.readFileSync(split[0].stored_path), source: "upload" });
+deleteProjectDocument(db, withLetter, split[0].id);
+const bHeld = heldLikeMain(withLetter);
+check("MUST-EXCLUDE: deleting confirmed document A voids it — document B (same letter) is not credited", bHeld.ok, bHeld.detail);
+check("…and the card says the confirmation no longer covers what is on file, and offers B",
+  /replaced or re-split/.test(gate(withLetter).structuralLetter?.voided?.reason ?? "") && gate(withLetter).structuralLetter?.candidate?.documentId === docB.id,
+  JSON.stringify(gate(withLetter).structuralLetter));
+
+// ── MUST-EXCLUDE: a re-upload, a re-split, or changed bytes void it ───────────────────────────
+const reup = await mk([FRAMING, ...LETTER_PAGES]);
+confirmAs(reup, structuralDocs(reup)[0].id);
+check("fixture: the re-upload project is credited after its confirmation", released(reup).ok, released(reup).detail);
+await new Promise((r) => setTimeout(r, 5));
+const planRow = db.get<{ stored_path: string }>("SELECT stored_path FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set'", [reup])!;
+saveProjectDocument(db, reup, { docType: "plan_set", filename: "plan-set-rev1.pdf", contentType: "application/pdf", buffer: fs.readFileSync(planRow.stored_path), source: "upload" });
+const reupHeld = heldLikeMain(reup);
+check("MUST-EXCLUDE: re-uploading the plan set voids the confirmation — held again", reupHeld.ok, reupHeld.detail);
+check("…with the reason on the card", /new plan set/.test(gate(reup).structuralLetter?.voided?.reason ?? ""), JSON.stringify(gate(reup).structuralLetter?.voided));
+
+const resplit = await mk([FRAMING, ...LETTER_PAGES]);
+const firstCut = structuralDocs(resplit)[0];
+confirmAs(resplit, firstCut.id);
+deleteProjectDocument(db, resplit, firstCut.id);
+db.run("DELETE FROM audit_logs WHERE project_id = ? AND action = 'project.document_deleted'", [resplit]); // a re-cut, not a person's ruling against the type
+await buildUtilityPackage(db, resplit, "permit");
+const recut = structuralDocs(resplit);
+check("fixture: the re-split cut a new structural document", recut.length === 1 && recut[0].id !== firstCut.id, JSON.stringify(recut));
+const resplitHeld = heldLikeMain(resplit);
+check("MUST-EXCLUDE: a re-split document (new id) is not covered — held again", resplitHeld.ok, resplitHeld.detail);
+
+const changed = await mk([FRAMING, ...LETTER_PAGES]);
+const changedDoc = structuralDocs(changed)[0];
+confirmAs(changed, changedDoc.id);
+fs.appendFileSync(changedDoc.stored_path, "\n% replaced bytes\n");
+const changedHeld = heldLikeMain(changed);
+check("MUST-EXCLUDE: a replaced document (same id, new bytes) is not covered — held again", changedHeld.ok, changedHeld.detail);
+
+// ── MUST-EXCLUDE: an engineered project with no structural document has nothing to confirm ────
 const noStructural = await mk([]);
-check("fixture: no `structural` document exists on the bare project",
-  !db.get("SELECT id FROM project_documents WHERE project_id = ? AND doc_type = 'structural'", [noStructural]));
-check("MUST-EXCLUDE: with no structural document the stamped-structural row is MISSING", letterRow(noStructural)?.present === false, JSON.stringify(letterRow(noStructural)));
-check("MUST-EXCLUDE: …and the stamped-engineering finding is a BLOCKER", stampFinding(noStructural)?.severity === "blocker", JSON.stringify(stampFinding(noStructural)?.severity));
-check("MUST-EXCLUDE: …which permit-requirements holds on",
-  holdLabels(noStructural).some((l) => /stamped calculation/i.test(l)), JSON.stringify(holdLabels(noStructural)));
+check("fixture: no `structural` document exists on the bare project", structuralDocs(noStructural).length === 0);
+const bare = heldLikeMain(noStructural);
+check("MUST-EXCLUDE: with no structural document the job is held", bare.ok, bare.detail);
+check("…and the card offers no candidate", gate(noStructural).structuralLetter?.candidate === null, JSON.stringify(gate(noStructural).structuralLetter));
 
-// MUST-EXCLUDE: a framing sheet split as `structural` is not the letter.
-const framingOnly = await mk([FRAMING]);
-check("fixture: the framing sheet is split as `structural`",
-  Boolean(db.get("SELECT id FROM project_documents WHERE project_id = ? AND doc_type = 'structural'", [framingOnly])));
-check("MUST-EXCLUDE: a framing-only structural split leaves the stamped-structural row MISSING", letterRow(framingOnly)?.present === false, JSON.stringify(letterRow(framingOnly)));
-check("MUST-EXCLUDE: …and the stamped-engineering finding stays a BLOCKER", stampFinding(framingOnly)?.severity === "blocker", JSON.stringify(stampFinding(framingOnly)?.severity));
+// The tile rule: with a confirmation its words ask for the seal to be verified — never "none is in
+// the package … obtain the sealed engineering"; without one it stays a blocker.
+const tileProject = { id: "tile", state: "OR", ahj: "City of Testville", utility: "PGE",
+  parserSnapshot: { roofMaterial: "Concrete Tile", framingType: "truss", roofRafterSpacing: 24, roofRafterSpan: 10, mounting: "Roof mount", snow: 25, deadLoad: 3, wind: "B" } } as never;
+const tileFinding = (cert: { confirmedBy: string; confirmedAt: string } | null) => evaluateDesignCodeFindings(tileProject, null, undefined, ["plan_set", "structural"], [], cert)
+  .find((x) => x.id === "city.struct.tile-stamped-engineering-missing");
+const tileCert = tileFinding({ confirmedBy: "Jane Example", confirmedAt: "2026-10-08T12:00:00.000Z" });
+check("tile: with a confirmation the tile stamp finding is a warning that says to verify the seal, naming who confirmed",
+  tileCert?.severity === "warning" && /verify the seal/i.test(tileCert.title) && /Jane Example 2026-10-08/.test(tileCert.message)
+  && !/none is in the package/i.test(tileCert.message) && !/^Obtain/i.test(tileCert.designTeamAction ?? ""),
+  JSON.stringify(tileCert && { severity: tileCert.severity, title: tileCert.title, message: tileCert.message }));
+check("tile: without one the tile stamp finding stays a blocker asking for the sealed engineering",
+  tileFinding(null)?.severity === "blocker" && /none is in the package/i.test(tileFinding(null)?.message ?? ""), JSON.stringify(tileFinding(null)?.severity));
 
-// MUST-EXCLUDE (review on #218): every probe, end to end through the splitter, the inventory, the
-// reviewer and the submit gate — the sheet is split as `structural` and the job is still held.
-for (const [name, line] of Object.entries(CITING_LINES)) {
-  const pid = await mk([[...FRAMING_FULL, ...line.split("\n")]]);
-  const split = Boolean(db.get("SELECT id FROM project_documents WHERE project_id = ? AND doc_type = 'structural'", [pid]));
-  const r = letterRow(pid);
-  const sev = stampFinding(pid)?.severity;
-  const holds = holdLabels(pid);
-  check(`MUST-EXCLUDE gate: framing sheet + "${name}" (split as structural: ${split}) — row MISSING, finding a BLOCKER, still held`,
-    split && r?.present === false && sev === "blocker" && holds.some((l) => /stamped calculation/i.test(l)),
-    JSON.stringify({ present: r?.present, via: r?.via, sev, holds }));
+// ── MUST-EXCLUDE: with no confirmation, every probe of rounds 1–4 and every genuine letter is held ──
+// End to end through the splitter, the inventory, the reviewer and the submit gate.
+const probes: Array<[string, string[]]> = [
+  ...Object.entries(CITING_LINES).map(([n, l]): [string, string[]] => [`round 1–4 "${n}"`, [...FRAMING_FULL, ...l.split("\n")]]),
+  ...Object.entries(ROUND4_PROBES).map(([n, l]): [string, string[]] => [`round 4 "${n}"`, [...FRAMING_FULL, ...l.split("\n")]]),
+  ...Object.entries(GENUINE_SIGNATURES).map(([n, sig]): [string, string[]] => [`genuine letter "${n}"`, [...LETTER_BODY, sig]]),
+];
+for (const [name, lines] of probes) {
+  const pid = await mk([lines]);
+  const hasSplit = structuralDocs(pid).length > 0;
+  const h = heldLikeMain(pid);
+  check(`MUST-EXCLUDE gate, no confirmation: ${name} (split as structural: ${hasSplit}) — held exactly as main`, hasSplit && h.ok, h.detail);
 }
 
 db.close();

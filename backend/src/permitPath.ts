@@ -277,111 +277,55 @@ export function hasStampedStructuralEvidence(project: PermitPathInputs): boolean
   return affirmed;
 }
 
-// AN ENGINEER'S CERTIFICATION IS A STRUCTURAL DOCUMENT THE TEXT LAYER CAN RECOGNISE (#198).
+// WHICH STRUCTURAL PAGES LOOK LIKE THE ENGINEER'S LETTER — A SUGGESTION, NEVER A CREDIT (#198).
 //
-// The splitter files an engineering firm's certification bound into the plan set (letterhead,
-// "STRUCTURAL CERTIFICATION", the per-array calcs, a signature line) as doc type `structural` —
-// the same type as a bare framing sheet, which is NOT the sealed letter (stampedEngineering
-// test). A heading is not enough to tell them apart: a framing sheet CITES the letter ("REFER TO
-// STRUCTURAL LETTER BY …", "STRUCTURAL CALCULATIONS BY OTHERS", "SEE ENGINEERING CALCULATIONS
-// SHEET S-3") in the very words a letter is titled with, and crediting that is the engineered-
-// with-no-letter false pass the stamped-engineering hold exists to stop. So the document has to
-// ASSERT, in its own voice, that THE EXISTING STRUCTURE is certified or adequate (not "this plan
-// was prepared", not a racking product's rating), in a clause that is not negated, hedged or
-// pointing at another document — and name an engineer near that clause, in a credential that is
-// itself neither negated ("NO PE STAMP REQUIRED") nor a placeholder ("ENGINEER OF RECORD: NONE").
-// The seal is an IMAGE and the text layer never sees it, so this says nothing about the seal: "no
-// stamp seen" is unknown, not absent, and the consumers word it as "verify the seal", never as a
-// stamp in hand.
+// Owner ruling 2026-10-08 (on #218): text matching only SUGGESTS; a named person's one-click
+// confirmation (structuralLetter.ts) is the only thing that credits the letter or releases the
+// stamped-structural hold. Four review rounds showed the text layer cannot tell an engineer's
+// certification from a framing sheet that cites one, a blank signature block, a compass point or a
+// pipe grade — pages are joined with spaces, so "same line" is "rest of page", and a seal is an
+// image it never sees. So this reads text for one job only: to rank the split `structural`
+// documents and their pages, so the gate can put the likeliest letter in front of a person. A false
+// positive costs a person a look; it never releases anything.
+//
+// Every pattern here is linear: no name-shaped token runs (an unbroken capital run at the 150K
+// text cap took 24s under the old NAME regex), only bounded gaps between fixed words.
 const STRUCTURE_NOUN = String.raw`(?:existing\s+)?(?:roof\s+)?(?:structure|framing|roof|trusses|rafters|members?)`;
 const CERTIFYING_CLAUSE = new RegExp(
   String.raw`\b(?:hereby\s+certif(?:y|ies)|do\s+certify|this\s+is\s+to\s+certify)\b[\w\s/-]{0,60}?\b${STRUCTURE_NOUN}\b`
   + String.raw`|\b${STRUCTURE_NOUN}\b[\w\s/-]{0,40}?\b(?:is|are)\s+(?:structurally\s+)?adequate\b`, "i");
-/** A clause that points AT another document, or tells someone to check, is not the document
- *  speaking. Scoped to document targets: a certification citing its design code ("adequate per
- *  ASCE 7-16") is the certification, not a pointer. */
+/** A clause that points AT another document, or tells someone to check, is not the document speaking. */
 const REFERENCE_CLAUSE = /\b(?:refer(?:\s+to)?|see|per|reference[ds]?)\s+(?:the\s+|separate\s+|attached\s+)?(?:structural|engineering|engineer'?s?)\s+(?:letter|calc\w*|report|sheet|analysis)\b|\bby\s+others\b|\b(?:verify|confirm|contact|check)\b/i;
-/** WHO CERTIFIED — POSITIVE EVIDENCE ONLY (#198, review on #218). Three rounds of excluding look-alikes
- *  (", SE" compass points, "PE 3408" pipe grades, blank "SIGNATURE: ____" / "STAMP HERE" blocks) each
- *  left a close variant that released the hold with nobody named. So a credential is credited only
- *  when it NAMES someone:
- *    (a) a person-name-shaped token — two or more capitalised words, none a compass point, number,
- *        material or form label — immediately followed by a dotted P.E. / S.E. ("Jane Roe, P.E.");
- *    (b) an engineer label ("Engineer of Record", "Licensed/Professional/Registered Engineer")
- *        followed ON THE SAME LINE by such a name, or by a licence field holding digits after
- *        License / Lic / No. ("PROFESSIONAL ENGINEER SIGNATURE: Jane Roe", "… : LICENSE NO. 12345");
- *    (c) the credential itself carrying a licence number after License / Lic / No. ("PE No. 12345"),
- *        never directly after HDPE / PIPE / CONDUIT.
- *  Everything else — every blank, label-only or look-alike block — names nobody and stays held. */
-const NAME_WORD = String.raw`(?:[A-Z][A-Za-z'’-]+|[A-Z]\.)`;
-const NAME = String.raw`${NAME_WORD}(?:[ \t]+${NAME_WORD}){1,3}`;
-const DOTTED_CREDENTIAL = String.raw`(?:P\.[ \t]?E\.|S\.[ \t]?E\.)(?![A-Za-z])`;
-const NAME_THEN_CREDENTIAL = new RegExp(`(${NAME}),?[ \\t]+${DOTTED_CREDENTIAL}`, "g");
-const ENGINEER_LABEL = /\bengineer\s+of\s+record\b|\b(?:(?:licensed|professional|registered)\s+)+(?:structural\s+)?engineer\b/gi;
-const LABEL_FILLER = /^(?:[ \t:,\-–\/()&]+|(?:signature|name|by|stamp|seal|signed|sign|and)\b)+/i;
-const LICENCE_FIELD = /^(?:License|Licence|Lic\.?|No\.?)[ \t]*(?:No\.?|#)?[ \t]*[:#]?[ \t]*\d{3,}/i;
-const NAME_AFTER_LABEL = new RegExp(`^(${NAME})(?=[ \\t]*(?:,|$|${DOTTED_CREDENTIAL}|License|Licence|Lic\\b))`);
-const CREDENTIAL_LICENCE = /\b(?:P\.\s?E\.?|PE|S\.\s?E\.)[ \t]*(?:License|Licence|Lic\.?|No\.?)[ \t]*(?:No\.?)?[ \t]*[#:]?[ \t]*\d{3,}/g;
-/** Words that make a "name" a compass point, a material, a plan note or a form label. */
-const NOT_A_NAME = new Set(("NORTH SOUTH EAST WEST N S E W NE NW SE SW AZIMUTH TILT ORIENTATION FACING ROOF ARRAY "
-  + "HDPE PIPE CONDUIT PVC EMT PE PLAN SHEET DETAIL EXISTING RAFTER RAFTERS TRUSS TRUSSES FRAMING STRUCTURE "
-  + "ADEQUATE ENGINEER ENGINEERS ENGINEERING OF RECORD PROFESSIONAL LICENSED REGISTERED STRUCTURAL SIGNATURE "
-  + "SIGN STAMP SEAL DATE NAME BY LIC LICENSE LICENCE NO THE AND FOR NONE TBD PENDING BLANK HERE").split(" "));
-function isPersonName(name: string, mayDropLeading: boolean): boolean {
-  let words = name.trim().split(/[ \t]+/);
-  // A label word before the name ("Signature Jane Roe, P.E.") is not part of it.
-  if (mayDropLeading) while (words.length && NOT_A_NAME.has(words[0].replace(/\.$/, "").toUpperCase())) words = words.slice(1);
-  if (words.length < 2 || words.length > 4) return false;
-  if (words.some((w) => /\d/.test(w) || NOT_A_NAME.has(w.replace(/\.$/, "").toUpperCase()))) return false;
-  return words.filter((w) => w.replace(/[^A-Za-z]/g, "").length >= 2).length >= 2;
-}
-/** Offsets of credentials that NAME someone, by (a), (b) or (c). */
-function namedCredentials(body: string): number[] {
-  const at: number[] = [];
-  for (const m of body.matchAll(NAME_THEN_CREDENTIAL)) if (isPersonName(m[1], true)) at.push(m.index ?? 0);
-  for (const m of body.matchAll(ENGINEER_LABEL)) {
-    const end = (m.index ?? 0) + m[0].length;
-    const nl = body.indexOf("\n", end);
-    const rest = body.slice(end, nl < 0 ? body.length : nl).replace(LABEL_FILLER, "");
-    const named = NAME_AFTER_LABEL.exec(rest);
-    if (LICENCE_FIELD.test(rest) || (named && isPersonName(named[1], false))) at.push(m.index ?? 0);
-  }
-  for (const m of body.matchAll(CREDENTIAL_LICENCE)) {
-    const i = m.index ?? 0;
-    if (!/\b(?:HDPE|PIPE|CONDUIT|PVC)\W*$/i.test(body.slice(Math.max(0, i - 12), i))) at.push(i);
-  }
-  return at;
-}
-/** "Near" without page boundaries (pages are joined into one extract): about a page of text. */
-const CREDENTIAL_WINDOW_CHARS = 2000;
+/** Any engineer credential MENTIONED — enough to rank a page, never to credit one. */
+const CREDENTIAL_MENTION = /\bP\.?[ \t]?E\.?(?![A-Za-z])|\bS\.[ \t]?E\.(?![A-Za-z])|\bengineer\s+of\s+record\b|\b(?:licensed|professional|registered|structural)\s+engineer/i;
+const LETTER_HEADING = /\bstructural\s+(?:certification|calculations?|analysis|report|letter)\b|\bengineering\s+(?:letter|report|certification)\b/i;
+const DESIGN_BASIS = /\bASCE\s*7\b|\bIRC\s*20\d\d\b|\bIBC\s*20\d\d\b/i;
 
+/** Does any clause of this text certify the existing structure, in its own (un-negated,
+ *  un-hedged, non-pointing) voice? */
+function hasCertifyingClause(body: string): boolean {
+  // "No. 12345" is a licence number: its period must not cut the clause, nor its "No" negate it.
+  const text = body.replace(/\bno\.?\s*(?=[#\d])/gi, (m) => "#".padEnd(m.length, " "));
+  return text.split(new RegExp(CLAUSE_BREAK.source, "gi")).some((raw) => {
+    const c = (raw ?? "").trim();
+    return Boolean(c) && CERTIFYING_CLAUSE.test(c) && !NEGATOR.test(withoutNumberAbbreviation(c)) && !HEDGED.test(c) && !REFERENCE_CLAUSE.test(c);
+  });
+}
+
+/** How much a page (or document) reads like an engineer's structural letter: 0 = nothing, up to 5.
+ *  For RANKING candidates only (structuralLetter.structuralLetterCandidate). */
+export function certificationScore(text: string): number {
+  const body = String(text || "");
+  if (!body.trim() || body === "[no text layer]") return 0;
+  return (hasCertifyingClause(body) ? 2 : 0) + (CREDENTIAL_MENTION.test(body) ? 1 : 0)
+    + (LETTER_HEADING.test(body) ? 1 : 0) + (DESIGN_BASIS.test(body) ? 1 : 0);
+}
+
+/** Reads like an engineer's certification: a certifying clause plus an engineer credential mention.
+ *  A SUGGESTION for the gate's candidate card — it never credits a document or releases a hold. */
 export function readsAsEngineerCertification(text: string): boolean {
   const body = String(text || "");
-  if (!body.trim() || body === "[no text layer]") return false;
-  // The clauses with their offsets, so a credential is judged in its own clause and "near" is
-  // measured in the text.
-  // "No. 12345" is a licence NUMBER: its period must not cut the clause and its "No" must not read as
-  // a negator. Rewritten length-for-length, so offsets into `body` still line up.
-  const clauseText = body.replace(/\bno\.?\s*(?=[#\d])/gi, (m) => "#".padEnd(m.length, " "));
-  const breaker = new RegExp(CLAUSE_BREAK.source, "gi");
-  let start = 0;
-  const clauses: Array<{ clause: string; at: number; end: number }> = [];
-  for (const m of clauseText.matchAll(breaker)) {
-    clauses.push({ clause: clauseText.slice(start, m.index), at: start, end: m.index ?? start });
-    start = (m.index ?? 0) + m[0].length;
-  }
-  clauses.push({ clause: clauseText.slice(start), at: start, end: clauseText.length });
-  const clauseAt = (i: number) => clauses.find((c) => i >= c.at && i <= c.end)?.clause.trim() ?? "";
-  const speaks = (c: string) => !NEGATOR.test(withoutNumberAbbreviation(c)) && !HEDGED.test(c);
-
-  // A named credential, judged in its own clause: "NO PE STAMP REQUIRED" names nobody either way.
-  const credentialAt = namedCredentials(body).filter((i) => speaks(clauseAt(i)));
-  if (!credentialAt.length) return false;
-  return clauses.some(({ clause, at }) => {
-    const c = clause.trim();
-    return CERTIFYING_CLAUSE.test(c) && speaks(c) && !REFERENCE_CLAUSE.test(c)
-      && credentialAt.some((i) => Math.abs(i - at) <= CREDENTIAL_WINDOW_CHARS);
-  });
+  return CREDENTIAL_MENTION.test(body) && hasCertifyingClause(body);
 }
 
 // ---------------------------------------------------------------------------

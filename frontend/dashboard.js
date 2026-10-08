@@ -4479,6 +4479,80 @@ function gateEvidenceSplit(evidence) {
   return { named: lines.filter(names), rest: lines.filter((line) => !names(line)) };
 }
 
+// THE ENGINEER'S STRUCTURAL LETTER CARD (#198; owner ruling 2026-10-08). Shown on the stamped-
+// structural hold and on the document-inventory row. The text layer only SUGGESTS which split
+// `structural` document (and page) is the letter; a named person's click on Confirm is the only
+// thing that credits it, and it stays "verify the seal" after that. Pure: returns HTML, every value
+// esc()'d; the buttons are wired in renderSubmitGate by their data-structural-letter-action.
+function structuralLetterCardHtml(sl, projectId) {
+  if (!sl) return "";
+  const pagesLink = (docId, page) => `/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(docId)}?inline=1${page > 0 ? `#page=${encodeURIComponent(String(page))}` : ""}`;
+  const c = sl.confirmation;
+  if (c) {
+    return `<div class="kx-inline-tool structural-letter-card" data-structural-letter="confirmed">
+      <span class="kx-inline-tool-title">Engineer's structural letter on file, confirmed by ${esc(c.confirmedBy)} ${esc(String(c.confirmedAt || "").slice(0, 10))} — verify the seal.</span>
+      <div class="kx-inline-tool-row">
+        <a href="${esc(pagesLink(c.documentId, c.page))}" target="_blank" rel="noopener">Open ${esc(c.filename || "the structural document")}${c.page > 0 ? `, page ${esc(String(c.page))}` : ""} →</a>
+        <button type="button" class="secondary" data-structural-letter-action="withdraw">Withdraw confirmation</button>
+      </div>
+    </div>`;
+  }
+  const v = sl.voided;
+  const voidedNote = v ? `<p class="muted">The confirmation by ${esc(v.confirmedBy)} ${esc(String(v.confirmedAt || "").slice(0, 10))} no longer covers what is on file: ${esc(v.reason)}. Look again and re-confirm.</p>` : "";
+  const k = sl.candidate;
+  if (!k) {
+    return `<div class="kx-inline-tool structural-letter-card" data-structural-letter="none">
+      <span class="kx-inline-tool-title">No structural document on file to confirm as the engineer's letter — split the plan set or upload the sealed letter.</span>${voidedNote}
+    </div>`;
+  }
+  const where = `${k.filename || "structural document"}${k.page > 0 ? `, page ${k.page}${k.pageCount > 1 ? ` of ${k.pageCount}` : ""}` : ""}`;
+  return `<div class="kx-inline-tool structural-letter-card" data-structural-letter="candidate">
+      <span class="kx-inline-tool-title">Candidate engineer's letter: ${esc(where)}${k.score > 0 ? "" : " — its text says nothing letter-like; open it and check"}.</span>${voidedNote}
+      <div class="kx-inline-tool-row">
+        <a href="${esc(pagesLink(k.documentId, k.page))}" target="_blank" rel="noopener">Open its pages →</a>
+        <button type="button" data-structural-letter-action="confirm" data-document-id="${esc(k.documentId)}" data-page="${esc(String(k.page || 0))}">Confirm: this is the engineer's sealed structural letter for this job</button>
+      </div>
+    </div>`;
+}
+
+// Confirm / withdraw from the card. With sign-in on, the server records the signed-in person and
+// ignores anything sent; with it off, the person types their name (a placeholder is refused).
+async function structuralLetterAction(action, btn) {
+  const id = state.selectedProjectId;
+  if (!id) return;
+  let auth = state.authMe;
+  if (!auth) {
+    try { auth = await api("/api/auth/me"); state.authMe = auth; } catch { auth = { enabled: false, user: null }; }
+  }
+  const lede = action === "confirm"
+    ? "Confirm that this document is the engineer's sealed structural letter for THIS job?\n\nYou are saying you opened its pages and it is the engineer's letter. Recorded under your name; replacing or re-splitting the document, or uploading a new plan set, voids it. The seal itself still needs verifying before submittal."
+    : "Withdraw the confirmation of the engineer's structural letter? The stamped-structural hold comes back until someone confirms again.";
+  let name = "";
+  if (auth && auth.enabled) {
+    if (!confirm(`${lede}\n\nRecorded as: ${(auth.user && (auth.user.name || auth.user.email)) || "you"}`)) return;
+  } else {
+    let last = "";
+    try { last = localStorage.getItem("feeConfirmName") || ""; } catch { last = ""; }
+    const typed = window.prompt(`${lede}\n\nYour name (recorded as the person who ${action === "confirm" ? "confirmed" : "withdrew"} it):`, last);
+    if (typed == null) return;
+    name = String(typed).trim();
+    if (!name) { showMessage("Enter your name — a confirmation is a person vouching for it.", "warning"); return; }
+    try { localStorage.setItem("feeConfirmName", name); } catch { /* per-viewer convenience only */ }
+  }
+  btn.disabled = true;
+  try {
+    const body = action === "confirm"
+      ? { documentId: btn.getAttribute("data-document-id"), page: Number(btn.getAttribute("data-page") || 0), confirmedBy: name }
+      : { withdrawnBy: name };
+    await api(`/api/projects/${id}/structural-letter/${action}`, { method: "POST", body: JSON.stringify(body) });
+    showMessage(action === "confirm" ? "Structural letter confirmed — verify the seal before submittal." : "Confirmation withdrawn — the stamped-structural hold is back.");
+    if (state.selectedProjectId === id) await selectProject(id);
+  } catch (err) {
+    showMessage(`${action === "confirm" ? "Confirm" : "Withdraw"} failed: ${err.message}`, "error");
+    btn.disabled = false;
+  }
+}
+
 function renderSubmitGate() {
   ensureKeelixDetailStyles();
   const gate = state.submitGate;
@@ -4588,6 +4662,7 @@ function renderSubmitGate() {
                    requirement, evidence and source are provenance. -->
               <p><strong>Next:</strong> ${esc(check.nextAction)}</p>
               ${ev.named.length ? `<ul class="evidence-list">${ev.named.map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
+              ${(check.id === "permit-requirements" || check.id === "document-inventory") && gate.structuralLetter ? structuralLetterCardHtml(gate.structuralLetter, gate.projectId) : ""}
               ${check.id === "ahj-form-mapping-verified" && (check.status === "blocker" || check.status === "warning") ? `<button type="button" class="secondary" style="font-size:12px;margin-top:4px" onclick="document.querySelector('.stage-accordion[data-stage-index=\\'1\\']')?.setAttribute('open','');document.getElementById('applicationDocs')?.scrollIntoView({behavior:'smooth'})">Go to App Docs → verify forms</button>` : ""}
               <details class="provenance">
                 <summary>Owner: ${esc(check.ownerRole)}</summary>
@@ -4634,6 +4709,9 @@ function renderSubmitGate() {
       </article>
     </div>
   `;
+  $("submitGate").querySelectorAll("[data-structural-letter-action]").forEach((b) => {
+    b.addEventListener("click", () => structuralLetterAction(b.getAttribute("data-structural-letter-action"), b));
+  });
 }
 
 // ----- Per-permit submittal tracks (NEM + building/electrical, tracked apart) -----

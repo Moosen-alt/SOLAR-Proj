@@ -74,7 +74,8 @@ import { notServedInResult } from "../../shared/src/portalNotServed";
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 // detectPlatform moved with the target INSERT into submittalTracks.ts's ensureCheckTarget.
 import { publicPermitStatusCheck } from "./publicPermitStatus";
-import { planSetTextForProject, projectDocsByType, structuralCertificationOnFile, DOCS_DIR, PLAN_TEXT_DOC_TYPES } from "./projectDocuments";
+import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES } from "./projectDocuments";
+import { activeStructuralLetterConfirmation, structuralLetterState } from "./structuralLetter";
 import type { DesignTextSource } from "./designCriteria";
 import { describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor, isStatewidePortalUrl, permitProcessKey, projectForTrack, refuseTrackIssuerValue, trackIssuer } from "./permitProcess";
 import { statewideDecisionFor, statewideUrlRefusal } from "./statewideEvidence";
@@ -211,13 +212,9 @@ export function buildReviewerReportFor(db: AppDb, project: ProjectRecord): Revie
   // undefined = not read (the note says so); null = read, and the AHJ has no row of its own.
   let codeProfileRow: { ahj: string; confidence: "seeded" | "verified" } | null | undefined;
   try { const own = ownCodeProfileRow(db, project.state, project.ahj); codeProfileRow = own ? { ahj: own.profile.ahj, confidence: own.profile.confidence } : null; } catch { codeProfileRow = undefined; }
-  // Only read the structural document's text when it can matter (#198): a stamped-letter type
-  // already settles it, a resolved-prescriptive path owes no stamp, and no `structural` doc means
-  // nothing to read.
-  const structuralCertification = uploadedDocTypes.includes("structural")
-    && !uploadedDocTypes.some((t) => ["structural_letter", "stamped_plans", "engineering_letter"].includes(t))
-    && resolvePermitPath(project).path !== "prescriptive"
-    && structuralCertificationOnFile(db, project.id);
+  // A named person's confirmation of the engineer's letter (#198; owner ruling 2026-10-08) — the
+  // only thing that turns the stamped-structural hold into "verify the seal". Text never does.
+  const structuralCertification = activeStructuralLetterConfirmation(db, project.id);
   return buildReviewerReport(project, { codeContext, codeProfileRow, uploadedDocTypes, documentTexts: designDocumentTexts(db, project.id), pvWorksheet: filedPvWorksheetInput(db, project), structuralCertification });
 }
 
@@ -1384,6 +1381,8 @@ export function deleteProject(db: AppDb, projectId: string): { deleted: true; pr
     // Project-scoped tables added later — must also be cleared or the FK on projects fails.
     db.run("DELETE FROM project_metrics WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM filing_metrics WHERE project_id = ?", [projectId]);
+    // A person's confirmation of the structural letter (migration v47) is bound to a document here.
+    db.run("DELETE FROM structural_letter_confirmations WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM project_documents WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM project_intake_requests WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM submission_payments WHERE project_id = ?", [projectId]);
@@ -3905,7 +3904,9 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       title: "Required documents attached",
       lane: gateDocs.owed.some((d) => d.lane === "nem") && !gateDocs.owed.some((d) => d.lane === "permit") ? "nem" : "permit",
       // An application set nobody knows is a WARNING (seen, never blocking) — never "pass".
-      status: gateDocs.owed.length ? "blocker" : docInventory.missingAdvisory.length || gateDocs.acquiredAtStaging.length || docInventory.applicationSetUnknown ? "warning" : "pass",
+      // A row present with something left for a person to check (the confirmed structural letter's
+      // seal, #198) is a WARNING too — confirmed is not the same as sealed.
+      status: gateDocs.owed.length ? "blocker" : docInventory.missingAdvisory.length || gateDocs.acquiredAtStaging.length || docInventory.applicationSetUnknown || docInventory.presence.some((d) => d.present && d.warning) ? "warning" : "pass",
       ownerRole: "Permit Ops",
       requirement: "Every required submittal document must be attached as a file (or identified in the uploaded plan set) before staging — the AHJ rejects incomplete packages.",
       evidence: [
@@ -3913,7 +3914,9 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
         // Never dropped by the evidence cap ("NOT KNOWN:" names a document question, like MISSING):
         // the count above is of a set that may not include the AHJ's applications at all.
         ...(docInventory.applicationSetUnknown ? [`NOT KNOWN: ${docInventory.applicationSetUnknown}`] : []),
-        ...docInventory.presence.filter((d) => d.present).slice(0, 4).map((d) => documentPresenceLine(d.label, d.via)),
+        // A present row a person must still check is listed first, so the cap never hides it.
+        ...docInventory.presence.filter((d) => d.present).sort((a, b) => Number(Boolean(b.warning)) - Number(Boolean(a.warning)))
+          .slice(0, 4).map((d) => documentPresenceLine(d.label, d.via)),
         ...gateDocs.filledAtStaging.map((d) => `Filled at staging: ${d.label} — the form's template is on file; staging fills it and offers it to any upload slot that asks for it (check the portal's attachment list before submitting)`),
         ...gateDocs.acquiredAtStaging.map((d) => `Stage downloads and fills it: ${d.label} — ${acquisitionSentence(gateDocs.acquiredVia.get(d))}`),
         ...gateDocs.owed.map((d) => `MISSING (required): ${d.label} — ${d.why}`),
@@ -4085,6 +4088,13 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
     passCount,
     checks,
     manualSubmitChecklist,
+    // THE ENGINEER'S LETTER CARD (#198): the candidate a person can confirm and the standing
+    // confirmation, beside the stamped-structural hold and the inventory row — only when the job
+    // owes the letter and no stamped-letter file settles it (the row is missing or stands on a
+    // confirmation, or a stamped-engineering finding was raised).
+    ...(docInventory.presence.some((d) => d.docType === "structural_letter" && (!d.present || d.warning))
+      || reviewerReport.findings.some((f) => f.id === "city.struct.stamped-engineering-missing" || f.id === "city.struct.tile-stamped-engineering-missing")
+      ? { structuralLetter: structuralLetterState(db, projectId) } : {}),
   };
 
   return {
