@@ -204,6 +204,47 @@ check("2023: the label is asked at 690.12(D), a plan citing 690.12(D) answers it
   assert.ok(!cited?.codeReferences.some((r) => r.section === "690.12(D)"), cited?.message);
 });
 
+console.log("\nD. #242 — '690.12(B)(2)(3) … NOT USED' rejects the option; it is not listed equipment");
+
+// Two synthetic jurisdictions, so no single fixture carries the behaviour.
+const JURISDICTIONS = [["ZZ", "City of Testville"], ["YY", "Town of Example Mesa"]] as const;
+const runIn = (state: string, ahj: string, edition: string, text: string): ReviewerFinding[] => {
+  const p = { ...profile(edition), key: `${state.toLowerCase()}|${ahj.toLowerCase()}|unknown`, state, ahj };
+  const proj = { ...project(text, STRING_INVERTER), state, ahj } as ProjectRecord;
+  return evaluateDesignCodeFindings(proj, null, buildCodeContext(state, ahj, p), [], [{ label: "Plan set", text }]);
+};
+for (const [state, ahj] of JURISDICTIONS) {
+  for (const edition of ["2017", "2020"]) {
+    for (const note of [
+      "690.12(B)(2)(3) NO EXPOSED WIRING METHODS - NOT USED.",
+      "NEC 690.12(B)(2)(3): N/A.",
+      "690.12(B)(2)(3) NO EXPOSED WIRING METHODS OR CONDUCTIVE PARTS - NOT APPLICABLE.",
+    ]) {
+      check(`MUST-EXCLUDE: NEC ${edition}, ${state}: '${note}' does not clear 690.12(B)(2) → blocker`, () => {
+        const f = get(runIn(state, ahj, edition, `${PLACARD} ${note}`), RSD_EDITION);
+        assert.ok(f, "the inside-boundary gap is owed");
+        assert.deepEqual(sections(f), [`${edition} NEC 690.12(B)(2)`]);
+        assert.equal(f.severity, "blocker", f.message);
+      });
+    }
+    for (const note of [
+      "INSIDE ARRAY BOUNDARY PER NEC 690.12(B)(2)(3).",
+      "INSIDE ARRAY BOUNDARY: 690.12(B)(2)(3) NO EXPOSED WIRING METHODS.",
+      "INSIDE ARRAY BOUNDARY PER LISTED PVHCS, 690.12(B)(2)(1).",
+    ]) {
+      check(`MUST-PASS: NEC ${edition}, ${state}: '${note}' answers 690.12(B)(2)`, () => {
+        const f = get(runIn(state, ahj, edition, `${PLACARD} ${note}`), RSD_EDITION);
+        assert.equal(f, undefined, f?.message);
+      });
+    }
+  }
+  check(`2023, ${state}: '690.12(B)(2)(3) NO EXPOSED WIRING METHODS' is a citation of the deleted option, not a denial`, () => {
+    const f = get(runIn(state, ahj, "2023", `${PLACARD} INSIDE ARRAY BOUNDARY: 690.12(B)(2)(3) NO EXPOSED WIRING METHODS.`), RSD_EDITION);
+    assert.ok(f);
+    assert.match(f.title, /option the NEC 2023 removed/);
+  });
+}
+
 if (failures) {
   console.error(`\n${failures} check(s) failed`);
   process.exit(1);
