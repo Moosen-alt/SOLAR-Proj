@@ -1,0 +1,121 @@
+// #238: the human-review queue is an edit door too. applyVerifiedField wrote only the source field
+// (inverterModel → invModel) and never dropped the stale derived alias, so a verified "Sunny Boy"
+// left inverterModel "Enphase" — and that alias, now differing from its source, read as operator-set
+// and survived every later edit. Also pins the read-only report of snapshots diverged before the fix.
+// Run:
+//   tsx backend/test/reviewQueueAliases.test.ts
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "review-queue-aliases-test-"));
+process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
+process.env.SEED_TEST_INSTALLER = "false";
+process.env.AUTOPILOT_AUTO_START = "0";
+
+const { openDatabase } = await import("../src/db");
+const { createProject, updateProject, humanVerify, listDivergedAliasProjects } = await import("../src/repository");
+const { isMlpeDesignForProject } = await import("../src/codeReviewRules");
+const db = await openDatabase();
+
+let failed = 0;
+const check = (name: string, cond: boolean, detail?: unknown) => {
+  if (cond) console.log(`ok   - ${name}`);
+  else { failed++; console.log(`FAIL - ${name}${detail === undefined ? "" : ` (got ${JSON.stringify(detail)})`}`); }
+};
+
+const base = {
+  owner: "Test Owner", street: "100 Example St", city: "Testville", state: "OR", zip: "97000",
+  ahj: "City of Testville", utility: "Test Utility", dcKw: 8, acKw: 7.6,
+  moduleMake: "TestSolar", moduleModel: "TS-400", moduleQty: "20", busRating: "200",
+};
+
+// A pending review item on one field, the way QC queues one (the operator's fix-it door).
+const queueReview = (projectId: string, fieldName: string, parserValue: string): string => {
+  const itemId = `review-${fieldName}-${projectId.slice(0, 8)}`;
+  const ts = new Date().toISOString();
+  db.run(
+    `INSERT INTO human_review_items
+       (id, project_id, issue_type, field_name, parser_value, llm_suggested_value, source_excerpt, status, notes, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [itemId, projectId, "critical", fieldName, parserValue, "", "", "pending", "test", ts, ts],
+  );
+  return itemId;
+};
+
+let healthyPid = "";
+
+// 1) MUST-PASS — the #238 probe: a verified inverter edit moves the derived aliases with it.
+{
+  const created = createProject(db, { ...base, invModel: "Enphase IQ8M-72-2-US", invQty: "20" });
+  const pid = created.project.id;
+  check("probe setup: design is MLPE", isMlpeDesignForProject(created.project));
+  const itemId = queueReview(pid, "inverterModel", "Enphase IQ8M-72-2-US");
+  const verified = humanVerify(db, pid, { reviewItemId: itemId, action: "edit", fieldValue: "Sunny Boy SB7.7-1SP-US-41" });
+  const s = verified.project.parserSnapshot;
+  check("verified edit lands on invModel", s.invModel === "Sunny Boy SB7.7-1SP-US-41", s.invModel);
+  check("verified edit moves inverterModel", s.inverterModel === "Sunny Boy SB7.7-1SP-US-41", s.inverterModel);
+  check("verified design is no longer MLPE", !isMlpeDesignForProject(verified.project));
+  // …and the alias is an echo again, so a later source edit moves it too (it used to stick forever).
+  const later = updateProject(db, pid, { invModel: "Sunny Boy SB6.0-1SP-US-41" });
+  check("later invModel edit still moves inverterModel", later.project.parserSnapshot.inverterModel === "Sunny Boy SB6.0-1SP-US-41", later.project.parserSnapshot.inverterModel);
+}
+
+// 2) Quantity too, and an approve (no typed value) goes through the same door.
+{
+  const created = createProject(db, { ...base, invModel: "Enphase IQ8M-72-2-US", invQty: "20" });
+  const pid = created.project.id;
+  const itemId = queueReview(pid, "inverterQty", "1");
+  const verified = humanVerify(db, pid, { reviewItemId: itemId, action: "approve" });
+  healthyPid = pid;
+  check("approved invQty moves inverterQuantity", verified.project.parserSnapshot.inverterQuantity === "1", verified.project.parserSnapshot.inverterQuantity);
+}
+
+// 3) MUST-EXCLUDE — a human-verified value is never overwritten by a derivation, and an alias set
+//    on its own is not touched by a verify on its source's neighbour.
+{
+  const created = createProject(db, {
+    ...base, invMake: "Enphase", invModel: "IQ8M-72-2-US", invQty: "20",
+    inverterManufacturer: "Enphase Energy Inc. (operator)",
+  });
+  const pid = created.project.id;
+  const itemId = queueReview(pid, "inverterModel", "IQ8M-72-2-US");
+  const verified = humanVerify(db, pid, { reviewItemId: itemId, action: "edit", fieldValue: "IQ8A-72-2-US" });
+  check("operator-set inverterManufacturer survives a verify", verified.project.parserSnapshot.inverterManufacturer === "Enphase Energy Inc. (operator)", verified.project.parserSnapshot.inverterManufacturer);
+  const unrelated = updateProject(db, pid, { zip: "97001" });
+  check("verified invModel survives an unrelated edit", unrelated.project.parserSnapshot.invModel === "IQ8A-72-2-US", unrelated.project.parserSnapshot.invModel);
+  check("its alias stays with it", unrelated.project.parserSnapshot.inverterModel === "IQ8A-72-2-US", unrelated.project.parserSnapshot.inverterModel);
+
+  // A review item on the CANONICAL key itself: the verified value is the edit, so the derivation
+  // from invQty ("20") must not win over it.
+  const qtyItem = queueReview(pid, "inverterQuantity", "20");
+  const v2 = humanVerify(db, pid, { reviewItemId: qtyItem, action: "edit", fieldValue: "18" });
+  check("verified canonical value is not overwritten by its derivation", v2.project.parserSnapshot.inverterQuantity === "18", v2.project.parserSnapshot.inverterQuantity);
+}
+
+// 4) The read-only report of snapshots diverged by the old bug: listed, never rewritten.
+{
+  const created = createProject(db, { ...base, invModel: "Enphase IQ8M-72-2-US", invQty: "20", ownerPhone: "555-0100" });
+  const pid = created.project.id;
+  // Simulate a pre-#238 snapshot: source edited, alias left behind (and a stale phone alias).
+  const row = db.get<{ parser_json: string; updated_at: string }>("SELECT parser_json, updated_at FROM projects WHERE id = ?", [pid])!;
+  const legacy = { ...JSON.parse(row.parser_json), invModel: "Sunny Boy SB7.7-1SP-US-41", ownerPhone: "555-0199" };
+  db.run("UPDATE projects SET parser_json = ? WHERE id = ?", [JSON.stringify(legacy), pid]);
+  const before = db.get<{ parser_json: string; updated_at: string }>("SELECT parser_json, updated_at FROM projects WHERE id = ?", [pid])!;
+
+  const report = listDivergedAliasProjects(db, null);
+  const hit = report.find((r) => r.projectId === pid);
+  const inv = hit?.aliases.find((a) => a.key === "inverterModel");
+  check("report lists the diverged inverterModel", inv?.stored === "Enphase IQ8M-72-2-US" && inv?.derived === "Sunny Boy SB7.7-1SP-US-41", hit);
+  const phone = hit?.aliases.find((a) => a.key === "homeownerPhone");
+  check("report names the phone alias without its value", !!phone && !JSON.stringify(phone).includes("555-"), phone);
+  check("report skips a project whose aliases agree", !!healthyPid && !report.some((r) => r.projectId === healthyPid), report.map((r) => r.projectId));
+  const after = db.get<{ parser_json: string; updated_at: string }>("SELECT parser_json, updated_at FROM projects WHERE id = ?", [pid])!;
+  check("report writes nothing", after.parser_json === before.parser_json && after.updated_at === before.updated_at);
+  check("org-scoped report sees only that org", listDivergedAliasProjects(db, "no-such-org").length === 0);
+}
+
+db.close();
+fs.rmSync(tmpDir, { recursive: true, force: true });
+if (failed) { console.log(`\nreviewQueueAliases: ${failed} check(s) FAILED`); process.exit(1); }
+console.log("\nreviewQueueAliases: all checks passed");

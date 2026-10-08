@@ -111,6 +111,36 @@ export function staleDerivedKeys(snapshot: ParserPayload): string[] {
   return out;
 }
 
+// THE ONE WAY AN EDIT LANDS ON A STORED SNAPSHOT (#225, #238). Every edit door (updateProject, the
+// human-review queue's applyVerifiedField) goes through here, so a door can't forget the re-derivation:
+// the derived flags (hasExistingSystem/hasBattery) and every alias that merely echoes its source
+// (staleDerivedKeys, judged on the snapshot BEFORE the edit) are dropped, then the edit is merged on
+// top. The caller canonicalizes the result (directly, or via normalizeProject), which re-derives what
+// was dropped from the merged evidence. What the edit itself carries always wins — a human-verified
+// value is evidence, never something a derivation overwrites — and an alias stored on its own
+// (differs from its source) is kept.
+export function mergeEditOverSnapshot(snapshot: ParserPayload, edit: ParserPayload): ParserPayload {
+  const kept: Record<string, unknown> = { ...snapshot };
+  delete kept["hasExistingSystem"];
+  delete kept["hasBattery"];
+  for (const key of staleDerivedKeys(snapshot)) delete kept[key];
+  return { ...kept, ...edit } as ParserPayload;
+}
+
+// Canonical aliases whose stored value DIFFERS from what their sources would derive (#238). Before
+// #225 an edit to a source left its alias behind, and a snapshot carries no provenance, so a diverged
+// alias may be that legacy staleness OR a value someone set on purpose — only a person can tell. This
+// only reports; nothing calls it to rewrite a snapshot.
+export function divergedAliases(snapshot: ParserPayload): Array<{ key: string; stored: string; derived: string }> {
+  const out: Array<{ key: string; stored: string; derived: string }> = [];
+  for (const [key, sources] of CANONICAL_ALIAS_SOURCES) {
+    const stored = str(snapshot, key);
+    const derived = first(snapshot, [...sources]);
+    if (stored && derived && stored !== derived) out.push({ key, stored, derived });
+  }
+  return out;
+}
+
 // Produces the canonical snapshot keys that portal adapters and the AHJ PDF
 // form engine read, mapping the parser's short field names to canonical names
 // and building a structured pvArrays list. Additive and idempotent: existing

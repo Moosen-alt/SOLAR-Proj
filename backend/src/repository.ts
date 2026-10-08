@@ -134,7 +134,7 @@ import {
   isVerifiedKnowledge,
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
-import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens, staleDerivedKeys, TRACK_ISSUER_SNAPSHOT_KEYS, withTrackIssuers } from "./normalize";
+import { canonicalizeSnapshot, compactAlnum, divergedAliases, existingSystemFromSnapshot, fieldAliases, mergeEditOverSnapshot, normalizeProject, normalizeTokens, TRACK_ISSUER_SNAPSHOT_KEYS, withTrackIssuers } from "./normalize";
 import {
   classificationDrift, classifyPermitStatusText, effectiveCheckDays, extractStatusDate, isAuthWallText, isNemApprovalOutcome, nextCheckIso, outcomeTrack, portalStatedStatus,
   readingMayFinishTrack, shouldRecordStatusCheck, trackKind, UNCONFIRMED_READING_LABEL,
@@ -829,14 +829,12 @@ export function updateProject(db: AppDb, projectId: string, payload: ParserPaylo
   // from the merged evidence — a stale stored value would win over the re-parse
   // (canonicalizeSnapshot never clobbers a present key), permanently freezing
   // e.g. an addition discovered on re-parse out of the canonical flag.
-  delete (existingSnapshot as Record<string, unknown>)["hasExistingSystem"];
-  delete (existingSnapshot as Record<string, unknown>)["hasBattery"];
   // Same for the canonical ALIASES (inverterModel ← invModel, inverterQuantity ← invQty, …, #225):
   // a stored alias that merely echoes its source is dropped and re-derived from the merged evidence,
   // so editing invModel moves inverterModel with it. An alias set on its own (differs from its
-  // source) is kept, and one sent in THIS payload wins over everything via the merge below.
-  for (const key of staleDerivedKeys(existingSnapshot as ParserPayload)) delete (existingSnapshot as Record<string, unknown>)[key];
-  const mergedSnapshot: ParserPayload = { ...existingSnapshot, ...payload };
+  // source) is kept, and one sent in THIS payload wins over everything via the merge.
+  // normalizeProject canonicalizes the result. (The review queue's applyVerifiedField shares this.)
+  const mergedSnapshot: ParserPayload = mergeEditOverSnapshot(existingSnapshot as ParserPayload, payload);
   // WHICH PORTAL THIS FILES ON IS NOT A SIDE EFFECT OF AN EDIT.
   //
   // normalizeProject re-derives every column from the snapshot, so a project whose stored
@@ -9800,9 +9798,14 @@ export function humanVerify(
   return getProjectDetail(db, projectId);
 }
 
-function applyVerifiedField(db: AppDb, projectId: string, payload: ParserPayload, fieldName: string, value: string): void {
+function applyVerifiedField(db: AppDb, projectId: string, stored: ParserPayload, fieldName: string, value: string): void {
   const aliases = fieldAliases[fieldName] ?? [fieldName];
-  payload[aliases[0]] = value;
+  // THE REVIEW QUEUE IS AN EDIT DOOR TOO (#238). Writing only `invModel` left a stored inverterModel
+  // echoing the OLD value — and, now differing from its source, it read as operator-set, so every
+  // later edit kept it (QC's critical.inverter_model blocker sends the operator exactly here). The
+  // same merge updateProject uses drops the echoes, then canonicalization re-derives them from the
+  // verified value. The verified value itself is the edit, so nothing derived overwrites it.
+  const payload = canonicalizeSnapshot(mergeEditOverSnapshot(stored, { [aliases[0]]: value }));
   const numeric = Number.parseFloat(value.replace(/[^0-9.-]/g, ""));
   const numberValue = Number.isFinite(numeric) ? numeric : null;
 
@@ -9831,6 +9834,28 @@ function applyVerifiedField(db: AppDb, projectId: string, payload: ParserPayload
   }
 
   db.run("UPDATE projects SET parser_json = ?, updated_at = ? WHERE id = ?", [asJson(payload), nowIso(), projectId]);
+}
+
+// SNAPSHOTS DIVERGED BEFORE #225/#238 NEVER SELF-HEAL — so list them for a person (#238). A stored
+// alias that differs from its source is kept by every edit door (it reads as operator-set), and the
+// snapshot carries no provenance to tell legacy staleness from intent. READ-ONLY: it never rewrites a
+// snapshot; the operator fixes a row through the normal edit (sending the alias itself). The phone
+// alias is reported by key only — its values are a homeowner's contact details.
+export function listDivergedAliasProjects(
+  db: AppDb,
+  orgId: string | null = DEFAULT_ORG_ID,
+): Array<{ projectId: string; status: string; aliases: Array<{ key: string; stored: string; derived: string }> }> {
+  const rows = db.query<{ id: string; status: string; parser_json: string }>(
+    `SELECT id, status, parser_json FROM projects${orgId ? " WHERE org_id = ?" : ""} ORDER BY created_at ASC`,
+    orgId ? [orgId] : [],
+  );
+  const out: Array<{ projectId: string; status: string; aliases: Array<{ key: string; stored: string; derived: string }> }> = [];
+  for (const row of rows) {
+    const aliases = divergedAliases(parseJson<ParserPayload>(row.parser_json, {}))
+      .map((a) => (a.key === "homeownerPhone" ? { ...a, stored: "(differs)", derived: "(differs)" } : a));
+    if (aliases.length) out.push({ projectId: row.id, status: text(row.status), aliases });
+  }
+  return out;
 }
 
 // Pre-fill a suggested value onto pending human-review items (e.g. an AI equipment-spec
