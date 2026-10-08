@@ -341,5 +341,87 @@ await check("universality: no AHJ name or URL lives in the probe's source", () =
   assert.doesNotMatch(src, /saratoga|https?:\/\/(?!\$\{)[a-z0-9.-]+\.[a-z]{2,}/i);
 });
 
+// ── 7. #250 follow-ups ──────────────────────────────────────────────────────────────────
+console.log("7. ASD-only snow is not an answer; the hub budget; the no-host diagnostic (#250)");
+
+// govAccess (Granicus) site whose page gives ONLY the allowable-stress pg(asd), plus wind (synthetic).
+const ASD = { state: "MT", ahj: "City of Larchmesa" };
+const ASD_HOST = "https://www.larchmesamt.gov";
+const ASD_PAGE = `${ASD_HOST}/departments/building/design-criteria`;
+const GOVACCESS_HEAD = `<script src="/Project/Contents/Main/_gfx/granicus.js"></script>`;
+serve(`${ASD_HOST}/`, { contentType: "text/html", text: html(`<h1>City of Larchmesa</h1><a href="/departments/building/design-criteria">Design Criteria</a><a href="/Home/ShowDocument?id=4">Budget</a>`, GOVACCESS_HEAD) });
+serve(ASD_PAGE, { contentType: "text/html", text: html(`<h1>Design Criteria</h1><table>
+<tr><td>Ground Snow Load, pg(asd)</td><td>35 psf</td></tr>
+<tr><td>Ultimate Design Wind Speed</td><td>110 mph</td></tr>
+<tr><td>Seismic Design Category</td><td>C</td></tr>
+</table>`, GOVACCESS_HEAD) });
+// Revize site whose page gives the STRENGTH-LEVEL pg, plus wind (synthetic).
+const PG = { state: "ID", ahj: "City of Birchford" };
+const PG_HOST = "https://www.birchfordid.gov";
+const PG_PAGE = `${PG_HOST}/building/design-criteria`;
+const REVIZE_HEAD = `<link rel="stylesheet" href="/revize/plugins/style.css">`;
+serve(`${PG_HOST}/`, { contentType: "text/html", text: html(`<h1>City of Birchford</h1><a href="/building/design-criteria">Design Criteria</a>`, REVIZE_HEAD) });
+serve(PG_PAGE, { contentType: "text/html", text: html(`<h1>Design Criteria</h1><table>
+<tr><td>Ground Snow Load, Pg</td><td>50 psf</td></tr>
+<tr><td>Ultimate Design Wind Speed</td><td>115 mph</td></tr>
+</table>`, REVIZE_HEAD) });
+// A site with two hubs whose links NAME the table but lead nowhere: no candidate page exists (synthetic).
+const HB = { state: "OR", ahj: "City of Fernhollow" };
+const HB_HOST = "https://www.fernhollowor.gov";
+serve(`${HB_HOST}/`, { contentType: "text/html", text: html(`<h1>City of Fernhollow</h1><a href="/building">Building</a><a href="/permits">Permits</a>`) });
+const deadLinks = (n: number, from: string) => Array.from({ length: n }, (_, i) => `<a href="/${from}/snow-load-${i}">Snow Load Notice ${i}</a>`).join("");
+serve(`${HB_HOST}/building`, { contentType: "text/html", text: html(`<h1>Building</h1>${deadLinks(3, "building")}`) });
+serve(`${HB_HOST}/permits`, { contentType: "text/html", text: html(`<h1>Permits</h1>${deadLinks(3, "permits")}`) });
+seedProcess(ASD, `${ASD_HOST}/`);
+seedProcess(PG, `${PG_HOST}/`);
+seedProcess(HB, `${HB_HOST}/`);
+
+await check("MUST-PASS: a page giving only pg(asd) plus wind still runs the web round (grounded on the page), and the pg(asd) lands seeded", async () => {
+  calls.length = 0;
+  const r = await CP.runDesignCriteriaResearch(db, ASD, fakeLlm(), reader());
+  assert.equal(calls.length, 1, "an ASD-only page skipped the web round: the strength-level pg was never looked for");
+  assert.equal(calls[0].issuerPage?.url, ASD_PAGE);
+  assert.deepEqual(r.issuerPage, { url: ASD_PAGE, parsed: false });
+  const row = ownRow(ASD)!;
+  assert.equal(row.profile.confidence, "seeded");
+  assert.equal(row.profile.designCriteria.groundSnowLoadAsdPsf, 35);
+  assert.equal(row.profile.designCriteria.groundSnowLoadPsf, undefined, "the pg(asd) was stored as the strength pg");
+  assert.equal(row.profile.designCriteria.windSpeedMph, 110);
+});
+
+await check("MUST-EXCLUDE: a page giving the strength-level pg plus wind spends no web round and no model call", async () => {
+  calls.length = 0;
+  const r = await CP.runDesignCriteriaResearch(db, PG, fakeLlm(), reader());
+  assert.equal(calls.length, 0, `a web-search round was spent: ${JSON.stringify(calls)}`);
+  assert.deepEqual(r.issuerPage, { url: PG_PAGE, parsed: true });
+  const row = ownRow(PG)!;
+  assert.equal(row.profile.confidence, "seeded");
+  assert.equal(row.profile.designCriteria.groundSnowLoadPsf, 50);
+  assert.equal(row.profile.designCriteria.windSpeedMph, 115);
+});
+
+await check("no candidate page before the hubs: the hub phase gets the smaller budget, and the job result says so", async () => {
+  calls.length = 0;
+  const rd = reader();
+  const r = await CP.runDesignCriteriaResearch(db, HB, fakeLlm(), rd);
+  const max = 3 + P.ISSUER_PROBE_HUB_READS; // home + site search + common page name, then the hub phase
+  assert.ok(rd.log.length <= max && rd.log.length < P.ISSUER_PROBE_MAX_READS, `the probe read ${rd.log.length} pages: ${rd.log.map((l) => l.url).join(", ")}`);
+  assert.equal(r.issuerPage, undefined);
+  assert.deepEqual(calls, [HB], "the web round's input changed");
+  assert.match(String(r.issuerProbe), new RegExp(`no design-criteria page found \\(${rd.log.length} pages read on www\\.fernhollowor\\.gov; hub reads capped at ${P.ISSUER_PROBE_HUB_READS}\\)`));
+});
+
+await check("a hub that links the table still reaches it inside the hub budget (WordPress: one hub, then its PDF)", async () => {
+  const probe = await P.probeIssuerDesignCriteria(reader(), { host: "www.examplefieldco.gov", ahj: WP.ahj, state: WP.state });
+  assert.equal(probe.candidateUrl, WP_PDF);
+  assert.equal(probe.hubBudget, P.ISSUER_PROBE_HUB_READS);
+});
+
+await check("no issuer host on file: the job result says \"no issuer host on file\"", async () => {
+  const who = { state: "WY", ahj: "City of Nohostburg" };
+  const r = await CP.runDesignCriteriaResearch(db, who, fakeLlm(), reader());
+  assert.equal(r.issuerProbe, "no issuer host on file");
+});
+
 if (failures) { console.error(`\n${failures} check(s) FAILED`); process.exit(1); }
 console.log("\nall issuer design-criteria page checks passed");

@@ -8977,6 +8977,19 @@ async function loadClients() {
   renderProjectClientFilterOptions();
 }
 
+/** The Clients card's licence line, labelled by the CLIENT'S state (#208): it said "CCB <n>" /
+ *  "No CCB on file" for every client. Through parser-review.js (loaded by dashboard.html) — the
+ *  one label table and the one licence list /parser reads: "DOPL <n>" for a Utah client, "CCB <n>"
+ *  for an Oregon one, "No contractor licence on file" when the state is unknown. */
+function clientCardLicenceText(client) {
+  const PR = window.ParserReview;
+  if (!PR) return "";
+  const held = PR.clientLicences(client);
+  return held.length
+    ? held.map((l) => `${l.label} ${l.number}`).join(" · ")
+    : `No ${PR.licenceWords(PR.clientLicenceState(client))} on file`;
+}
+
 function renderClientsList() {
   const list = $("clientsList");
   if (!state.clients || state.clients.length === 0) {
@@ -8986,7 +8999,7 @@ function renderClientsList() {
   list.innerHTML = state.clients.map((client) => `
     <button type="button" class="client-row${client.id === state.editingClientId ? " active" : ""}" data-client-id="${esc(client.id)}">
       <strong>${esc(client.companyName || client.legalBusinessName || "Unnamed")}</strong>
-      <span class="muted">${esc(client.ccbLicenseNumber ? "CCB " + client.ccbLicenseNumber : "No CCB on file")}${esc((client.stateLicenses || []).length ? ` · ${client.stateLicenses.length} state licence${client.stateLicenses.length === 1 ? "" : "s"}` : "")}</span>
+      <span class="muted">${esc(clientCardLicenceText(client))}${esc((client.stateLicenses || []).length ? ` · ${client.stateLicenses.length} state licence${client.stateLicenses.length === 1 ? "" : "s"}` : "")}</span>
     </button>
   `).join("");
   list.querySelectorAll("[data-client-id]").forEach((btn) => {

@@ -1684,10 +1684,13 @@ export function evaluateDesignCodeFindings(
   // reliably carries "FIRE ACCESS PATHWAY", so that fix would itself have switched off every
   // battery review. It also held an unbounded /ESS/i, which matches "addrESS" and "procESS".
   // Word-boundary the acronym, and take fire SEPARATION/rating rather than the bare word.
+  // The acronym itself is a TRIGGER only (#245): it also sat in the suppression list, so an
+  // equipment-schedule line reading "ESS" both raised this review and cleared it. Suppression
+  // takes real detail evidence — a 706/R328/1207 citation, clearances, fire separation.
   if (hasAny(batteryText, [/battery/i, /\bESS\b/i, /powerwall/i, /encharge/i, /backup/i])
     && !hasAny(batteryText, [
       /clearance/i, /working\s*space/i,
-      /\bESS\b/i, /\b706\b/i, /R\s*328/i, /\b1207\b/i,
+      /\b706\b/i, /R\s*328/i, /\b1207\b/i,
       /fire\s*(?:separation|barrier|rating)|fire.?rated/i,
     ])) {
     out.push(finding({
