@@ -15,7 +15,7 @@ import { sniffFileKind, looksLikeCad, isImageKind, describeKind, type SniffedKin
 type Row = Record<string, unknown>;
 
 // Doc types whose text is design/plan evidence for the reviewer gate.
-export const PLAN_TEXT_DOC_TYPES = new Set(["plan_set", "sld", "site_plan", "structural", "structural_letter", "stamped_plans", "engineering_letter", "electrical", "inverter_spec", "module_spec", "labels"]);
+export const PLAN_TEXT_DOC_TYPES = new Set(["plan_set", "sld", "site_plan", "structural", "structural_letter", "stamped_plans", "engineering_letter", "electrical", "inverter_spec", "module_spec", "labels", "ground_footing", "trench_detail"]);
 const MAX_PLAN_TEXT_CHARS = 150_000;
 
 function isPdfDoc(row: Row): boolean {
@@ -173,6 +173,7 @@ const PDF_REQUIRED_DOC_TYPES = new Set([
   "sld", "site_plan", "structural", "structural_letter", "stamped_plans",
   "engineering_letter", "electrical", "module_spec", "inverter_spec", "labels",
   "permit_application", "building_application", "electrical_application", "solar_checklist", "pv_worksheet",
+  "ground_footing", "trench_detail", "zoning_approval",
 ]);
 
 // Slots that hold a photo or a scan. A PDF is fine here too — people scan the meter
