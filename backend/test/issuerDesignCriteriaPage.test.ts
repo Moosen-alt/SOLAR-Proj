@@ -414,7 +414,79 @@ await check("no candidate page before the hubs: the hub phase gets the smaller b
 await check("a hub that links the table still reaches it inside the hub budget (WordPress: one hub, then its PDF)", async () => {
   const probe = await P.probeIssuerDesignCriteria(reader(), { host: "www.examplefieldco.gov", ahj: WP.ahj, state: WP.state });
   assert.equal(probe.candidateUrl, WP_PDF);
-  assert.equal(probe.hubBudget, P.ISSUER_PROBE_HUB_READS);
+  assert.equal(probe.hubBudget, 3, "the hub budget is three reads (a literal: the constant alone would pass vacuously)");
+});
+
+// ── 8. #258: one hub at a time; the strength-level pg ───────────────────────────────────
+console.log("8. the hubs are visited one at a time; ASD-only is not answered on file either (#258)");
+
+// Two hubs; the first links a bare "Snow Load Map" and THEN the "Design Criteria" table. Reading
+// both hubs back to back left one read, which the snow-load map spent. On two platforms (synthetic).
+const twoHubSite = (origin: string, head: string, hubPaths: [string, string]) => {
+  serve(`${origin}/`, { contentType: "text/html", text: html(`<h1>City Home</h1><a href="${hubPaths[0]}">Building</a><a href="${hubPaths[1]}">Permits</a>`, head) });
+  serve(`${origin}${hubPaths[0]}`, { contentType: "text/html", text: html(`<h1>Building</h1><a href="${hubPaths[0]}/snow-load-map">Snow Load Map</a><a href="${hubPaths[0]}/criteria-table">Design Criteria</a>`, head) });
+  serve(`${origin}${hubPaths[1]}`, { contentType: "text/html", text: html(`<h1>Permits</h1><a href="${hubPaths[1]}/fees">Permit Fees</a>`, head) });
+  serve(`${origin}${hubPaths[0]}/snow-load-map`, { contentType: "text/html", text: html(`<h1>Snow Load Map</h1><img src="/images/snow-map.png" alt="map">`, head) });
+  serve(`${origin}${hubPaths[0]}/criteria-table`, { contentType: "text/html", text: html(`<h1>Design Criteria</h1><table>
+<tr><td>Ground Snow Load, Pg</td><td>45 psf</td></tr>
+<tr><td>Ultimate Design Wind Speed</td><td>105 mph</td></tr>
+</table>`, head) });
+  return `${origin}${hubPaths[0]}/criteria-table`;
+};
+const TH1 = { state: "UT", ahj: "City of Ashgrove" };
+const TH1_PAGE = twoHubSite("https://www.ashgroveut.gov", CIVICPLUS_HEAD, ["/150/Building", "/160/Permits"]);
+const TH2 = { state: "WA", ahj: "City of Quillmont" };
+const TH2_PAGE = twoHubSite("https://www.quillmontwa.gov", GOVACCESS_HEAD, ["/departments/building", "/departments/permits"]);
+seedProcess(TH1, "https://www.ashgroveut.gov/");
+seedProcess(TH2, "https://www.quillmontwa.gov/");
+
+await check("MUST-PASS: two hubs, \"Snow Load Map\" then \"Design Criteria\": the table is reached inside the 3-read hub budget (CivicPlus and govAccess)", async () => {
+  for (const [who, host, page] of [[TH1, "www.ashgroveut.gov", TH1_PAGE], [TH2, "www.quillmontwa.gov", TH2_PAGE]] as const) {
+    const probe = await P.probeIssuerDesignCriteria(reader(), { host, ahj: who.ahj, state: who.state });
+    assert.equal(probe.candidateUrl, page, `${host}: read ${probe.pagesRead.map((r) => r.url).join(", ")}`);
+    assert.equal(probe.hubBudget, 3);
+    assert.ok(probe.pagesRead.length <= 3 + 3, `${host}: the probe read ${probe.pagesRead.length} pages`);
+    assert.ok(!probe.pagesRead.some((r) => /\/permits$/i.test(r.url)), `${host}: the second hub was read though the first one's candidate answered`);
+    assert.equal(P.probeAnswered(probe.raw), true);
+  }
+  calls.length = 0;
+  const r = await CP.runDesignCriteriaResearch(db, TH1, fakeLlm(), reader());
+  assert.equal(calls.length, 0, `a web-search round was spent: ${JSON.stringify(calls)}`);
+  assert.deepEqual(r.issuerPage, { url: TH1_PAGE, parsed: true });
+  const row = ownRow(TH1)!;
+  assert.equal(row.profile.confidence, "seeded");
+  assert.equal(row.profile.designCriteria.groundSnowLoadPsf, 45);
+  assert.equal(row.profile.designCriteria.windSpeedMph, 105);
+});
+
+await check("a link naming the table is read before a bare snow-load link (stable otherwise)", () => {
+  const words = new Map([["a", "Snow Load Map"], ["b", "Climatic and Geographic Design Criteria"], ["c", "Ground Snow Loads"], ["d", "R301.2 table"]]);
+  assert.deepEqual(P.rankedCandidates(["a", "b", "c", "d"], words), ["b", "d", "a", "c"]);
+});
+
+await check("probeAnswered needs the strength-level pg: an ASD-only pg plus wind is not an answer", () => {
+  assert.equal(P.probeAnswered({ groundSnowLoadAsdPsf: { value: 35 }, windSpeedMph: { value: 110 } }), false);
+  assert.equal(P.probeAnswered({ groundSnowLoadPsf: { value: 50 }, windSpeedMph: { value: 115 } }), true);
+  assert.equal(P.probeAnswered({ groundSnowLoadPsf: { value: 50 }, groundSnowLoadAsdPsf: { value: 30 } }), false, "no wind");
+});
+
+await check("MUST-PASS: a row holding only the ASD pg plus wind runs the lookup again for the strength-level pg", async () => {
+  const dc = ownRow(ASD)!.profile.designCriteria;
+  assert.equal(dc.groundSnowLoadAsdPsf, 35);
+  assert.equal(dc.groundSnowLoadPsf, undefined);
+  calls.length = 0;
+  const r = await CP.runDesignCriteriaResearch(db, ASD, fakeLlm(), reader());
+  assert.notEqual(r.reason, "design criteria already on file");
+  assert.equal(calls.length, 1, "an ASD-only row read as answered: the strength-level pg is never looked for");
+});
+
+await check("MUST-EXCLUDE: a row holding the strength-level pg plus wind is answered (no probe, no model call)", async () => {
+  calls.length = 0;
+  const rd = reader();
+  const r = await CP.runDesignCriteriaResearch(db, PG, fakeLlm(), rd);
+  assert.equal(r.reason, "design criteria already on file");
+  assert.equal(calls.length, 0);
+  assert.equal(rd.log.length, 0, "the issuer site was read for an answered row");
 });
 
 await check("no issuer host on file: the job result says \"no issuer host on file\"", async () => {

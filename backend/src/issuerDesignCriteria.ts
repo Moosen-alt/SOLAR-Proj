@@ -122,8 +122,11 @@ export function commonCriteriaPaths(origin: string): string[] {
   return ["/Design-Criteria", "/design-criteria", "/building/design-criteria"].map((p) => `${origin}${p}`);
 }
 
-/** A link (or page) that NAMES the design-criteria table. */
-const CRITERIA_WORDS = /design[\s_-]*criteria|climatic[\s_-]*(?:and|&)?[\s_-]*geographic|\bR301\.2\b|requirements?[\s_-]+to[\s_-]+be[\s_-]+shown[\s_-]+on[\s_-]+(?:the[\s_-]+)?(?:drawings|plans)|snow[\s_-]*loads?\b|structural[\s_-]+design[\s_-]+(?:criteria|data|loads)/i;
+/** A link that names the TABLE itself (R301.2, climatic and geographic, design criteria, the
+ *  drawing requirements), not only one of its loads: read before a bare "snow load" link (#258). */
+const TABLE_NAME_WORDS = /design[\s_-]*criteria|climatic[\s_-]*(?:and|&)?[\s_-]*geographic|\bR301\.2\b|requirements?[\s_-]+to[\s_-]+be[\s_-]+shown[\s_-]+on[\s_-]+(?:the[\s_-]+)?(?:drawings|plans)|structural[\s_-]+design[\s_-]+(?:criteria|data|loads)/i;
+/** A link (or page) that NAMES the design-criteria table, or one of its loads. */
+const CRITERIA_WORDS = new RegExp(`${TABLE_NAME_WORDS.source}|snow[\\s_-]*loads?\\b`, "i");
 /** A link to the department page that usually links it. */
 const HUB_WORDS = /\bbuilding\b|applications?\s*(?:&|and)\s*forms|\bpermits?\b|development\s+services|community\s+development|\binspections?\b/i;
 /** Links that are never the table: sign-in, calendars, agendas, news, social. */
@@ -135,6 +138,12 @@ function linkWords(l: PageLink): string {
   return `${l.text} ${path.replace(/[/_-]+/g, " ")}`;
 }
 export function isCriteriaLink(l: PageLink): boolean { return CRITERIA_WORDS.test(linkWords(l)) && !NOT_A_PAGE.test(l.text); }
+/** The candidates in reading order: those naming the table first, then the rest, each group as
+ *  collected (a stable sort). `words` is each candidate's link words. */
+export function rankedCandidates(candidates: string[], words: Map<string, string>): string[] {
+  const rank = (u: string) => (TABLE_NAME_WORDS.test(words.get(u) ?? u) ? 0 : 1);
+  return [...candidates].sort((a, b) => rank(a) - rank(b));
+}
 export function isHubLink(l: PageLink): boolean { return !isCriteriaLink(l) && HUB_WORDS.test(l.text) && !NOT_A_PAGE.test(linkWords(l)); }
 
 /** The criterion labels a page's own text carries: two or more and it reads as a criteria table. */
@@ -191,11 +200,12 @@ export async function probeIssuerDesignCriteria(reader: PageReader, input: { hos
   const seen = new Set<string>();
   const key = (u: string) => u.replace(/#.*$/, "").replace(/\/$/, "").toLowerCase();
   const candidates: string[] = [];
+  const candidateWords = new Map<string, string>();
   const hubs: string[] = [];
   const collect = (pg: ReadPage) => {
     for (const l of pg.links) {
       if (!onSite(l.href) || seen.has(key(l.href))) continue;
-      if (isCriteriaLink(l)) { if (!candidates.some((c) => key(c) === key(l.href))) candidates.push(l.href); }
+      if (isCriteriaLink(l)) { if (!candidates.some((c) => key(c) === key(l.href))) { candidates.push(l.href); candidateWords.set(l.href, linkWords(l)); } }
       else if (isHubLink(l) && !hubs.some((c) => key(c) === key(l.href))) hubs.push(l.href);
     }
   };
@@ -223,31 +233,34 @@ export async function probeIssuerDesignCriteria(reader: PageReader, input: { hos
   const home = await read(`${origin}/`);
   if (home) { out.platform = detectSitePlatform(home); collect(home); }
   let done = false;
-  // Candidates the home page links, then the CMS's own search, then the common page names; a hub
-  // only when nothing has named the table yet.
-  const steps: Array<() => string[]> = [
-    () => candidates,
-    () => siteSearchUrls(origin, out.platform).slice(0, 1),
-    () => candidates,
-    () => commonCriteriaPaths(origin).slice(0, 1),
-    () => {
-      if (candidates.some((c) => !seen.has(key(c))) || !hubs.length) return [];
-      // Nothing has named the table yet: the hub phase runs on a smaller budget, and says so.
-      capAt = out.pagesRead.length + ISSUER_PROBE_HUB_READS;
-      out.hubBudget = Math.min(ISSUER_PROBE_HUB_READS, reader.readsLeft());
-      logger.info("issuer-design-criteria", `no candidate page named on ${input.host} after ${out.pagesRead.length} read(s); hub reads capped at ${out.hubBudget}`);
-      return hubs.slice(0, 2);
-    },
-    () => candidates,
-  ];
-  for (const step of steps) {
-    for (const u of [...step()]) {
-      if (done || left() <= 0) break;
+  const visitAll = async (urls: string[]): Promise<void> => {
+    for (const u of urls) {
+      if (done || left() <= 0) return;
       if (seen.has(key(u))) continue;
       done = await visit(u);
     }
-    if (done || left() <= 0) break;
+  };
+  // Candidates the home page links, then the CMS's own search, then the common page names (each
+  // pass over the candidates the reads so far have named, the table's own names first).
+  await visitAll(rankedCandidates(candidates, candidateWords));
+  await visitAll(siteSearchUrls(origin, out.platform).slice(0, 1));
+  await visitAll(rankedCandidates(candidates, candidateWords));
+  await visitAll(commonCriteriaPaths(origin).slice(0, 1));
+  if (!done && left() > 0 && !candidates.some((c) => !seen.has(key(c))) && hubs.length) {
+    // Nothing has named the table yet: the hub phase runs on a smaller budget, and says so.
+    capAt = out.pagesRead.length + ISSUER_PROBE_HUB_READS;
+    out.hubBudget = Math.min(ISSUER_PROBE_HUB_READS, reader.readsLeft());
+    logger.info("issuer-design-criteria", `no candidate page found on ${input.host} after ${out.pagesRead.length} read(s); hub reads capped at ${out.hubBudget}`);
+    // ONE HUB AT A TIME (#258): a hub, then the candidates it named, and the next hub only when
+    // nothing was found. Two hubs read back to back left one read for a candidate, and the first
+    // criteria-looking link (a bare "Snow Load Map") spent it before the "Design Criteria" table.
+    for (const hub of hubs.slice(0, 2)) {
+      if (done || best || left() <= 0) break;
+      await visitAll([hub]);
+      await visitAll(rankedCandidates(candidates, candidateWords));
+    }
   }
+  await visitAll(rankedCandidates(candidates, candidateWords));
   const found = best as { url: string; text: string; raw: Record<string, unknown> } | null;
   if (found) {
     out.candidateUrl = found.url;
@@ -257,9 +270,11 @@ export async function probeIssuerDesignCriteria(reader: PageReader, input: { hos
   return out;
 }
 
-/** The probe answered the core criteria (ground snow and wind speed) from the issuer's own table. */
+/** The probe answered the core criteria (the STRENGTH-LEVEL ground snow and wind speed) from the
+ *  issuer's own table. An ASD-only pg is not an answer (#258): the probe keeps reading for a page
+ *  that states the strength-level pg, as researchWithIssuerPage requires. */
 export function probeAnswered(raw: Record<string, unknown> | undefined): boolean {
-  return !!raw && coreCount(raw) >= 2 && Boolean(raw.windSpeedMph);
+  return !!raw && Boolean(raw.groundSnowLoadPsf) && Boolean(raw.windSpeedMph);
 }
 
 // ── 3. The table ─────────────────────────────────────────────────────────────────────────
