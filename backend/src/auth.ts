@@ -195,14 +195,41 @@ export function orgFromApiKey(db: AppDb, req: Request): OrgInfo | null {
   return getOrg(db, String(row.org_id));
 }
 
-/** The requesting org: API key first (programmatic), else the session user's org,
- *  else the default org (auth disabled / local single-operator use). */
+/** The requesting org: the session user's org whenever there is a session, else the
+ *  API key's org (programmatic), else the default org (auth disabled / local
+ *  single-operator use).
+ *
+ *  SESSION FIRST. This used to read the key first, so org A's session cookie plus org B's
+ *  key acted IN org B while `currentUser` was still A's user: requireAuth passed on the
+ *  cookie, then the entitlement gate and the scope guard both used B — reaching
+ *  session-only autopilot routes (which no key may authenticate) in another tenant, and
+ *  recording a human action on B's project under A's user (#268). The session user and
+ *  the org a request acts in must always agree. A request whose two credentials disagree
+ *  is refused outright by entitlementGate (see `credentialsConflict`); this ordering is
+ *  the second wall, for any caller that resolves the org without passing that gate. */
 export function requestOrg(db: AppDb, req: Request): OrgInfo {
-  const viaKey = orgFromApiKey(db, req);
-  if (viaKey) return viaKey;
   const user = currentUser(db, req);
   if (user) return getOrg(db, user.orgId);
+  const viaKey = orgFromApiKey(db, req);
+  if (viaKey) return viaKey;
   return getOrg(db, DEFAULT_ORG_ID);
+}
+
+/**
+ * True when a request carries BOTH a live session and a valid API key, and they belong
+ * to DIFFERENT orgs. Such a request names two tenants at once and is refused whole —
+ * there is no right answer to "which org is this?", so neither is picked. A key that
+ * does not resolve (absent, revoked, garbage) is not a second credential, and a key from
+ * the session user's own org agrees with it, so neither counts.
+ *
+ * Superadmin is NOT exempt: a superadmin session is cross-org by its role, and letting a
+ * foreign key ride along would only make the audit trail lie about which org acted.
+ */
+export function credentialsConflict(db: AppDb, req: Request): boolean {
+  const user = currentUser(db, req);
+  if (!user) return false;
+  const viaKey = orgFromApiKey(db, req);
+  return !!viaKey && viaKey.id !== user.orgId;
 }
 
 // Simple in-memory per-IP login throttle to blunt brute force on the internet-facing
@@ -325,6 +352,14 @@ export function requireAuth(db: AppDb) {
 export function entitlementGate(db: AppDb) {
   return (req: Request, res: Response, next: NextFunction) => {
     if (!req.path.startsWith("/api/")) return next(); // pages handle their own redirects
+    // Mixed credentials (#268, hard rule 6): org A's session with org B's key. Refused
+    // here, ONCE, before any route or scope guard runs, so nothing is read or written.
+    // 404 not 403 — "out-of-scope returns 404": the refusal must not confirm that the
+    // path, or a row under it, exists in the key's org.
+    if (credentialsConflict(db, req)) {
+      res.status(404).json({ error: "Not found." });
+      return;
+    }
     const org = requestOrg(db, req);
     (req as Request & { org?: OrgInfo }).org = org;
     const products = orgEntitlements(db, org.id);

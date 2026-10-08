@@ -225,6 +225,82 @@ try {
     assert.equal(write.status, 404, `assign returned ${write.status}`);
   });
 
+  // MIXED CREDENTIALS (#268, hard rule 6). A session cookie from org A plus an API key from
+  // org B used to act IN org B (requestOrg read the key first) while the acting user was
+  // still A's — reaching B's session-only autopilot routes, which a key alone gets 401 on,
+  // and recording a human action on B's project under A's user. Two credentials naming two
+  // tenants are now refused whole, with the out-of-scope 404, before anything is written.
+  // Synthetic keys, minted against the scratch server; their values are never printed.
+  let keyA = "", keyB = "";
+  await run("an admin can mint one synthetic API key per tenant", async () => {
+    keyA = String((await jsonOk(await owner(`/api/orgs/${orgA}/api-keys`, { method: "POST", body: JSON.stringify({ name: "mixed-cred A" }) }))).key);
+    keyB = String((await jsonOk(await owner(`/api/orgs/${orgB}/api-keys`, { method: "POST", body: JSON.stringify({ name: "mixed-cred B" }) }))).key);
+    assert.ok(keyA && keyB && keyA !== keyB, "two distinct keys");
+  });
+  const withKey = (cookie: string | null, key: string) => (p: string, init: RequestInit = {}) => {
+    const headers = new Headers(init.headers);
+    if (cookie) headers.set("cookie", cookie);
+    headers.set("x-api-key", key);
+    if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+    return fetch(`${BASE}${p}`, { ...init, headers });
+  };
+
+  await run("MUST-EXCLUDE: org A's session + org B's key reads nothing of B's (404)", async () => {
+    const mixed = withKey(aCookie, keyB);
+    const res = await mixed(`/api/projects/${projB}`);
+    const text = await res.text();
+    assert.equal(res.status, 404, `GET B's project with A's session + B's key returned ${res.status}: ${text.slice(0, 200)}`);
+    assert.ok(!text.includes("Bob B"), "the refusal leaked B's homeowner");
+    // Nor does the key smuggle B into A's own reads: the request is refused whole.
+    assert.equal((await mixed(`/api/projects/${projA}`)).status, 404, "mixed credentials still read A's project");
+    assert.equal((await mixed("/api/projects")).status, 404, "mixed credentials still listed projects");
+  });
+
+  await run("MUST-EXCLUDE: org A's session + org B's key writes nothing to B (404, row unchanged)", async () => {
+    const mixed = withKey(aCookie, keyB);
+    const Database = (await import("better-sqlite3")).default;
+    const auditRows = (): number => {
+      const sdb = new Database(env.AUTOPILOT_DB_PATH, { readonly: true });
+      try { return (sdb.prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE project_id = ?").get(projB) as { n: number }).n; }
+      finally { sdb.close(); }
+    };
+    const auditBefore = auditRows();
+    const before = await (await b(`/api/projects/${projB}`)).json();
+    const status = await mixed(`/api/projects/${projB}/status`, {
+      method: "POST", body: JSON.stringify({ status: "blocked", reason: "mixed-credential probe" }),
+    });
+    assert.equal(status.status, 404, `status override with mixed credentials returned ${status.status}`);
+    const usersA = await (await a("/api/users")).json();
+    const aUser = (Array.isArray(usersA) ? usersA : usersA.users || []).find((u: { email: string }) => u.email === "staff@acme.test");
+    const assign = await mixed(`/api/projects/${projB}/assign`, { method: "POST", body: JSON.stringify({ userId: aUser?.id ?? null }) });
+    assert.equal(assign.status, 404, `assign with mixed credentials returned ${assign.status}`);
+    const after = await (await b(`/api/projects/${projB}`)).json();
+    assert.equal(after.project.status, before.project.status, `B's project status moved to ${after.project.status}`);
+    assert.equal(after.project.stageDetail, before.project.stageDetail, "B's stage detail changed");
+    assert.equal(after.project.assignedTo ?? null, before.project.assignedTo ?? null, "B's project was re-assigned");
+    // No audit row landed on B's project either (a human action recorded under A's user).
+    assert.equal(auditRows(), auditBefore, "an audit row was written on B's project by a refused request");
+  });
+
+  await run("MUST-PASS: a key alone still works on its prefixes, and still gets 401 on the autopilot", async () => {
+    const keyOnly = withKey(null, keyB);
+    assert.equal((await keyOnly("/api/review/work-types")).status, 200, "key-only review-gate call broke");
+    assert.equal((await keyOnly(`/api/projects/${projB}`)).status, 401, "a key alone reached a session-only route");
+  });
+
+  await run("MUST-PASS: a session alone, and a session + its OWN org's key, still work", async () => {
+    assert.equal((await a(`/api/projects/${projA}`)).status, 200, "session-only read broke");
+    const same = withKey(aCookie, keyA);
+    const res = await same(`/api/projects/${projA}`);
+    assert.equal(res.status, 200, `session + same-org key returned ${res.status}`);
+    assert.equal((await res.json()).project.id, projA);
+    assert.equal((await same("/api/review/work-types")).status, 200, "session + same-org key on a key prefix broke");
+    // Same-org pairing never widens: B's project is still out of scope for A.
+    assert.equal((await same(`/api/projects/${projB}`)).status, 404, "session + same-org key reached B");
+    // A key that does not resolve is not a second credential: the session carries on.
+    assert.equal((await withKey(aCookie, "rg_not-a-real-key")(`/api/projects/${projA}`)).status, 200, "a dead key broke a valid session");
+  });
+
   // LLM-6 model spend, asserted as a PAIR for the reason given below: the owner's 200 proves the
   // route exists and is licensed, the other tenant's 404 proves it sits behind the scope guard.
   await run("per-project model spend (llm-usage) is registered and tenancy-scoped", async () => {
@@ -405,6 +481,9 @@ try {
     assert.ok(all.projects.length >= 2, `superadmin saw ${all.projects.length} projects, expected both tenants'`);
     assert.equal((await owner(`/api/projects/${projA}`)).status, 200);
     assert.equal((await owner(`/api/projects/${projB}`)).status, 200);
+    // The superadmin bypass does not stretch to a foreign key riding along (#268): two
+    // credentials naming two orgs are refused even for the operator.
+    assert.equal((await withKey(ownerCookie, keyB)(`/api/projects/${projB}`)).status, 404, "superadmin + foreign key was not refused");
   });
 
 } finally {
