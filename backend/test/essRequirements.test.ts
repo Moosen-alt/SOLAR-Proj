@@ -9,6 +9,9 @@
 //   K1 requiredDocuments: drop the essDocumentRows() push           → (d1) (d2) fail.
 //   K2 essRequirements: gate on batteryStatus() !== "no"             → (x2) fails.
 //   K3 submittalTracks: drop the essStep spread                      → (c1)-(c4) and (c6) fail.
+//   K4 essRequirements: drop the placeholder-model guard               → (x3) fails.
+//   K5 essRequirements: a fire-only cite counts as "cited"             → (c7) fails.
+//   K6 dashboard.js: drop the listed-above filter                      → (r1) fails.
 //
 // Run: npx tsx backend/test/essRequirements.test.ts
 import "./_isolate"; // FIRST
@@ -16,6 +19,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ess-requirements-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmp, "t.sqlite");
@@ -30,7 +34,7 @@ const profile = (o: Record<string, unknown>) => ({
 });
 const REFERENCE = path.join(tmp, "reference-ahj-processes.json");
 fs.writeFileSync(REFERENCE, JSON.stringify({ profiles: [
-  profile({ ahj: "Juniper Flats", submissionMethod: "Portal", reviewerNotes: "Upload the plan set. Battery jobs go to the fire department for review" }),
+  profile({ ahj: "Juniper Flats", submissionMethod: "Portal", reviewerNotes: "Upload the plan set. Battery jobs go to the fire department for review. ESS clearances per NEC 706.10 apply." }),
   profile({ ahj: "Sagebrush", submissionMethod: "Portal", reviewerNotes: "Upload the plan set and the spec sheets." }),
 ] }));
 process.env.AHJ_PROCESS_REFERENCE_PATH = REFERENCE;
@@ -40,6 +44,8 @@ const db = await openDatabase();
 const tracks = await import("../src/submittalTracks");
 const permitProcess = await import("../src/permitProcess");
 const rd = await import("../src/requiredDocuments");
+const { createClient } = await import("../src/clients");
+const { createProject } = await import("../src/repository");
 
 let failures = 0;
 const check = async (name: string, fn: () => void | Promise<void>) => {
@@ -133,6 +139,8 @@ await check("(c3) MUST-PASS: only a seeded note mentions storage → quoted as a
   const combo = cards(project({ ahj: "Juniper Flats", city: "Juniper Flats", parserSnapshot: BATTERY })).find((t) => t.category === "permit")!;
   assert.equal(combo.essStep?.status, "process_note");
   assert.match(combo.essStep!.entries[0].step, /Battery jobs go to the fire department/);
+  // Split on sentence boundaries, not on every '.': the section number stays whole.
+  assert.ok(combo.essStep!.entries.some((e) => e.step === "ESS clearances per NEC 706.10 apply"), JSON.stringify(combo.essStep!.entries.map((e) => e.step)));
   assert.equal(combo.essStep!.entries[0].sourceUrl, "");
   assert.match(combo.essStep!.summary, /unverified/);
 });
@@ -165,6 +173,91 @@ await check("(x2) MUST-EXCLUDE: an UNKNOWN battery (never parsed) is not a batte
     assert.equal(strip(cards(mk({}))), strip(cards(mk(NO_BATTERY))));
     assert.ok(cards(mk({})).every((t) => !("essStep" in t)));
   }
+});
+
+console.log("\nReview round (#256)");
+await check("(d4) MUST-PASS: the inventory holds battery_spec for a battery job whose plan set says MISSING; an uploaded battery_spec clears it", () => {
+  const client = createClient(db, { companyName: "ESS Test Solar", ccbLicenseNumber: "246246" });
+  const created = createProject(db, { clientId: client.id, owner: "ESS Owner", street: "2 Test Way", city: "Sagebrush", state: "CO", ahj: "Sagebrush", utility: "Example Mountain Electric", dcKw: "6", acKw: "5" }).project;
+  const attach = (docType: string) => {
+    const file = path.join(tmp, `${created.id}-${docType}.pdf`);
+    fs.writeFileSync(file, "%PDF-1.4 test fixture");
+    db.run(`INSERT INTO project_documents (id, project_id, doc_type, original_filename, stored_path, source, uploaded_at, extracted_text)
+      VALUES (?, ?, ?, ?, ?, 'upload', ?, '')`, [`${created.id}-${docType}`, created.id, docType, `${docType}.pdf`, file, new Date().toISOString()]);
+  };
+  attach("plan_set");
+  const p = { ...(created as object), parserSnapshot: { ...BATTERY, packetReadinessText: "MISSING - 07 Battery / ESS Spec Sheet" } } as never;
+  const held = (inv: { missingBlocking: Array<{ docType: string }> }) => inv.missingBlocking.some((d) => d.docType === "battery_spec");
+  assert.ok(held(rd.documentInventory(db, p)), "the MISSING battery line must hold battery_spec");
+  attach("battery_spec");
+  assert.ok(!held(rd.documentInventory(db, p)), "an uploaded battery_spec must clear the hold");
+});
+await check("(d5) MUST-PASS: the upload control offers battery_spec and ess_detail (the hold has an operator path)", () => {
+  const html = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "frontend", "dashboard.html"), "utf8");
+  const select = html.slice(html.indexOf('id="docUploadType"'), html.indexOf("</select>", html.indexOf('id="docUploadType"')));
+  assert.match(select, /value="battery_spec"/);
+  assert.match(select, /value="ess_detail"/);
+});
+await check("(x3) MUST-EXCLUDE: a placeholder battery model is not a battery; MUST-PASS: an affirmed battery with a placeholder model still is", () => {
+  for (const snap of [{ batteryModel: "N/A" }, { batteryModel: "None" }, { batteryModel: "Not included" }, { batteryModel: "-" }, { hasBattery: "No", batteryModel: "None" }]) {
+    const p = cedar(snap);
+    assert.ok(!docTypes(p).includes("battery_spec"), JSON.stringify(snap));
+    assert.ok(cards(p).every((t) => !("essStep" in t)), JSON.stringify(snap));
+  }
+  assert.ok(docTypes(cedar({ hasBattery: "Yes", batteryModel: "N/A" })).includes("battery_spec"));
+  assert.ok(docTypes(cedar({ batteryModel: "TBD", batteryQty: "2" })).includes("battery_spec"));
+});
+await check("(c7) MUST-EXCLUDE: a cited fire-only permit or review is never presented as the cited ESS requirement", () => {
+  lookup("Town of Mesa Verde Springs", {
+    permits: [permit("other", "Fire Sprinkler Permit", ACCELA, "accela", {
+      issuingAgency: cited("Mesa Verde Springs Fire District", "https://mvs.example.gov/fire", "Fire sprinkler permits are issued by the Fire District"),
+    })],
+    prerequisites: [cited("Fire district review of rooftop access pathways and setbacks (R324.6)", "https://mvs.example.gov/fire/solar", "All solar plans require fire district review of roof access pathways")],
+  });
+  const step = cards(project({ ahj: "Town of Mesa Verde Springs", city: "Mesa Verde Springs", parserSnapshot: BATTERY })).find((t) => t.category === "permit")!.essStep!;
+  assert.equal(step.status, "fire_review_unconfirmed");
+  assert.match(step.summary, /whether it covers the battery is not stated — verify/);
+  assert.doesNotMatch(step.summary, /file it alongside/);
+  assert.ok(step.entries.length === 2 && step.entries.every((e) => e.namesStorage === false), JSON.stringify(step.entries));
+});
+
+// The card renderer, lifted from dashboard.js by bracket balance (feeTracksDisplay's lift).
+const dashboard = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "frontend", "dashboard.js"), "utf8").replace(/\r\n/g, "\n");
+const lift = (name: string): string => {
+  const m = new RegExp(`^function ${name}\\(|^const ${name} = `, "m").exec(dashboard);
+  if (!m) throw new Error(`dashboard.js: could not find ${name}`);
+  const isConst = m[0].startsWith("const");
+  let i = isConst ? m.index + m[0].length : dashboard.indexOf("{", dashboard.indexOf(")", m.index));
+  let depth = 0;
+  for (; i < dashboard.length; i++) {
+    const ch = dashboard[i];
+    if (ch === "{" || ch === "[" || ch === "(") depth++;
+    else if (ch === "}" || ch === "]" || ch === ")") { depth--; if (depth === 0) { i++; break; } }
+  }
+  return dashboard.slice(m.index, i) + (isConst ? ";" : "");
+};
+const RENDER = ["esc", "httpUrl", "linkifyText", "ESS_STEP_BASIS", "trackEssStepHtml"];
+// eslint-disable-next-line no-new-func
+const ui = new Function(`${RENDER.map(lift).join("\n\n")}\nreturn { ${RENDER.join(", ")} };`)() as { trackEssStepHtml: (t: unknown) => string };
+await check("(r1) MUST-EXCLUDE: hostile strings render escaped, a non-http source is never linked, and a step listed above is not listed twice", () => {
+  const html = ui.trackEssStepHtml({
+    prerequisites: [{ step: "Fire Marshal review of the battery <b>first</b>", sourceUrl: "https://x.example.gov/a" }],
+    essStep: {
+      status: "cited", summary: "Battery/ESS <script>alert(1)</script>",
+      entries: [
+        { step: "Fire Marshal review of the battery <b>first</b>", sourceUrl: "https://x.example.gov/a", quote: "q", basis: "lookup_prerequisite", namesStorage: true },
+        { step: "<img src=x onerror=alert(1)> ESS permit", sourceUrl: "javascript:alert(1)", quote: "q", basis: "lookup_permit", namesStorage: true },
+        { step: "Fire \"review\"", sourceUrl: "https://x.example.gov/b", quote: "q", basis: "lookup_permit", namesStorage: false },
+      ],
+    },
+  });
+  assert.doesNotMatch(html, /<script|<img|<b>/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt; ESS permit/);
+  assert.doesNotMatch(html, /javascript:/);
+  assert.equal((html.match(/Fire Marshal review/g) || []).length, 0, html);
+  assert.match(html, /listed above/);
+  assert.match(html, /whether it covers the battery is not stated — verify/);
+  assert.equal(ui.trackEssStepHtml({ type: "combo" }), "");
 });
 
 if (failures) { console.error(`\n${failures} ESS check(s) FAILED.`); process.exit(1); }

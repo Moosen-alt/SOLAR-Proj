@@ -26,9 +26,20 @@ import { batteryStatus } from "./batteryServiceFeeder";
 import { permitProcessFor } from "./permitProcess";
 import { findAhjProcessProfile } from "./processProfiles";
 
-/** Does this project carry battery storage? (The one predicate, "yes" only.) */
+// A battery MODEL field that says there is none ("N/A", "None", "Not included", "-") is not a
+// battery. batteryStatus() reads any non-empty model as "yes" (the fee line and the portal's
+// declaration share that reading); here the row BLOCKS, so a placeholder must not create it.
+const PLACEHOLDER_MODEL = /^(?:n\/?a|none|no|nil|null|tbd|not\s+(?:included|applicable|used)|no\s+battery|[-\u2013\u2014]+|0)$/i;
+
+/** Does this project carry battery storage? The one predicate (batteryStatus "yes"), except that a
+ *  placeholder model with no positive hasBattery and no quantity is not a battery. */
 export function projectHasBattery(project: Pick<ProjectRecord, "parserSnapshot">): boolean {
-  return batteryStatus(project.parserSnapshot as Record<string, unknown> | undefined) === "yes";
+  const s = (project.parserSnapshot ?? {}) as Record<string, unknown>;
+  const str = (v: unknown) => (v == null ? "" : String(v).trim());
+  const qty = Number(str(s.batteryQuantity) || str(s.batteryQty) || 0);
+  const affirmed = /^(yes|true|y)$/i.test(str(s.hasBattery)) || (Number.isFinite(qty) && qty > 0);
+  if (!affirmed && PLACEHOLDER_MODEL.test(str(s.batteryModel))) return false;
+  return batteryStatus(s) === "yes";
 }
 
 /** The two rows a storage job adds to the required set. The spec sheet blocks like the module and
@@ -48,17 +59,20 @@ export interface EssStepEntry {
   sourceUrl: string;
   quote: string;
   basis: "lookup_permit" | "lookup_prerequisite" | "process_note";
+  /** Does the source itself name storage? false: a cited FIRE permit/review that never says it
+   *  covers the battery — shown hedged, never as the ESS requirement. */
+  namesStorage: boolean;
 }
 export interface EssPermitStep {
-  /** "cited": a cited lookup answer names it; "process_note": only the seeded notes mention
-   *  storage; "not_on_file": nothing on file says either way. */
-  status: "cited" | "process_note" | "not_on_file";
+  /** "cited": a cited lookup answer names storage; "fire_review_unconfirmed": a cited fire
+   *  permit/review is on file but never says it covers the battery; "process_note": only the seeded
+   *  notes mention storage; "not_on_file": nothing on file says either way. */
+  status: "cited" | "fire_review_unconfirmed" | "process_note" | "not_on_file";
   entries: EssStepEntry[];
   /** One line for the card. */
   summary: string;
 }
 
-// Storage words; a FIRE permit or review on a storage job is the fire-code review of that storage.
 const ESS_WORDS = /\bbatter(?:y|ies)\b|\bess\b|energy[\s-]*storage|\bpowerwall\b/i;
 const FIRE_WORDS = /\bfire\b/i;
 const citedOk = (url: unknown, quote: unknown) => /^https?:\/\//i.test(String(url ?? "")) && String(quote ?? "").trim().length >= 8;
@@ -79,33 +93,39 @@ export function essPermitStep(project: ProjectRecord): EssPermitStep | null {
     if (!ESS_WORDS.test(words) && !FIRE_WORDS.test(words)) continue;
     const cite = [p.recordType, p.issuingAgency, p.portalUrl, p.documents].find((f) => f && citedOk(f.sourceUrl, f.quote));
     if (!cite) continue; // an uncited permit is not a fact
+    const quote = String(cite.quote).trim();
     const step = `${(p.label || recordType || "Separate permit").trim()}${agency ? ` — issued by ${agency}` : ""}${recordType && recordType !== p.label ? ` (record type: ${recordType})` : ""}`;
-    entries.push({ step, sourceUrl: String(cite.sourceUrl), quote: String(cite.quote).trim(), basis: "lookup_permit" });
+    entries.push({ step, sourceUrl: String(cite.sourceUrl), quote, basis: "lookup_permit", namesStorage: ESS_WORDS.test(`${words} ${quote}`) });
   }
 
   // 2. A cited prerequisite at another office that names storage or fire review.
   for (const pre of lk?.prerequisites ?? []) {
     const step = typeof pre?.value === "string" ? pre.value.trim() : "";
-    if (!step || !(ESS_WORDS.test(step) || FIRE_WORDS.test(step)) || !citedOk(pre.sourceUrl, pre.quote)) continue;
-    entries.push({ step, sourceUrl: String(pre.sourceUrl), quote: String(pre.quote).trim(), basis: "lookup_prerequisite" });
+    if (!step || !citedOk(pre.sourceUrl, pre.quote)) continue;
+    const quote = String(pre.quote).trim();
+    if (!ESS_WORDS.test(`${step} ${quote}`) && !FIRE_WORDS.test(step)) continue;
+    entries.push({ step, sourceUrl: String(pre.sourceUrl), quote, basis: "lookup_prerequisite", namesStorage: ESS_WORDS.test(`${step} ${quote}`) });
   }
-  const cited = entries.length > 0;
 
-  // 3. The AHJ's seeded process notes, per segment (as mpuNeedsOwnPermit reads them): a segment that
-  //    names storage is quoted as the operator's note — never turned into a conclusion.
+  // 3. The AHJ's seeded process notes, per sentence/clause (as mpuNeedsOwnPermit reads them, but on
+  //    sentence boundaries so "NEC 706.10" stays whole): a clause that names storage is quoted as the
+  //    operator's note — never turned into a conclusion.
   const ahj = findAhjProcessProfile(project);
   const notes = `${ahj?.reviewerNotes || ""} | ${ahj?.otherRequirements || ""}`;
-  for (const segment of notes.split(/[.;|\n]+/).map((x) => x.trim()).filter(Boolean)) {
+  for (const segment of notes.split(/(?<=[.!?])\s+|[;|\n]+/).map((x) => x.trim().replace(/[.!?]+$/, "")).filter(Boolean)) {
     if (!ESS_WORDS.test(segment)) continue;
     if (entries.some((e) => e.step.toLowerCase() === segment.toLowerCase())) continue;
-    entries.push({ step: segment, sourceUrl: "", quote: segment, basis: "process_note" });
+    entries.push({ step: segment, sourceUrl: "", quote: segment, basis: "process_note", namesStorage: true });
   }
 
-  const status: EssPermitStep["status"] = cited ? "cited" : entries.length ? "process_note" : "not_on_file";
-  const summary = status === "cited"
-    ? "Battery/ESS: a fire review or separate ESS permit is on file for this AHJ (cited) — file it alongside this permit."
-    : status === "process_note"
-      ? "Battery/ESS: only the seeded process notes mention storage (unverified, not a cited page) — confirm with the AHJ whether a fire review or separate ESS permit applies."
-      : "Battery/ESS: whether this AHJ wants a fire review or a separate ESS permit is not on file — verify with the AHJ / fire marshal before filing.";
+  const status: EssPermitStep["status"] = entries.some((e) => e.basis !== "process_note" && e.namesStorage) ? "cited"
+    : entries.some((e) => e.basis !== "process_note") ? "fire_review_unconfirmed"
+      : entries.length ? "process_note" : "not_on_file";
+  const summary = {
+    cited: "Battery/ESS: a fire review or separate ESS permit for the storage is on file for this AHJ (cited) — file it alongside this permit.",
+    fire_review_unconfirmed: "Battery/ESS: a cited fire permit or review is on file, but whether it covers the battery is not stated — verify with the AHJ / fire marshal.",
+    process_note: "Battery/ESS: only the seeded process notes mention storage (unverified, not a cited page) — confirm with the AHJ whether a fire review or separate ESS permit applies.",
+    not_on_file: "Battery/ESS: whether this AHJ wants a fire review or a separate ESS permit is not on file — verify with the AHJ / fire marshal before filing.",
+  }[status];
   return { status, entries, summary };
 }
