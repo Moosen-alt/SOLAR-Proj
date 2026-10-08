@@ -51,12 +51,16 @@ export const DOC_DISCIPLINE: Readonly<Record<string, DocDiscipline>> = {
   plan_set: SHARED, combined_plan_set: SHARED, full_plan_set: SHARED, plan: SHARED, plan_pdf: SHARED,
   sld: SHARED, site_plan: SHARED, structural: SHARED, labels: SHARED,
   module_spec: SHARED, inverter_spec: SHARED, racking_spec: SHARED, battery_spec: SHARED,
+  // A ground array's sheets (#247) are plan-set sheets like `structural`, which they stand in for.
+  ground_footing: SHARED, trench_detail: SHARED,
 
   // THE BUILDING (STRUCTURAL) PERMIT's own documents.
   building_application: BUILDING,
   permit_application: BUILDING,
   solar_checklist: BUILDING,
   structural_letter: BUILDING, stamped_plans: BUILDING, engineering_letter: BUILDING,
+  // A ground array's zoning / land-use approval (#247) goes with the building filing, never the utility's.
+  zoning_approval: BUILDING,
   generated_structural_worksheet: BUILDING,
   generated_prescriptive_worksheet: BUILDING,
   generated_engineered_doc_collection: BUILDING,
