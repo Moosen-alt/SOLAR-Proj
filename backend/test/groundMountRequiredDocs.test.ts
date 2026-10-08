@@ -35,9 +35,9 @@ const { openDatabase } = await import("../src/db");
 const { savePermitProcessLookup } = await import("../src/permitProcess");
 const { requiredDocuments } = await import("../src/requiredDocuments");
 const { resolvePermitPath } = await import("../src/permitPath");
-const { mountKindForProject, isGroundMount } = await import("../src/mountKind");
+const { mountKindForProject, isGroundMount, groundMountFromField } = await import("../src/mountKind");
 const { mountKindForProject: reviewerMountKind } = await import("../src/codeReviewRules");
-const { PROCESS_LOOKUP_SYSTEM, parseProcessPart } = await import("../src/permitProcessLookup");
+const { PROCESS_LOOKUP_SYSTEM, parseProcessPart, groundZoningPolarity } = await import("../src/permitProcessLookup");
 const db = await openDatabase();
 
 let failures = 0;
@@ -50,6 +50,7 @@ const check = (label: string, fn: () => void): void => {
 const ACCELA = { state: "AZ", ahj: "Town of Sample Mesa", portal: "https://aca-prod.accela.com/SAMPLEMESA/Default.aspx", page: "https://www.samplemesa.example.gov/permits/solar" };
 const ENERGOV = { state: "CO", ahj: "Example Valley County", portal: "https://examplevalleyco-energovweb.tylerhost.net/apps/selfservice", page: "https://www.examplevalley.example.gov/building/solar" };
 const NO_LOOKUP = { state: "NV", ahj: "City of Nowhere Flats" };
+const OREGON = { state: "OR", ahj: "City of Sample Harbor" };
 
 const cited = <T,>(value: T, sourceUrl: string, quote: string): CitedFact<T> => ({ value, sourceUrl, quote, origin: "lookup" });
 const nf = (why: string): CitedFact<never> => ({ value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: why });
@@ -70,19 +71,19 @@ const save = (j: { state: string; ahj: string; portal: string; page: string }, z
 save(ACCELA, cited("required", ACCELA.page, "Ground-mounted solar arrays require a zoning permit and must meet accessory structure setbacks."));
 save(ENERGOV, cited("not_required", ENERGOV.page, "Ground-mounted solar arrays in residential districts do not require a separate zoning permit."));
 
-const job = (where: { state: string; ahj: string }, mounting: string, text = ""): ProjectRecord => ({
+const job = (where: { state: string; ahj: string }, mounting: string, text = "", extra: Record<string, string> = {}): ProjectRecord => ({
   id: `gm-${where.state}-${mounting.replace(/\W+/g, "-") || "blank"}`, clientId: "c", homeownerName: "Test Owner", projectAddress: "1 Test Rd",
   city: "Testville", state: where.state, zip: "00000", ahj: where.ahj, utility: "Test Electric", accountNumber: "", meterNumber: "",
   systemSizeDcKw: 8, systemSizeAcKw: 7.6, interconnectionMethod: "Load-side breaker", status: "pending",
-  parserSnapshot: { state: where.state, ahj: where.ahj, mounting, planSetExtractedText: text, groundSnow: "20", windSpeed: "100", windExposure: "C" },
+  parserSnapshot: { state: where.state, ahj: where.ahj, mounting, planSetExtractedText: text, groundSnow: "20", windSpeed: "100", windExposure: "C", ...extra },
 } as unknown as ProjectRecord);
 const types = (p: ProjectRecord) => requiredDocuments(p).map((i) => i.docType);
 const row = (p: ProjectRecord, t: string) => requiredDocuments(p).find((i) => i.docType === t);
 
-console.log("\n1. ONE PREDICATE — permitPath, requiredDocuments and the reviewer rules agree");
-for (const [mounting, text] of [["Ground", ""], ["Pole mount", ""], ["ground-mounted array", ""], ["", "SHEET S-1 GROUND MOUNT RACKING DETAIL"]] as const) {
-  check(`"${mounting || `(text) ${text}`}" is a ground mount everywhere`, () => {
-    const p = job(ACCELA, mounting, text);
+console.log("\n1. ONE PREDICATE — the mounting FIELD drives permitPath and requiredDocuments, and agrees with the reviewer rules");
+for (const mounting of ["Ground", "Pole mount", "ground-mounted array", "Pole"]) {
+  check(`field "${mounting}" is a ground mount everywhere`, () => {
+    const p = job(ACCELA, mounting);
     assert.equal(mountKindForProject(p), "ground");
     assert.equal(reviewerMountKind(p), "ground");
     assert.ok(isGroundMount(p));
@@ -135,6 +136,18 @@ check("an uncited 'required' is not on file (verify), not a requirement", () => 
   assert.match(row(job(UNCITED, "Ground mount"), "zoning_approval")!.label, /not on file, verify/);
 });
 
+console.log("\n2b. A ROOF + GROUND COMBINATION keeps roof framing and adds the ground rows");
+for (const mounting of ["Roof and Ground", "Roof + ground mount"]) {
+  check(`field "${mounting}": structural kept, ground rows right after it, engineered`, () => {
+    const p = job(ACCELA, mounting);
+    assert.equal(groundMountFromField(p), "combination");
+    assert.ok(!isGroundMount(p), "a combination is not a pure ground mount");
+    const t = types(p);
+    assert.deepEqual(t.slice(3, 7), ["structural", "ground_footing", "trench_detail", "zoning_approval"]);
+    assert.equal(resolvePermitPath(p).path, "engineered");
+  });
+}
+
 console.log("\n3. MUST EXCLUDE — rooftop and unknown mount unchanged");
 const ROOF_BASELINE = ["plan_set", "site_plan", "sld", "structural", "module_spec", "inverter_spec", "labels"];
 for (const [label, mounting] of [["rooftop", "Roof mount"], ["unknown mount", ""], ["carport", "Carport"]] as const) {
@@ -144,6 +157,32 @@ for (const [label, mounting] of [["rooftop", "Roof mount"], ["unknown mount", ""
       assert.deepEqual(items.map((i) => i.docType).slice(0, 7), ROOF_BASELINE);
       assert.deepEqual(items.find((i) => i.docType === "structural"), { docType: "structural", label: "Structural roof framing + attachment detail", why: "Required for the structural permit (framing, spacing, attachment).", lane: "permit", blocking: true });
       for (const t of ["ground_footing", "trench_detail", "zoning_approval"]) assert.ok(!items.some((i) => i.docType === t), t);
+    });
+  }
+}
+// Plan prose and parser flags name ground-mounted EQUIPMENT on rooftop jobs; they never vote (#247
+// review, each reproduced against the first version of this PR). In and outside Oregon.
+const ROOFTOP_PROSE: Array<[string, string, Record<string, string>]> = [
+  ["", "(E) UTILITY POLE MOUNTED TRANSFORMER. FLUSH ROOF MOUNT COMP SHINGLE.", {}],
+  ["", "(N) GROUND-MOUNTED AC DISCONNECT", {}],
+  ["", "GROUND MOUNTED METER PEDESTAL", {}],
+  ["", "(N) GROUND MOUNTED BATTERY ON CONCRETE PAD", {}],
+  ["", "UNDERGROUND ARRAY FEEDER", {}],
+  ["", "ROOF MOUNT - NOT A GROUND MOUNT", {}],
+  ["", "", { reviewFlags: "confirm roof mount vs ground mount" }],
+  ["Pole barn roof", "", {}],
+  ["Roof mount - not a ground mount", "", {}],
+];
+for (const where of [OREGON, NO_LOOKUP]) {
+  for (const [mounting, text, extra] of ROOFTOP_PROSE) {
+    check(`${where.state}: ${mounting ? `field "${mounting}"` : text ? `text "${text}"` : `flag "${extra.reviewFlags}"`} keeps the roof set and the roof path`, () => {
+      const p = job(where, mounting, text, extra);
+      const bare = job(where, /ground/i.test(mounting) ? "Roof mount" : mounting);
+      assert.equal(groundMountFromField(p), null);
+      assert.deepEqual(types(p), types(bare));
+      assert.ok(types(p).includes("structural") && !types(p).includes("ground_footing"));
+      assert.ok(!resolvePermitPath(p).basis.some((b) => /Ground\/pole mount/.test(b)), resolvePermitPath(p).basis.join(" | "));
+      assert.equal(resolvePermitPath(p).path, resolvePermitPath(bare).path);
     });
   }
 }
@@ -168,6 +207,14 @@ check("a cited 'not_required' is kept only when the quote says so", () => {
 check("a 'required' whose quote says no zoning is needed, or a quote not about zoning, is dropped", () => {
   assert.equal(parseProcessPart(answer("required", "No zoning permit is needed for ground-mounted solar."), [ACCELA.page], "end_turn").groundMountZoning?.value, null);
   assert.equal(parseProcessPart(answer("required", "Solar permits are reviewed within ten business days."), [ACCELA.page], "end_turn").groundMountZoning?.value, null);
+});
+check("polarity is the requirement phrase's: a height limit's 'not' never flips it", () => {
+  assert.equal(groundZoningPolarity("A zoning permit is required for ground-mounted arrays; arrays shall not exceed 15 feet"), "required");
+  assert.equal(groundZoningPolarity("Ground-mounted systems not exceeding 6 feet in height require zoning approval."), "required");
+  assert.equal(groundZoningPolarity("Ground-mounted systems do not require a zoning permit."), "not_required");
+  assert.equal(groundZoningPolarity("Ground-mounted solar is exempt from zoning review."), "not_required");
+  assert.equal(parseProcessPart(answer("required", "A zoning permit is required for ground-mounted arrays; arrays shall not exceed 15 feet"), [ACCELA.page], "end_turn").groundMountZoning?.value, "required");
+  assert.equal(parseProcessPart(answer("not_required", "Ground-mounted systems not exceeding 6 feet in height require zoning approval."), [ACCELA.page], "end_turn").groundMountZoning?.value, null);
 });
 check("an unknown value or a quote from a page the search never returned is dropped", () => {
   assert.equal(parseProcessPart(answer("maybe", "Ground-mounted solar requires zoning approval."), [ACCELA.page], "end_turn").groundMountZoning?.value, null);

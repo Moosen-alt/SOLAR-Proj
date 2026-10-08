@@ -3,7 +3,9 @@
 // roof?" — and two of them used to answer with their own vocabulary (permitPath's regex never knew a
 // bare "Ground" field or the design text; requiredDocuments never asked at all, so a ground array was
 // told to attach roof framing, #247). It lives here, with no imports beyond the shared types, so
-// permitPath can read it without a cycle (codeReviewRules imports permitPath).
+// permitPath can read it without a cycle (codeReviewRules imports permitPath). The two BLOCKING
+// consumers (permitPath's ground default, requiredDocuments' ground rows) read the mounting field only
+// — groundMountFromField, below; the text fallback serves the advisory reviewer rules.
 import type { ProjectRecord } from "../../shared/src/types";
 
 /** What the predicate reads: the parser snapshot, plus the project's interconnection method when the
@@ -84,8 +86,28 @@ export function mountKindForProject(project: MountInputs): MountKind {
   return mountKind(project, designText(project));
 }
 
-/** A ground or pole array: no roof, so footings and a trench instead of roof framing (#247). A carport
- *  is NOT one (see above) and an unknown mount never is — silence keeps the roof set. */
+// WHAT THE BLOCKING CONSUMERS READ (#247 review): the mounting FIELD, and only the field. The text
+// fallback above is fine for advisory reviewer rules, but plan prose names ground-mounted EQUIPMENT on
+// rooftop jobs ("(N) GROUND-MOUNTED AC DISCONNECT", "UTILITY POLE MOUNTED TRANSFORMER", "UNDERGROUND
+// ARRAY FEEDER") and the parser's own review flag reads "confirm roof mount vs ground mount" exactly
+// when the field is empty — so a text vote here dropped a rooftop's roof-framing row and flipped it to
+// engineered. A rooftop or unknown-mount job therefore never reaches the ground rows or path.
+//   "ground"      — a pure ground / pole array: its rows replace roof framing.
+//   "combination" — roof AND ground arrays: roof framing stays, the ground rows are added.
+//   null          — roof, carport, unknown, or anything else.
+// A bare "pole" counts only as the whole value (mountType's "Pole") or "pole mount": "Pole barn roof"
+// is a roof. "... not a ground mount" is not a ground vote.
+export type MountFieldGround = "ground" | "combination";
+export function groundMountFromField(project: MountInputs): MountFieldGround | null {
+  const raw = str(project, "mounting") || str(project, "mountType");
+  const m = raw.replace(/\b(?:not|no)\s+(?:an?\s+)?(?:ground|pole)[-\s]?(?:mount\w*|array)/gi, " ");
+  if (!m.trim() || /carport|canopy|awning|patio cover/i.test(m)) return null;
+  const ground = /\bground\b/i.test(m) || /\bpole[-\s]?mount/i.test(m) || /^\s*poles?\s*$/i.test(m);
+  if (!ground) return null;
+  return /\broof/i.test(m) ? "combination" : "ground";
+}
+
+/** A PURE ground or pole array, by the mounting field (see groundMountFromField). */
 export function isGroundMount(project: MountInputs): boolean {
-  return mountKindForProject(project) === "ground";
+  return groundMountFromField(project) === "ground";
 }

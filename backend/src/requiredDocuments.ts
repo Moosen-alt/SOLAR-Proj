@@ -58,7 +58,7 @@ import {
   designText, INVERTER_LISTING_PATTERNS, LOAD_SIDE_CALC_PATTERNS, MODULE_LISTING_PATTERNS, POWER_SOURCE_DIRECTORY_PATTERNS, RAPID_SHUTDOWN_PATTERNS, SUPPLY_SIDE_DETAIL_PATTERNS,
 } from "./codeReviewRules";
 import { FIRE_PATHWAY_PATTERNS } from "./projectEvidence";
-import { isGroundMount } from "./mountKind";
+import { groundMountFromField } from "./mountKind";
 import { adoptedNecEdition } from "./necEditions";
 
 export interface RequiredDocItem {
@@ -241,8 +241,8 @@ const PLAN_SHEET_HINT_TABLE = {
   module_spec: /\bmodule\s*spec/i,
   inverter_spec: /\b(inverter|microinverter)\s*spec|\bUL[\s-]*1741\b/i,
   labels: /\b(label|placard)/i,
-  // A ground array's structural sheet IS its footing sheet (#247), so the structural words count too.
-  ground_footing: /\b(structural|footings?|foundation|piers?|piles?|helical|mount\s*detail|racking\s*detail)\b/i,
+  // A ground array's structural sheet IS its footing sheet (#247), so every structural word counts too.
+  ground_footing: /\b(structural|footings?|foundation|piers?|piles?|helical|mount\s*detail|racking\s*detail|attachment\s*detail|rafter|truss)\b/i,
   trench_detail: /\b(trench(?:ing)?|burial\s*depth|underground\s*(?:conduit|conductors?|feeder|run))\b/i,
 } satisfies Record<string, RegExp>;
 type PlanSheetType = keyof typeof PLAN_SHEET_HINT_TABLE;
@@ -427,11 +427,15 @@ export function requiredDocuments(
     { docType: "labels", label: "Label / placard schedule", why: "Placard/label schedule (705.10 directory, RSD, disconnects) — usually a plan-set sheet.", lane: "permit", blocking: false },
   ];
 
-  // A GROUND / POLE ARRAY HAS NO ROOF (#247): the one mount predicate (mountKind.ts) decides, and the
-  // roof framing/attachment row gives way, in place, to the rows a ground array does need. Rooftop,
-  // carport and unknown-mount jobs never take this branch — their set is unchanged.
-  if (isGroundMount(project)) {
-    items.splice(items.findIndex((i) => i.docType === "structural"), 1, ...groundMountDocItems(project));
+  // A GROUND / POLE ARRAY HAS NO ROOF (#247). The mounting FIELD decides (mountKind.groundMountFromField
+  // — plan prose never does): a pure ground array's rows replace roof framing in place; a roof + ground
+  // combination keeps roof framing and adds them after it. Rooftop, carport and unknown-mount jobs never
+  // take this branch — their set is unchanged.
+  const groundMount = groundMountFromField(project);
+  if (groundMount) {
+    const at = items.findIndex((i) => i.docType === "structural");
+    if (at < 0) items.push(...groundMountDocItems(project));
+    else items.splice(at + (groundMount === "combination" ? 1 : 0), groundMount === "combination" ? 0 : 1, ...groundMountDocItems(project));
   }
 
   // CONDITIONAL — the sealed structural letter ("SS stamp"). One authority decides
@@ -472,7 +476,8 @@ export function requiredDocuments(
 }
 
 /**
- * A GROUND-MOUNTED array's rows in place of roof framing (#247): its footings and racking (the
+ * A GROUND-MOUNTED array's rows — in place of roof framing, or beside it for a roof + ground
+ * combination (#247): its footings and racking (the
  * structural review), the trench its conductors run in, and — read from the per-job lookup, never
  * assumed — whether the AHJ wants a zoning / land-use approval for it.
  *
@@ -494,7 +499,7 @@ export function groundMountDocItems(project: ProjectRecord): RequiredDocItem[] {
   if (cited && z!.value === "not_required") return items;
   const label = "Zoning / land-use approval for the ground-mounted array";
   if (cited && z!.value === "required") {
-    const verified = lookup!.confidence === "verified" || Boolean(lookup!.verifiedAt);
+    const verified = isVerifiedKnowledge(lookup);
     items.push({
       docType: "zoning_approval", label, lane: "permit", blocking: verified,
       why: `${lookup!.ahj || "The AHJ"} requires a zoning / land-use approval for a ground-mounted array — per-job lookup${verified ? " (verified)" : ""}, ${z!.sourceUrl} ("${z!.quote.slice(0, 160)}").`,

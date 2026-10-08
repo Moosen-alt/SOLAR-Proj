@@ -19,7 +19,7 @@ import {
 import { adoptedNecEdition, necEditionRequirements, NEC_EDITION_REQUIREMENTS } from "./necEditions";
 import { moduleLevelElectronicsEquipment, type ModuleLevelElectronicsEvidence } from "./moduleLevelElectronics";
 import { designText, mountKind, type MountKind } from "./mountKind";
-export { designText, isGroundMount, mountKind, mountKindForProject, type MountKind } from "./mountKind";
+export { designText, groundMountFromField, isGroundMount, mountKind, mountKindForProject, type MountKind } from "./mountKind";
 
 const oregonElectrical2023: CodeReference = {
   code: "2023 OESC / 2023 NEC",

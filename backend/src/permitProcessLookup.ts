@@ -490,6 +490,19 @@ const asDiscipline = (v: unknown): PermitProcessDiscipline | null => {
 const STATE_AGENCY = /\bcid\b|construction industries/i;
 const OWN_BUILDING_OFFICE = /\bown\b[^.;]{0,30}\bbuilding\b|\bbuilding (?:official|department|division|program)\b/i;
 const GROUND_ZONING_WORDS = /\b(?:zoning|land[- ]use|planning|setbacks?|accessory structure|conditional use|special use)\b/i;
+// POLARITY IS THE REQUIREMENT PHRASE'S, not the quote's (#247 review): "arrays shall not exceed 15
+// feet" says nothing about whether zoning is required, and "systems not exceeding 6 feet ... require
+// zoning approval" is a requirement. So size limits ("not exceed(ing) 15 feet", "no more than 6 ft")
+// are cut out first; then a negation counts only within a few words BEFORE require / need, or as an
+// exemption. No requirement phrase and no negation -> null (not kept).
+const SIZE_LIMIT = /\b(?:not|no)\s+(?:to\s+)?(?:exceed(?:ing|s)?|more|greater|higher|taller|larger|over|less|closer)\b[^,;.]*?\d[\d.,]*\s*(?:feet|foot|ft|inch(?:es)?|in|square\s+feet|sq\.?\s*ft|%|percent)?/gi;
+const NEGATED_REQUIREMENT = /\b(?:no|not|never|without)\b(?:\W+\w+){0,3}?\W+(?:requires?|required|need(?:s|ed)?)\b|\b\w+n't\s+(?:\w+\s+){0,2}?(?:require|need)|\bexempt\b|\bnot\s+subject\s+to\b/i;
+const REQUIREMENT = /\b(?:requires?|required|need(?:s|ed)?|must\s+(?:obtain|apply|have|receive|get))\b/i;
+export function groundZoningPolarity(quote: string): "required" | "not_required" | null {
+  const q = quote.replace(SIZE_LIMIT, " ");
+  if (NEGATED_REQUIREMENT.test(q)) return "not_required";
+  return REQUIREMENT.test(q) ? "required" : null;
+}
 const NEGATED = /\b(?:no|not|never|without|lacks?|none)\b|n't\b/i;
 /** The serving office's words (permitProcess.servingIssuerNamed): CID in New Mexico, a county or BCD
  *  in Oregon (#171) — with the AHJ's own name taken out, so a county's own division is its own. */
@@ -538,11 +551,11 @@ export function parseProcessPart(text: string, seenUrls: string[], stopReason: s
     seenUrls, what: "unincorporated zoning office", coerce: (v) => (/\bcounty\b/i.test(str(v)) ? str(v) : null), supports: supportsName,
   });
   // The ground-mount question (#247): one bounded enum, kept only when the quote is about zoning /
-  // land use and points the same way (a negation or exemption for "not_required", none for
-  // "required"). A quote that says both reads as not found — the gate then says "verify".
+  // land use and points the same way (groundZoningPolarity). Anything else reads as not found — the
+  // gate then says "verify".
   const groundMountZoning = acceptCited<"required" | "not_required">(json.groundMountZoning as RawFact, {
     seenUrls, what: "ground-mount zoning answer", coerce: (v) => (/^not[_\s-]?required\b/i.test(str(v)) ? "not_required" : /^required\b/i.test(str(v)) ? "required" : null),
-    supports: (v, q) => GROUND_ZONING_WORDS.test(q) && (v === "required" ? !NEGATED.test(q) && !/\bexempt/i.test(q) : NEGATED.test(q) || /\bexempt/i.test(q)),
+    supports: (v, q) => GROUND_ZONING_WORDS.test(q) && groundZoningPolarity(q) === v,
   });
   return { issuingAgency, permitStructure, permits, buildingProgram, unincorporatedZoning, groundMountZoning, prerequisites: parsePrerequisites(json.prerequisites, seenUrls), problem: truncated ? "answer was cut off (kept only fully parsed, cited values)" : "" };
 }
