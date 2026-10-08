@@ -58,6 +58,7 @@ import {
   designText, INVERTER_LISTING_PATTERNS, LOAD_SIDE_CALC_PATTERNS, MODULE_LISTING_PATTERNS, POWER_SOURCE_DIRECTORY_PATTERNS, RAPID_SHUTDOWN_PATTERNS, SUPPLY_SIDE_DETAIL_PATTERNS,
 } from "./codeReviewRules";
 import { FIRE_PATHWAY_PATTERNS } from "./projectEvidence";
+import { isGroundMount } from "./mountKind";
 import { adoptedNecEdition } from "./necEditions";
 
 export interface RequiredDocItem {
@@ -240,6 +241,9 @@ const PLAN_SHEET_HINT_TABLE = {
   module_spec: /\bmodule\s*spec/i,
   inverter_spec: /\b(inverter|microinverter)\s*spec|\bUL[\s-]*1741\b/i,
   labels: /\b(label|placard)/i,
+  // A ground array's structural sheet IS its footing sheet (#247), so the structural words count too.
+  ground_footing: /\b(structural|footings?|foundation|piers?|piles?|helical|mount\s*detail|racking\s*detail)\b/i,
+  trench_detail: /\b(trench(?:ing)?|burial\s*depth|underground\s*(?:conduit|conductors?|feeder|run))\b/i,
 } satisfies Record<string, RegExp>;
 type PlanSheetType = keyof typeof PLAN_SHEET_HINT_TABLE;
 const PLAN_SHEET_HINTS: Record<string, RegExp> = PLAN_SHEET_HINT_TABLE;
@@ -423,6 +427,13 @@ export function requiredDocuments(
     { docType: "labels", label: "Label / placard schedule", why: "Placard/label schedule (705.10 directory, RSD, disconnects) — usually a plan-set sheet.", lane: "permit", blocking: false },
   ];
 
+  // A GROUND / POLE ARRAY HAS NO ROOF (#247): the one mount predicate (mountKind.ts) decides, and the
+  // roof framing/attachment row gives way, in place, to the rows a ground array does need. Rooftop,
+  // carport and unknown-mount jobs never take this branch — their set is unchanged.
+  if (isGroundMount(project)) {
+    items.splice(items.findIndex((i) => i.docType === "structural"), 1, ...groundMountDocItems(project));
+  }
+
   // CONDITIONAL — the sealed structural letter ("SS stamp"). One authority decides
   // (resolveStampRequirement in permitPath.ts): the engineered path or the
   // jurisdiction's own threshold is a hard requirement; a learned process-profile
@@ -457,6 +468,43 @@ export function requiredDocuments(
   // that files a building AND an electrical permit could pass every check with
   // one of the two never acquired, never filled and never attached.
   items.push(...requiredApplicationDocs(project, opts.application ?? {}));
+  return items;
+}
+
+/**
+ * A GROUND-MOUNTED array's rows in place of roof framing (#247): its footings and racking (the
+ * structural review), the trench its conductors run in, and — read from the per-job lookup, never
+ * assumed — whether the AHJ wants a zoning / land-use approval for it.
+ *
+ *   - footing/racking: blocking, as the roof-framing row it replaces was. An upload in the
+ *     structural slot counts (the splitter files a ground set's structural sheet there).
+ *   - trench/burial depth (NEC 300.5 cover): advisory — not every ground array trenches.
+ *   - zoning: the lookup's CITED answer. "not_required" -> no row. "required" -> a row naming the
+ *     source; it blocks only on a person-verified lookup (a seeded answer must not stop a filing on
+ *     its own). No answer -> an advisory "not on file — verify" row, never silence and never a guess.
+ */
+export function groundMountDocItems(project: ProjectRecord): RequiredDocItem[] {
+  const items: RequiredDocItem[] = [
+    { docType: "ground_footing", altDocTypes: ["structural"], label: "Ground-mount footing / foundation + racking detail", why: "A ground array has no roof to frame: the structural permit reviews its footings or piers (size, embedment, frost depth) and the racking on them.", lane: "permit", blocking: true },
+    { docType: "trench_detail", label: "Trench / burial-depth detail (underground conductor run)", why: "Where the array's conductors run underground to the building, the plan set shows the trench route, the conduit and its burial depth (NEC 300.5 minimum cover).", lane: "permit", blocking: false },
+  ];
+  const lookup = permitProcessFor(project);
+  const z = lookup?.groundMountZoning;
+  const cited = Boolean(z?.value && /^https?:\/\//i.test(z.sourceUrl || "") && (z.quote || "").trim());
+  if (cited && z!.value === "not_required") return items;
+  const label = "Zoning / land-use approval for the ground-mounted array";
+  if (cited && z!.value === "required") {
+    const verified = lookup!.confidence === "verified" || Boolean(lookup!.verifiedAt);
+    items.push({
+      docType: "zoning_approval", label, lane: "permit", blocking: verified,
+      why: `${lookup!.ahj || "The AHJ"} requires a zoning / land-use approval for a ground-mounted array — per-job lookup${verified ? " (verified)" : ""}, ${z!.sourceUrl} ("${z!.quote.slice(0, 160)}").`,
+    });
+    return items;
+  }
+  items.push({
+    docType: "zoning_approval", label: `${label} — not on file, verify`, lane: "permit", blocking: false,
+    why: "Whether this AHJ needs a zoning / land-use approval (setbacks, accessory-structure review) for a ground-mounted array is not on file — verify with the AHJ before filing.",
+  });
   return items;
 }
 

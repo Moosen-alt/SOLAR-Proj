@@ -60,6 +60,7 @@ Find, with web search (search several times with different queries: the city, it
 Where answers may come from: the jurisdiction's own site; its county's building-inspection site; the state building agency; the permitting portal's public pages and public permit records.
 
 4. prerequisites — a step at ANOTHER office that must happen BEFORE the application is filed or the permit is issued ("submit to City Hall first, then to the County", a zoning sign-off). A prerequisite office is NOT the issuing agency: the issuing agency is the one that issues the permit. What happens AFTER the permit is approved or issued (copies of approved plans, inspections, final, occupancy) is NEVER a prerequisite. Take prerequisites only from pages about THIS permit (residential solar / electrical / building) — never from another permit type's page (basement, deck, fence, pool…). List each step once, however many pages repeat it.
+   groundMountZoning — how this jurisdiction permits a residential GROUND-MOUNTED array (not on a roof): "required" when a page says it needs a zoning / land-use approval (a zoning permit, setback or accessory-structure review, planning sign-off) beside the building permit; "not_required" when a page says it does not. null when no page says so — never inferred from the rooftop answer.
 
 EVERY value carries "sourceUrl" (a page your search returned or you opened) and "quote" (the exact words on that page that state it, under 250 characters, containing the answer itself). If you cannot find a page that states it, set "value": null and say what you searched in "notFound". Never answer from memory. Never guess.
 
@@ -67,6 +68,7 @@ Return ONLY JSON (no prose):
 {"issuingAgency": {"value": "<agency>"|null, "sourceUrl": "", "quote": "", "notFound": ""},
  "permitStructure": {"value": "separate"|"combo"|null, "sourceUrl": "", "quote": "", "notFound": ""},
  "prerequisites": [{"value": "<the step, naming the office>", "sourceUrl": "", "quote": ""}],
+ "groundMountZoning": {"value": "required"|"not_required"|null, "sourceUrl": "", "quote": "", "notFound": ""},
  "permits": [{"discipline": "structural"|"electrical"|"combo", "label": "<permit name>",
    "issuingAgency": {"value": ..., "sourceUrl": "", "quote": ""},
    "portalUrl": {"value": "<url>"|null, "sourceUrl": "", "quote": "", "notFound": ""},
@@ -487,6 +489,7 @@ const asDiscipline = (v: unknown): PermitProcessDiscipline | null => {
  *  "does not have its own building department") claims nothing. */
 const STATE_AGENCY = /\bcid\b|construction industries/i;
 const OWN_BUILDING_OFFICE = /\bown\b[^.;]{0,30}\bbuilding\b|\bbuilding (?:official|department|division|program)\b/i;
+const GROUND_ZONING_WORDS = /\b(?:zoning|land[- ]use|planning|setbacks?|accessory structure|conditional use|special use)\b/i;
 const NEGATED = /\b(?:no|not|never|without|lacks?|none)\b|n't\b/i;
 /** The serving office's words (permitProcess.servingIssuerNamed): CID in New Mexico, a county or BCD
  *  in Oregon (#171) — with the AHJ's own name taken out, so a county's own division is its own. */
@@ -497,7 +500,7 @@ const supportsBuildingProgram = (value: "own" | "state", quote: string, names: N
 
 export function parseProcessPart(text: string, seenUrls: string[], stopReason: string | null, platformPages: string[] = [], entity: PortalEntity | null = null, where: { state: string; ahj: string } | null = null): {
   issuingAgency: CitedFact<string>; permitStructure: CitedFact<"separate" | "combo">; permits: PermitProcessPermitAnswer[]; prerequisites: CitedFact<string>[]; problem: string;
-  buildingProgram?: CitedFact<"own" | "state">; unincorporatedZoning?: CitedFact<string>;
+  buildingProgram?: CitedFact<"own" | "state">; unincorporatedZoning?: CitedFact<string>; groundMountZoning?: CitedFact<"required" | "not_required">;
 } {
   const truncated = stopReason === "max_tokens" || stopReason === "pause_turn";
   const json = parseJsonLoose(text);
@@ -534,7 +537,14 @@ export function parseProcessPart(text: string, seenUrls: string[], stopReason: s
   const unincorporatedZoning = acceptCited<string>(json.unincorporatedZoning as RawFact, {
     seenUrls, what: "unincorporated zoning office", coerce: (v) => (/\bcounty\b/i.test(str(v)) ? str(v) : null), supports: supportsName,
   });
-  return { issuingAgency, permitStructure, permits, buildingProgram, unincorporatedZoning, prerequisites: parsePrerequisites(json.prerequisites, seenUrls), problem: truncated ? "answer was cut off (kept only fully parsed, cited values)" : "" };
+  // The ground-mount question (#247): one bounded enum, kept only when the quote is about zoning /
+  // land use and points the same way (a negation or exemption for "not_required", none for
+  // "required"). A quote that says both reads as not found — the gate then says "verify".
+  const groundMountZoning = acceptCited<"required" | "not_required">(json.groundMountZoning as RawFact, {
+    seenUrls, what: "ground-mount zoning answer", coerce: (v) => (/^not[_\s-]?required\b/i.test(str(v)) ? "not_required" : /^required\b/i.test(str(v)) ? "required" : null),
+    supports: (v, q) => GROUND_ZONING_WORDS.test(q) && (v === "required" ? !NEGATED.test(q) && !/\bexempt/i.test(q) : NEGATED.test(q) || /\bexempt/i.test(q)),
+  });
+  return { issuingAgency, permitStructure, permits, buildingProgram, unincorporatedZoning, groundMountZoning, prerequisites: parsePrerequisites(json.prerequisites, seenUrls), problem: truncated ? "answer was cut off (kept only fully parsed, cited values)" : "" };
 }
 
 /** The portal step's answer: per discipline, the cited portal and record type (the same doors as
@@ -1070,7 +1080,7 @@ export async function runPermitProcessLookup(
   const platformPages = ev?.platformPages ?? [];
   const part1 = first
     ? (ev ? parseProcessPart(p1.text, [...seenOf(p1), ...ev.seen], p1.stopReason, platformPages, entity, input) : first)
-    : { issuingAgency: ungrounded(p1.error ? `lookup failed: ${p1.error.slice(0, 120)}` : "no web search returned results — nothing kept from memory"), permitStructure: ungrounded("no grounded search"), permits: [] as PermitProcessPermitAnswer[], prerequisites: [] as CitedFact<string>[], problem: p1.error ?? "ungrounded", buildingProgram: undefined, unincorporatedZoning: undefined };
+    : { issuingAgency: ungrounded(p1.error ? `lookup failed: ${p1.error.slice(0, 120)}` : "no web search returned results — nothing kept from memory"), permitStructure: ungrounded("no grounded search"), permits: [] as PermitProcessPermitAnswer[], prerequisites: [] as CitedFact<string>[], problem: p1.error ?? "ungrounded", buildingProgram: undefined, unincorporatedZoning: undefined, groundMountZoning: undefined };
 
   // ASK THE AGENCY THAT ISSUES EACH PERMIT. Lift an agency every permit agrees on; then group.
   const issuer = issuerOf(part1.permits, part1.issuingAgency);
@@ -1447,6 +1457,8 @@ export async function runPermitProcessLookup(
       // Oregon (#171): only the buildingProgram question is asked there.
       buildingProgram: part1.buildingProgram?.value ? part1.buildingProgram : existing?.buildingProgram ?? part1.buildingProgram,
     } : {}),
+    // Asked everywhere (#247), kept the same way: a re-run that could not establish it keeps the earlier answer.
+    groundMountZoning: part1.groundMountZoning?.value ? part1.groundMountZoning : existing?.groundMountZoning?.value ? existing.groundMountZoning : part1.groundMountZoning,
     ...(ev?.codes ? { codes: ev.codes } : existing?.codes ? { codes: existing.codes } : {}),
     ...(reader ? { pagesRead: reader.log.map((l) => ({ url: l.url, ok: l.ok, reason: l.reason.slice(0, 160) })) } : {}),
   });
