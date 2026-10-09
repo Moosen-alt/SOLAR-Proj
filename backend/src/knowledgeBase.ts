@@ -436,14 +436,23 @@ function correctionSignature(correction: KnowledgeFacts["correction"]): string {
   return normalize(`${correction.bucket} ${correction.rootCause} ${correction.requiredAction}`);
 }
 
-// Strip PII (emails, street addresses, long digit runs, phone numbers) from a
+// A digit run grouped by space, dash, en dash, dot or "#" — the separators wordingNamesProject
+// ignores ("/" aside: "120/240 V" is a service voltage). Identifier-shaped once it holds 5+
+// digits: "80 000 1234", "1234-5678-90", "SA# 1234 5678", or a bare "8000012345". Applied after
+// the phone rule so a phone keeps its own tag.
+const GROUPED_DIGITS = /(?<!\d)\d+(?:[\s\-\u2013.#]+\d+)*(?!\d)/g;
+// ...unless the whole run is a date ("2026-10-08", "10.08.2026") or a code section ("690.12",
+// "R324.6" — its letter is outside the run), which a correction sample must keep readable.
+const READABLE_DIGIT_RUN = /^(?:\d{4}[-.]\d{1,2}[-.]\d{1,2}|\d{1,2}[-.]\d{1,2}[-.](?:\d{2}|\d{4})|\d{1,4}\.\d{1,3})$/;
+
+// Strip PII (emails, street addresses, identifier-shaped digit runs, phone numbers) from a
 // learning/email sample and cap its length. Shared by redactSample/redactEmailText.
 function redact(value: string, maxLen: number): string {
   return clean(value)
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
     .replace(/\b\d{2,6}\s+[A-Z0-9 .'-]{3,60}\s+(?:ST|STREET|AVE|AVENUE|RD|ROAD|DR|DRIVE|LN|LANE|CT|COURT|PL|PLACE|WAY|BLVD|CIR|CIRCLE)\b(?:[, ]+[A-Z .'-]{2,40})?/gi, "[address]")
-    .replace(/\b\d{5,}\b/g, "[number]")
     .replace(/\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b/g, "[phone]")
+    .replace(GROUPED_DIGITS, (run) => (run.replace(/\D/g, "").length >= 5 && !READABLE_DIGIT_RUN.test(run) ? "[number]" : run))
     .slice(0, maxLen);
 }
 
