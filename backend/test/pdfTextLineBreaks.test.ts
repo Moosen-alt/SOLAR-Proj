@@ -94,8 +94,13 @@ async function projectWith(bytes: Buffer, meterNumber = SYNTHETIC_METER) {
   const oneLine = await extractPdfText(file);
   run("extractPdfText keeps one line per page, as before", oneLine === "PROJECT: SYNTHETIC RESIDENCE SHEET PV-1 COVER LEFT  RIGHT\nSECOND PAGE", json(oneLine));
 }
-run("pageTextFromItems: hasEOL → \\n, otherwise a space",
-  pageTextFromItems([{ str: "A", hasEOL: false }, { str: "B", hasEOL: true }, { str: "C" }, { str: "", hasEOL: true }, { str: "D" }]) === "A B\nC \nD");
+run("pageTextFromItems: hasEOL → \\n, otherwise a space; an empty item only carries its end of line",
+  pageTextFromItems([{ str: "A", hasEOL: false }, { str: "B", hasEOL: true }, { str: "C" }, { str: "", hasEOL: true }, { str: "D" }]) === "A B\nC\nD");
+{
+  const at = (str: string, y: number) => ({ str, hasEOL: true, transform: [10, 0, 0, 10, 54, y] });
+  run("pageTextFromItems: a gap over 1.5x the usual line spacing is a blank line (a paragraph)",
+    pageTextFromItems([at("ONE", 700), at("TWO", 686), at("THREE", 672), at("FOUR", 630), at("FIVE", 616)]) === "ONE\nTWO\nTHREE\n\nFOUR\nFIVE");
+}
 
 // --- MUST-PASS: batch import (moved to lines) learns a correction PDF's numbered items ----------
 {
@@ -124,6 +129,27 @@ run("pageTextFromItems: hasEOL → \\n, otherwise a space",
     "SELECT sample, correction_bucket FROM historical_failure_examples WHERE source_label LIKE '%Wrapped Customer%'");
   run("a wrapped correction item is learned whole, as a designer fix",
     /on the rafters shown on sheet PV-3/.test(row?.sample ?? "") && row?.correction_bucket === "B_designer_fix", json(row));
+}
+{
+  // A letter's CLOSING paragraph is not part of its last item: pdf.js emits no blank line for the
+  // gap, so the paragraph break comes from the gap itself. Joined, "account … application" would
+  // turn a reviewer clarification (C) into a submission fix (A) in the shared rollup.
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const page = pdf.addPage([612, 792]);
+  ([["PLAN CHECK CORRECTION LIST", 700], ["1. Please clarify the proposed schedule for inspection of the new", 680],
+    ["system before the next review cycle begins", 664], ["If you have questions about this account or application, contact", 620],
+    ["the permit desk during business hours", 604]] as Array<[string, number]>).forEach(([l, y]) => page.drawText(l, { x: 54, y, size: 10, font }));
+  const dir = fs.mkdtempSync(path.join(tmpDir, "scan-"));
+  const folder = path.join(dir, "Closing Customer - Anytown, OR");
+  fs.mkdirSync(folder);
+  await write(await pdf.save(), "Closing Customer - Anytown, OR correction.pdf", folder);
+  const org = db.get<{ id: string }>("SELECT id FROM orgs LIMIT 1")?.id ?? "default";
+  await scanFolder(db, dir, { orgId: org });
+  const row = db.get<{ sample: string; correction_bucket: string }>(
+    "SELECT sample, correction_bucket FROM historical_failure_examples WHERE source_label LIKE '%Closing Customer%'");
+  run("a closing paragraph after the last item does not join it; the bucket stays a clarification",
+    /review cycle begins$/.test(row?.sample ?? "") && !/permit desk/.test(row?.sample ?? "") && row?.correction_bucket === "C_reviewer_clarification", json(row));
 }
 {
   // The classifier reads one line per page: a wrapped "SINGLE LINE / DIAGRAM" title is still an SLD.

@@ -1,7 +1,8 @@
 import type { HistoricalChecklistItem, ProjectRecord } from "../../shared/src/types";
 import { text } from "./json";
 import { hasStampedStructuralEvidence } from "./permitPath";
-import { projectSecretValues, redactSecretValues } from "./autoLearn";
+import { projectSecretValues } from "./projectSecrets";
+import { redactSecretValues } from "../../shared/src/portalSafety";
 
 export type EvidenceConfidence = "high" | "medium" | "low";
 

@@ -13,7 +13,7 @@ type PdfjsModule = {
   GlobalWorkerOptions: { workerSrc: string };
 };
 type PdfjsDoc = { numPages: number; getPage: (n: number) => Promise<PdfjsPage> };
-type PdfjsTextItem = { str?: string; hasEOL?: boolean };
+type PdfjsTextItem = { str?: string; hasEOL?: boolean; transform?: number[] };
 type PdfjsPage = { getTextContent: () => Promise<{ items: PdfjsTextItem[] }> };
 
 let _pdfjs: PdfjsModule | null = null;
@@ -84,21 +84,39 @@ export async function extractPdfPages(filePath: string, maxPages = 60): Promise<
 // item that ends a line (`hasEOL`, from its own position test); that boundary is "\n", every other
 // boundary the " " it always was, so text within a line is what onePageLine gives. OPT-IN: a reader
 // moves to these only with a before/after on fixtures, because a line break splits what the
-// one-line readers above join (see onePageLine). Pages are joined by a blank line, so a reader can
-// tell a page break from a line break.
+// one-line readers above join (see onePageLine).
+//
+// A PARAGRAPH is a blank line. pdf.js emits nothing for the gap between paragraphs, so a reader that
+// ends a numbered item "at a blank line" never saw one inside a page, and a letter's closing text
+// joined its last item (#260 review). A line break whose vertical gap is more than 1.5x the page's
+// usual line spacing (the median gap) is "\n\n". Pages are joined by a blank line too.
 export function pageTextFromItems(items: PdfjsTextItem[]): string {
+  // An empty item carries only its end-of-line mark; folding it into the item before keeps it from
+  // reading as a line of its own.
+  const kept: PdfjsTextItem[] = [];
+  for (const item of items) {
+    if (item.str) kept.push({ ...item });
+    else if (item.hasEOL && kept.length) kept[kept.length - 1].hasEOL = true;
+  }
+  const y = (item: PdfjsTextItem) => item.transform?.[5];
+  const gapAt = (i: number) => {
+    const a = y(kept[i - 1]), b = y(kept[i]);
+    return a === undefined || b === undefined ? 0 : Math.abs(a - b);
+  };
+  const gaps = kept.map((_, i) => (i > 0 && kept[i - 1].hasEOL ? gapAt(i) : 0)).filter((g) => g > 0).sort((a, b) => a - b);
+  const usual = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
   let out = "";
-  items.forEach((item, i) => {
-    if (i > 0) out += items[i - 1].hasEOL ? "\n" : " ";
-    out += item.str ?? "";
+  kept.forEach((item, i) => {
+    if (i > 0) out += !kept[i - 1].hasEOL ? " " : usual > 0 && gapAt(i) > 1.5 * usual ? "\n\n" : "\n";
+    out += item.str;
   });
   return out;
 }
 
-// A run of 3+ spaces is two (as onePageLine's cleanup does), and a run of whitespace holding a line
-// break is ONE break: the one-line `\s{3,}` would fold a break and the spaces around it into "  ".
+// A run of 3+ spaces is two (as onePageLine's cleanup does); spaces around a line break go; and a
+// run of breaks is at most one blank line (a paragraph).
 function tidyLines(text: string): string {
-  return text.replace(/[^\S\n]*\n\s*/g, "\n").replace(/[^\S\n]{3,}/g, "  ").trim();
+  return text.replace(/[^\S\n]*\n[^\S\n]*/g, "\n").replace(/\n{3,}/g, "\n\n").replace(/[^\S\n]{3,}/g, "  ").trim();
 }
 
 export async function extractPdfTextLines(filePath: string, maxPages = 30): Promise<string> {

@@ -13,6 +13,7 @@ import { PRIOR_CORRECTION_ID } from "./ahjReviewRules";
 import { PRECEDENT_DEPARTURE_ID } from "./permitPrecedents";
 import { nowIso } from "./time";
 import { redactSecretValues } from "../../shared/src/portalSafety";
+import { projectSecretValuesById } from "./projectSecrets";
 
 // ---------------------------------------------------------------------------
 // AHJ Reviewer Gate — vision verification pass.
@@ -390,19 +391,6 @@ export function visionRelaxedBlockers(report: ReviewerReport): ReviewerFinding[]
   return report.findings.filter((finding) => finding.visionRelaxedFrom === "blocker");
 }
 
-/** The project's account/meter values (autoLearn.projectSecretValues), loaded lazily: repository and
- *  autoLearn both reach this module, so a static import would be a cycle. null when they cannot be
- *  read — the caller then sends NO prompt (rule 2 fails closed, #260 review). */
-async function projectSecrets(db: AppDb, projectId: string): Promise<string[] | null> {
-  try {
-    const { getProjectDetail } = await import("./repository");
-    const { projectSecretValues } = await import("./autoLearn");
-    return projectSecretValues(getProjectDetail(db, projectId).project);
-  } catch {
-    return null;
-  }
-}
-
 // Opt-in vision pass over an already-built reviewer report. Returns a new report
 // with vision-annotated findings (and recomputed installerCallouts). Safe no-op
 // when there is no plan set or no LLM configured.
@@ -428,7 +416,7 @@ export async function applyVisionToReviewerReport(
   }
   const sig = sourceSig(pdfPath);
   // Secrets unknown → cached verdicts only, never a new prompt.
-  const loaded = await projectSecrets(db, report.projectId);
+  const loaded = projectSecretValuesById(db, report.projectId);
   const secrets = loaded ?? [];
 
   let budget = opts.cacheOnly || loaded === null ? 0 : MAX_VISION_CHECKS;

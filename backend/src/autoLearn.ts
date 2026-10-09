@@ -26,6 +26,7 @@ import fs from "node:fs";
 import type { AppDb } from "./db";
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { FINAL_SUBMIT_GATE_SENTENCE, redactSecretValues } from "../../shared/src/portalSafety";
+import { isPlannerSecretKey, projectSecretValues } from "./projectSecrets";
 import { perJobAnswerKeyFor, perJobControlOfField } from "../../shared/src/perJobQuestions";
 import { parseHasBattery } from "../../shared/src/batteryControls";
 import { learnPortal, browserLimiter } from "../../portal-bot/src/index";
@@ -127,31 +128,9 @@ export function designNotesDigest(project: ProjectRecord, maxChars = 1200, extra
   return digestLines(project, maxChars, (line) => DESIGN_NOTE_TOPICS.test(line) || (learned ? learned.test(line) : false), projectSecretValues(project));
 }
 
-// SAFETY RULE 2 — which parser/field keys hold a secret. ONE predicate for the planner's key
-// filter and for collecting the values to redact from free text. Who HOLDS the account
-// (ubAccountHolder*) is identity the portal asks for, not a secret (see buildPortalPlanner).
-const PLANNER_SECRET_KEY = /acc(oun)?t|meter|ssn|social|passw|agreement\s*num|application\s*num|agreementnumber|applicationnumber|\besi\b|esiid|service\s*agreement/i;
-const PLANNER_IDENTITY_KEY = /^ubAccountHolder/i;
-export function isPlannerSecretKey(k: string): boolean {
-  return PLANNER_SECRET_KEY.test(k) && !PLANNER_IDENTITY_KEY.test(k);
-}
-
-/** Every known secret on the project: the canonical account/meter plus any parser-snapshot
- *  value under a secret key (the parser's own aliases: "account", "meter", "ubMeterNumber"...). */
-export function projectSecretValues(project: ProjectRecord): string[] {
-  const out = new Set<string>();
-  const add = (v: unknown) => {
-    const s = v == null ? "" : String(v).trim();
-    if (s.length >= 4) out.add(s);
-  };
-  add(project.accountNumber);
-  add(project.meterNumber);
-  const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
-  for (const [k, v] of Object.entries(snap)) {
-    if ((typeof v === "string" || typeof v === "number") && isPlannerSecretKey(k)) add(v);
-  }
-  return [...out];
-}
+// SAFETY RULE 2 — which values are secrets lives in the leaf module projectSecrets.ts (#260 review);
+// re-exported here for the planner's existing callers.
+export { isPlannerSecretKey, projectSecretValues };
 
 /** SAFETY RULE 2 — a secret EMBEDDED in free text. The planner's value filter drops a field
  *  whose WHOLE value equals a secret; prose is not caught that way. Live (City of Jefferson,
