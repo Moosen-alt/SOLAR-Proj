@@ -217,25 +217,31 @@ const FRAMING: string[] = ["S 1.1 Sheet Name ATTACHMENT DETAIL", "2x4 TRUSS AT 2
 const FRAMING_FULL: string[] = ["S 1.1 Sheet Name ATTACHMENT DETAIL", ...FRAMING_NOTES];
 
 let seq = 0;
-async function mk(extraPages: string[][]): Promise<string> {
-  const d = createProject(db, { clientId: client.id, owner: `Letter Owner ${++seq}`, ...COMPLETE });
+async function planSetPdf(extraPages: string[][]): Promise<Buffer> {
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   for (const lines of [...SHEETS, ...extraPages]) {
     const page = pdf.addPage([792, 612]);
     lines.forEach((line, i) => page.drawText(line, { x: 40, y: 560 - i * 28, size: 10, font }));
   }
-  saveProjectDocument(db, d.project.id, {
-    docType: "plan_set", filename: "plan-set.pdf", contentType: "application/pdf", buffer: Buffer.from(await pdf.save()), source: "upload",
-  });
-  await buildUtilityPackage(db, d.project.id, "permit");
-  // Text extraction runs in the background after each save; the gate reads what it stored.
+  return Buffer.from(await pdf.save());
+}
+// Text extraction runs in the background after each save; the gate reads what it stored.
+async function extracted(pid: string): Promise<void> {
   for (let i = 0; i < 200; i++) {
     const pending = db.get<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM project_documents WHERE project_id = ? AND content_type = 'application/pdf' AND COALESCE(extracted_text, '') = ''", [d.project.id]);
+      "SELECT COUNT(*) AS n FROM project_documents WHERE project_id = ? AND content_type = 'application/pdf' AND COALESCE(extracted_text, '') = ''", [pid]);
     if (!pending?.n) break;
     await new Promise((r) => setTimeout(r, 25));
   }
+}
+async function mk(extraPages: string[][]): Promise<string> {
+  const d = createProject(db, { clientId: client.id, owner: `Letter Owner ${++seq}`, ...COMPLETE });
+  saveProjectDocument(db, d.project.id, {
+    docType: "plan_set", filename: "plan-set.pdf", contentType: "application/pdf", buffer: await planSetPdf(extraPages), source: "upload",
+  });
+  await buildUtilityPackage(db, d.project.id, "permit");
+  await extracted(d.project.id);
   return d.project.id;
 }
 
@@ -244,7 +250,7 @@ const stampFinding = (pid: string) => buildReviewerReportFor(db, getProjectDetai
 const gate = (pid: string) => getSubmitGateReport(db, pid);
 const holdLabels = (pid: string): string[] => gate(pid).checks.find((c) => c.id === "permit-requirements")?.holds?.map((h) => h.label) ?? [];
 const structuralDocs = (pid: string) => db.query<{ id: string; source: string; stored_path: string }>(
-  "SELECT id, source, stored_path FROM project_documents WHERE project_id = ? AND doc_type = 'structural' ORDER BY uploaded_at", [pid]);
+  "SELECT id, source, stored_path FROM project_documents WHERE project_id = ? AND doc_type = 'structural' ORDER BY uploaded_at, rowid", [pid]);
 const audits = (pid: string, action: string) => db.query<{ actor_name: string; actor_type: string; details: string; created_at: string }>(
   "SELECT actor_name, actor_type, details, created_at FROM audit_logs WHERE project_id = ? AND action = ?", [pid, action]);
 /** Held exactly as main holds it: row MISSING, finding a BLOCKER, a permit-requirements hold. */
@@ -327,7 +333,7 @@ const planRow = db.get<{ stored_path: string }>("SELECT stored_path FROM project
 saveProjectDocument(db, reup, { docType: "plan_set", filename: "plan-set-rev1.pdf", contentType: "application/pdf", buffer: fs.readFileSync(planRow.stored_path), source: "upload" });
 const reupHeld = heldLikeMain(reup);
 check("MUST-EXCLUDE: re-uploading the plan set voids the confirmation — held again", reupHeld.ok, reupHeld.detail);
-check("…with the reason on the card", /new plan set/.test(gate(reup).structuralLetter?.voided?.reason ?? ""), JSON.stringify(gate(reup).structuralLetter?.voided));
+check("…with the reason on the card", /no longer the one on file/.test(gate(reup).structuralLetter?.voided?.reason ?? ""), JSON.stringify(gate(reup).structuralLetter?.voided));
 
 const resplit = await mk([FRAMING, ...LETTER_PAGES]);
 const firstCut = structuralDocs(resplit)[0];
@@ -377,8 +383,9 @@ await new Promise((r) => setTimeout(r, 5));
 const onePage = await PDFDocument.create();
 const f1 = await onePage.embedFont(StandardFonts.Helvetica);
 onePage.addPage([792, 612]).drawText(LETTER_PAGES[0][0], { x: 40, y: 560, size: 10, font: f1 });
+const recutPlanId = db.get<{ id: string }>("SELECT id FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set'", [recutChanged])!.id;
 const changedCut = saveProjectDocument(db, recutChanged, { docType: "structural", filename: "plan-set - Structural.pdf", contentType: "application/pdf",
-  buffer: Buffer.from(await onePage.save()), source: "split" });
+  buffer: Buffer.from(await onePage.save()), source: "split", sourceDocumentId: recutPlanId });
 const recutHeld = heldLikeMain(recutChanged);
 check("MUST-EXCLUDE: a re-split that cut a DIFFERENT structural document voids the confirmation — held again", recutHeld.ok, recutHeld.detail);
 check("…with the reason on the card", /re-split cut a different/.test(reasonOf(recutChanged)), reasonOf(recutChanged));
@@ -428,6 +435,69 @@ const freshCut = structuralDocs(stale).find((d) => d.id !== staleCut.id);
 check("…the re-split of the newest plan set is the candidate, and confirming it releases the hold",
   Boolean(freshCut) && gate(stale).structuralLetter?.candidate?.documentId === freshCut?.id
   && (await confirmAs(stale, freshCut!.id)).documentId === freshCut?.id && released(stale).ok, released(stale).detail);
+
+// LINEAGE BY SOURCE PLAN SET, not timestamps (Helm's review at 0116f98a, Medium 1). A cut is current
+// only while the plan set it was cut from is the one the package ships.
+const planSetIdOf = (pid: string): string => db.get<{ id: string }>(
+  "SELECT id FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set' ORDER BY uploaded_at DESC, rowid DESC LIMIT 1", [pid])!.id;
+// G2: P1 (framing only), then P2 carrying the engineer's letter; P2's cut is confirmed; then P2 is
+// deleted. The package ships P1 again, so the credit on P2's cut must not stand.
+const g2 = await mk([FRAMING]);
+await new Promise((r) => setTimeout(r, 5));
+const g2P2 = saveProjectDocument(db, g2, { docType: "plan_set", filename: "plan-set-rev1.pdf", contentType: "application/pdf",
+  buffer: await planSetPdf([FRAMING, ...LETTER_PAGES]), source: "upload" });
+await buildUtilityPackage(db, g2, "permit");
+await extracted(g2);
+const g2Cut = structuralDocs(g2).at(-1)!;
+check("fixture (G2): P2's cut is the candidate and records P2 as its source",
+  gate(g2).structuralLetter?.candidate?.documentId === g2Cut.id
+  && db.get<{ s: string }>("SELECT source_document_id AS s FROM project_documents WHERE id = ?", [g2Cut.id])?.s === g2P2.id,
+  JSON.stringify(gate(g2).structuralLetter?.candidate));
+await confirmAs(g2, g2Cut.id);
+check("fixture (G2): confirming P2's cut releases the hold", released(g2).ok, released(g2).detail);
+deleteProjectDocument(db, g2, g2P2.id);
+const g2Held = heldLikeMain(g2);
+check("MUST-EXCLUDE (G2): deleting the newest plan set after its cut was confirmed voids the confirmation — held again",
+  g2Held.ok && /no longer the one on file/.test(gate(g2).structuralLetter?.voided?.reason ?? ""), `${g2Held.detail} ${JSON.stringify(gate(g2).structuralLetter?.voided)}`);
+check("MUST-EXCLUDE (G2): the deleted plan set's cut is never offered again",
+  gate(g2).structuralLetter?.candidate?.documentId !== g2Cut.id, JSON.stringify(gate(g2).structuralLetter?.candidate));
+let g2Status = "";
+try { await confirmAs(g2, g2Cut.id); } catch (e) { g2Status = String((e as { status?: number }).status); }
+check("MUST-EXCLUDE (G2): re-confirming the deleted plan set's cut is refused (409), still held", g2Status === "409" && heldLikeMain(g2).ok, g2Status);
+await buildUtilityPackage(db, g2, "permit");
+const g2Fresh = structuralDocs(g2).at(-1)!;
+check("…a re-split of the plan set that ships (P1) is the candidate again",
+  g2Fresh.id !== g2Cut.id && gate(g2).structuralLetter?.candidate?.documentId === g2Fresh.id, JSON.stringify(gate(g2).structuralLetter?.candidate));
+
+// J2: a plan set lands MID-SPLIT. The split read P1; P2 is uploaded while it awaits; it must not save
+// P1's parts (they would land as the newest rows and ship).
+const j2 = await mk([FRAMING, ...LETTER_PAGES]);
+const j2P1 = planSetIdOf(j2);
+const j2Before = structuralDocs(j2).map((d) => d.id);
+const j2Split = buildUtilityPackage(db, j2, "permit"); // runs synchronously up to its first await: it has read P1
+const j2P2 = saveProjectDocument(db, j2, { docType: "plan_set", filename: "plan-set-rev1.pdf", contentType: "application/pdf",
+  buffer: await planSetPdf([FRAMING, ...LETTER_PAGES]), source: "upload" });
+let j2Status = "";
+try { await j2Split; } catch (e) { j2Status = String((e as { status?: number }).status); }
+check("MUST-EXCLUDE (J2): a split whose plan set changed mid-split is refused (409) and saves no part",
+  j2Status === "409" && JSON.stringify(structuralDocs(j2).map((d) => d.id)) === JSON.stringify(j2Before), `${j2Status} ${structuralDocs(j2).length}`);
+// …and even a P1 cut that lands after P2 (what an un-rechecked split would write) is void by lineage,
+// though it is the newest row: never offered, confirming it is 409, held.
+const j2Late = saveProjectDocument(db, j2, { docType: "structural", filename: "plan-set - Structural.pdf", contentType: "application/pdf",
+  buffer: fs.readFileSync(structuralDocs(j2)[0].stored_path), source: "split", sourceDocumentId: j2P1 });
+check("MUST-EXCLUDE (J2): a cut of the superseded plan set saved after the new one landed is not offered",
+  gate(j2).structuralLetter?.candidate?.documentId !== j2Late.id, JSON.stringify(gate(j2).structuralLetter?.candidate));
+let j2LateStatus = "";
+try { await confirmAs(j2, j2Late.id); } catch (e) { j2LateStatus = String((e as { status?: number }).status); }
+check("MUST-EXCLUDE (J2): confirming it is refused (409), nothing written, still held",
+  j2LateStatus === "409" && heldLikeMain(j2).ok && db.query("SELECT id FROM structural_letter_confirmations WHERE project_id = ?", [j2]).length === 0, j2LateStatus);
+await buildUtilityPackage(db, j2, "permit");
+await extracted(j2);
+const j2Fresh = structuralDocs(j2).at(-1)!;
+check("…the split of the new plan set records it as the source, is the candidate, and confirming it releases the hold",
+  db.get<{ s: string }>("SELECT source_document_id AS s FROM project_documents WHERE id = ?", [j2Fresh.id])?.s === j2P2.id
+  && gate(j2).structuralLetter?.candidate?.documentId === j2Fresh.id
+  && (await confirmAs(j2, j2Fresh.id)).documentId === j2Fresh.id && released(j2).ok, released(j2).detail);
 
 // Pages come from the PDF, not from extracted text: scanned (empty) pages still count, and the
 // confirmed page is clamped into the document.

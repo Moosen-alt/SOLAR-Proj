@@ -1066,6 +1066,7 @@ function migrate(db: AppDb): void {
   `);
 
   runVersionedMigrations(db);
+  healStructuralLetterColumns(db);
 
   // WHO VERIFIED A SHARED FEE ROW IS A TENANT'S FACT (skeptic MF3, 2026-09-27). fee_schedules is
   // shared ON PURPOSE, and so is its "verified" grade — but verified_by is a person's name or
@@ -2552,9 +2553,24 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       // text (JSON string[]), written by the background extraction — extracted_text collapses
       // empty (scanned) pages, so the candidate's page and page count come from here.
       addColumnIfMissing(db, "project_documents", "page_texts_json", "TEXT NOT NULL DEFAULT ''");
+      healStructuralLetterColumns(db);
     },
   },
 ];
+
+/** v47 was edited in place while #218 was open (Helm's review at 0116f98a): a DB that ran an earlier
+ *  v47 has the table without voided_at / void_reason (and project_documents without
+ *  source_document_id) and throws on the first upload. Called at the end of v47 (a replay heals) and
+ *  again after runVersionedMigrations on every boot (a DB that already stamped v47 heals too).
+ *  source_document_id: the plan set a `source = 'split'` cut was cut from (buildUtilityPackage), so
+ *  a cut is judged by its lineage, never by timestamps (structuralLetterVoid.ts); '' on an upload. */
+function healStructuralLetterColumns(db: AppDb): void {
+  if (!db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'structural_letter_confirmations'")) return;
+  addColumnIfMissing(db, "structural_letter_confirmations", "voided_at", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "structural_letter_confirmations", "void_reason", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "project_documents", "page_texts_json", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "project_documents", "source_document_id", "TEXT NOT NULL DEFAULT ''");
+}
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the
 // whole existing notes blob as a single item, so the same seed sentence was

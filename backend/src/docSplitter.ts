@@ -7,7 +7,7 @@ import { portalUploadCapBytes } from "../../portal-bot/src/uploadCap";
 import type { AppDb } from "./db";
 import type { LLMProvider, PlanSheetKind } from "../../shared/src/types";
 import { HttpError } from "./httpError";
-import { saveProjectDocument, listProjectDocuments, projectDocsByType, documentTypesDeletedSince, withdrawSplitPart } from "./projectDocuments";
+import { saveProjectDocument, listProjectDocuments, projectDocsByType, shippedPlanSetDocumentId, documentTypesDeletedSince, withdrawSplitPart } from "./projectDocuments";
 
 // Sheet/content patterns → upload doc category. Ported from the parser's detectSplitPages;
 // pages are scored against each category and assigned to the best match. The categories are
@@ -327,7 +327,10 @@ export function undecidedSpecSummary(pages: number[], filedAs: Record<string, st
 // Find the project's stored plan set (doc_type plan_set, else the largest PDF upload).
 function findPlanSet(db: AppDb, projectId: string): { id: string; path: string; name: string } {
   const docs = listProjectDocuments(db, projectId);
-  const planSet = docs.find((d) => d.docType === "plan_set") ?? docs.find((d) => /\.pdf$/i.test(d.originalFilename));
+  // An alias-typed plan set (combined_plan_set…) is the one projectDocsByType ships, so it is cut
+  // before the newest-PDF fallback — which could otherwise pick an earlier split part (#198 lineage).
+  const shippedId = shippedPlanSetDocumentId(db, projectId);
+  const planSet = docs.find((d) => d.docType === "plan_set") ?? docs.find((d) => d.id === shippedId) ?? docs.find((d) => /\.pdf$/i.test(d.originalFilename));
   if (!planSet) throw new HttpError(400, "No plan-set PDF uploaded for this project. Upload the plan set (doc type: plan_set) first.");
   const row = db.get<{ stored_path: string }>("SELECT stored_path FROM project_documents WHERE id = ?", [planSet.id]);
   const stored = row?.stored_path ?? "";
@@ -389,6 +392,15 @@ export async function buildUtilityPackage(
 
   const baseName = planSet.name.replace(/\.pdf$/i, "");
   const parts: UtilityPackageResult["parts"] = [];
+  // A PLAN SET THAT LANDS MID-SPLIT (#198 J2, Helm's review at 0116f98a). Classifying (and any page
+  // read) awaits, so a newer plan set can be uploaded meanwhile; parts cut from the old one would then
+  // land as the newest rows of their types and ship. Re-checked right before EACH save (the check and
+  // the synchronous save cannot interleave with another upload); a changed plan set refuses the split.
+  const assertStillThePlanSet = (): void => {
+    let now: string | null = null;
+    try { now = findPlanSet(db, projectId).id; } catch { now = null; }
+    if (now !== planSet.id) throw new HttpError(409, "The plan set changed while it was being split. Split the current plan set again.");
+  };
 
   // Split only the sheet categories this submission type needs (plus any already split).
   for (const cat of CATEGORY_PATTERNS) {
@@ -419,12 +431,16 @@ export async function buildUtilityPackage(
       const leadBytes = Buffer.from(await lead.save());
       if (leadBytes.length <= CAP) bytes = leadBytes;
     }
+    assertStillThePlanSet();
     const saved = saveProjectDocument(db, projectId, {
       docType: cat.docType,
       filename: `${baseName} - ${cat.label}${visionTypes.has(cat.docType) ? VISION_PART_MARK : ""}.pdf`,
       contentType: "application/pdf",
       buffer: bytes,
       source: "split",
+      // The cut's lineage: the structural-letter confirmation stands only while this is the plan set
+      // the package ships (structuralLetterVoid.ts).
+      sourceDocumentId: planSet.id,
     });
     parts.push({ docType: cat.docType, label: cat.label, pages: pages.map((n) => n + 1), documentId: saved.id });
   }

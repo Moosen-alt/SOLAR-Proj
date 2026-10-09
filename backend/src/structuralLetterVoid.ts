@@ -7,13 +7,17 @@
 // the NEWEST `structural` row (projectDocsByType, latest per type), and the splitter only ever
 // APPENDS (buildUtilityPackage — the build-package route, auto-stage's repair re-split), so a
 // confirmation on row A is void as soon as a newer `structural` row B exists — unless B is the
-// same cut again: a `source = 'split'` row of the same newest plan set with the same sha256 (the
+// same cut again: a `source = 'split'` row cut from the same plan set with the same sha256 (the
 // splitter writes its parts without a save-time timestamp, so an unchanged plan set re-cuts
 // byte-identically). A changed re-cut, a person's upload to the slot, or a new plan set voids it.
 //
-// A split cut is judged by its LINEAGE: cut before the newest plan set landed, it is stale whenever
-// it was confirmed. A person's own upload was looked at alongside whatever plan set stood when they
-// confirmed, so for it a plan set newer than the confirmation voids.
+// A split cut is judged by its LINEAGE, never by timestamps (Helm's review at 0116f98a): its
+// source_document_id must be the plan set the package ships (projectDocuments.shippedPlanSetDocumentId).
+// So deleting the newest plan set after its cut was confirmed (the package falls back to the older
+// one) voids it, and so does a cut that a split of an older plan set saved after a newer one landed.
+// A cut with no recorded source (written before the column existed) is void: re-split to confirm.
+// A person's own upload was looked at alongside whatever plan set stood when they confirmed, so for
+// it a plan set newer than the confirmation voids.
 //
 // Dependency-light on purpose: projectDocuments imports this, so it must not import the gate.
 // ---------------------------------------------------------------------------
@@ -21,7 +25,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import type { AppDb } from "./db";
-import { DOC_TYPE_ALIASES } from "./projectDocuments";
+import { DOC_TYPE_ALIASES, shippedPlanSetDocumentId } from "./projectDocuments";
 import { nowIso } from "./time";
 
 type Row = Record<string, unknown>;
@@ -54,7 +58,7 @@ export function structuralDocumentVoidReason(
   db: AppDb, projectId: string, documentId: string, sha256: string, confirmedAt: string,
 ): string | null {
   const doc = db.get<Row>(
-    "SELECT rowid AS rid, doc_type, stored_path, source, uploaded_at FROM project_documents WHERE id = ? AND project_id = ?",
+    "SELECT rowid AS rid, doc_type, stored_path, source, uploaded_at, source_document_id FROM project_documents WHERE id = ? AND project_id = ?",
     [documentId, projectId],
   );
   if (!doc || s(doc.doc_type) !== "structural") return "the confirmed document was replaced or re-split";
@@ -62,22 +66,25 @@ export function structuralDocumentVoidReason(
   if (!sha) return "the confirmed document's file is missing";
   if (sha !== sha256) return "the confirmed document's contents changed";
   const isCut = s(doc.source) === "split";
-  const types = planSetTypes();
-  const newestPlanSet = s(db.get<Row>(
-    `SELECT MAX(uploaded_at) AS t FROM project_documents WHERE project_id = ? AND doc_type IN (${types.map(() => "?").join(", ")})`,
-    [projectId, ...types],
-  )?.t);
-  if (newestPlanSet && newestPlanSet > (isCut ? s(doc.uploaded_at) : confirmedAt)) {
-    return isCut ? "a new plan set was uploaded after this cut was made" : "a new plan set was uploaded after it was confirmed";
+  const cutFrom = s(doc.source_document_id);
+  if (isCut) {
+    if (!cutFrom || cutFrom !== shippedPlanSetDocumentId(db, projectId)) return "this cut was made from a plan set that is no longer the one on file";
+  } else {
+    const types = planSetTypes();
+    const newestPlanSet = s(db.get<Row>(
+      `SELECT MAX(uploaded_at) AS t FROM project_documents WHERE project_id = ? AND doc_type IN (${types.map(() => "?").join(", ")})`,
+      [projectId, ...types],
+    )?.t);
+    if (newestPlanSet && newestPlanSet > confirmedAt) return "a new plan set was uploaded after it was confirmed";
   }
   for (const newer of db.query<Row>(
-    `SELECT source, stored_path FROM project_documents
+    `SELECT source, stored_path, source_document_id FROM project_documents
       WHERE project_id = ? AND doc_type = 'structural' AND id <> ? AND (uploaded_at > ? OR (uploaded_at = ? AND rowid > ?))`,
     [projectId, documentId, s(doc.uploaded_at), s(doc.uploaded_at), Number(doc.rid)],
   )) {
     const newerIsCut = s(newer.source) === "split";
     // The same cut again (the stage pass's no-op re-split): what ships is what the person saw.
-    if (isCut && newerIsCut && fileSha256(s(newer.stored_path)) === sha256) continue;
+    if (isCut && newerIsCut && s(newer.source_document_id) === cutFrom && fileSha256(s(newer.stored_path)) === sha256) continue;
     return newerIsCut ? "a re-split cut a different structural document" : "a newer document was filed to the structural slot";
   }
   return null;

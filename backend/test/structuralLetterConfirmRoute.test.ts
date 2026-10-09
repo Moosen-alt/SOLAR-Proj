@@ -11,7 +11,10 @@
 //   4. withdraw → 200 and audited; withdrawing again → 409;
 //   5. an org API key alone (no session) → 401 and nothing written: a key names an org, never a person;
 //   6. a signed-in account with a person's display name is recorded by that name (and its user id);
-//   7. ?inline=1 sends nosniff, and opens inline only a file whose bytes are a PDF.
+//   7. ?inline=1 sends nosniff, and opens inline only a file whose bytes are a PDF;
+//   8. with sign-in OFF (the local single-operator convention, Helm's ruling at fb160321): a
+//      placeholder name ("Operator", "N/A", blank) → 400 and nothing written; "Jane Example" → 200,
+//      recorded by that typed name.
 // The gate behaviour (held without a confirmation, released with one, voided on re-upload) is pinned
 // in structuralCertificationCredit.test.ts.
 //
@@ -66,7 +69,9 @@ async function letterPdf(): Promise<Buffer> {
 }
 const mk = async (owner: string) => {
   const d = createProject(db, { clientId: client.id, owner, street: "1 Example St", city: "Testville", state: "UT", zip: "84000", ahj: "City of Testville", utility: "Rocky Mountain Power" });
-  const doc = saveProjectDocument(db, d.project.id, { docType: "structural", filename: "structural.pdf", contentType: "application/pdf", buffer: await letterPdf(), source: "split" });
+  // A real cut's lineage: the plan set it came from is the one on file (structuralLetterVoid).
+  const plan = saveProjectDocument(db, d.project.id, { docType: "plan_set", filename: "plan-set.pdf", contentType: "application/pdf", buffer: await letterPdf(), source: "upload" });
+  const doc = saveProjectDocument(db, d.project.id, { docType: "structural", filename: "structural.pdf", contentType: "application/pdf", buffer: await letterPdf(), source: "split", sourceDocumentId: plan.id });
   return { projectId: d.project.id, docId: doc.id };
 };
 const mine = await mk("Jane Example");
@@ -89,17 +94,27 @@ db.close();
 
 const PORT = 5190 + Math.floor(Math.random() * 30);
 const BASE = `http://127.0.0.1:${PORT}`;
-const env: Record<string, string | undefined> = {
-  ...process.env,
-  AUTOPILOT_DB_PATH: dbPath, BACKUP_DIR: path.join(tmpDir, "backups"), AUTOPILOT_AUTO_START: "0", PORT: String(PORT),
-  SEED_TEST_INSTALLER: "false", MONITOR_INTERVAL_MINUTES: "0", LOG_LEVEL: "warn", ANTHROPIC_API_KEY: "", CODE_RESEARCH: "off",
-  SESSION_ENCRYPTION_KEY: process.env.SESSION_ENCRYPTION_KEY || "unit-test-key-not-a-real-secret",
-  AUTH_ENABLED: "true", ADMIN_EMAIL: "admin@letter.test", ADMIN_PASSWORD: "letter-test-password-1", NO_PROXY: "*", no_proxy: "*",
+const boot = (port: number, authOn: boolean) => {
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    AUTOPILOT_DB_PATH: dbPath, BACKUP_DIR: path.join(tmpDir, "backups"), AUTOPILOT_AUTO_START: "0", PORT: String(port),
+    SEED_TEST_INSTALLER: "false", MONITOR_INTERVAL_MINUTES: "0", LOG_LEVEL: "warn", ANTHROPIC_API_KEY: "", CODE_RESEARCH: "off",
+    SESSION_ENCRYPTION_KEY: process.env.SESSION_ENCRYPTION_KEY || "unit-test-key-not-a-real-secret",
+    AUTH_ENABLED: authOn ? "true" : "false", ADMIN_EMAIL: "admin@letter.test", ADMIN_PASSWORD: "letter-test-password-1", NO_PROXY: "*", no_proxy: "*",
+  };
+  for (const k of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]) delete env[k];
+  return spawn(process.execPath, [path.join(REPO, "node_modules/tsx/dist/cli.mjs"), path.join(REPO, "backend/src/server.ts")], {
+    env: env as NodeJS.ProcessEnv, cwd: REPO, stdio: ["ignore", "pipe", "pipe"],
+  });
 };
-for (const k of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]) delete env[k];
-const server = spawn(process.execPath, [path.join(REPO, "node_modules/tsx/dist/cli.mjs"), path.join(REPO, "backend/src/server.ts")], {
-  env: env as NodeJS.ProcessEnv, cwd: REPO, stdio: ["ignore", "pipe", "pipe"],
-});
+const waitUp = async (base: string, log: () => string): Promise<void> => {
+  for (let i = 0; i < 90; i++) {
+    try { if ((await fetch(`${base}/health`)).ok) return; } catch { /* not up yet */ }
+    if (i === 89) throw new Error(`server never came up:\n${log().slice(-1500)}`);
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+};
+const server = boot(PORT, true);
 let serverLog = "";
 server.stdout?.on("data", (d) => { serverLog += String(d); });
 server.stderr?.on("data", (d) => { serverLog += String(d); });
@@ -109,11 +124,7 @@ const read = (sql: string, args: unknown[] = []): Array<Record<string, unknown>>
 };
 const rowsFor = (pid: string) => read("SELECT document_id, content_sha256, confirmed_by, confirmed_by_user_id, withdrawn_at FROM structural_letter_confirmations WHERE project_id = ?", [pid]);
 try {
-  for (let i = 0; i < 90; i++) {
-    try { if ((await fetch(`${BASE}/health`)).ok) break; } catch { /* not up yet */ }
-    if (i === 89) throw new Error(`server never came up:\n${serverLog.slice(-1500)}`);
-    await new Promise((r) => setTimeout(r, 1000));
-  }
+  await waitUp(BASE, () => serverLog);
   const post = (projectId: string, action: string, body: unknown, cookie = "", extra: Record<string, string> = {}) => fetch(`${BASE}/api/projects/${projectId}/structural-letter/${action}`, {
     method: "POST", headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}), ...extra }, body: JSON.stringify(body),
   });
@@ -186,6 +197,34 @@ try {
     `${fakeInline.status} ${fakeInline.headers.get("content-disposition")} ${fakeInline.headers.get("x-content-type-options")}`);
 } finally {
   server.kill("SIGTERM");
+}
+
+// 8. Sign-in OFF: the typed name is the person, and a placeholder is refused.
+await new Promise((r) => setTimeout(r, 500));
+const OFF_PORT = PORT + 40;
+const OFF_BASE = `http://127.0.0.1:${OFF_PORT}`;
+const offServer = boot(OFF_PORT, false);
+let offLog = "";
+offServer.stdout?.on("data", (d) => { offLog += String(d); });
+offServer.stderr?.on("data", (d) => { offLog += String(d); });
+try {
+  await waitUp(OFF_BASE, () => offLog);
+  const postOff = (body: unknown) => fetch(`${OFF_BASE}/api/projects/${mine.projectId}/structural-letter/confirm`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  const before = rowsFor(mine.projectId).length;
+  const refused: string[] = [];
+  for (const name of ["Operator", "N/A", "", "Admin"]) refused.push(`${name || "(blank)"}=${(await postOff({ documentId: mine.docId, page: 1, confirmedBy: name })).status}`);
+  check("8a. sign-in off: a placeholder name (Operator, N/A, blank, Admin) → 400, and nothing written",
+    refused.every((r) => r.endsWith("=400")) && rowsFor(mine.projectId).length === before, refused.join(" "));
+  const typed = await postOff({ documentId: mine.docId, page: 1, confirmedBy: "Jane Example" });
+  const typedBody = await typed.json().catch(() => ({})) as { confirmation?: { confirmedBy?: string } };
+  const typedRow = rowsFor(mine.projectId).find((r) => !r.withdrawn_at);
+  check("8b. sign-in off: \"Jane Example\" typed → 200, recorded by that name",
+    typed.status === 200 && typedBody.confirmation?.confirmedBy === "Jane Example" && typedRow?.confirmed_by === "Jane Example",
+    `${typed.status} ${JSON.stringify(typedBody).slice(0, 200)}`);
+} finally {
+  offServer.kill("SIGTERM");
 }
 
 await new Promise((r) => setTimeout(r, 500));
