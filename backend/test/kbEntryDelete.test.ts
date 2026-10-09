@@ -126,8 +126,11 @@ try {
   await waitForServer();
   const owner = as(await loginAs("owner@operator.test", "owner-test-password-1"));
   // Creating a tenant org is cross-org administration: superadmin-only since #275. The
-  // seeded login is a plain admin, so promote it as an operator does (VERIFICATION_PLAN 1.3).
-  await readDb((db) => db.run("UPDATE users SET role = 'superadmin' WHERE email = ?", ["owner@operator.test"]));
+  // seeded login is a plain admin, so promote it for the setup only, and demote it again
+  // once the tenant exists, so the KB delete below still runs as the plain admin it always
+  // has (who may reach that route is #278's question, not this suite's).
+  const setOwnerRole = (role: string) => readDb((db) => db.run("UPDATE users SET role = ? WHERE email = ?", [role, "owner@operator.test"]));
+  await setOwnerRole("superadmin");
 
   // A tenant org that holds the autopilot, with an ordinary (non-admin) user.
   let tenant: ReturnType<typeof as> | null = null;
@@ -140,6 +143,7 @@ try {
     assert.equal(user.status, 201, (await user.text()).slice(0, 300));
     tenant = as(await loginAs("staff@acme.test", "tenant-pass-12345"));
   });
+  await setOwnerRole("admin");
 
   await run("a non-admin tenant gets 403 and the row stays", async () => {
     assert.ok(tenant, "tenant login missing");

@@ -258,6 +258,29 @@ try {
     assert.equal(usersIn(orgB), usersBefore + 1);
     assert.deepEqual(productsOf(orgB), ["autopilot", "form_filler"]);
   });
+
+  // ------------------------------------------------- the role that IS the cross-org key
+  // Since #275 holding superadmin is what lets an admin act across orgs, so updateUser's
+  // "only a superadmin can grant superadmin" check (users.ts) is the boundary. Without it a
+  // tenant admin goes cross-org in three requests: promote a colleague, have them promote
+  // it back, done. Pinned here so deleting that check turns this suite red.
+  const userId = (email: string) => withDb((db) => String((db.prepare("SELECT id FROM users WHERE email = ?").get(email) as { id: string }).id));
+  const roleOf = (email: string) => withDb((db) => String((db.prepare("SELECT role FROM users WHERE email = ?").get(email) as { role: string }).role));
+
+  await run("MUST-EXCLUDE: A's admin cannot grant superadmin to an operator in its own org (403, role unchanged)", async () => {
+    assert.equal(roleOf("new@acme.test"), "operator", "setup: new@acme.test should be an operator");
+    const res = await adminA(`/api/users/${userId("new@acme.test")}`, { method: "PUT", body: JSON.stringify({ role: "superadmin" }) });
+    assert.equal(res.status, 403, `status ${res.status}`);
+    assert.equal(roleOf("new@acme.test"), "operator");
+    assert.equal(roleOf("admin@acme.test"), "admin");
+  });
+
+  await run("MUST-EXCLUDE: A's admin cannot grant superadmin to itself (403, role unchanged)", async () => {
+    const res = await adminA(`/api/users/${userId("admin@acme.test")}`, { method: "PUT", body: JSON.stringify({ role: "superadmin" }) });
+    assert.equal(res.status, 403, `status ${res.status}`);
+    assert.equal(roleOf("admin@acme.test"), "admin");
+    assert.equal(roleOf("new@acme.test"), "operator");
+  });
 } finally {
   server.kill("SIGTERM");
   await new Promise((r) => { server.once("exit", r); setTimeout(r, 5000); });

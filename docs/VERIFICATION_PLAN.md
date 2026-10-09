@@ -80,7 +80,7 @@ must be green before starting; this list is what the suites CANNOT prove alone.
 - Pass: self-promotion 403s; the list matches your mental model.
 
 **1.4 Entitlements match what was sold.**
-- Verify: `GET /api/orgs` as admin — every org's `products` list is exactly what
+- Verify: `GET /api/orgs` as superadmin — every org's `products` list is exactly what
   that tenant bought. For any review-gate tenant: their API key still reaches
   `/api/review` and 401s on `/api/projects`.
 - Pass: no org holds `autopilot` except yours.
