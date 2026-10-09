@@ -205,7 +205,12 @@ export function isPlaceholderBatteryModel(value: unknown): boolean {
   // installed" each read as a battery when only listed spellings counted, and a real model beats an
   // explicit "No" — so an unlisted negation became a false storage declaration to the utility. A
   // future / battery-ready / pre-wire / provision note is a statement that there is no battery TODAY.
-  return /^(?:n\/?a|no|none|not|nil|null)\b|^(?:0|[-\u2013\u2014]+)$|\bfuture\b|\bbattery[- ]?ready\b|\bpre-?wired?\b|\bprovision(?:ed)? for\b/.test(v);
+  // Both are anchored at the START: "Powerwall 3 w/ provision for future expansion" is a battery, and
+  // a hyphenated name ("No-Break X", "NA-10", "Na-ion 10kWh") is a model, not a negation. An UNDECIDED
+  // model ("Not yet selected", "None selected yet", "No model selected") is TBD-class (operator ruling
+  // on #256): a battery that owes its spec sheet, never a "no storage" declaration.
+  if (/^(?:n\/?a|no|none|not|nil|null)[\s,;:]+(?:yet|selected|specified|decided|determined|chosen|known|model)\b/.test(v)) return false;
+  return /^(?:n\/?a|no|none|not|nil|null)(?=$|[\s,;:])|^(?:0|[-\u2013\u2014]+)$|^(?:future|battery[- ]?ready|pre-?wired?|provision(?:ed)? for)\b/.test(v);
 }
 
 function batteryStr(value: unknown): string {

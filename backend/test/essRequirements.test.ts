@@ -17,7 +17,9 @@
 //   K9 portalRecipes: energySource honours a bare hasBattery "No" again   → (x5) fails.
 //   K10 normalize.ts: a bare "No" beats real evidence again               → (x5) fails.
 //   K11 applicationDocs worksheets: the raw model again                   → (x4) fails.
-//   K12 batteryControls: the closed placeholder list again (not negation-led) → (x3) fails.
+//   K12 batteryControls: the closed placeholder list again (not negation-led) → (x3) fails;
+//      unanchored future/pre-wire/provision terms, a "\b" that admits a hyphen, or no undecided-model
+//      exemption → (x3) fails too.
 //      (codeReviewRules' batteryText placeholder filter is belt and braces: #265's negation reader
 //      already denies "No ESS" / "No battery", so reverting the filter alone is not observable.)
 //   K5 essRequirements: a fire-only cite counts as "cited"             → (c7) fails.
@@ -240,6 +242,14 @@ await check("(x3) MUST-EXCLUDE: a placeholder battery model saved through create
     assert.equal(saved.parserSnapshot?.hasBattery, "No", `"${model}" became a battery`);
     assert.ok(!owes(saved), `"${model}" owes battery rows`);
     assert.equal(resolveRecipeFieldValues(db, saved, "powerclerk").energySource, "Solar PV", `"${model}" declared storage`);
+  }
+  // MUST-PASS (Helm on #256): an expansion note AFTER a real model, a hyphenated model name, and an
+  // undecided model (TBD-class) are all batteries.
+  for (const model of ["IQ Battery 5P, pre-wired for 2nd unit", "Powerwall 3 w/ provision for future expansion", "Tesla Powerwall 3 (future expansion)",
+    "No-Break X", "Not yet selected", "None selected yet", "No model selected"]) {
+    const saved = save({ hasBattery: "No", batteryModel: model });
+    assert.equal(saved.parserSnapshot?.hasBattery, "Yes", `"${model}" lost its battery`);
+    assert.ok(owes(saved), `"${model}" owes no battery rows`);
   }
   const ex13 = save({ hasBattery: "No", batteryModel: "EX-13" });
   assert.equal(ex13.parserSnapshot?.hasBattery, "Yes", "a real model under an explicit No is still a battery");
