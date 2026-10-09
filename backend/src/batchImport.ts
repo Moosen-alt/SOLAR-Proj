@@ -88,8 +88,11 @@ export async function extractPdfPages(filePath: string, maxPages = 60): Promise<
 //
 // A PARAGRAPH is a blank line. pdf.js emits nothing for the gap between paragraphs, so a reader that
 // ends a numbered item "at a blank line" never saw one inside a page, and a letter's closing text
-// joined its last item (#260 review). A line break whose vertical gap is more than 1.5x the page's
-// usual line spacing (the median gap) is "\n\n". Pages are joined by a blank line too.
+// joined its last item (#260 review). A line break is "\n\n" when its vertical gap is more than 1.5x
+// the line height of the lines on either side (1.2x their larger font size, transform[3]) — measured
+// against the TYPE, not the page's usual spacing: on a letter whose items are all separated by blank
+// lines, the usual spacing IS the paragraph gap. Only items without a transform fall back to the
+// page's median gap. Pages are joined by a blank line too.
 export function pageTextFromItems(items: PdfjsTextItem[]): string {
   // An empty item carries only its end-of-line mark; folding it into the item before keeps it from
   // reading as a line of its own.
@@ -104,10 +107,16 @@ export function pageTextFromItems(items: PdfjsTextItem[]): string {
     return a === undefined || b === undefined ? 0 : Math.abs(a - b);
   };
   const gaps = kept.map((_, i) => (i > 0 && kept[i - 1].hasEOL ? gapAt(i) : 0)).filter((g) => g > 0).sort((a, b) => a - b);
-  const usual = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
+  const median = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
+  const fontSize = (item: PdfjsTextItem) => Math.abs(item.transform?.[3] ?? 0);
+  const paragraphAt = (i: number) => {
+    const lineHeight = 1.2 * Math.max(fontSize(kept[i - 1]), fontSize(kept[i]));
+    const unit = lineHeight > 0 ? lineHeight : median;
+    return unit > 0 && gapAt(i) > 1.5 * unit;
+  };
   let out = "";
   kept.forEach((item, i) => {
-    if (i > 0) out += !kept[i - 1].hasEOL ? " " : usual > 0 && gapAt(i) > 1.5 * usual ? "\n\n" : "\n";
+    if (i > 0) out += !kept[i - 1].hasEOL ? " " : paragraphAt(i) ? "\n\n" : "\n";
     out += item.str;
   });
   return out;
@@ -183,7 +192,7 @@ interface CorrectionFields {
 function quickExtractCorrections(text: string): Partial<CorrectionFields> {
   const appMatch = text.match(/(?:application|app|record|permit)\s*(?:number|no\.?|#)[:\s]+([A-Z0-9\-]{4,20})/i);
   // Numbered correction items. An item WRAPS: the lines after its number belong to it until the next
-  // number or a blank line (a page break), so "1. Please clarify the mounting on the / rafters shown
+  // number or a blank line (a paragraph gap or a page break — pageTextFromItems), so "1. Please clarify the mounting on the / rafters shown
   // on PV-3." is one item — its first line alone is learned truncated and in the wrong bucket.
   const items: string[] = [];
   let current: string | null = null;
@@ -391,9 +400,12 @@ export async function scanFolder(
         // Lines (#260) for quickExtractCorrections only: it reads numbered items line by line, and on
         // one-line pages it never found any — a correction PDF taught nothing. The classifier and the
         // utility match read the ONE-LINE view they were tuned on: "SINGLE LINE / DIAGRAM" wrapped
-        // across lines filed an SLD as a permit application (#260 review).
-        const lines = await extractPdfTextLines(filePath, 12);
-        const text = lines.split("\n\n").map((page) => page.replace(/\n/g, " ")).join("\n");
+        // across lines filed an SLD as a permit application (#260 review). Both views come from the
+        // same pages: a blank line inside a page is a paragraph, not a page break, so the one-line
+        // view folds every break in a page.
+        const pages = await extractPdfPageLines(filePath, 12);
+        const lines = pages.join("\n\n");
+        const text = pages.map((page) => page.replace(/\n+/g, " ")).join("\n");
         const docType = classifyDoc(filePath, text);
         summary.byType[docType]++;
 

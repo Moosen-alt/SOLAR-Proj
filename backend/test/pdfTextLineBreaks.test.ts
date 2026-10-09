@@ -152,6 +152,46 @@ run("pageTextFromItems: hasEOL → \\n, otherwise a space; an empty item only ca
     /review cycle begins$/.test(row?.sample ?? "") && !/permit desk/.test(row?.sample ?? "") && row?.correction_bucket === "C_reviewer_clarification", json(row));
 }
 {
+  // A letter whose items are ALL separated by blank lines: the usual spacing is the paragraph gap, so
+  // the paragraph is measured against the type (1.2x the font size), not the page's median gap.
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const page = pdf.addPage([612, 792]);
+  ["PLAN CHECK CORRECTION LIST", "1. Please clarify the proposed schedule for the final inspection visit",
+    "2. Please clarify which contractor will attend the final inspection visit",
+    "If you have questions about this account or application, contact the permit desk"]
+    .forEach((l, i) => page.drawText(l, { x: 54, y: 700 - i * 28, size: 10, font }));
+  const dir = fs.mkdtempSync(path.join(tmpDir, "scan-"));
+  const folder = path.join(dir, "Spaced Customer - Anytown, OR");
+  fs.mkdirSync(folder);
+  await write(await pdf.save(), "Spaced Customer - Anytown, OR correction.pdf", folder);
+  const org = db.get<{ id: string }>("SELECT id FROM orgs LIMIT 1")?.id ?? "default";
+  await scanFolder(db, dir, { orgId: org });
+  const row = db.get<{ sample: string; correction_bucket: string }>(
+    "SELECT sample, correction_bucket FROM historical_failure_examples WHERE source_label LIKE '%Spaced Customer%'");
+  run("evenly spaced items: the closing paragraph joins no item; the bucket stays a clarification",
+    !/permit desk/.test(row?.sample ?? "") && row?.correction_bucket === "C_reviewer_clarification", json(row));
+}
+{
+  // A large-font title over dense small-font notes: the title's own line gap is a paragraph, which is
+  // not a page break — the classifier still reads "SINGLE LINE DIAGRAM" as one run.
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const page = pdf.addPage([612, 792]);
+  page.drawText("SINGLE LINE", { x: 54, y: 720, size: 20, font });
+  page.drawText("DIAGRAM", { x: 54, y: 680, size: 20, font });
+  for (let i = 0; i < 12; i++) page.drawText(`NOTE ${i + 1}: ALL WORK PER THE ADOPTED CODES AND THE LOCAL AMENDMENTS`, { x: 54, y: 620 - i * 9, size: 7, font });
+  const dir = fs.mkdtempSync(path.join(tmpDir, "scan-"));
+  const folder = path.join(dir, "Title Block Customer - Anytown, OR");
+  fs.mkdirSync(folder);
+  await write(await pdf.save(), "Title Block Customer - Anytown, OR sheet4.pdf", folder);
+  const lines = (await extractPdfPageLines(path.join(folder, "Title Block Customer - Anytown, OR sheet4.pdf")))[0];
+  run("setup: the title's line gap reads as a paragraph", /SINGLE LINE\n\nDIAGRAM/.test(lines), json(lines.slice(0, 60)));
+  const org = db.get<{ id: string }>("SELECT id FROM orgs LIMIT 1")?.id ?? "default";
+  const summary = await scanFolder(db, dir, { orgId: org });
+  run("a title split by a paragraph gap still files as an SLD (a paragraph is not a page break)", summary.byType.sld === 1, json(summary.byType));
+}
+{
   // The classifier reads one line per page: a wrapped "SINGLE LINE / DIAGRAM" title is still an SLD.
   const dir = fs.mkdtempSync(path.join(tmpDir, "scan-"));
   const folder = path.join(dir, "Title Customer - Anytown, OR");
