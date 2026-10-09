@@ -1058,7 +1058,7 @@ await check("…and 'UNAVAILABLE' when it threw — the list is ABSENT, never em
   // Break the inventory at a statement ONLY documentInventory issues on this path
   // (projectDocsByType, its first line), through the real getApplicationDocumentPackage.
   // No re-implementation, no raw-SQL fakery — the production function, a real throw.
-  const BOOM = "SELECT doc_type, stored_path FROM project_documents WHERE project_id = ? ORDER BY uploaded_at DESC";
+  const BOOM = "SELECT id, doc_type, stored_path FROM project_documents WHERE project_id = ? ORDER BY uploaded_at DESC, rowid DESC";
   let armed = false;
   const brokenDb = new Proxy(db as unknown as Record<string, unknown>, {
     get(target, prop, recv) {
