@@ -22,7 +22,7 @@ const project = (snap: Record<string, unknown>): ProjectRecord => ({
 }) as unknown as ProjectRecord;
 
 check("MUST-EXCLUDE: a placeholder battery model never reaches the description of work", () => {
-  for (const model of ["N/A", "None", "No ESS", "Not included", "-"]) {
+  for (const model of ["N/A", "None", "No ESS", "Not included", "-", "No battery storage", "Future", "Battery ready"]) {
     const text = buildDescriptionOfWork(project({ batteryModel: model, hasBattery: "No" }));
     assert.doesNotMatch(text, /Battery|ESS/, `"${model}": ${text}`);
   }
@@ -33,7 +33,7 @@ check("MUST-PASS: a real battery model is described; a real model outranks a bar
 });
 check("MUST-PASS: a battery with a placeholder model but a quantity is still described, without the placeholder", () => {
   const text = buildDescriptionOfWork(project({ batteryModel: "N/A", batteryQuantity: "2" }));
-  assert.match(text, /Battery \/ ESS scope includes 2/);
+  assert.match(text, /Battery \/ ESS scope includes 2 battery units\./);
   assert.doesNotMatch(text, /N\/A/);
 });
 

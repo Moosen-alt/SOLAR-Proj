@@ -17,6 +17,7 @@
 //   K9 portalRecipes: energySource honours a bare hasBattery "No" again   → (x5) fails.
 //   K10 normalize.ts: a bare "No" beats real evidence again               → (x5) fails.
 //   K11 applicationDocs worksheets: the raw model again                   → (x4) fails.
+//   K12 batteryControls: the closed placeholder list again (not negation-led) → (x3) fails.
 //      (codeReviewRules' batteryText placeholder filter is belt and braces: #265's negation reader
 //      already denies "No ESS" / "No battery", so reverting the filter alone is not observable.)
 //   K5 essRequirements: a fire-only cite counts as "cited"             → (c7) fails.
@@ -232,6 +233,17 @@ await check("(x3) MUST-EXCLUDE: a placeholder battery model saved through create
     assert.equal(updated.parserSnapshot?.hasBattery, "No", `updateProject re-derived hasBattery from "${model}"`);
     assert.ok(!owes(getProjectDetail(db, created.id).project), `updateProject: "${model}" owes battery rows`);
   }
+  // Negation-led (Helm on #256): unlisted negations under an explicit "No" stay no battery — each was
+  // a false storage declaration when only listed spellings counted.
+  for (const model of ["No battery storage", "None at this time", "Not installed", "Future", "Battery ready", "Pre-wired for storage", "Provision for future ESS"]) {
+    const saved = save({ hasBattery: "No", batteryModel: model });
+    assert.equal(saved.parserSnapshot?.hasBattery, "No", `"${model}" became a battery`);
+    assert.ok(!owes(saved), `"${model}" owes battery rows`);
+    assert.equal(resolveRecipeFieldValues(db, saved, "powerclerk").energySource, "Solar PV", `"${model}" declared storage`);
+  }
+  const ex13 = save({ hasBattery: "No", batteryModel: "EX-13" });
+  assert.equal(ex13.parserSnapshot?.hasBattery, "Yes", "a real model under an explicit No is still a battery");
+  assert.ok(owes(ex13));
   const parsed = save({ hasBattery: false, batteryModel: "N/A" });
   assert.ok(!owes(updateProject(db, parsed.id, { acKw: "5.2" } as never).project), "a parser-made {hasBattery:false, batteryModel:'N/A'} became a battery on update");
   assert.ok(owes(save({ batteryModel: "EX-13" })), "a real model is a battery");

@@ -194,14 +194,18 @@ export function batteryDeclarationAnswer(
 export type BatteryStatus = "yes" | "no" | "unknown";
 
 /** A battery MODEL field that says there is NO battery ("N/A", "N.A.", "(none)", "None proposed",
- *  "No ESS", "Not in scope", "-"): not battery evidence, wherever a battery is asked about —
+ *  "No ESS", "Not in scope", "-", "Future", "Battery ready", "Pre-wire"): not battery evidence, wherever a battery is asked about —
  *  normalize.ts (where hasBattery is DERIVED), batteryStatus below, and every reader of it (#246). Normalized first (case, dots, parentheses,
  *  spacing, " / "), so the spellings an operator actually types all read the same. "TBD" is NOT a
  *  placeholder (operator ruling on #256): a battery whose model is undecided is still a battery, and
  *  declaring "no storage" to the utility for it would be false. */
 export function isPlaceholderBatteryModel(value: unknown): boolean {
   const v = String(value ?? "").toLowerCase().replace(/[().]/g, "").replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").trim();
-  return /^(?:n\/?a|none(?: proposed| planned| installed)?|no(?: battery| batteries| ess| storage)?|nil|null|not (?:included|applicable|used|proposed|in scope)|0|[-\u2013\u2014]+)$/.test(v);
+  // NEGATION-LED, not a closed list (Helm on #256): "No battery storage", "None at this time", "Not
+  // installed" each read as a battery when only listed spellings counted, and a real model beats an
+  // explicit "No" — so an unlisted negation became a false storage declaration to the utility. A
+  // future / battery-ready / pre-wire / provision note is a statement that there is no battery TODAY.
+  return /^(?:n\/?a|no|none|not|nil|null)\b|^(?:0|[-\u2013\u2014]+)$|\bfuture\b|\bbattery[- ]?ready\b|\bpre-?wired?\b|\bprovision(?:ed)? for\b/.test(v);
 }
 
 function batteryStr(value: unknown): string {

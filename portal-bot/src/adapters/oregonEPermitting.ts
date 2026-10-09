@@ -49,7 +49,9 @@ export function buildDescriptionOfWork(project: ProjectRecord): string {
   // storage, so this never prints "Battery / ESS scope includes N/A." on a PV-only filing.
   if (batteryStatus(s) === "yes") {
     const model = isPlaceholderBatteryModel(batteryModel) ? "" : batteryModel;
-    const battery = [batteryQty ? String(batteryQty) : "", model, essKwh ? `(${essKwh} kWh)` : ""].filter(Boolean).join(" ");
+    // A quantity with no model names its unit ("2 battery units"), never a bare number.
+    const count = batteryQty ? (model ? String(batteryQty) : `${batteryQty} battery unit${batteryQty === 1 ? "" : "s"}`) : "";
+    const battery = [count, model, essKwh ? `(${essKwh} kWh)` : ""].filter(Boolean).join(" ");
     parts.push(`Battery / ESS scope includes ${battery || "battery storage"}.`);
   }
 
