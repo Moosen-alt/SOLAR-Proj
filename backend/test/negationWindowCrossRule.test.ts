@@ -5,7 +5,9 @@
 // accepted "N/A" / "NOT USED" ANYWHERE in the window, and "EV CHARGER: N/A" on the line after a
 // real mention denied it: new false blockers on 690.12(B)(2) / 690.12(C) / the 690.13 label, a
 // missed manufactured home, false UL 2703 / 61730 and load-path findings, and a text-only
-// Powerwall that stopped warning. "N/A" and "NOT USED" now deny only DIRECTLY after the mention.
+// Powerwall that stopped warning. "N/A" and "NOT USED" now deny only DIRECTLY after the mention;
+// "NOT APPLICABLE", "MISSING", "EXCLUDED" and "BY OTHERS" only there or in the mention's own cell
+// (#271).
 //
 // Every rule that reads through affirmedIn is probed here, on two synthetic jurisdictions.
 // Every fixture is SYNTHETIC. No database, no LLM, no network.
@@ -42,8 +44,12 @@ const runIn = (state: string, ahj: string, text: string, snapshot: Record<string
 const get = (fs: ReviewerFinding[], id: string) => fs.find((f) => f.id === id);
 const sections = (f: ReviewerFinding | undefined) => (f?.codeReferences ?? []).map((r) => r.section);
 
-// The unrelated rows that follow a real mention on a schedule.
-const ROWS = ["EV CHARGER: N/A", "HOA: N/A", "GENERATOR: NOT USED"];
+// The unrelated rows that follow a real mention on a schedule. #271: "NOT APPLICABLE", "MISSING",
+// "EXCLUDED" and "BY OTHERS" on the next row denied the mention too.
+const ROWS = [
+  "EV CHARGER: N/A", "HOA: N/A", "GENERATOR: NOT USED",
+  "EV CHARGER: NOT APPLICABLE", "HOA APPROVAL: MISSING", "TRENCHING: BY OTHERS", "MAIN PANEL UPGRADE: EXCLUDED",
+];
 const RSD_BASE = "SOLAR PV SYSTEM EQUIPPED WITH RAPID SHUTDOWN";
 
 for (const [state, ahj] of JURISDICTIONS) {
@@ -92,12 +98,36 @@ for (const [state, ahj] of JURISDICTIONS) {
     assert.ok(get(runIn(state, ahj, "(1) POWERWALL - NO GENERATOR"), "city.ess.details-missing"));
     assert.ok(!get(runIn(state, ahj, "POWERWALL - NO."), "city.ess.details-missing"));
   });
+  // #271: the issue's own case — the label and an unrelated row joined by affirmedIn.
+  check(`MUST-PASS ${state}: 'LISTED RSD EQUIPMENT' then 'EV CHARGER: NOT APPLICABLE' still answers 690.12(B)(2)`, () => {
+    const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\nINSIDE ARRAY BOUNDARY: LISTED RSD EQUIPMENT\nEV CHARGER: NOT APPLICABLE`), "city.elec.rapid-shutdown-edition-evidence");
+    assert.ok(!sections(f).includes("690.12(B)(2)"), f?.message);
+  });
+  // #271 / Helm on #265: "NO." followed by a number is the number abbreviation, not a denial.
+  check(`MUST-PASS ${state}: 'RAPID SHUTDOWN INITIATOR - NO. 1 AT MAIN SERVICE' still answers 690.12(C)`, () => {
+    const f = get(runIn(state, ahj, `${RSD_BASE}.\nLISTED PV HAZARD CONTROL SYSTEM.\nRAPID SHUTDOWN INITIATOR - NO. 1 AT MAIN SERVICE`), "city.elec.rapid-shutdown-edition-evidence");
+    assert.ok(!sections(f).includes("690.12(C)"), f?.message);
+  });
+  check(`MUST-PASS ${state}: '(2) TESLA POWERWALL - NO. 2 SHOWN ON E-3' still raises the ESS review`, () => {
+    assert.ok(get(runIn(state, ahj, "(2) TESLA POWERWALL - NO. 2 SHOWN ON E-3"), "city.ess.details-missing"));
+  });
   // The direct denials #242 / #257 asked for still deny.
   check(`MUST-EXCLUDE ${state}: a denial DIRECTLY after the mention still denies it`, () => {
     assert.ok(!get(runIn(state, ahj, "POWERWALL: NOT USED"), "city.ess.details-missing"), "POWERWALL: NOT USED");
     assert.ok(!get(runIn(state, ahj, "ENERGY STORAGE (BATTERY BACKUP): NOT USED"), "city.ess.details-missing"), "(BATTERY BACKUP): NOT USED");
     const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\n690.12(B)(2)(3) - NOT USED`), "city.elec.rapid-shutdown-edition-evidence");
     assert.ok(sections(f).includes("690.12(B)(2)"), f?.message ?? "no finding");
+  });
+  // #271: the denial in the mention's own cell still denies it.
+  check(`MUST-EXCLUDE ${state}: 'LISTED RSD EQUIPMENT: NOT APPLICABLE' still denies 690.12(B)(2)`, () => {
+    for (const cell of ["LISTED RSD EQUIPMENT: NOT APPLICABLE", "LISTED RSD EQUIPMENT - BY OTHERS", "LISTED RSD EQUIPMENT MISSING", "LISTED RSD: EXCLUDED"]) {
+      const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\n${cell}`), "city.elec.rapid-shutdown-edition-evidence");
+      assert.ok(sections(f).includes("690.12(B)(2)"), `${cell}: ${f?.message ?? "no finding"}`);
+    }
+  });
+  check(`MUST-EXCLUDE ${state}: 'POWERWALL - NO.' still denies the ESS mention`, () => {
+    assert.ok(!get(runIn(state, ahj, "POWERWALL - NO."), "city.ess.details-missing"));
+    assert.ok(!get(runIn(state, ahj, "POWERWALL - NO. "), "city.ess.details-missing"));
   });
 }
 
