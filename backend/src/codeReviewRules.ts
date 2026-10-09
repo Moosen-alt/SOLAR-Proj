@@ -256,23 +256,19 @@ function mlpeDesign(project: ProjectRecord, allText: string, texts: DesignTextSo
   return { mlpe: equipment.present || isMicroOrMlpeInverter(project, allText), equipment };
 }
 
-// THE CANONICAL INVERTER KEY OUTRANKS THE RAW MICRO EVIDENCE (#270). Both edit doors (the review
-// queue's verify, updateProject) write the canonical key and its first source (inverterModel/invModel)
-// but keep the parser's pvMicro* fields — evidence is never deleted. Joined here, a micro-parsed
-// design verified to "Sunny Boy …" still read pvMicroModel "IQ8…" and kept its rapid-shutdown blocker
-// softened. A canonical key that no longer echoes its pvMicro* counterpart was set by something
-// other than the micro parse (a person, or an invModel the parser also read), so the micro fields
-// stop answering. This can only turn MLPE off — the blocker stays hard — never on.
-const MICRO_EVIDENCE_PAIRS: ReadonlyArray<readonly [string, string]> = [
-  ["inverterModel", "pvMicroModel"],
-  ["inverterQuantity", "pvMicroQty"],
-  ["inverterManufacturer", "pvMicroMake"],
-];
+// THE CANONICAL INVERTER MODEL OUTRANKS THE RAW MICRO EVIDENCE (#270). Both edit doors (the review
+// queue's verify, updateProject) write inverterModel and its first source (invModel) but keep the
+// parser's pvMicro* fields — evidence is never deleted. Joined here, a micro-parsed design verified to
+// "Sunny Boy …" still read pvMicroModel "IQ8…" and kept its rapid-shutdown blocker softened.
+// ONLY THE MODEL states the topology. Quantity and make are no statement about it, and
+// canonicalizeSnapshot fills those from invQty/invMake first — so a parser invQty next to pvMicro*,
+// a re-save, or QC's quantity fix-it diverges them on a real micro design; on a micro the brand list
+// doesn't name, that hardened a correct warning into a staging blocker (Helm, PR #274). And only a
+// mismatch between two stated models counts: an empty one supersedes nothing.
 function microEvidenceSuperseded(project: ProjectRecord): boolean {
-  return MICRO_EVIDENCE_PAIRS.some(([canonical, micro]) => {
-    const value = str(project, canonical);
-    return value !== "" && value !== str(project, micro);
-  });
+  const canonical = str(project, "inverterModel");
+  const micro = str(project, "pvMicroModel");
+  return canonical !== "" && micro !== "" && canonical !== micro;
 }
 
 function isMicroOrMlpeInverter(project: ProjectRecord, allText: string): boolean {
@@ -572,7 +568,9 @@ function readableDocumentText(text: unknown): boolean {
 
 /** A microinverter design has no DC PV source circuits to label beyond the module leads. */
 function isMicroinverterDesign(project: ProjectRecord, allText: string): boolean {
-  if (str(project, "pvMicroModel") || str(project, "pvMicroQty")) return true;
+  // Same supersession rule as isMicroOrMlpeInverter (#270), so the two readers agree on a row
+  // verified away from its micro parse: its DC-circuit labels come back.
+  if (!microEvidenceSuperseded(project) && (str(project, "pvMicroModel") || str(project, "pvMicroQty"))) return true;
   const inverter = [str(project, "invModel"), str(project, "inverterModel")].filter(Boolean).join("\n");
   if (inverter.trim()) return /micro.?inverter|hoymiles|apsystems/i.test(inverter) || ENPHASE_MICRO.test(inverter);
   return /micro.?inverter/i.test(allText);

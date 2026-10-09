@@ -258,6 +258,44 @@ for (const [state, ahj] of JURISDICTIONS) {
   });
 }
 
+console.log("\nE. #270 — a canonical MODEL that differs from pvMicroModel supersedes the micro evidence; nothing else does");
+
+// Micros the brand list does not name, so only pvMicroQty's "microinverter" makes them MLPE: an
+// older Enphase M-series and an APsystems DS3D. Snapshots are in their stored (canonicalized) shape.
+const SUNNY = "Sunny Boy SB7.7-1SP-US-41";
+const unnamedMicro = (model: string, extra: Record<string, unknown> = {}) => ({
+  pvMicroMake: "Testmicro", pvMicroModel: model, pvMicroQty: "10",
+  inverterManufacturer: "Testmicro", inverterModel: model, inverterQuantity: "10", ...extra,
+});
+const LABELS_ONLY = "LABEL SCHEDULE: SERVICE EQUIPMENT DIRECTORY.";
+const labelSections = (snapshot: Record<string, unknown>) =>
+  (get(run("2023", LABELS_ONLY, snapshot), "city.elec.labels-edition-missing")?.evidenceNeeded ?? []).join(" | ");
+
+for (const model of ["M215-60-2LL-S22", "DS3D"]) {
+  check(`MUST-EXCLUDE (Helm probe D1): ${model} micro + a parser invQty/invMake (quantity/make diverged) stays MLPE`, () => {
+    const snap = unnamedMicro(model, { invQty: "12", inverterQuantity: "12", invMake: "Other", inverterManufacturer: "Other" });
+    assert.equal(isMlpeDesignForProject(project(PLACARD, snap)), true);
+  });
+  check(`MUST-EXCLUDE: ${model} micro after a quantity fix-it (inverterQuantity/invQty "18") stays MLPE`, () => {
+    assert.equal(isMlpeDesignForProject(project(PLACARD, unnamedMicro(model, { invQty: "18", inverterQuantity: "18" }))), true);
+  });
+}
+check("MUST-PASS: a micro-parsed row whose inverterModel was verified to a string inverter is not MLPE", () => {
+  assert.equal(isMlpeDesignForProject(project(PLACARD, unnamedMicro("DS3D", { invModel: SUNNY, inverterModel: SUNNY }))), false);
+});
+check("an empty model on either side supersedes nothing (pvMicroQty still answers)", () => {
+  assert.equal(isMlpeDesignForProject(project(PLACARD, { pvMicroQty: "10", inverterQuantity: "10" })), true);
+  assert.equal(isMlpeDesignForProject(project(PLACARD, unnamedMicro("DS3D", { inverterModel: "" }))), true);
+});
+check("the label reader agrees (isMicroinverterDesign): the verified row gets the string design's DC labels back", () => {
+  const micro = labelSections(unnamedMicro("DS3D"));
+  const verified = labelSections(unnamedMicro("DS3D", { invModel: SUNNY, inverterModel: SUNNY }));
+  const string = labelSections({ invModel: SUNNY, inverterModel: SUNNY });
+  assert.notEqual(micro, string, "fixture must distinguish micro from string labels");
+  assert.equal(verified, string, `verified: ${verified}\nstring:   ${string}`);
+  assert.equal(labelSections(unnamedMicro("DS3D", { invQty: "12", inverterQuantity: "12" })), micro, "a quantity divergence must not drop the micro reading");
+});
+
 if (failures) {
   console.error(`\n${failures} check(s) failed`);
   process.exit(1);

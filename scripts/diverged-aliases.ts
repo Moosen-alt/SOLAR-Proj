@@ -1,7 +1,7 @@
 // WHICH PROJECTS CARRY A CANONICAL ALIAS THAT DISAGREES WITH ITS SOURCE? (#238)
 //
 //   npx tsx scripts/diverged-aliases.ts            # every org
-//   npx tsx scripts/diverged-aliases.ts --org <id> # one org
+//   npx tsx scripts/diverged-aliases.ts --org <id> # one org (or --org=<id>)
 //
 // Before #225 (updateProject) and #238 (the review queue), editing invModel/invQty/… left the
 // derived inverterModel/inverterQuantity/… behind. Such a stored alias now differs from its source,
@@ -14,15 +14,27 @@
 import "dotenv/config";
 
 // A BARE --org IS A MISTAKE, NOT "EVERY ORG" (#270). It used to map to null, which reads across all
-// tenants — the opposite of what the operator asked for. Refused before the database is opened.
-const argv = process.argv.slice(2);
-const orgIndex = argv.indexOf("--org");
-const orgArg = orgIndex >= 0 ? argv[orgIndex + 1] : undefined;
-if (orgIndex >= 0 && (orgArg === undefined || orgArg.trim() === "" || orgArg.startsWith("--"))) {
-  console.error("usage: npx tsx scripts/diverged-aliases.ts [--org <id>]   (--org needs an org id; omit it for every org)");
+// tenants — the opposite of what the operator asked for. Both spellings (`--org <id>`, `--org=<id>`)
+// are read; an empty id, a repeated --org, or any argument this script doesn't know is a usage error,
+// so nothing an operator mistypes can widen the read. Refused before the database is opened.
+const usage = (why: string): never => {
+  console.error(`${why}\nusage: npx tsx scripts/diverged-aliases.ts [--org <id> | --org=<id>]   (omit --org for every org)`);
   process.exit(2);
+};
+const argv = process.argv.slice(2);
+let orgId: string | null = null;
+let orgSeen = false;
+for (let i = 0; i < argv.length; i++) {
+  const arg = argv[i];
+  let value: string | undefined;
+  if (arg === "--org") value = argv[++i];
+  else if (arg.startsWith("--org=")) value = arg.slice("--org=".length);
+  else usage(`unknown argument: ${arg}`);
+  if (orgSeen) usage("--org given more than once");
+  if (value === undefined || value.trim() === "" || value.startsWith("--")) usage("--org needs an org id");
+  orgSeen = true;
+  orgId = value!.trim();
 }
-const orgId: string | null = orgIndex >= 0 ? orgArg!.trim() : null;
 
 process.env.AUTOPILOT_DB_PATH = process.env.AUTOPILOT_DB_PATH || "backend/data/autopilot.sqlite";
 const { openDatabase } = await import("../backend/src/db");

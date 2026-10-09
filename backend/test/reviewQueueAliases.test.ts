@@ -213,12 +213,29 @@ for (const [door, edit] of [["inverterModel", { inverterModel: SUNNY }], ["invMo
   check("…while null still reads every org", listDivergedAliasProjects(db, null).length >= 2);
   const script = path.resolve(import.meta.dirname, "../../scripts/diverged-aliases.ts");
   const scratchDb = path.join(tmpDir, "script-must-not-open.sqlite");
-  for (const args of [["--org"], ["--org", ""], ["--org", "--verbose"]]) {
-    const run = spawnSync(process.execPath, ["--import", "tsx", script, ...args], {
-      encoding: "utf8", env: { ...process.env, AUTOPILOT_DB_PATH: scratchDb }, timeout: 60_000,
-    });
+  const runScript = (args: string[], dbPath: string) => spawnSync(process.execPath, ["--import", "tsx", script, ...args], {
+    encoding: "utf8", env: { ...process.env, AUTOPILOT_DB_PATH: dbPath }, timeout: 60_000,
+  });
+  const refused = [
+    ["--org"], ["--org", ""], ["--org", "  "], ["--org", "--verbose"],
+    ["--org="], ["--org= "], ["--verbose"], ["--orgs=acme"], ["acme"], ["--org=a", "--org=b"],
+  ];
+  for (const args of refused) {
+    const run = runScript(args, scratchDb);
     check(`script ${JSON.stringify(args)} exits with a usage error`, run.status === 2 && /usage:/.test(run.stderr), { status: run.status, stderr: run.stderr.slice(0, 300) });
     check(`script ${JSON.stringify(args)} never opens the database`, !fs.existsSync(scratchDb));
+  }
+  // Both spellings of a real org id read ONLY that org (the = form used to fall through to every org).
+  const otherOrg = "org-238-other";
+  const short = (orgId: string) => db.query<{ id: string }>("SELECT id FROM projects WHERE org_id = ?", [orgId]).map((r) => r.id.slice(0, 8));
+  const otherIds = short(otherOrg);
+  const defaultIds = short(DEFAULT_ORG_ID);
+  for (const args of [[`--org=${otherOrg}`], ["--org", otherOrg]]) {
+    const run = runScript(args, process.env.AUTOPILOT_DB_PATH!);
+    const listed = (run.stdout.match(/^[0-9a-f]{8}(?=\s)/gm) ?? []);
+    check(`script ${JSON.stringify(args)} lists only that org's projects`,
+      run.status === 0 && listed.length > 0 && listed.every((p) => otherIds.includes(p)) && !listed.some((p) => defaultIds.includes(p)),
+      { status: run.status, listed, stderr: run.stderr.slice(0, 300) });
   }
 }
 
