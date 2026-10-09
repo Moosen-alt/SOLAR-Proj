@@ -436,24 +436,40 @@ function correctionSignature(correction: KnowledgeFacts["correction"]): string {
   return normalize(`${correction.bucket} ${correction.rootCause} ${correction.requiredAction}`);
 }
 
-// A digit run grouped by space, dash, en dash, dot or "#" — the separators wordingNamesProject
-// ignores ("/" aside: "120/240 V" is a service voltage). Identifier-shaped once it holds 5+
-// digits: "80 000 1234", "1234-5678-90", "SA# 1234 5678", or a bare "8000012345". Applied after
-// the phone rule so a phone keeps its own tag.
-const GROUPED_DIGITS = /(?<!\d)\d+(?:[\s\-\u2013.#]+\d+)*(?!\d)/g;
-// ...unless the whole run is a date ("2026-10-08", "10.08.2026") or a code section ("690.12",
-// "R324.6" — its letter is outside the run), which a correction sample must keep readable.
-const READABLE_DIGIT_RUN = /^(?:\d{4}[-.]\d{1,2}[-.]\d{1,2}|\d{1,2}[-.]\d{1,2}[-.](?:\d{2}|\d{4})|\d{1,4}\.\d{1,3})$/;
+// A digit run grouped by spaces/tabs, a dash (ASCII, Unicode or minus), "#", or a dot with a
+// digit straight after it — the separators wordingNamesProject ignores ("/" aside: "120/240 V" is
+// a service voltage). Identifier-shaped once it holds 5+ digits: "80 000 1234", "1234-5678-90",
+// "SA# 1234 5678", or a bare "8000012345". NOT a separator: a newline (a numbered letter's "2."
+// would join the line before it) or a sentence-ending ". ". Applied after the phone rule so a
+// phone keeps its own tag.
+const GROUPED_DIGITS = /(?<!\d)\d+(?:(?:[ \t\-‐-―−#]|\.(?=\d))+\d+)*(?!\d)/g;
+// ...unless EVERY space-separated chunk of the run is a shape a reviewer must still read: a
+// plausible date ("2026-10-08", "10.08.2026" — a 19xx/20xx year, month 1-12, day 1-31, one
+// separator), a code section ("690.12", "R324.6.1" — its letter is outside the run; no leading
+// zero, at most 7 digits, so "1234.567" is not one), an edition ("1547-2018") or a bare year ("690.12 2023").
+const READABLE_DATE = /^(?:(?:19|20)\d{2}([-.])(?:0?[1-9]|1[0-2])\1(?:0?[1-9]|[12]\d|3[01])|(?:0?[1-9]|1[0-2])([-.])(?:0?[1-9]|[12]\d|3[01])\2(?:(?:19|20)\d{2}|\d{2})|(?:0?[1-9]|[12]\d|3[01])([-.])(?:0?[1-9]|1[0-2])\3(?:19|20)\d{2})$/;
+const READABLE_SECTION = /^(?:[1-9]\d{0,2}\.\d{1,3}(?:\.\d{1,2})*|[1-9]\d{3}(?:\.\d{1,2})+)$/;
+const READABLE_EDITION = /^[1-9]\d{1,4}(?:\.\d{1,2})?-(?:19|20)\d{2}$/;
+const READABLE_YEAR = /^(?:19|20)\d{2}$/;
+const readableChunk = (chunk: string): boolean =>
+  READABLE_DATE.test(chunk) || READABLE_EDITION.test(chunk) || READABLE_YEAR.test(chunk) ||
+  (READABLE_SECTION.test(chunk) && chunk.replace(/\D/g, "").length <= 7);
+const scrubDigitRun = (run: string): string =>
+  run.replace(/\D/g, "").length >= 5 && !run.split(/[ \t]+/).every(readableChunk) ? "[number]" : run;
 
 // Strip PII (emails, street addresses, identifier-shaped digit runs, phone numbers) from a
-// learning/email sample and cap its length. Shared by redactSample/redactEmailText.
+// learning/email sample and cap its length. Shared by redactSample/redactEmailText. Scrubs
+// BEFORE clean() collapses newlines into spaces (each whitespace run becomes one "\n" or " ",
+// so the address and phone rules match exactly what they matched on the collapsed text).
 function redact(value: string, maxLen: number): string {
-  return clean(value)
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
-    .replace(/\b\d{2,6}\s+[A-Z0-9 .'-]{3,60}\s+(?:ST|STREET|AVE|AVENUE|RD|ROAD|DR|DRIVE|LN|LANE|CT|COURT|PL|PLACE|WAY|BLVD|CIR|CIRCLE)\b(?:[, ]+[A-Z .'-]{2,40})?/gi, "[address]")
-    .replace(/\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b/g, "[phone]")
-    .replace(GROUPED_DIGITS, (run) => (run.replace(/\D/g, "").length >= 5 && !READABLE_DIGIT_RUN.test(run) ? "[number]" : run))
-    .slice(0, maxLen);
+  const lines = text(value).replace(/\s+/g, (ws) => (/[\r\n]/.test(ws) ? "\n" : " "));
+  return clean(
+    lines
+      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
+      .replace(/\b\d{2,6}\s+[A-Z0-9\s.'-]{3,60}\s+(?:ST|STREET|AVE|AVENUE|RD|ROAD|DR|DRIVE|LN|LANE|CT|COURT|PL|PLACE|WAY|BLVD|CIR|CIRCLE)\b(?:[,\s]+[A-Z\s.'-]{2,40})?/gi, "[address]")
+      .replace(/\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b/g, "[phone]")
+      .replace(GROUPED_DIGITS, scrubDigitRun),
+  ).slice(0, maxLen);
 }
 
 function redactSample(value: string): string {
@@ -466,6 +482,8 @@ export function redactEmailText(value: string): string {
 
 export interface ClassifiedMboxMessage {
   sourceSignature: string;
+  /** The pre-#277 signature of the same message (mboxSourceSignatures) — dedupe checks both. */
+  legacySourceSignature: string;
   sourceLabel: string;
   subject: string;
   from: string;
@@ -479,6 +497,27 @@ export interface ClassifiedMboxMessage {
 
 function signatureFor(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+// The mbox message's dedupe signature. Seeded from the body itself (hashed, never stored), not
+// from its redacted form, so a change to redact() can never make a re-imported mailbox look new.
+// The LEGACY signature is the one written before #277 — the body as redact() read it then. It is
+// frozen here (never edit it) and looked up alongside, so a mailbox imported before this change
+// is still recognised on re-import instead of duplicating rows and inflating the shared rollup.
+function legacyMboxBodySeed(body: string): string {
+  return clean(body)
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
+    .replace(/\b\d{2,6}\s+[A-Z0-9 .'-]{3,60}\s+(?:ST|STREET|AVE|AVENUE|RD|ROAD|DR|DRIVE|LN|LANE|CT|COURT|PL|PLACE|WAY|BLVD|CIR|CIRCLE)\b(?:[, ]+[A-Z .'-]{2,40})?/gi, "[address]")
+    .replace(/\b\d{5,}\b/g, "[number]")
+    .replace(/\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b/g, "[phone]")
+    .slice(0, 180);
+}
+
+function mboxSourceSignatures(sourceLabel: string, subject: string, date: string, body: string): { sourceSignature: string; legacySourceSignature: string } {
+  return {
+    sourceSignature: signatureFor(`mbox-v2|${sourceLabel}|${subject}|${date}|${clean(body).slice(0, 180)}`),
+    legacySourceSignature: signatureFor(`${sourceLabel}|${subject}|${date}|${legacyMboxBodySeed(body)}`),
+  };
 }
 
 function hashValue(value: string): string {
@@ -1778,7 +1817,7 @@ export async function classifyMboxMessages(input: {
     const date = parsed.headers.date || "";
     const body = parsed.body.slice(0, 12000);
     const combined = `${subject}\n${from}\n${body}`;
-    const sourceSignature = signatureFor(`${sourceLabel}|${subject}|${date}|${redactSample(body).slice(0, 180)}`);
+    const { sourceSignature, legacySourceSignature } = mboxSourceSignatures(sourceLabel, subject, date, body);
     const built = buildMboxLearningRecord({
       combined,
       subject,
@@ -1797,6 +1836,7 @@ export async function classifyMboxMessages(input: {
     }
     messages.push({
       sourceSignature,
+      legacySourceSignature,
       sourceLabel,
       subject,
       from,
@@ -1887,8 +1927,8 @@ async function runMboxImport(
     const date = parsed.headers.date || "";
     const body = parsed.body.slice(0, 12000);
     const combined = `${subject}\n${from}\n${body}`;
-    const sourceSignature = signatureFor(`${sourceLabel}|${subject}|${date}|${redactSample(body).slice(0, 180)}`);
-    if (db.get<Row>("SELECT id FROM mbox_learning_records WHERE source_signature = ?", [sourceSignature])) {
+    const { sourceSignature, legacySourceSignature } = mboxSourceSignatures(sourceLabel, subject, date, body);
+    if (db.get<Row>("SELECT id FROM mbox_learning_records WHERE source_signature IN (?, ?)", [sourceSignature, legacySourceSignature])) {
       duplicateMessages += 1;
       continue;
     }

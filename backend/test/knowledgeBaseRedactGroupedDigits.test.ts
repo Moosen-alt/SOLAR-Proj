@@ -6,8 +6,15 @@
 // with separators IGNORED, as wordingNamesProject does, and keeps the shapes a reviewer must
 // still read: dates, code sections, dimensions, ratings.
 //
+// redact() feeds enrichMboxLearningWithLlm -> the triage model, so this is a rule-2 model path.
+// It scrubs before clean() folds newlines (a numbered letter's "2." must not join the line above),
+// and the mbox dedupe signature no longer hashes the redacted body, so a mailbox imported before
+// this change is not imported twice (legacy signature looked up alongside).
+//
 // KILL (verified red by hand): drop the GROUPED_DIGITS replace (restore the \b\d{5,}\b line) →
-// every MUST-PASS check fails; drop the READABLE_DIGIT_RUN test → the date and "690.12" checks fail.
+// every MUST-PASS check fails; drop the readableChunk test → the date/section/letter checks fail;
+// scrub after clean() → the numbered-letter check fails; drop the legacy signature from the
+// dedupe lookup → the cross-version re-import check fails.
 //
 // All numbers are synthetic.
 //
@@ -33,6 +40,11 @@ async function main(): Promise<void> {
     ["#-grouped service agreement", "SA#1234#5678 on the application."],
     ["en-dash-grouped meter", "Meter 4321–8765 per the photo."],
     ["mixed separators", "ESI ID 1008 9012-3456.78 is required."],
+    ["Unicode-dash-grouped meter", "Meter 1234\u20105678 and 2345\u20116789 and 3456\u20127890 and 4567\u20148901 and 5678\u22129012."],
+    ["implausible ISO date shape", "Account 1234-56-78 on the bill."],
+    ["implausible US date shape", "Account 99-99-9999 on the bill."],
+    ["dotted 4.3 run", "Meter 1234.567 on the photo."],
+    ["section-shaped 3-level run with 3-digit tail", "Meter 123.456.789 on the photo."],
     ["bare long run (prior behaviour kept)", "Account 8000012345 is wrong."],
     ["letter-prefixed run", "Ref ACCT00012345 on file."],
   ];
@@ -54,11 +66,37 @@ async function main(): Promise<void> {
     ["spacing", "Attachments at 48 IN O.C. max."],
     ["service voltage", "Service is 120/240 V single phase."],
     ["code edition", "Per the 2023 NEC and 2022 CEC."],
+    ["multi-level section", "Per CRC R324.6.1 and IBC 1507.3.1."],
+    ["standard edition", "Inverter listed to IEEE 1547-2018 and UL 1741."],
+    ["section then year", "Per NEC 690.12 2023 edition."],
+    ["sentence-ending section", "Label per NEC 690.56. 2026 rules apply."],
   ];
   for (const [label, input] of readable) {
     const out = kb.redactEmailText(input);
     check(`MUST-EXCLUDE: ${label} stays readable`, out === input, out);
   }
+
+  // wordingNamesProject reads the same dashes, so the shared-table guard stays in step.
+  const { wordingNamesProject } = await import("../src/ahjReviewRules");
+  for (const dash of ["\u2010", "\u2011", "\u2012", "\u2014", "\u2212"]) {
+    check(`wordingNamesProject flags a U+${dash.charCodeAt(0).toString(16).toUpperCase()}-grouped number`, wordingNamesProject(`Meter 123${dash}45`, {}));
+  }
+
+  // A realistic numbered correction letter: a list number on the next line must not join the
+  // section / edition / date that ends the line above it.
+  const letter = [
+    "CORRECTION NOTICE 2026-10-08",
+    "1. Provide the roof access pathway per CRC R324.6.1",
+    "2. Provide placards per NEC 690.56",
+    "3. Inverter must be listed to IEEE 1547-2018",
+    "4. Resubmit by 10.22.2026",
+    "5. Account 80 000 1234 does not match the bill",
+  ].join("\n");
+  const letterOut = kb.redactEmailText(letter);
+  for (const keep of ["2026-10-08", "R324.6.1", "690.56", "1547-2018", "10.22.2026", "2. Provide", "4. Resubmit", "5. Account"]) {
+    check(`MUST-EXCLUDE: the numbered letter keeps "${keep}"`, letterOut.includes(keep), letterOut);
+  }
+  check("MUST-PASS: …while its account number is redacted", !letterOut.includes("80 000 1234") && letterOut.includes("Account [number]"), letterOut);
 
   // A phone keeps its own tag (the grouped rule runs after it).
   check("a phone number is still tagged [phone]", kb.redactEmailText("Call 555-010-1234 today.") === "Call [phone] today.", kb.redactEmailText("Call 555-010-1234 today."));
@@ -86,6 +124,41 @@ async function main(): Promise<void> {
   const sample = rows[0]?.sample ?? "";
   check("the stored sample carries neither grouped number", !sample.includes("80 000 1234") && !sample.includes("1234-5678-90") && !/\d{4}[-\s]\d{4}/.test(sample), sample);
   check("…and keeps the date and the code section readable", sample.includes("2026-10-08") && sample.includes("690.12(B)(2)"), sample);
+
+  // CROSS-VERSION RE-IMPORT: a mailbox imported before this change carries the OLD signature —
+  // the body as the old redact() read it. Frozen copy of that formula, as main had it:
+  const crypto = await import("node:crypto");
+  const legacySeed = (body: string): string => body.replace(/\s+/g, " ").trim()
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
+    .replace(/\b\d{2,6}\s+[A-Z0-9 .'-]{3,60}\s+(?:ST|STREET|AVE|AVENUE|RD|ROAD|DR|DRIVE|LN|LANE|CT|COURT|PL|PLACE|WAY|BLVD|CIR|CIRCLE)\b(?:[, ]+[A-Z .'-]{2,40})?/gi, "[address]")
+    .replace(/\b\d{5,}\b/g, "[number]")
+    .replace(/\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b/g, "[phone]")
+    .slice(0, 240).slice(0, 180);
+  const LABEL = "synthetic.mbox";
+  const SUBJECT = "Pacific Power PowerClerk correction required";
+  const DATE = "Mon, 15 Jun 2026 10:00:00 -0700";
+  const BODY = "Correction required. Pacific Power PowerClerk application account 80 000 1234 does not match the bill and the meter photo is missing. Please revise and resubmit.";
+  const mbox = `From reviewer@example.com Mon Jun 15 10:00:00 2026\nSubject: ${SUBJECT}\nDate: ${DATE}\n\n${BODY}\n`;
+  const legacySig = crypto.createHash("sha256").update(`${LABEL}|${SUBJECT}|${DATE}|${legacySeed(BODY)}`).digest("hex");
+  const classified = await kb.classifyMboxMessages({ mboxText: mbox, sourceLabel: LABEL });
+  check("the classified message carries the pre-change signature as legacySourceSignature",
+    classified.messages[0]?.legacySourceSignature === legacySig, String(classified.messages[0]?.legacySourceSignature));
+  check("…and a new signature that does not hash the redacted body", Boolean(classified.messages[0]?.sourceSignature) && classified.messages[0]?.sourceSignature !== legacySig);
+
+  const count = (table: string): number => Number(db.get<{ c: number }>(`SELECT COUNT(*) c FROM ${table}`)?.c ?? 0);
+  const first = await kb.importMboxKnowledge(db, { orgId: "org-redact", mboxText: mbox, sourceLabel: LABEL });
+  check("SETUP: the first import wrote one learning record and one failure row",
+    first.learningEvents === 1 && first.failureExamplesImported === 1, JSON.stringify({ e: first.learningEvents, f: first.failureExamplesImported }));
+  // Turn that import into one made BEFORE the upgrade: its rows carry the legacy signature.
+  db.run("UPDATE mbox_learning_records SET source_signature = ?", [legacySig]);
+  const before = { records: count("mbox_learning_records"), failures: count("historical_failure_examples"), shared: db.query<{ c: string }>("SELECT common_corrections_json c FROM permit_utility_knowledge").map((r) => r.c).join("|") };
+  const again = await kb.importMboxKnowledge(db, { orgId: "org-redact", mboxText: mbox, sourceLabel: LABEL });
+  check("re-importing the pre-upgrade mailbox is recognised as a duplicate", again.duplicateMessages === 1 && again.learningEvents === 0, JSON.stringify({ d: again.duplicateMessages, e: again.learningEvents }));
+  check("…writes no new learning record or failure row", count("mbox_learning_records") === before.records && count("historical_failure_examples") === before.failures,
+    JSON.stringify({ records: count("mbox_learning_records"), failures: count("historical_failure_examples"), before }));
+  check("…and leaves the shared rollup unchanged", db.query<{ c: string }>("SELECT common_corrections_json c FROM permit_utility_knowledge").map((r) => r.c).join("|") === before.shared);
+  const third = await kb.importMboxKnowledge(db, { orgId: "org-redact", mboxText: mbox.replace(BODY, `${BODY} Second notice.`), sourceLabel: LABEL });
+  check("positive control: a genuinely different message still imports", third.learningEvents === 1, JSON.stringify({ e: third.learningEvents, d: third.duplicateMessages }));
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nall checks passed");
