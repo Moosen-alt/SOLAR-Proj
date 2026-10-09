@@ -2611,7 +2611,11 @@ async function designCriteriaResearchBody(
   };
   const own = resolveCriteriaWriteRow(db, state, ahj);
   const dcNow = own && own.kind !== "create" ? own.profile.designCriteria ?? {} : {};
-  const criteriaAnswered = (typeof dcNow.groundSnowLoadPsf === "number" || typeof dcNow.groundSnowLoadAsdPsf === "number") && typeof dcNow.windSpeedMph === "number";
+  // ANSWERED needs the STRENGTH-LEVEL pg (#258), as researchWithIssuerPage does: a row holding only
+  // the ASD pg (2024 IRC Table R301.2) plus wind still runs the lookup for the pg it lacks. NOTE: the
+  // scheduler gate (ensureDesignCriteriaResearched's snowAnswered) still counts ASD-only as answered, so
+  // such a row is not re-queued on its own; whether it should be is a cost call, ruled separately.
+  const criteriaAnswered = typeof dcNow.groundSnowLoadPsf === "number" && typeof dcNow.windSpeedMph === "number";
   // EVERY CHECKLIST ITEM IS RECORDED (found / weak source / not found / not researched) on the row
   // and in the job result, so a criterion nobody found is a visible gap, never a silent pass.
   const ownProfile = () => {

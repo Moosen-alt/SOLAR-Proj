@@ -414,7 +414,209 @@ await check("no candidate page before the hubs: the hub phase gets the smaller b
 await check("a hub that links the table still reaches it inside the hub budget (WordPress: one hub, then its PDF)", async () => {
   const probe = await P.probeIssuerDesignCriteria(reader(), { host: "www.examplefieldco.gov", ahj: WP.ahj, state: WP.state });
   assert.equal(probe.candidateUrl, WP_PDF);
-  assert.equal(probe.hubBudget, P.ISSUER_PROBE_HUB_READS);
+  assert.equal(probe.hubBudget, 3, "the hub budget is three reads (a literal: the constant alone would pass vacuously)");
+});
+
+// ── 8. #258: one hub at a time; the strength-level pg ───────────────────────────────────
+console.log("8. the hubs are visited one at a time; ASD-only is not answered on file either (#258)");
+
+// Two hubs; the first links a bare "Snow Load Map" and THEN the "Design Criteria" table. Reading
+// both hubs back to back left one read, which the snow-load map spent. On two platforms (synthetic).
+const twoHubSite = (origin: string, head: string, hubPaths: [string, string]) => {
+  serve(`${origin}/`, { contentType: "text/html", text: html(`<h1>City Home</h1><a href="${hubPaths[0]}">Building</a><a href="${hubPaths[1]}">Permits</a>`, head) });
+  serve(`${origin}${hubPaths[0]}`, { contentType: "text/html", text: html(`<h1>Building</h1><a href="${hubPaths[0]}/snow-load-map">Snow Load Map</a><a href="${hubPaths[0]}/criteria-table">Design Criteria</a>`, head) });
+  serve(`${origin}${hubPaths[1]}`, { contentType: "text/html", text: html(`<h1>Permits</h1><a href="${hubPaths[1]}/fees">Permit Fees</a>`, head) });
+  serve(`${origin}${hubPaths[0]}/snow-load-map`, { contentType: "text/html", text: html(`<h1>Snow Load Map</h1><img src="/images/snow-map.png" alt="map">`, head) });
+  serve(`${origin}${hubPaths[0]}/criteria-table`, { contentType: "text/html", text: html(`<h1>Design Criteria</h1><table>
+<tr><td>Ground Snow Load, Pg</td><td>45 psf</td></tr>
+<tr><td>Ultimate Design Wind Speed</td><td>105 mph</td></tr>
+</table>`, head) });
+  return `${origin}${hubPaths[0]}/criteria-table`;
+};
+const TH1 = { state: "UT", ahj: "City of Ashgrove" };
+const TH1_PAGE = twoHubSite("https://www.ashgroveut.gov", CIVICPLUS_HEAD, ["/150/Building", "/160/Permits"]);
+const TH2 = { state: "WA", ahj: "City of Quillmont" };
+const TH2_PAGE = twoHubSite("https://www.quillmontwa.gov", GOVACCESS_HEAD, ["/departments/building", "/departments/permits"]);
+seedProcess(TH1, "https://www.ashgroveut.gov/");
+seedProcess(TH2, "https://www.quillmontwa.gov/");
+
+await check("MUST-PASS: two hubs, \"Snow Load Map\" then \"Design Criteria\": the table is reached inside the 3-read hub budget (CivicPlus and govAccess)", async () => {
+  for (const [who, host, page] of [[TH1, "www.ashgroveut.gov", TH1_PAGE], [TH2, "www.quillmontwa.gov", TH2_PAGE]] as const) {
+    const probe = await P.probeIssuerDesignCriteria(reader(), { host, ahj: who.ahj, state: who.state });
+    assert.equal(probe.candidateUrl, page, `${host}: read ${probe.pagesRead.map((r) => r.url).join(", ")}`);
+    assert.equal(probe.hubBudget, 3);
+    assert.ok(probe.pagesRead.length <= 3 + 3, `${host}: the probe read ${probe.pagesRead.length} pages`);
+    assert.ok(!probe.pagesRead.some((r) => /\/permits$/i.test(r.url)), `${host}: the second hub was read though the first one's candidate answered`);
+    assert.equal(P.probeAnswered(probe.raw), true);
+  }
+  calls.length = 0;
+  const r = await CP.runDesignCriteriaResearch(db, TH1, fakeLlm(), reader());
+  assert.equal(calls.length, 0, `a web-search round was spent: ${JSON.stringify(calls)}`);
+  assert.deepEqual(r.issuerPage, { url: TH1_PAGE, parsed: true });
+  const row = ownRow(TH1)!;
+  assert.equal(row.profile.confidence, "seeded");
+  assert.equal(row.profile.designCriteria.groundSnowLoadPsf, 45);
+  assert.equal(row.profile.designCriteria.windSpeedMph, 105);
+});
+
+// The home page links an image-only "Snow Load Map" AND a Building hub; the hub links the table.
+// The map is found before the hubs, and the first hub must still be read (Helm's #263 review).
+const mapThenHubSite = (origin: string, head: string, hub: string) => {
+  serve(`${origin}/`, { contentType: "text/html", text: html(`<h1>City Home</h1><a href="/snow-load-map">Snow Load Map</a><a href="${hub}">Building</a>`, head) });
+  serve(`${origin}/snow-load-map`, { contentType: "text/html", text: html(`<h1>Snow Load Map</h1><img src="/images/snow-map.png" alt="map">`, head) });
+  serve(`${origin}${hub}`, { contentType: "text/html", text: html(`<h1>Building</h1><a href="${hub}/criteria">Design Criteria</a>`, head) });
+  serve(`${origin}${hub}/criteria`, { contentType: "text/html", text: html(`<h1>Design Criteria</h1><table>
+<tr><td>Ground Snow Load, Pg</td><td>60 psf</td></tr>
+<tr><td>Ultimate Design Wind Speed</td><td>100 mph</td></tr>
+</table>`, head) });
+  return `${origin}${hub}/criteria`;
+};
+const MH1 = { state: "UT", ahj: "City of Mosspoint" };
+const MH1_PAGE = mapThenHubSite("https://www.mosspointut.gov", CIVICPLUS_HEAD, "/150/Building");
+const MH2 = { state: "CO", ahj: "Town of Wrenfield" };
+const MH2_PAGE = mapThenHubSite("https://www.wrenfieldco.gov", WP_HEAD, "/departments/building");
+seedProcess(MH1, "https://www.mosspointut.gov/");
+seedProcess(MH2, "https://www.wrenfieldco.gov/");
+
+await check("MUST-PASS: a snow-load map found before the hubs does not skip the first hub; its table is read with no web round (CivicPlus and WordPress)", async () => {
+  for (const [who, page] of [[MH1, MH1_PAGE], [MH2, MH2_PAGE]] as const) {
+    calls.length = 0;
+    const r = await CP.runDesignCriteriaResearch(db, who, fakeLlm(), reader());
+    assert.equal(calls.length, 0, `${who.ahj}: a web-search round was spent: ${JSON.stringify(calls)}`);
+    assert.deepEqual(r.issuerPage, { url: page, parsed: true });
+    const row = ownRow(who)!;
+    assert.equal(row.profile.confidence, "seeded");
+    assert.equal(row.profile.designCriteria.groundSnowLoadPsf, 60);
+    assert.equal(row.profile.designCriteria.windSpeedMph, 100);
+  }
+});
+
+// The home page links an image-only "Snow Load Map", "Building" and "Permits"; the table is under
+// PERMITS. The unparsed map is not "found", so the second hub is still read (Helm's #263 re-review).
+const mapTwoHubSite = (origin: string, head: string, hubs: [string, string]) => {
+  serve(`${origin}/`, { contentType: "text/html", text: html(`<h1>City Home</h1><a href="/snow-load-map">Snow Load Map</a><a href="${hubs[0]}">Building</a><a href="${hubs[1]}">Permits</a>`, head) });
+  serve(`${origin}/snow-load-map`, { contentType: "text/html", text: html(`<h1>Snow Load Map</h1><img src="/images/snow-map.png" alt="map">`, head) });
+  serve(`${origin}${hubs[0]}`, { contentType: "text/html", text: html(`<h1>Building</h1><a href="${hubs[0]}/inspections">Schedule an Inspection</a>`, head) });
+  serve(`${origin}${hubs[1]}`, { contentType: "text/html", text: html(`<h1>Permits</h1><a href="${hubs[1]}/criteria">Design Criteria</a>`, head) });
+  serve(`${origin}${hubs[1]}/criteria`, { contentType: "text/html", text: html(`<h1>Design Criteria</h1><table>
+<tr><td>Ground Snow Load, Pg</td><td>55 psf</td></tr>
+<tr><td>Ultimate Design Wind Speed</td><td>95 mph</td></tr>
+</table>`, head) });
+  return `${origin}${hubs[1]}/criteria`;
+};
+const MP1 = { state: "UT", ahj: "City of Hazelrock" };
+const MP1_PAGE = mapTwoHubSite("https://www.hazelrockut.gov", CIVICPLUS_HEAD, ["/150/Building", "/160/Permits"]);
+const MP2 = { state: "WA", ahj: "City of Sprucedale" };
+const MP2_PAGE = mapTwoHubSite("https://www.sprucedalewa.gov", GOVACCESS_HEAD, ["/departments/building", "/departments/permits"]);
+seedProcess(MP1, "https://www.hazelrockut.gov/");
+seedProcess(MP2, "https://www.sprucedalewa.gov/");
+
+await check("MUST-PASS: an unparsed snow-load map does not skip the second hub; the table under it is read with no web round (CivicPlus and govAccess)", async () => {
+  for (const [who, page] of [[MP1, MP1_PAGE], [MP2, MP2_PAGE]] as const) {
+    calls.length = 0;
+    const rd = reader();
+    const r = await CP.runDesignCriteriaResearch(db, who, fakeLlm(), rd);
+    assert.equal(calls.length, 0, `${who.ahj}: a web-search round was spent (read ${rd.log.map((l) => l.url).join(", ")})`);
+    assert.deepEqual(r.issuerPage, { url: page, parsed: true });
+    const row = ownRow(who)!;
+    assert.equal(row.profile.confidence, "seeded");
+    assert.equal(row.profile.designCriteria.groundSnowLoadPsf, 55);
+    assert.equal(row.profile.designCriteria.windSpeedMph, 95);
+  }
+});
+
+// The home page links a "Snow Loads" table that PARSES (pg and roof snow) but does not answer (no
+// wind), "Building" and "Permits"; the table is under Permits (Helm's #263 third review).
+const snowTableTwoHubSite = (origin: string, head: string, hubs: [string, string]) => {
+  serve(`${origin}/`, { contentType: "text/html", text: html(`<h1>City Home</h1><a href="/snow-loads">Snow Loads</a><a href="${hubs[0]}">Building</a><a href="${hubs[1]}">Permits</a>`, head) });
+  serve(`${origin}/snow-loads`, { contentType: "text/html", text: html(`<h1>Snow Loads</h1><table>
+<tr><td>Ground Snow Load, Pg</td><td>40 psf</td></tr>
+<tr><td>Roof Snow Load</td><td>30 psf</td></tr>
+</table>`, head) });
+  serve(`${origin}${hubs[0]}`, { contentType: "text/html", text: html(`<h1>Building</h1><a href="${hubs[0]}/inspections">Schedule an Inspection</a>`, head) });
+  serve(`${origin}${hubs[1]}`, { contentType: "text/html", text: html(`<h1>Permits</h1><a href="${hubs[1]}/criteria">Design Criteria</a>`, head) });
+  serve(`${origin}${hubs[1]}/criteria`, { contentType: "text/html", text: html(`<h1>Design Criteria</h1><table>
+<tr><td>Ground Snow Load, Pg</td><td>40 psf</td></tr>
+<tr><td>Ultimate Design Wind Speed</td><td>105 mph</td></tr>
+</table>`, head) });
+  return `${origin}${hubs[1]}/criteria`;
+};
+const SP1 = { state: "UT", ahj: "City of Thornridge" };
+const SP1_PAGE = snowTableTwoHubSite("https://www.thornridgeut.gov", CIVICPLUS_HEAD, ["/150/Building", "/160/Permits"]);
+const SP2 = { state: "WA", ahj: "City of Alderbay" };
+const SP2_PAGE = snowTableTwoHubSite("https://www.alderbaywa.gov", GOVACCESS_HEAD, ["/departments/building", "/departments/permits"]);
+seedProcess(SP1, "https://www.thornridgeut.gov/");
+seedProcess(SP2, "https://www.alderbaywa.gov/");
+
+await check("MUST-PASS: a snow table that parses (pg + roof, no wind) does not skip the second hub; the table under it answers with no web round (CivicPlus and govAccess)", async () => {
+  for (const [who, page] of [[SP1, SP1_PAGE], [SP2, SP2_PAGE]] as const) {
+    calls.length = 0;
+    const rd = reader();
+    const r = await CP.runDesignCriteriaResearch(db, who, fakeLlm(), rd);
+    assert.equal(calls.length, 0, `${who.ahj}: a web-search round was spent (read ${rd.log.map((l) => l.url).join(", ")})`);
+    assert.deepEqual(r.issuerPage, { url: page, parsed: true });
+    const row = ownRow(who)!;
+    assert.equal(row.profile.confidence, "seeded");
+    assert.equal(row.profile.designCriteria.groundSnowLoadPsf, 40);
+    assert.equal(row.profile.designCriteria.windSpeedMph, 105);
+  }
+});
+
+// The home page links an ASD-only table that has MORE rows first, then a strength-level one. The
+// probe stops on the second; it must return that one, not the first (Helm's #263 review).
+const asdThenPgSite = (origin: string, head: string) => {
+  serve(`${origin}/`, { contentType: "text/html", text: html(`<h1>City Home</h1><a href="/design-criteria-asd">Design Criteria</a><a href="/climatic-table">Climatic and Geographic Design Criteria</a>`, head) });
+  serve(`${origin}/design-criteria-asd`, { contentType: "text/html", text: html(`<h1>Design Criteria</h1><table>
+<tr><td>Ground Snow Load, pg(asd)</td><td>30 psf</td></tr>
+<tr><td>Ultimate Design Wind Speed</td><td>110 mph</td></tr>
+<tr><td>Seismic Design Category</td><td>C</td></tr>
+<tr><td>Frost Line Depth</td><td>24 inches</td></tr>
+</table>`, head) });
+  serve(`${origin}/climatic-table`, { contentType: "text/html", text: html(`<h1>Climatic and Geographic Design Criteria</h1><table>
+<tr><td>Ground Snow Load, Pg</td><td>42 psf</td></tr>
+<tr><td>Ultimate Design Wind Speed</td><td>110 mph</td></tr>
+</table>`, head) });
+  return `${origin}/climatic-table`;
+};
+const AP1_PAGE = asdThenPgSite("https://www.oakvaleid.gov", REVIZE_HEAD);
+const AP2_PAGE = asdThenPgSite("https://www.elmcrestmt.gov", GOVACCESS_HEAD);
+
+await check("when the probe stops early, the page it returns answers (strength-level pg + wind), not an earlier ASD-only page with more rows (Revize and govAccess)", async () => {
+  for (const [host, ahj, state, page] of [["www.oakvaleid.gov", "City of Oakvale", "ID", AP1_PAGE], ["www.elmcrestmt.gov", "City of Elmcrest", "MT", AP2_PAGE]] as const) {
+    const probe = await P.probeIssuerDesignCriteria(reader(), { host, ahj, state });
+    assert.equal(probe.candidateUrl, page, `${host}: returned ${probe.candidateUrl}`);
+    assert.equal(P.probeAnswered(probe.raw), true, `${host}: the probe stopped but its page does not answer`);
+  }
+});
+
+await check("a link naming the table is read before a bare snow-load link (stable otherwise)", () => {
+  const words = new Map([["a", "Snow Load Map"], ["b", "Climatic and Geographic Design Criteria"], ["c", "Ground Snow Loads"], ["d", "R301.2 table"]]);
+  assert.deepEqual(P.rankedCandidates(["a", "b", "c", "d"], words), ["b", "d", "a", "c"]);
+});
+
+await check("probeAnswered needs the strength-level pg: an ASD-only pg plus wind is not an answer", () => {
+  assert.equal(P.probeAnswered({ groundSnowLoadAsdPsf: { value: 35 }, windSpeedMph: { value: 110 } }), false);
+  assert.equal(P.probeAnswered({ groundSnowLoadPsf: { value: 50 }, windSpeedMph: { value: 115 } }), true);
+  assert.equal(P.probeAnswered({ groundSnowLoadPsf: { value: 50 }, groundSnowLoadAsdPsf: { value: 30 } }), false, "no wind");
+});
+
+await check("MUST-PASS: a row holding only the ASD pg plus wind runs the lookup again for the strength-level pg", async () => {
+  const dc = ownRow(ASD)!.profile.designCriteria;
+  assert.equal(dc.groundSnowLoadAsdPsf, 35);
+  assert.equal(dc.groundSnowLoadPsf, undefined);
+  calls.length = 0;
+  const r = await CP.runDesignCriteriaResearch(db, ASD, fakeLlm(), reader());
+  assert.notEqual(r.reason, "design criteria already on file");
+  assert.equal(calls.length, 1, "an ASD-only row read as answered: the strength-level pg is never looked for");
+});
+
+await check("MUST-EXCLUDE: a row holding the strength-level pg plus wind is answered (no probe, no model call)", async () => {
+  calls.length = 0;
+  const rd = reader();
+  const r = await CP.runDesignCriteriaResearch(db, PG, fakeLlm(), rd);
+  assert.equal(r.reason, "design criteria already on file");
+  assert.equal(calls.length, 0);
+  assert.equal(rd.log.length, 0, "the issuer site was read for an answered row");
 });
 
 await check("no issuer host on file: the job result says \"no issuer host on file\"", async () => {
