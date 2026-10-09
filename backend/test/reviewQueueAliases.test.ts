@@ -17,6 +17,7 @@ process.env.AUTOPILOT_AUTO_START = "0";
 const { openDatabase, DEFAULT_ORG_ID } = await import("../src/db");
 const { createProject, updateProject, humanVerify, listDivergedAliasProjects } = await import("../src/repository");
 const { isMlpeDesignForProject } = await import("../src/codeReviewRules");
+const { MICRO_SUPERSEDED_KEY } = await import("../src/normalize");
 const db = await openDatabase();
 
 let failed = 0;
@@ -168,10 +169,12 @@ const forceSnapshot = (pid: string, patch: Record<string, unknown>) => {
   check("null filter includes both orgs", all.includes(pid) && all.includes(other), all);
 }
 
-// 6) #270 — a micro-PARSED design (pvMicro*, no inv*): the verify/edit writes the canonical key, the
-//    parser's pvMicro* evidence stays on file, and the canonical key is what answers MLPE.
+// 6) #270 — a micro-PARSED design (pvMicro*, no inv*). Only a PERSON's statement (the review-queue
+//    verify, an updateProject payload naming inverterModel itself) supersedes the pvMicro* evidence,
+//    and it is recorded on the snapshot; the parser's own output and re-saves never do (Helm ruling).
 const MICRO = { ...base, pvMicroMake: "Enphase", pvMicroModel: "IQ8PLUS-72-2-US", pvMicroQty: "20" };
 const SUNNY = "Sunny Boy SB7.7-1SP-US-41";
+const snapshotOf = (pid: string) => JSON.parse(db.get<{ parser_json: string }>("SELECT parser_json FROM projects WHERE id = ?", [pid])!.parser_json);
 {
   const created = createProject(db, MICRO);
   const pid = created.project.id;
@@ -179,30 +182,54 @@ const SUNNY = "Sunny Boy SB7.7-1SP-US-41";
   check("micro setup: design is MLPE", isMlpeDesignForProject(created.project));
   const itemId = queueReview(pid, "inverterModel", "IQ8PLUS-72-2-US");
   const v = humanVerify(db, pid, { reviewItemId: itemId, action: "edit", fieldValue: SUNNY });
-  check("MUST-PASS: micro-parsed design verified to Sunny Boy is no longer MLPE", !isMlpeDesignForProject(v.project), v.project.parserSnapshot);
+  check("MUST-PASS: a human verify to Sunny Boy on a micro-parsed design turns MLPE off", !isMlpeDesignForProject(v.project), v.project.parserSnapshot);
+  check("…the statement is recorded, by the review queue, about that model", (v.project.parserSnapshot[MICRO_SUPERSEDED_KEY] as { model?: string; door?: string })?.model === SUNNY && (v.project.parserSnapshot[MICRO_SUPERSEDED_KEY] as { door?: string }).door === "review_queue", v.project.parserSnapshot[MICRO_SUPERSEDED_KEY]);
   check("…the parser's pvMicro* evidence is kept", v.project.parserSnapshot.pvMicroModel === "IQ8PLUS-72-2-US" && v.project.parserSnapshot.pvMicroQty === "20", v.project.parserSnapshot);
-  // A later quantity verify on the same project keeps it off (pvMicroQty must not re-answer).
   const qtyItem = queueReview(pid, "inverterQty", "20");
   const v2 = humanVerify(db, pid, { reviewItemId: qtyItem, action: "edit", fieldValue: "1" });
   check("…and a later inverterQty verify keeps it off", !isMlpeDesignForProject(v2.project), v2.project.parserSnapshot);
-}
-for (const [door, edit] of [["inverterModel", { inverterModel: SUNNY }], ["invModel", { invModel: SUNNY }]] as const) {
-  // The updateProject door, both ways an operator can name the inverter.
-  const pid = createProject(db, MICRO).project.id;
-  const edited = updateProject(db, pid, edit);
-  check(`MUST-PASS: updateProject ${door} → Sunny Boy on a micro-parsed design is no longer MLPE`, !isMlpeDesignForProject(edited.project), edited.project.parserSnapshot);
-  check(`…pvMicroModel kept on the ${door} edit`, edited.project.parserSnapshot.pvMicroModel === "IQ8PLUS-72-2-US", edited.project.parserSnapshot.pvMicroModel);
+  // A parser re-save sends the stored fields back (its form is filled from the snapshot) — with the
+  // marker stripped or, forged/echoed, ignored. Either way the person's statement stands.
+  const { [MICRO_SUPERSEDED_KEY]: _m, ...resent } = snapshotOf(pid);
+  const resaved = updateProject(db, pid, { ...resent, pvMicroModel: "IQ8PLUS-72-2-US", pvMicroQty: "20" });
+  check("MUST-PASS: a parser re-save after the verify keeps MLPE off", !isMlpeDesignForProject(resaved.project), resaved.project.parserSnapshot);
+  const echoed = updateProject(db, pid, { ...snapshotOf(pid), [MICRO_SUPERSEDED_KEY]: { model: "something else", door: "parser" } });
+  check("…a re-sent marker can't move the stored one", (echoed.project.parserSnapshot[MICRO_SUPERSEDED_KEY] as { model?: string })?.model === SUNNY && !isMlpeDesignForProject(echoed.project), echoed.project.parserSnapshot[MICRO_SUPERSEDED_KEY]);
 }
 {
-  // MUST-EXCLUDE: a real micro design nobody verified stays MLPE, through an unrelated edit and a
-  // verify that confirms the micro model.
+  // The dashboard/correction door: a payload that names the canonical inverterModel.
+  const pid = createProject(db, MICRO).project.id;
+  const edited = updateProject(db, pid, { inverterModel: SUNNY });
+  check("MUST-PASS: updateProject naming inverterModel → Sunny Boy turns MLPE off", !isMlpeDesignForProject(edited.project), edited.project.parserSnapshot);
+  check("…recorded by the project-edit door", (edited.project.parserSnapshot[MICRO_SUPERSEDED_KEY] as { door?: string })?.door === "project_edit", edited.project.parserSnapshot[MICRO_SUPERSEDED_KEY]);
+  check("…pvMicroModel kept", edited.project.parserSnapshot.pvMicroModel === "IQ8PLUS-72-2-US", edited.project.parserSnapshot.pvMicroModel);
+}
+{
+  // MUST-EXCLUDE: the parser's keys are not a person's statement.
+  const pid = createProject(db, MICRO).project.id;
+  const parserShaped = updateProject(db, pid, { invModel: "Powerwall 3", invMake: "Tesla", batteryMake: "Tesla", batteryModel: "Powerwall 3", batteryQty: "1" });
+  check("MUST-EXCLUDE: a parser-shaped micro + Powerwall 3 re-save stays MLPE", isMlpeDesignForProject(parserShaped.project), parserShaped.project.parserSnapshot);
+  check("…and records nothing", parserShaped.project.parserSnapshot[MICRO_SUPERSEDED_KEY] === undefined, parserShaped.project.parserSnapshot[MICRO_SUPERSEDED_KEY]);
+  const pw3 = createProject(db, { ...base, pvMicroMake: "Enphase", pvMicroModel: "IQ8PLUS-72-2-US", pvMicroQty: "10", invMake: "Tesla", invModel: "Powerwall 3", invQty: "1", invOutputW: "1.21", batteryMake: "Tesla", batteryModel: "Powerwall 3", batteryQty: "1" }).project;
+  check("MUST-EXCLUDE: a NEW project in the parser's micro + Powerwall shape is MLPE", isMlpeDesignForProject(pw3), pw3.parserSnapshot);
+  const forged = createProject(db, { ...MICRO, invModel: SUNNY, [MICRO_SUPERSEDED_KEY]: { model: SUNNY, door: "review_queue" } }).project;
+  check("MUST-EXCLUDE: a new project can't arrive carrying a marker", forged.parserSnapshot[MICRO_SUPERSEDED_KEY] === undefined && isMlpeDesignForProject(forged), forged.parserSnapshot);
+}
+{
+  // MUST-EXCLUDE: a real micro design with no verify stays MLPE — through an unrelated edit, an
+  // approve of its micro model, and verifies that only correct the micro's spelling.
   const pid = createProject(db, MICRO).project.id;
   const unrelated = updateProject(db, pid, { zip: "97002" });
   check("MUST-EXCLUDE: unverified micro design stays MLPE after an unrelated edit", isMlpeDesignForProject(unrelated.project), unrelated.project.parserSnapshot);
   const itemId = queueReview(pid, "inverterModel", "IQ8PLUS-72-2-US");
   const v = humanVerify(db, pid, { reviewItemId: itemId, action: "approve" });
   check("MUST-EXCLUDE: approving the micro model keeps it MLPE", isMlpeDesignForProject(v.project), v.project.parserSnapshot);
-  // pvMicroQty alone (no model) still reads as a microinverter design.
+  for (const [read, fixed] of [["HMS-2OOO-4T", "HMS-2000-4T"], ["M215-60-2LL-S2", "M215-60-2LL-S22"], ["DS3-D", "DS3D"]]) {
+    const p = createProject(db, { ...base, pvMicroMake: "Testmicro", pvMicroModel: read, pvMicroQty: "10" }).project.id;
+    const item = queueReview(p, "inverterModel", read);
+    const fixedUp = humanVerify(db, p, { reviewItemId: item, action: "edit", fieldValue: fixed });
+    check(`MUST-EXCLUDE: verifying '${read}' → '${fixed}' (a spelling fix of the micro) keeps it MLPE`, isMlpeDesignForProject(fixedUp.project) && fixedUp.project.parserSnapshot[MICRO_SUPERSEDED_KEY] === undefined, fixedUp.project.parserSnapshot);
+  }
   const qtyOnly = createProject(db, { ...base, pvMicroQty: "20" }).project;
   check("MUST-EXCLUDE: pvMicroQty alone stays MLPE", isMlpeDesignForProject(qtyOnly), qtyOnly.parserSnapshot);
 }

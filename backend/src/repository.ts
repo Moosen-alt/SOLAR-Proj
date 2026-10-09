@@ -134,7 +134,7 @@ import {
   isVerifiedKnowledge,
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
-import { canonicalAliasForVerifiedField, canonicalizeSnapshot, compactAlnum, divergedAliases, existingSystemFromSnapshot, fieldAliases, mergeEditOverSnapshot, normalizeProject, normalizeTokens, TRACK_ISSUER_SNAPSHOT_KEYS, withTrackIssuers } from "./normalize";
+import { canonicalAliasForVerifiedField, canonicalizeSnapshot, compactAlnum, divergedAliases, existingSystemFromSnapshot, fieldAliases, mergeEditOverSnapshot, MICRO_SUPERSEDED_KEY, normalizeProject, recordMicroSupersession, normalizeTokens, TRACK_ISSUER_SNAPSHOT_KEYS, withTrackIssuers } from "./normalize";
 import {
   classificationDrift, classifyPermitStatusText, effectiveCheckDays, extractStatusDate, isAuthWallText, isNemApprovalOutcome, nextCheckIso, outcomeTrack, portalStatedStatus,
   readingMayFinishTrack, shouldRecordStatusCheck, trackKind, UNCONFIRMED_READING_LABEL,
@@ -688,7 +688,9 @@ export function createProject(
    *  knowledge base (L3). Written in the INSERT, so even the birth learn below skips it. */
   options: { learningExcluded?: boolean } = {},
 ): ProjectDetail {
-  const project = normalizeProject(id(), payload);
+  // A new project is parser/intake output: it never carries a human micro-supersession (#270).
+  const { [MICRO_SUPERSEDED_KEY]: _forgedMarker, ...parsed } = payload as Record<string, unknown>;
+  const project = normalizeProject(id(), parsed as ParserPayload);
   db.transaction(() => {
     db.run(
       `INSERT INTO projects (
@@ -834,7 +836,13 @@ export function updateProject(db: AppDb, projectId: string, payload: ParserPaylo
   // so editing invModel moves inverterModel with it. An alias set on its own (differs from its
   // source) is kept, and one sent in THIS payload wins over everything via the merge.
   // normalizeProject canonicalizes the result. (The review queue's applyVerifiedField shares this.)
-  const mergedSnapshot: ParserPayload = mergeEditOverSnapshot(existingSnapshot as ParserPayload, payload);
+  // THE MICRO-SUPERSESSION MARKER IS WRITTEN HERE, NEVER RECEIVED (#270): a re-sent snapshot can't
+  // forge or move it, and the stored one rides through the merge. Only a payload that names the
+  // canonical inverterModel itself is a person's statement — the dashboard and approved corrections
+  // send it; the parser sends invModel/pvMicroModel and never this key.
+  const { [MICRO_SUPERSEDED_KEY]: _forgedMarker, ...edit } = payload as Record<string, unknown>;
+  const mergedSnapshot: ParserPayload = mergeEditOverSnapshot(existingSnapshot as ParserPayload, edit as ParserPayload);
+  if (String(edit.inverterModel ?? "").trim()) recordMicroSupersession(mergedSnapshot, "project_edit");
   // WHICH PORTAL THIS FILES ON IS NOT A SIDE EFFECT OF AN EDIT.
   //
   // normalizeProject re-derives every column from the snapshot, so a project whose stored
@@ -9810,6 +9818,10 @@ function applyVerifiedField(db: AppDb, projectId: string, stored: ParserPayload,
   const canonicalKey = canonicalAliasForVerifiedField(fieldName, aliases[0]);
   const edit: ParserPayload = { [aliases[0]]: value, ...(canonicalKey ? { [canonicalKey]: value } : {}) };
   const payload = canonicalizeSnapshot(mergeEditOverSnapshot(stored, edit));
+  // A person verified the inverter model: record it, so the reader can tell their word from the
+  // parser's own inv*/pvMicro* split (#270). recordMicroSupersession decides whether it is a statement
+  // at all (not a spelling fix of the micro, not the ESS inverter).
+  if (canonicalKey === "inverterModel") recordMicroSupersession(payload, "review_queue");
   const numeric = Number.parseFloat(value.replace(/[^0-9.-]/g, ""));
   const numberValue = Number.isFinite(numeric) ? numeric : null;
 

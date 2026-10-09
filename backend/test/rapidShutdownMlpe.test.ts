@@ -23,6 +23,7 @@ import { evaluateDesignCodeFindings, isMlpeDesignForProject } from "../src/codeR
 import { dcDcConverterEvidence } from "../src/iowaPvWorksheet";
 import { moduleLevelElectronicsEquipment } from "../src/moduleLevelElectronics";
 import { NEC_EDITION_REQUIREMENTS } from "../src/necEditions";
+import { isNearModelVariant, MICRO_SUPERSEDED_KEY, recordMicroSupersession } from "../src/normalize";
 
 let failures = 0;
 const check = (label: string, fn: () => void): void => {
@@ -258,7 +259,7 @@ for (const [state, ahj] of JURISDICTIONS) {
   });
 }
 
-console.log("\nE. #270 — a canonical MODEL that differs from pvMicroModel supersedes the micro evidence; nothing else does");
+console.log("\nE. #270 — only a RECORDED human statement supersedes pvMicro* evidence; string inequality never does");
 
 // Micros the brand list does not name, so only pvMicroQty's "microinverter" makes them MLPE: an
 // older Enphase M-series and an APsystems DS3D. Snapshots are in their stored (canonicalized) shape.
@@ -267,6 +268,8 @@ const unnamedMicro = (model: string, extra: Record<string, unknown> = {}) => ({
   pvMicroMake: "Testmicro", pvMicroModel: model, pvMicroQty: "10",
   inverterManufacturer: "Testmicro", inverterModel: model, inverterQuantity: "10", ...extra,
 });
+// What recordMicroSupersession writes after a person's verify/edit (normalize.ts).
+const personSaid = (model: string) => ({ invModel: model, inverterModel: model, [MICRO_SUPERSEDED_KEY]: { model, door: "review_queue", at: "2026-10-09T00:00:00.000Z" } });
 const LABELS_ONLY = "LABEL SCHEDULE: SERVICE EQUIPMENT DIRECTORY.";
 const labelSections = (snapshot: Record<string, unknown>) =>
   (get(run("2023", LABELS_ONLY, snapshot), "city.elec.labels-edition-missing")?.evidenceNeeded ?? []).join(" | ");
@@ -280,21 +283,57 @@ for (const model of ["M215-60-2LL-S22", "DS3D"]) {
     assert.equal(isMlpeDesignForProject(project(PLACARD, unnamedMicro(model, { invQty: "18", inverterQuantity: "18" }))), true);
   });
 }
-check("MUST-PASS: a micro-parsed row whose inverterModel was verified to a string inverter is not MLPE", () => {
-  assert.equal(isMlpeDesignForProject(project(PLACARD, unnamedMicro("DS3D", { invModel: SUNNY, inverterModel: SUNNY }))), false);
+check("MUST-EXCLUDE (Helm re-review blocker): the parser's micro + Powerwall 3 shape (PW3_MICRO_AMPS) stays MLPE", () => {
+  // parser.html moves the ESS inverter into inv* and keeps the micro in pvMicro*: inverterModel ≠ pvMicroModel, no person involved.
+  const snap = unnamedMicro("DS3D", { batteryMake: "Tesla", batteryModel: "Powerwall 3", batteryQty: "1", invMake: "Tesla", invModel: "Powerwall 3", invQty: "1", invOutputW: "1.21", inverterModel: "Powerwall 3", inverterManufacturer: "Tesla", inverterQuantity: "1" });
+  assert.equal(isMlpeDesignForProject(project(PLACARD, snap)), true);
 });
-check("an empty model on either side supersedes nothing (pvMicroQty still answers)", () => {
-  assert.equal(isMlpeDesignForProject(project(PLACARD, { pvMicroQty: "10", inverterQuantity: "10" })), true);
-  assert.equal(isMlpeDesignForProject(project(PLACARD, unnamedMicro("DS3D", { inverterModel: "" }))), true);
+check("MUST-EXCLUDE: a string inverterModel that differs from pvMicroModel WITHOUT the recorded statement stays MLPE", () => {
+  assert.equal(isMlpeDesignForProject(project(PLACARD, unnamedMicro("DS3D", { invModel: SUNNY, inverterModel: SUNNY }))), true);
+});
+check("MUST-PASS: a person's recorded verify to a string inverter turns MLPE off", () => {
+  assert.equal(isMlpeDesignForProject(project(PLACARD, unnamedMicro("DS3D", personSaid(SUNNY)))), false);
+});
+check("a statement about a model no longer on file is inert (a later parse put the micro back)", () => {
+  const snap = { ...unnamedMicro("DS3D", personSaid(SUNNY)), invModel: "DS3D", inverterModel: "DS3D" };
+  assert.equal(isMlpeDesignForProject(project(PLACARD, snap)), true);
 });
 check("the label reader agrees (isMicroinverterDesign): the verified row gets the string design's DC labels back", () => {
   const micro = labelSections(unnamedMicro("DS3D"));
-  const verified = labelSections(unnamedMicro("DS3D", { invModel: SUNNY, inverterModel: SUNNY }));
+  const verified = labelSections(unnamedMicro("DS3D", personSaid(SUNNY)));
   const string = labelSections({ invModel: SUNNY, inverterModel: SUNNY });
   assert.notEqual(micro, string, "fixture must distinguish micro from string labels");
   assert.equal(verified, string, `verified: ${verified}\nstring:   ${string}`);
-  assert.equal(labelSections(unnamedMicro("DS3D", { invQty: "12", inverterQuantity: "12" })), micro, "a quantity divergence must not drop the micro reading");
+  assert.equal(labelSections(unnamedMicro("DS3D", { invModel: SUNNY, inverterModel: SUNNY })), micro, "inequality alone must not drop the micro reading");
 });
+
+console.log("\nF. #270 — what counts as a person's statement (recordMicroSupersession)");
+const afterVerify = (micro: string, model: string, extra: Record<string, unknown> = {}) => {
+  const snap: Record<string, unknown> = { pvMicroModel: micro, pvMicroQty: "10", inverterModel: model, ...extra };
+  recordMicroSupersession(snap as never, "review_queue");
+  return snap;
+};
+for (const [micro, fixed] of [["HMS-2OOO-4T", "HMS-2000-4T"], ["M215-60-2LL-S2", "M215-60-2LL-S22"], ["DS3-D", "DS3D"]]) {
+  check(`MUST-EXCLUDE: a verify that corrects the micro's string ('${micro}' → '${fixed}') records nothing and stays MLPE`, () => {
+    const snap = afterVerify(micro, fixed);
+    assert.equal(snap[MICRO_SUPERSEDED_KEY], undefined);
+    assert.equal(isMlpeDesignForProject(project(PLACARD, { ...snap, invModel: fixed })), true);
+  });
+}
+check("MUST-EXCLUDE: a verify naming the ESS inverter or the battery records nothing", () => {
+  assert.equal(afterVerify("DS3D", "Powerwall 3", { batteryModel: "Powerwall 3" })[MICRO_SUPERSEDED_KEY], undefined);
+  assert.equal(afterVerify("DS3D", "SE-10K-RWS", { essInverterModel: "SE10K-RWS" })[MICRO_SUPERSEDED_KEY], undefined);
+});
+check("MUST-PASS: a verify to a different inverter records the model it was about", () => {
+  assert.deepEqual((afterVerify("DS3D", SUNNY)[MICRO_SUPERSEDED_KEY] as { model: string }).model, SUNNY);
+});
+check("near-variant: shared 5+ prefix or ≤2 edits after normalising; unrelated models are not", () => {
+  assert.equal(isNearModelVariant("IQ8PLUS-72-2-US", "IQ8PLUS-72-2-US (operator)"), true);
+  assert.equal(isNearModelVariant("DS3D", "DS3"), true);
+  assert.equal(isNearModelVariant("DS3D", SUNNY), false);
+  assert.equal(isNearModelVariant("IQ8PLUS-72-2-US", "Powerwall 3"), false);
+});
+
 
 if (failures) {
   console.error(`\n${failures} check(s) failed`);

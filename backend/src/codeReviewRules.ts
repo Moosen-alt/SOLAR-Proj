@@ -19,6 +19,7 @@ import {
 import { adoptedNecEdition, necEditionRequirements, NEC_EDITION_REQUIREMENTS } from "./necEditions";
 import { moduleLevelElectronicsEquipment, type ModuleLevelElectronicsEvidence } from "./moduleLevelElectronics";
 import { designText, mountKind, type MountKind } from "./mountKind";
+import { microEvidenceSupersededIn } from "./normalize";
 export { designText, engineeredGroundMount, groundMountFromField, isGroundMount, mountKind, mountKindForProject, type MountKind } from "./mountKind";
 
 const oregonElectrical2023: CodeReference = {
@@ -256,19 +257,15 @@ function mlpeDesign(project: ProjectRecord, allText: string, texts: DesignTextSo
   return { mlpe: equipment.present || isMicroOrMlpeInverter(project, allText), equipment };
 }
 
-// THE CANONICAL INVERTER MODEL OUTRANKS THE RAW MICRO EVIDENCE (#270). Both edit doors (the review
-// queue's verify, updateProject) write inverterModel and its first source (invModel) but keep the
-// parser's pvMicro* fields — evidence is never deleted. Joined here, a micro-parsed design verified to
-// "Sunny Boy …" still read pvMicroModel "IQ8…" and kept its rapid-shutdown blocker softened.
-// ONLY THE MODEL states the topology. Quantity and make are no statement about it, and
-// canonicalizeSnapshot fills those from invQty/invMake first — so a parser invQty next to pvMicro*,
-// a re-save, or QC's quantity fix-it diverges them on a real micro design; on a micro the brand list
-// doesn't name, that hardened a correct warning into a staging blocker (Helm, PR #274). And only a
-// mismatch between two stated models counts: an empty one supersedes nothing.
+// A PERSON'S "THAT IS NOT THE MICRO" OUTRANKS THE RAW MICRO EVIDENCE (#270). Both human edit doors
+// write inverterModel but keep the parser's pvMicro* fields — evidence is never deleted — so joined
+// here, a micro-parsed design verified to "Sunny Boy …" kept its rapid-shutdown blocker softened.
+// The supersession is a recorded human statement (normalize.recordMicroSupersession), NEVER string
+// inequality: the parser itself writes a Powerwall into invModel next to a micro, and a verify that
+// only fixes the micro's spelling is no change of inverter (Helm rulings on PR #274). Can only turn
+// MLPE off, and only on a person's word.
 function microEvidenceSuperseded(project: ProjectRecord): boolean {
-  const canonical = str(project, "inverterModel");
-  const micro = str(project, "pvMicroModel");
-  return canonical !== "" && micro !== "" && canonical !== micro;
+  return microEvidenceSupersededIn(project.parserSnapshot ?? {});
 }
 
 function isMicroOrMlpeInverter(project: ProjectRecord, allText: string): boolean {
