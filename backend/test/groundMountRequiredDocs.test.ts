@@ -198,6 +198,15 @@ const ROOFTOP_PROSE: Array<[string, string, Record<string, string>]> = [
   ["Roof mount, ground pad", "", {}],
   ["Roof; pole-top transformer", "", {}],
   ["Rooftop, not on ground", "", {}],
+  // #272 review 4: a trailing ground / pole in a segment about equipment or wiring, or after a negation.
+  ["Roof mount, inverter on ground", "", {}],
+  ["Roof mount, battery on ground", "", {}],
+  ["Roof mount, ESS on ground", "", {}],
+  ["Roof; disconnect at ground", "", {}],
+  ["Roof; meter on pole", "", {}],
+  ["Roof; utility pole", "", {}],
+  ["Roof mount, bonded to ground", "", {}],
+  ["Roof mount, not mounted on the ground", "", {}],
 ];
 for (const where of [OREGON, NO_LOOKUP]) {
   for (const [mounting, text, extra] of ROOFTOP_PROSE) {
@@ -257,6 +266,10 @@ const MUST_PASS_GROUND: Array<[string, "ground" | "combination"]> = [
   ["Ballasted ground", "ground"], ["Fixed-tilt ground", "ground"], ["Tracker (ground)", "ground"], ["Mounted on ground", "ground"],
   ["Ground mount inverter rack, no roof work", "ground"], ["Ground mount, no roof work", "ground"],
   ["Non-penetrating roof + ground mount", "combination"],
+  // #272 review 4: only an article may sit between "no" and "roof" — a "no penetration" roof is a roof
+  // and keeps its blocking roof-framing row; a bare "Pole-top" is a pole.
+  ["No penetration roof mount + ground mount", "combination"], ["Ground mount, not a roof mount", "ground"],
+  ["Pole-top", "ground"], ["Pole top", "ground"],
 ];
 for (const [mounting, field] of MUST_PASS_GROUND) {
   check(`MUST PASS: field "${mounting}" — ${field} by the field, ground to the reviewer rules, the same set and path as a plain ${field}`, () => {

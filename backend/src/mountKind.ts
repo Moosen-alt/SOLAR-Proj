@@ -115,22 +115,25 @@ export function mountKindForProject(project: MountInputs): MountKind {
 // pedestal is caught by "meter".
 // A SEGMENT THAT STARTS WITH A BARE "ground" / "pole" is a ground vote too, whatever qualifies it
 // ("Ground (ballasted)", "Ground - fixed tilt", "Ground based", "Ground mtd", "On ground"), and so is
-// one that ENDS in one ("Ballasted ground", "Tracker (ground)", "Mounted on ground"; never "not ground")
-// — unless the next word (after an optional "AC" / "utility" / "main"...) makes it a non-mount noun or
+// one that ENDS in one ("Ballasted ground", "Tracker (ground)", "Mounted on ground") — never after a
+// negation ("not mounted on the ground") or in a segment about equipment or wiring ("inverter on
+// ground", "meter on pole", "bonded to ground", "utility pole"). A LEADING ground / pole does not count
+// when the next word (after an optional "AC" / "utility" / "main"...) makes it a non-mount noun or
 // equipment ("ground lugs", "ground floor", "Pole barn roof", "ground AC disconnect", "ground pad",
 // "pole-top transformer"), which the advisory rules used to accept and the blocking ones never did.
-// "Pole-top mount" / "pole-top array" is a mount noun, as "top of pole" is.
+// "Pole-top mount" / "pole-top array" is a mount noun, as "top of pole" is; a bare "Pole-top" is a pole.
 export type MountFieldGround = "ground" | "combination";
 const NEGATED_MOUNT = /\b(?:(?:not|no)\s+(?:an?\s+)?|non[-\s]?)(?:ground|pole)[-\s]?(?:mount\w*|array)/gi;
 const EQUIPMENT = "inverters?|disconnects?|meters?|batter(?:y|ies)|ess|transformers?";
 const MOUNTED_EQUIPMENT = new RegExp(String.raw`\b(?:ground|pole)[-\s]?mount\w*\s+(?:(?!(?:with|w\/|w\/o|without|w|and|plus|on|in|at|from|for|arrays?|rack\w*|systems?|pv|solar|panels?|modules?|carport|canopy|\d[\w.]*)\s)[\w/]+\s+){0,2}?(?:${EQUIPMENT})\b`, "gi");
 const NO_MATCH = /$^/;
 const GROUND_MOUNT_NOUN = /\bground[-\s]?(?:mount\w*|arrays?|rack\w*)|\bpole[-\s]?mount\w*|\btop[-\s]?of[-\s]?pole\b|\bpole[-\s]?top[-\s]?(?:mount\w*|arrays?|rack\w*)/i;
-const NON_MOUNT_NEXT = "lugs?|fault|floor|level|rods?|wires?|bars?|barn|building|shed|electrodes?|conductors?|bond\\w*|snow|clearance|cover|pedestals?|pads?|clamps?|bus\\w*|top";
-const GROUND_SEGMENT = new RegExp(String.raw`^(?:on\s+(?:the\s+)?)?(?:ground|poles?)\b(?![-\s(]*(?:(?:ac|dc|pv|utility|service|main)\s+)?(?:${NON_MOUNT_NEXT}|${EQUIPMENT})\b)|(?:^|\s|\()(?<!\b(?:not|no|non)\b[\w\s(-]{0,12})(?:ground|poles?)\)?$`, "i");
+const NON_MOUNT_NEXT = "lugs?|fault|floor|level|rods?|wires?|bars?|barn|building|shed|electrodes?|conductors?|bond\\w*|snow|clearance|cover|pedestals?|pads?|clamps?|bus\\w*|top(?=[-\\s]+\\w)";
+const GROUND_SEGMENT = new RegExp(String.raw`^(?:on\s+(?:the\s+)?)?(?:ground|poles?)\b(?![-\s(]*(?:(?:ac|dc|pv|utility|service|main)\s+)?(?:${NON_MOUNT_NEXT}|${EQUIPMENT})\b)|^(?!.*\b(?:${EQUIPMENT}|utility|service|conduit|feeder|bond\w*|equipment|nothing)\b)(?:.*[\s(])?(?<!\b(?:not|no|non)\b[\w\s(-]{0,20})(?:ground|poles?)\)?$`, "i");
 // "no roof work" names no roof: stripped before the roof gate and the combination test read the field.
-// Only "no" / "not": "Non-penetrating roof mount" is a roof.
-const NEGATED_ROOF = /\b(?:not|no)\s+(?:\w+\s+)?roof\w*/gi;
+// Only "no" / "not", and only an article between it and "roof": "Non-penetrating roof mount" and "No
+// penetration roof mount" are roofs, and stripping one would drop the blocking roof-framing row.
+const NEGATED_ROOF = /\b(?:not|no)\s+(?:(?:a|an|the|any)\s+)?roof\w*/gi;
 const mountSegments = (m: string) => m.split(/\s*(?:[,;+&/]|\band\b)\s*/i).map((x) => x.trim().toLowerCase());
 const fieldOf = (project: MountInputs) => {
   const raw = (str(project, "mounting") || str(project, "mountType")).replace(NEGATED_MOUNT, " ").replace(NEGATED_ROOF, " ");
