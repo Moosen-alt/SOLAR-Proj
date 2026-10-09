@@ -192,6 +192,11 @@ const ROOFTOP_PROSE: Array<[string, string, Record<string, string>]> = [
   ["Roof mount w/ ground mount ESS", "", {}],
   ["Roof; pole-mounted transformer", "", {}],
   ["Roof; ground inverter", "", {}],
+  // #272 re-review: a qualified equipment noun or a non-mount noun after a bare ground / pole.
+  ["Roof; ground AC disconnect", "", {}],
+  ["Roof; ground utility meter", "", {}],
+  ["Roof mount, ground pad", "", {}],
+  ["Roof; pole-top transformer", "", {}],
 ];
 for (const where of [OREGON, NO_LOOKUP]) {
   for (const [mounting, text, extra] of ROOFTOP_PROSE) {
@@ -241,6 +246,10 @@ const MUST_PASS_GROUND: Array<[string, "ground" | "combination"]> = [
   ["Pole mount w/ disconnect", "ground"], ["Roof + ground mount w/ battery", "combination"],
   ["Ground (ballasted)", "ground"], ["Ground - fixed tilt", "ground"], ["Ground based", "ground"], ["Ground-based rack", "ground"],
   ["Ground install", "ground"], ["Ground mtd", "ground"], ["On ground", "ground"], ["Ground (piers)", "ground"],
+  // #272 re-review: with no roof in the field, nothing is cut as equipment; "pedestal" is a foundation.
+  ["Ground mount concrete pedestals", "ground"], ["Ground mount pedestal foundation", "ground"], ["Ground-mounted pedestal racking", "ground"],
+  ["Pole mount pedestal", "ground"], ["Ground mount inverter rack", "ground"], ["Ground mount w/o battery", "ground"],
+  ["Roof + ground mount w/o battery", "combination"],
 ];
 for (const [mounting, field] of MUST_PASS_GROUND) {
   check(`MUST PASS: field "${mounting}" — ${field} by the field, ground to the reviewer rules, the same set and path as a plain ${field}`, () => {

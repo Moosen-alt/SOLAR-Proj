@@ -106,22 +106,31 @@ export function mountKindForProject(project: MountInputs): MountKind {
 // is a roof. "... not a ground mount" and "non-ground-mount" are not a ground vote (#269).
 // GROUND-MOUNTED EQUIPMENT IS NOT AN ARRAY (#269): "Roof mount with ground-mounted inverter" names
 // where the inverter / disconnect / meter / battery stands, not a second array — a ground or pole
-// mount phrase whose noun (within two words) is equipment is cut out before the field is read. A
-// word that joins an ARRAY to its equipment ("Ground mount w/ battery", "on concrete pedestals",
-// "Pole mount with disconnect"; a preposition, conjunction, number or array noun) ends the phrase,
-// so a real ground array is never cut (#272 review).
+// mount phrase whose noun (within two words) is equipment is cut out before the field is read — but
+// ONLY when the field also names a roof: equipment is a second thing only beside a roof array, and a
+// field with no roof ("Ground mount inverter rack", "Ground mount w/o battery") is a ground array
+// whatever else it lists (#272 re-review). A word that joins an ARRAY to its equipment ("Roof + ground
+// mount w/ battery"; a preposition, conjunction, number or array noun) ends the phrase. "Pedestal" is
+// not equipment: it is a ground array's foundation ("Ground mount concrete pedestals"), and a meter
+// pedestal is caught by "meter".
 // A SEGMENT THAT STARTS WITH A BARE "ground" / "pole" is a ground vote too, whatever qualifies it
 // ("Ground (ballasted)", "Ground - fixed tilt", "Ground based", "Ground mtd", "On ground") — unless the
-// next word makes it a non-mount noun or equipment ("ground lugs", "ground floor", "Pole barn roof",
-// "ground inverter"), which the advisory rules used to accept and the blocking ones never did.
+// next word (after an optional "AC" / "utility" / "main"...) makes it a non-mount noun or equipment
+// ("ground lugs", "ground floor", "Pole barn roof", "ground AC disconnect", "ground pad", "pole-top
+// transformer"), which the advisory rules used to accept and the blocking ones never did.
 export type MountFieldGround = "ground" | "combination";
 const NEGATED_MOUNT = /\b(?:(?:not|no)\s+(?:an?\s+)?|non[-\s]?)(?:ground|pole)[-\s]?(?:mount\w*|array)/gi;
-const EQUIPMENT = "inverters?|disconnects?|meters?|batter(?:y|ies)|ess|transformers?|pedestals?";
-const MOUNTED_EQUIPMENT = new RegExp(String.raw`\b(?:ground|pole)[-\s]?mount\w*\s+(?:(?!(?:with|w\/|w|and|plus|on|in|at|from|for|arrays?|rack\w*|systems?|pv|solar|panels?|modules?|carport|canopy|\d[\w.]*)\s)[\w/]+\s+){0,2}?(?:${EQUIPMENT})\b`, "gi");
+const EQUIPMENT = "inverters?|disconnects?|meters?|batter(?:y|ies)|ess|transformers?";
+const MOUNTED_EQUIPMENT = new RegExp(String.raw`\b(?:ground|pole)[-\s]?mount\w*\s+(?:(?!(?:with|w\/|w\/o|without|w|and|plus|on|in|at|from|for|arrays?|rack\w*|systems?|pv|solar|panels?|modules?|carport|canopy|\d[\w.]*)\s)[\w/]+\s+){0,2}?(?:${EQUIPMENT})\b`, "gi");
+const NO_MATCH = /$^/;
 const GROUND_MOUNT_NOUN = /\bground[-\s]?(?:mount\w*|arrays?|rack\w*)|\bpole[-\s]?mount\w*|\btop[-\s]?of[-\s]?pole\b/i;
-const GROUND_SEGMENT = new RegExp(String.raw`^(?:on\s+(?:the\s+)?)?(?:ground|poles?)\b(?![-\s(]*(?:lugs?|fault|floor|level|rods?|wires?|bars?|barn|building|shed|electrodes?|conductors?|bond\w*|snow|clearance|cover|${EQUIPMENT})\b)`, "i");
+const NON_MOUNT_NEXT = "lugs?|fault|floor|level|rods?|wires?|bars?|barn|building|shed|electrodes?|conductors?|bond\\w*|snow|clearance|cover|pedestals?|pads?|clamps?|bus\\w*|top";
+const GROUND_SEGMENT = new RegExp(String.raw`^(?:on\s+(?:the\s+)?)?(?:ground|poles?)\b(?![-\s(]*(?:(?:ac|dc|pv|utility|service|main)\s+)?(?:${NON_MOUNT_NEXT}|${EQUIPMENT})\b)`, "i");
 const mountSegments = (m: string) => m.split(/\s*(?:[,;+&/]|\band\b)\s*/i).map((x) => x.trim().toLowerCase());
-const fieldOf = (project: MountInputs) => (str(project, "mounting") || str(project, "mountType")).replace(NEGATED_MOUNT, " ").replace(MOUNTED_EQUIPMENT, " ");
+const fieldOf = (project: MountInputs) => {
+  const raw = str(project, "mounting") || str(project, "mountType");
+  return raw.replace(NEGATED_MOUNT, " ").replace(/\broof/i.test(raw) ? MOUNTED_EQUIPMENT : NO_MATCH, " ");
+};
 export function groundMountFromField(project: MountInputs): MountFieldGround | null {
   const m = fieldOf(project);
   if (!m.trim() || /carport|canopy|awning|patio cover/i.test(m)) return null;
