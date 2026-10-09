@@ -822,7 +822,14 @@ export { researchWithFittedUrl };
 // over the existing parser snapshot — so a re-parse of a corrected plan set
 // updates the record (including the canonical electrical/structural/evidence
 // keys) without losing prior data — then re-runs QC.
-export function updateProject(db: AppDb, projectId: string, payload: ParserPayload): ProjectDetail {
+export function updateProject(
+  db: AppDb,
+  projectId: string,
+  payload: ParserPayload,
+  /** humanInverterEdit: ONLY a human-only caller (corrections-apply, a person's approval) may set it —
+   *  never PUT /api/projects/:id, which the parser and API keys use (#270). See recordMicroSupersession. */
+  options: { humanInverterEdit?: boolean } = {},
+): ProjectDetail {
   const existing = getProjectDetail(db, projectId).project;
   // Drop the non-persistent plan-set text overlay (re-derived from project_documents
   // on every load) so document text never bloats the stored parser_json.
@@ -836,13 +843,12 @@ export function updateProject(db: AppDb, projectId: string, payload: ParserPaylo
   // so editing invModel moves inverterModel with it. An alias set on its own (differs from its
   // source) is kept, and one sent in THIS payload wins over everything via the merge.
   // normalizeProject canonicalizes the result. (The review queue's applyVerifiedField shares this.)
-  // THE MICRO-SUPERSESSION MARKER IS WRITTEN HERE, NEVER RECEIVED (#270): a re-sent snapshot can't
-  // forge or move it, and the stored one rides through the merge. Only a payload that names the
-  // canonical inverterModel itself is a person's statement — the dashboard and approved corrections
-  // send it; the parser sends invModel/pvMicroModel and never this key.
+  // THE MICRO-SUPERSESSION MARKER IS NEVER RECEIVED (#270): a re-sent snapshot can't forge or move it,
+  // and the stored one rides through the merge. A payload's inverterModel is NOT a person's statement
+  // (the parser sends it on every save); only a human-only caller's explicit option records one.
   const { [MICRO_SUPERSEDED_KEY]: _forgedMarker, ...edit } = payload as Record<string, unknown>;
   const mergedSnapshot: ParserPayload = mergeEditOverSnapshot(existingSnapshot as ParserPayload, edit as ParserPayload);
-  if (String(edit.inverterModel ?? "").trim()) recordMicroSupersession(mergedSnapshot, "project_edit");
+  if (options.humanInverterEdit && String(edit.inverterModel ?? "").trim()) recordMicroSupersession(mergedSnapshot, "correction_apply");
   // WHICH PORTAL THIS FILES ON IS NOT A SIDE EFFECT OF AN EDIT.
   //
   // normalizeProject re-derives every column from the snapshot, so a project whose stored
@@ -5540,7 +5546,9 @@ export function applyCorrectionProposals(
     const key = CORRECTION_FIELD_TO_PAYLOAD[p.field] || p.field;
     payload[key] = p.proposedValue;
   }
-  if (Object.keys(payload).length) updateProject(db, projectId, payload);
+  // A person approved these proposals (/api/corrections/:id/apply): their inverter model is a human
+  // statement (#270).
+  if (Object.keys(payload).length) updateProject(db, projectId, payload, { humanInverterEdit: true });
 
   const ts = nowIso();
   db.run("UPDATE corrections SET human_approved = 1 WHERE id = ?", [correctionId]);

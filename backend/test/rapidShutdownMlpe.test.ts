@@ -324,6 +324,16 @@ check("MUST-EXCLUDE: a verify naming the ESS inverter or the battery records not
   assert.equal(afterVerify("DS3D", "Powerwall 3", { batteryModel: "Powerwall 3" })[MICRO_SUPERSEDED_KEY], undefined);
   assert.equal(afterVerify("DS3D", "SE-10K-RWS", { essInverterModel: "SE10K-RWS" })[MICRO_SUPERSEDED_KEY], undefined);
 });
+check("MUST-EXCLUDE (Helm re-review blocker 1): the ESS is matched by FAMILY, not exact string", () => {
+  const PW3X = "POWERWALL 3 (13.5 KWH) + EXPANSION (13.5 KWH)";
+  assert.equal(afterVerify("DS3D", PW3X, { batteryModel: PW3X })[MICRO_SUPERSEDED_KEY], undefined, "approve of the parser's own model");
+  assert.equal(afterVerify("DS3D", "Tesla Powerwall 3", { batteryModel: "Powerwall 3" })[MICRO_SUPERSEDED_KEY], undefined, "typed with the make in front");
+  assert.equal(afterVerify("DS3D", "Powerwall 3", { batteryModel: PW3X })[MICRO_SUPERSEDED_KEY], undefined, "contained in the expansion string");
+  assert.equal(afterVerify("DS3D", "PW3-1707000-21-K", { batteryMake: "Tesla", batteryQty: "1", invMake: "TESLA" })[MICRO_SUPERSEDED_KEY], undefined, "invMake = batteryMake on a battery design");
+});
+check("…while a real string inverter next to an unrelated battery still records", () => {
+  assert.ok(afterVerify("DS3D", SUNNY, { batteryMake: "Enphase", batteryModel: "IQ Battery 5P", batteryQty: "1", invMake: "SMA" })[MICRO_SUPERSEDED_KEY]);
+});
 check("MUST-PASS: a verify to a different inverter records the model it was about", () => {
   assert.deepEqual((afterVerify("DS3D", SUNNY)[MICRO_SUPERSEDED_KEY] as { model: string }).model, SUNNY);
 });

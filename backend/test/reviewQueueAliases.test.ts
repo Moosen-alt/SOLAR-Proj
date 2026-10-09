@@ -33,8 +33,9 @@ const base = {
 };
 
 // A pending review item on one field, the way QC queues one (the operator's fix-it door).
+let reviewSeq = 0;
 const queueReview = (projectId: string, fieldName: string, parserValue: string): string => {
-  const itemId = `review-${fieldName}-${projectId.slice(0, 8)}`;
+  const itemId = `review-${fieldName}-${projectId.slice(0, 8)}-${++reviewSeq}`;
   const ts = new Date().toISOString();
   db.run(
     `INSERT INTO human_review_items
@@ -170,8 +171,9 @@ const forceSnapshot = (pid: string, patch: Record<string, unknown>) => {
 }
 
 // 6) #270 — a micro-PARSED design (pvMicro*, no inv*). Only a PERSON's statement (the review-queue
-//    verify, an updateProject payload naming inverterModel itself) supersedes the pvMicro* evidence,
-//    and it is recorded on the snapshot; the parser's own output and re-saves never do (Helm ruling).
+//    verify, or corrections-apply via updateProject's explicit humanInverterEdit option) supersedes the
+//    pvMicro* evidence, and it is recorded on the snapshot; PUT-shaped saves (the parser, API keys) —
+//    inverterModel included — never do, nor does a model naming the ESS (Helm rulings on PR #274).
 const MICRO = { ...base, pvMicroMake: "Enphase", pvMicroModel: "IQ8PLUS-72-2-US", pvMicroQty: "20" };
 const SUNNY = "Sunny Boy SB7.7-1SP-US-41";
 const snapshotOf = (pid: string) => JSON.parse(db.get<{ parser_json: string }>("SELECT parser_json FROM projects WHERE id = ?", [pid])!.parser_json);
@@ -191,18 +193,48 @@ const snapshotOf = (pid: string) => JSON.parse(db.get<{ parser_json: string }>("
   // A parser re-save sends the stored fields back (its form is filled from the snapshot) — with the
   // marker stripped or, forged/echoed, ignored. Either way the person's statement stands.
   const { [MICRO_SUPERSEDED_KEY]: _m, ...resent } = snapshotOf(pid);
-  const resaved = updateProject(db, pid, { ...resent, pvMicroModel: "IQ8PLUS-72-2-US", pvMicroQty: "20" });
+  const resaved = updateProject(db, pid, { ...resent, pvMicroModel: "IQ8PLUS-72-2-US", pvMicroQty: "20", inverterModel: resent.invModel, inverterMake: resent.invMake ?? "" });
   check("MUST-PASS: a parser re-save after the verify keeps MLPE off", !isMlpeDesignForProject(resaved.project), resaved.project.parserSnapshot);
   const echoed = updateProject(db, pid, { ...snapshotOf(pid), [MICRO_SUPERSEDED_KEY]: { model: "something else", door: "parser" } });
   check("…a re-sent marker can't move the stored one", (echoed.project.parserSnapshot[MICRO_SUPERSEDED_KEY] as { model?: string })?.model === SUNNY && !isMlpeDesignForProject(echoed.project), echoed.project.parserSnapshot[MICRO_SUPERSEDED_KEY]);
 }
 {
-  // The dashboard/correction door: a payload that names the canonical inverterModel.
+  // PUT /api/projects/:id is NOT a human door: the parser sends inverterModel on every save.
   const pid = createProject(db, MICRO).project.id;
-  const edited = updateProject(db, pid, { inverterModel: SUNNY });
-  check("MUST-PASS: updateProject naming inverterModel → Sunny Boy turns MLPE off", !isMlpeDesignForProject(edited.project), edited.project.parserSnapshot);
-  check("…recorded by the project-edit door", (edited.project.parserSnapshot[MICRO_SUPERSEDED_KEY] as { door?: string })?.door === "project_edit", edited.project.parserSnapshot[MICRO_SUPERSEDED_KEY]);
-  check("…pvMicroModel kept", edited.project.parserSnapshot.pvMicroModel === "IQ8PLUS-72-2-US", edited.project.parserSnapshot.pvMicroModel);
+  const put = updateProject(db, pid, { inverterModel: SUNNY, invModel: SUNNY });
+  check("MUST-EXCLUDE: a PUT-shaped save naming inverterModel → Sunny Boy keeps MLPE and records nothing", isMlpeDesignForProject(put.project) && put.project.parserSnapshot[MICRO_SUPERSEDED_KEY] === undefined, put.project.parserSnapshot);
+  // Corrections-apply (a person's approval) passes the explicit option.
+  const pid2 = createProject(db, MICRO).project.id;
+  const applied = updateProject(db, pid2, { inverterModel: SUNNY }, { humanInverterEdit: true });
+  check("MUST-PASS: a human-only caller (humanInverterEdit) naming Sunny Boy turns MLPE off", !isMlpeDesignForProject(applied.project), applied.project.parserSnapshot);
+  check("…recorded by the correction-apply door", (applied.project.parserSnapshot[MICRO_SUPERSEDED_KEY] as { door?: string })?.door === "correction_apply", applied.project.parserSnapshot[MICRO_SUPERSEDED_KEY]);
+  check("…pvMicroModel kept", applied.project.parserSnapshot.pvMicroModel === "IQ8PLUS-72-2-US", applied.project.parserSnapshot.pvMicroModel);
+  // Marker strip on updateProject: a payload can't plant one on a project that has none.
+  const pid3 = createProject(db, MICRO).project.id;
+  const planted = updateProject(db, pid3, { invModel: SUNNY, inverterModel: SUNNY, [MICRO_SUPERSEDED_KEY]: { model: SUNNY, door: "review_queue" } });
+  check("MUST-EXCLUDE: updateProject strips a planted marker", planted.project.parserSnapshot[MICRO_SUPERSEDED_KEY] === undefined && isMlpeDesignForProject(planted.project), planted.project.parserSnapshot);
+}
+{
+  // Helm re-review blocker 1 — the parser's PW3 + expansion shape. The parser writes the ESS into inv*
+  // (and inverterModel) and keeps the micro in pvMicro*; essInverterModel never reaches the project.
+  const PW3X = "POWERWALL 3 (13.5 KWH) + EXPANSION (13.5 KWH)";
+  // parser.html: essInverterModel = normalizeTeslaPowerwallModel(batteryModel) → "Powerwall 3" lands in invModel.
+  const shape = { ...MICRO, invMake: "Tesla", invModel: "Powerwall 3", inverterModel: "Powerwall 3", invQty: "1", batteryMake: "Tesla", batteryModel: PW3X, batteryQty: "2" };
+  const created = createProject(db, shape).project;
+  check("MUST-EXCLUDE: the parser's PW3 + expansion create is MLPE", isMlpeDesignForProject(created), created.parserSnapshot);
+  const resaved = updateProject(db, created.id, shape);
+  check("MUST-EXCLUDE: …its parser re-save keeps MLPE", isMlpeDesignForProject(resaved.project), resaved.project.parserSnapshot);
+  const item = queueReview(created.id, "inverterModel", "Powerwall 3");
+  const approved = humanVerify(db, created.id, { reviewItemId: item, action: "approve" });
+  check("MUST-EXCLUDE: …a review-queue APPROVE of the parser's Powerwall model keeps MLPE and records nothing", isMlpeDesignForProject(approved.project) && approved.project.parserSnapshot[MICRO_SUPERSEDED_KEY] === undefined, approved.project.parserSnapshot);
+  const item2 = queueReview(created.id, "inverterModel", "Powerwall 3");
+  const typed = humanVerify(db, created.id, { reviewItemId: item2, action: "edit", fieldValue: "Tesla Powerwall 3" });
+  check("MUST-EXCLUDE: …a person typing 'Tesla Powerwall 3' keeps MLPE and records nothing", isMlpeDesignForProject(typed.project) && typed.project.parserSnapshot[MICRO_SUPERSEDED_KEY] === undefined, typed.project.parserSnapshot);
+  // Same, with only the battery model to go on (no Tesla invMake).
+  const plain = createProject(db, { ...MICRO, batteryMake: "Tesla", batteryModel: "Powerwall 3", batteryQty: "1" }).project;
+  const item3 = queueReview(plain.id, "inverterModel", "IQ8PLUS-72-2-US");
+  const typed2 = humanVerify(db, plain.id, { reviewItemId: item3, action: "edit", fieldValue: "Tesla Powerwall 3" });
+  check("MUST-EXCLUDE: 'Tesla Powerwall 3' on a micro + Powerwall 3 battery design keeps MLPE (family match on batteryModel)", isMlpeDesignForProject(typed2.project) && typed2.project.parserSnapshot[MICRO_SUPERSEDED_KEY] === undefined, typed2.project.parserSnapshot);
 }
 {
   // MUST-EXCLUDE: the parser's keys are not a person's statement.

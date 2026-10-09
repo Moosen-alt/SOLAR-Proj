@@ -141,18 +141,19 @@ export function canonicalAliasForVerifiedField(fieldName: string, writtenKey: st
   return null;
 }
 
-// A PERSON SAYING "THAT IS NOT THE MICRO" IS RECORDED, NEVER INFERRED (#270, Helm ruling on PR #274).
+// A PERSON SAYING "THAT IS NOT THE MICRO" IS RECORDED, NEVER INFERRED (#270, Helm rulings on PR #274).
 // The parser deliberately writes a Tesla/Powerwall ESS inverter into invModel while the micro stays in
 // pvMicroModel, so inverterModel ≠ pvMicroModel says nothing about topology; and a verify that only
 // corrects the micro's string (OCR "HMS-2OOO-4T" → "HMS-2000-4T", a suffix, "DS3-D" → "DS3D") is not a
-// change of inverter. So the raw pvMicro* evidence stops answering MLPE ONLY when a human edit door
-// (the review queue's verify, an updateProject payload that names inverterModel itself — the dashboard
-// or an approved correction; the parser never sends the canonical key) sets an inverterModel that is
-// neither a near-variant of pvMicroModel nor the ESS inverter/battery. That statement is stored on the
-// snapshot under this key, with the model it was made about; the reader honours it only while
-// inverterModel still holds that model. Parser output and re-saves never write it (updateProject
-// strips it from every payload, so a re-sent snapshot can't forge or move it).
+// change of inverter. So the raw pvMicro* evidence stops answering MLPE ONLY on a person's statement:
+// the human review queue's verify of inverterModel (applyVerifiedField), or a human-only caller that
+// passes updateProject's explicit humanInverterEdit option (corrections-apply). NEVER PUT
+// /api/projects/:id — the parser sends inverterModel on every save, and that route is also the API-key
+// door. The statement is stored on the snapshot under this key, with the model it was made about; the
+// reader honours it only while inverterModel still holds that model. createProject/updateProject
+// strip it from every payload, so parser output and re-saves can't forge or move it.
 export const MICRO_SUPERSEDED_KEY = "microSupersededBy";
+export type MicroSupersessionDoor = "review_queue" | "correction_apply";
 
 // OCR-tolerant model family: alphanumerics only, upper case, O→0 and I/L→1 (the usual misreads).
 function modelFamily(value: unknown): string {
@@ -179,13 +180,30 @@ export function isNearModelVariant(a: unknown, b: unknown): boolean {
   return prefix >= 5 || editDistanceAtMost(x, y, 2);
 }
 
-/** Called by a HUMAN edit door after it has set inverterModel on `snapshot` (mutated in place). */
-export function recordMicroSupersession(snapshot: ParserPayload, door: "review_queue" | "project_edit"): void {
+// THE ESS INVERTER IS NOT "A DIFFERENT INVERTER" (Helm re-review blocker 1). essInverterModel never
+// reaches a parser-built project, and the parser writes a PW3 with expansion as "POWERWALL 3 … +
+// EXPANSION …" — so an exact-string guard let an APPROVE of the parser's own Powerwall model, or a
+// person typing "Tesla Powerwall 3", record a supersession. Family match instead: a near-variant of,
+// or contained in / containing, the battery or ESS-inverter model; and on a battery design, an
+// inverter make equal to the battery make (Tesla/Tesla) is the ESS inverter too.
+function namesTheEss(snapshot: ParserPayload, model: string): boolean {
+  const family = modelFamily(model);
+  for (const ess of [str(snapshot, "essInverterModel"), str(snapshot, "batteryModel")]) {
+    const e = modelFamily(ess);
+    if (!e) continue;
+    if (isNearModelVariant(model, ess)) return true;
+    if (Math.min(e.length, family.length) >= 4 && (family.includes(e) || e.includes(family))) return true;
+  }
+  const batteryDesign = str(snapshot, "batteryModel") !== "" || Number.parseFloat(str(snapshot, "batteryQty")) > 0;
+  const invMake = modelFamily(str(snapshot, "invMake"));
+  return batteryDesign && invMake !== "" && invMake === modelFamily(str(snapshot, "batteryMake"));
+}
+
+/** Called ONLY by a human door after it has set inverterModel on `snapshot` (mutated in place). */
+export function recordMicroSupersession(snapshot: ParserPayload, door: MicroSupersessionDoor): void {
   const model = str(snapshot, "inverterModel");
   const micro = str(snapshot, "pvMicroModel");
-  if (!model || !micro || isNearModelVariant(model, micro)) return;
-  const ess = [str(snapshot, "essInverterModel"), str(snapshot, "batteryModel")].filter(Boolean);
-  if (ess.some((e) => modelFamily(e) === modelFamily(model))) return;
+  if (!model || !micro || isNearModelVariant(model, micro) || namesTheEss(snapshot, model)) return;
   (snapshot as Record<string, unknown>)[MICRO_SUPERSEDED_KEY] = { model, door, at: nowIso() };
 }
 
