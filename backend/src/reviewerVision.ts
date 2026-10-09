@@ -391,14 +391,15 @@ export function visionRelaxedBlockers(report: ReviewerReport): ReviewerFinding[]
 }
 
 /** The project's account/meter values (autoLearn.projectSecretValues), loaded lazily: repository and
- *  autoLearn both reach this module, so a static import would be a cycle. */
-async function projectSecrets(db: AppDb, projectId: string): Promise<string[]> {
-  const { getProjectDetail } = await import("./repository");
-  const { projectSecretValues } = await import("./autoLearn");
+ *  autoLearn both reach this module, so a static import would be a cycle. null when they cannot be
+ *  read — the caller then sends NO prompt (rule 2 fails closed, #260 review). */
+async function projectSecrets(db: AppDb, projectId: string): Promise<string[] | null> {
   try {
+    const { getProjectDetail } = await import("./repository");
+    const { projectSecretValues } = await import("./autoLearn");
     return projectSecretValues(getProjectDetail(db, projectId).project);
   } catch {
-    return []; // no project row (a standalone review subject): no project secrets to know
+    return null;
   }
 }
 
@@ -426,9 +427,11 @@ export async function applyVisionToReviewerReport(
     return applyCachedVisionVerdicts(db, report);
   }
   const sig = sourceSig(pdfPath);
-  const secrets = await projectSecrets(db, report.projectId);
+  // Secrets unknown → cached verdicts only, never a new prompt.
+  const loaded = await projectSecrets(db, report.projectId);
+  const secrets = loaded ?? [];
 
-  let budget = opts.cacheOnly ? 0 : MAX_VISION_CHECKS;
+  let budget = opts.cacheOnly || loaded === null ? 0 : MAX_VISION_CHECKS;
   const findings: ReviewerFinding[] = [];
   for (const finding of report.findings) {
     if (isMeasurementTarget(finding)) {

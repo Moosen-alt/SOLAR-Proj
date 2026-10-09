@@ -1751,9 +1751,10 @@ export function redactSecretValues(text: string, secrets: Iterable<string>, repl
     if (digits.length >= 5) {
       const pattern = digits.split("").join("[\\s\\-\\u2013.#/]*");
       out = out.replace(new RegExp(`(?<!\\d)${pattern}(?!\\d)`, "g"), (m) => replace(m));
-    } else if (String(secret ?? "").length >= 6 && /\d/.test(String(secret))) {
+    } else if (String(secret ?? "").trim().length >= 6 && /\d/.test(String(secret))) {
       // Whitespace inside the secret matches any whitespace run: text read off a page wraps "AB 1234"
-      // at its space as easily as it prints it on one line (#260 review).
+      // at its space as easily as it prints it on one line (#260 review). Trimmed before the length
+      // gate, so padding never lets a short value through to over-redact.
       const literal = String(secret).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
       out = out.replace(new RegExp(literal, "gi"), (m) => replace(m));
     }

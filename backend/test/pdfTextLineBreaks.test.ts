@@ -34,7 +34,7 @@ const { createProject, getProjectDetail, buildReviewerReportFor } = await import
 const { saveProjectDocument, planSetTextForProject } = await import("../src/projectDocuments");
 const { extractPdfText, extractPdfPages, extractPdfTextLines, extractPdfPageLines, pageTextFromItems, scanFolder } = await import("../src/batchImport");
 const { scorePage } = await import("../src/docSplitter");
-const { roofFramingFacts } = await import("../src/projectEvidence");
+const { roofFramingFacts, evidenceForTopic } = await import("../src/projectEvidence");
 const { designNotesDigest, redactSecretValues } = await import("../src/autoLearn");
 const { applyVisionToReviewerReport } = await import("../src/reviewerVision");
 
@@ -110,6 +110,31 @@ run("pageTextFromItems: hasEOL → \\n, otherwise a space",
   run("batch import learns the correction PDF's numbered items (one line per page found none)",
     summary.byType.correction === 1 && summary.correctionsLearned === 1, json({ byType: summary.byType, learned: summary.correctionsLearned }));
 }
+{
+  // A WRAPPED item is one item: its first line alone ("…mounting for the new system on the") is no
+  // design fix; with its continuation ("rafters shown on sheet PV-3") it is.
+  const dir = fs.mkdtempSync(path.join(tmpDir, "scan-"));
+  const folder = path.join(dir, "Wrapped Customer - Anytown, OR");
+  fs.mkdirSync(folder);
+  await write(await pdfOf([["PLAN CHECK CORRECTION LIST", "1. Please clarify the proposed mounting for the new system on the",
+    "rafters shown on sheet PV-3 of the submitted set"]]), "Wrapped Customer - Anytown, OR correction.pdf", folder);
+  const org = db.get<{ id: string }>("SELECT id FROM orgs LIMIT 1")?.id ?? "default";
+  await scanFolder(db, dir, { orgId: org });
+  const row = db.get<{ sample: string; correction_bucket: string }>(
+    "SELECT sample, correction_bucket FROM historical_failure_examples WHERE source_label LIKE '%Wrapped Customer%'");
+  run("a wrapped correction item is learned whole, as a designer fix",
+    /on the rafters shown on sheet PV-3/.test(row?.sample ?? "") && row?.correction_bucket === "B_designer_fix", json(row));
+}
+{
+  // The classifier reads one line per page: a wrapped "SINGLE LINE / DIAGRAM" title is still an SLD.
+  const dir = fs.mkdtempSync(path.join(tmpDir, "scan-"));
+  const folder = path.join(dir, "Title Customer - Anytown, OR");
+  fs.mkdirSync(folder);
+  await write(await pdfOf([["PV-4", "SINGLE LINE", "DIAGRAM", "RAPID", "SHUTDOWN INITIATOR AT THE SERVICE"]]), "Title Customer - Anytown, OR sheet4.pdf", folder);
+  const org = db.get<{ id: string }>("SELECT id FROM orgs LIMIT 1")?.id ?? "default";
+  const summary = await scanFolder(db, dir, { orgId: org });
+  run("batch import files a wrapped SINGLE LINE / DIAGRAM sheet as an SLD", summary.byType.sld === 1, json(summary.byType));
+}
 
 // --- MUST-EXCLUDE: the one-line extractors and their readers stay as they were -----------------
 const PLATFORMS: Array<{ name: string; build: () => Promise<Buffer>; sheets: string[][] }> = [
@@ -145,19 +170,44 @@ run("redactSecretValues: digits split by a newline are scrubbed",
   redactSecretValues("UTILITY METER #80 000\n1234 ON THE EAST WALL", [SYNTHETIC_METER]) === "UTILITY METER #[redacted] ON THE EAST WALL");
 run("redactSecretValues: a short literal secret wrapped at its space is scrubbed",
   redactSecretValues("METER AB\n1234 ON THE WALL", ["AB 1234"]) === "METER [redacted] ON THE WALL");
+run("redactSecretValues: a padded short value is not a secret (trimmed before the length gate)",
+  redactSecretValues("UNIT A12 ON THE WALL", ["  A12  "]) === "UNIT A12 ON THE WALL");
 {
-  // The label sits on the line ABOVE the digits, so an evidence excerpt can start at the digits and
-  // land in a finding's text. Every vision prompt is recorded; none may carry them.
+  // AT THE SOURCE: the label sits on the line ABOVE the digits, so an evidence window can start at
+  // them — or END inside them, past the reach of a whole-number scrub. No finding text may carry them.
   const project = await projectWith(await wrapLayoutPlanSet());
   const report = buildReviewerReportFor(db, project);
-  const carrying = report.findings.filter((f) => METER_DIGITS.test([f.title, f.message, f.cityFeedback, ...(f.evidenceNeeded ?? [])].join(" ")));
+  const carrying = report.findings.filter((f) => METER_DIGITS.test(json([f.title, f.message, f.cityFeedback, f.evidenceNeeded, f.evidenceFound])));
+  run("no finding quotes the meter digits (label above them)", carrying.length === 0, json(carrying.map((f) => f.id)));
+  const filler = "SEE NOTES FOR THE TIE IN AND THE BREAKER LOCATIONS ".repeat(4);
+  const cut = [];
+  for (let k = 150; k <= 185; k++) {
+    const probe = { ...project, parserSnapshot: { ...project.parserSnapshot, planSetExtractedText: `ONE-LINE DIAGRAM ${filler.slice(0, k)} 80 000 1234 END` } };
+    if (/80 000/.test(json(evidenceForTopic(probe, "sld")))) cut.push(k);
+  }
+  run("an evidence window that ends inside the meter number keeps no digit prefix", cut.length === 0, json(cut));
+
+  // SECOND GUARD, at the vision door: a finding whose text does carry the digits is scrubbed in the
+  // prompt. Every prompt is recorded; none may carry them.
+  const seeded = { ...report, findings: report.findings.map((f) => ({ ...f, evidenceNeeded: [...(f.evidenceNeeded ?? []), `METER ${SYNTHETIC_METER}`] })) };
   const prompts: string[] = [];
   const recorder = {
     async visionExtract(input: { prompt: string }) { prompts.push(input.prompt); return { present: false, confidence: "low", observed: "", missing: "" }; },
   };
-  await applyVisionToReviewerReport(db, recorder as never, report);
-  run("setup: a finding the vision pass reads quotes the meter digits", carrying.length > 0 && prompts.length > 0, json({ carrying: carrying.map((f) => f.id), prompts: prompts.length }));
+  await applyVisionToReviewerReport(db, recorder as never, seeded);
+  run("setup: the vision pass sent prompts", prompts.length > 0, json(prompts.length));
   run("the vision prompt carries no meter digits", prompts.every((p) => !METER_DIGITS.test(p)), json(prompts.filter((p) => METER_DIGITS.test(p)).map((p) => p.slice(0, 400))));
+
+  // FAILS CLOSED: when the project's secrets cannot be read, no prompt is sent at all.
+  const other = await projectWith(await wrapLayoutPlanSet());
+  const otherReport = buildReviewerReportFor(db, other);
+  db.run("PRAGMA foreign_keys = OFF");
+  db.run("UPDATE projects SET id = ? WHERE id = ?", [`${other.id}-gone`, other.id]);
+  const before = prompts.length;
+  await applyVisionToReviewerReport(db, recorder as never, otherReport);
+  run("secrets unreadable → no vision prompt is sent", prompts.length === before, json(prompts.length - before));
+  db.run("UPDATE projects SET id = ? WHERE id = ?", [other.id, `${other.id}-gone`]);
+  db.run("PRAGMA foreign_keys = ON");
 }
 
 // --- the digest's "within 10" topic ----------------------------------------------------------

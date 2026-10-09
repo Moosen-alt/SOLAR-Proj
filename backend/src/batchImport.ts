@@ -164,15 +164,25 @@ interface CorrectionFields {
 // Pull numbered correction / plan-check items out of a correction document.
 function quickExtractCorrections(text: string): Partial<CorrectionFields> {
   const appMatch = text.match(/(?:application|app|record|permit)\s*(?:number|no\.?|#)[:\s]+([A-Z0-9\-]{4,20})/i);
-  const lines = text.split(/\n/);
-  // Numbered correction items
-  const items = lines
-    .filter((l) => /^\s*\d+[\.\)]\s+.{20,}/.test(l))
-    .map((l) => l.replace(/^\s*\d+[\.\)]\s+/, "").trim())
-    .slice(0, 20);
+  // Numbered correction items. An item WRAPS: the lines after its number belong to it until the next
+  // number or a blank line (a page break), so "1. Please clarify the mounting on the / rafters shown
+  // on PV-3." is one item — its first line alone is learned truncated and in the wrong bucket.
+  const items: string[] = [];
+  let current: string | null = null;
+  for (const line of text.split(/\n/)) {
+    const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    if (numbered || !line.trim()) {
+      if (current !== null) items.push(current);
+      current = numbered ? numbered[1].trim() : null;
+    } else if (current !== null) {
+      current = `${current} ${line.trim()}`;
+    }
+  }
+  if (current !== null) items.push(current);
+  const kept = items.filter((item) => item.length >= 20).slice(0, 20);
   return {
     applicationNumber: appMatch?.[1],
-    correctionItems: items.length > 0 ? items : undefined,
+    correctionItems: kept.length > 0 ? kept : undefined,
   };
 }
 // ---------------------------------------------------------------------------
@@ -360,9 +370,12 @@ export async function scanFolder(
       summary.scanned++;
 
       try {
-        // Lines (#260): quickExtractCorrections reads numbered items one per line, and on one-line
-        // pages it never found any — a correction PDF taught nothing.
-        const text = await extractPdfTextLines(filePath, 12);
+        // Lines (#260) for quickExtractCorrections only: it reads numbered items line by line, and on
+        // one-line pages it never found any — a correction PDF taught nothing. The classifier and the
+        // utility match read the ONE-LINE view they were tuned on: "SINGLE LINE / DIAGRAM" wrapped
+        // across lines filed an SLD as a permit application (#260 review).
+        const lines = await extractPdfTextLines(filePath, 12);
+        const text = lines.split("\n\n").map((page) => page.replace(/\n/g, " ")).join("\n");
         const docType = classifyDoc(filePath, text);
         summary.byType[docType]++;
 
@@ -376,7 +389,7 @@ export async function scanFolder(
         // Pull a correction sample if this is a correction/plan-check doc.
         let correctionText: string | undefined;
         if (docType === "correction") {
-          const items = quickExtractCorrections(text).correctionItems;
+          const items = quickExtractCorrections(lines).correctionItems;
           if (items && items.length) correctionText = items.join("\n");
         }
 
