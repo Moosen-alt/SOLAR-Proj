@@ -302,7 +302,12 @@ function isMicroOrMlpeInverter(project: ProjectRecord, allText: string): boolean
 // "not a manufactured home", "not listed to UL 2703") — a wider window read "engineered, not
 // prescriptive, for a manufactured home" as a denial.
 const NEGATION_BEFORE = /(?:\b(?:not|no|never|without|missing|lacks?|lacking|other\s+than|excluding|except|isn'?t)\s+(?:[a-z]+\s+){0,2}|\bnon[-\s]?)$/i;
-const NEGATION_AFTER = /^[^.;]{0,30}?\b(?:not\s+(?:provided|shown|found|included|listed|evaluated|verified|checked|analy[sz]ed|addressed|applicable)|missing|by\s+others|excluded)\b|^\s*[?:]?\s*(?:no|n\/a|none)\b/i;
+// "NOT USED" denies only DIRECTLY after the mention (#242: "690.12(B)(2)(3) - NOT USED",
+// "… (NOT USED)", "… IS NOT USED"), like "N/A" and "NONE". Never in the 30-character window:
+// affirmedIn joins whitespace, so the next schedule row ("EV CHARGER: N/A", "HOA: N/A") would
+// deny a real mention before it. A dash before a bare "NO" denies only when the NO stands alone:
+// "MOBILE HOME - NO BASEMENT" and "RSD INITIATOR - NO ACCESS RESTRICTIONS" affirm the mention.
+const NEGATION_AFTER = /^[^.;]{0,30}?\b(?:not\s+(?:provided|shown|found|included|listed|evaluated|verified|checked|analy[sz]ed|addressed|applicable)|missing|by\s+others|excluded)\b|^\s*[?:]?\s*(?:no|n\/a|none|not\s+used)\b|^\s*[?:\u2013\u2014-]?\s*\(?\s*(?:is\s+)?(?:n\/a|none|not\s+used)\b|^\s*[\u2013\u2014-]\s*no(?=\s*(?:$|[.;,)]))/i;
 
 interface Affirmed {
   source: string;
@@ -523,17 +528,33 @@ export const RSD_LISTED_EQUIPMENT_PATTERNS: RegExp[] = [
   /\bPVHCS\b/i,
   /\bUL\s*3741\b/i,
   /\bPVRS[ES]\b/i,
-  /690\.12\s*\(\s*B\s*\)\s*\(\s*2\s*\)/i,
+  // Not "(B)(2)(3)": that is the no-exposed-wiring option, not listed equipment (#242). It answers
+  // the gap only where the edition still has it (RSD_NO_EXPOSED_WIRING_CITATION below).
+  /690\.12\s*\(\s*B\s*\)\s*\(\s*2\s*\)(?!\s*\(\s*3\s*\))/i,
   /\blisted\b[^.;\n]{0,40}\b(?:rapid\s*shutdown|RSD)\b/i,
   /\b(?:rapid\s*shutdown|RSD)\b[^.;\n]{0,40}\blisted\b/i,
 ];
 /** The 2017/2020 690.12(B)(2)(3) citation — the "no exposed wiring methods or conductive parts"
  *  option the 2023 NEC deleted (necEditions' `noExposedWiringOption`). Only the citation itself: a
  *  general "no exposed wiring" note (attic, EMT, a city handout) is not the option (Helm review). */
-const RSD_DELETED_OPTION_CITATION = /690\.12\s*\(\s*B\s*\)\s*\(\s*2\s*\)\s*\(\s*3\s*\)/i;
-/** "… 690.12(B)(2)(3) – NOT USED" names the option to reject it. */
-const notUsedAfter: MentionGuard = (text, index, matched) =>
-  /^[^.;]{0,30}?\b(?:not\s+used|not\s+applicable|n\/a)\b/i.test(text.slice(index + matched.length, index + matched.length + 40));
+const RSD_NO_EXPOSED_WIRING_CITATION = /690\.12\s*\(\s*B\s*\)\s*\(\s*2\s*\)\s*\(\s*3\s*\)/i;
+/** The option's own title after its citation ("690.12(B)(2)(3) NO EXPOSED WIRING METHODS") is part
+ *  of the citation — dropped before the negation read, or its "NO" would read as rejecting it. What
+ *  follows the title ("- NOT USED", "N/A") still decides (#242). */
+const RSD_OPTION_TITLE = /(690\.12\s*\(\s*B\s*\)\s*\(\s*2\s*\)\s*\(\s*3\s*\))\s*[-\u2013\u2014:]?\s*no\s+exposed\s+(?:wiring(?:\s+methods)?|conductive\s+parts)(?:\s+(?:or|and|,)\s*(?:wiring(?:\s+methods)?|conductive\s+parts))?/gi;
+function withoutRsdOptionTitle(sources: DesignTextSource[]): DesignTextSource[] {
+  return sources.map((s) => ({ ...s, text: String(s.text || "").replace(RSD_OPTION_TITLE, "$1") }));
+}
+/** city.ess.details-missing's trigger: a mention of storage scope. */
+const ESS_TRIGGER_PATTERNS: RegExp[] = [/battery/i, /\bESS\b/i, /powerwall/i, /encharge/i, /backup/i];
+const STORAGE_WORD = String.raw`(?:batter(?:y|ies)|ESS|backup|powerwall|encharge|energy\s+storage(?:\s+system)?|storage)`;
+const STORAGE_RUN_THEN_DENIAL = new RegExp(String.raw`^(?:\s*(?:\/|&|,|\+|and|or)?\s*${STORAGE_WORD}\b)*\s*\)?\s*(?:[?:]?\s*(?:no|none|n\/a|not\s+(?:used|applicable|included|proposed|provided))\b|[\u2013\u2014-]\s*(?:(?:none|n\/a|not\s+(?:used|applicable|included|proposed|provided))\b|no(?=\s*(?:$|[.;,)]))))`, "i");
+const DENIAL_THEN_STORAGE_RUN = new RegExp(String.raw`\b(?:no|without)\s+(?:${STORAGE_WORD}\s*(?:\/|&|,|\+|and|or)\s*)+$`, "i");
+/** "BATTERY / ESS: NONE", "(BATTERY BACKUP): NOT USED": the denial sits after the next storage
+ *  word (or its closing parenthesis), past NEGATION_AFTER's reach. */
+const essMentionDenied: MentionGuard = (text, index, matched) =>
+  STORAGE_RUN_THEN_DENIAL.test(text.slice(index + matched.length, index + matched.length + 60))
+  || DENIAL_THEN_STORAGE_RUN.test(text.slice(Math.max(0, index - 60), index));
 /** 690.12(C) (2017+): where the initiation device is. */
 export const RSD_INITIATION_PATTERNS: RegExp[] = [
   /\binitiat(?:ion|ing|or)\b/i,
@@ -1295,16 +1316,16 @@ export function evaluateDesignCodeFindings(
     const gaps: Array<{ item: string; section: string }> = [];
     // THE EDITION'S OWN OPTIONS (#215). 2017/2020 690.12(B)(2) had a third inside-boundary option,
     // (3) no exposed wiring methods or conductive parts, which the 2023 NEC deleted. Under 2017/2020
-    // a "690.12(B)(2)…" citation answers the gap as it always has; under 2023 a citation of the
-    // deleted (B)(2)(3) no longer does. Only that citation counts as relying on the deleted option —
-    // never a general "no exposed wiring" note — and only read from the plan set's own sheets.
+    // a "690.12(B)(2)(3)" citation answers the gap as it always has; under 2023 it no longer does.
+    // Only that citation counts as relying on the option — never a general "no exposed wiring"
+    // note — and a citation that rejects it ("… – NOT USED", #242) answers nothing under either.
     const deletedOption = !rs.noExposedWiringOption && rs.insideBoundaryArticle;
-    const citesDeletedOption: MentionGuard | undefined = deletedOption
-      ? (text, index, matched) => /690\.12/i.test(matched) && /^\s*\(\s*3\s*\)/.test(text.slice(index + matched.length))
-      : undefined;
-    const listed = affirmedIn(packageTexts, RSD_LISTED_EQUIPMENT_PATTERNS, citesDeletedOption);
+    const listed = affirmedIn(
+      withoutRsdOptionTitle(packageTexts),
+      rs.noExposedWiringOption ? [...RSD_LISTED_EQUIPMENT_PATTERNS, RSD_NO_EXPOSED_WIRING_CITATION] : RSD_LISTED_EQUIPMENT_PATTERNS,
+    );
     const planSheets = sheetTextSources(project, documentTexts).filter((src) => !SPEC_SHEET_SOURCE.test(src.label) && !/handout/i.test(src.label));
-    const deletedOptionCited = deletedOption && !listed ? affirmedIn(planSheets, [RSD_DELETED_OPTION_CITATION], notUsedAfter) : null;
+    const deletedOptionCited = deletedOption && !listed ? affirmedIn(withoutRsdOptionTitle(planSheets), [RSD_NO_EXPOSED_WIRING_CITATION]) : null;
     if (rs.requiresListedEquipment && rs.insideBoundaryArticle && !listed) {
       gaps.push({ item: "Listed PV hazard control system or listed rapid shutdown equipment for inside the array boundary", section: rs.insideBoundaryArticle });
     }
@@ -1608,18 +1629,30 @@ export function evaluateDesignCodeFindings(
     }
   }
 
-  const batteryText = `${str(project, "batteryModel")}\n${str(project, "batteryQty")}\n${all}`;
+  // The designer's sheets, not the parser's own labels (#257): the split map, the download
+  // checklist and the packet-readiness list always print "07 Battery / ESS specs: not detected" /
+  // "OPTIONAL/MISSING - 07 Battery / ESS Spec Sheet" / "READY - Battery / ESS", so a no-battery
+  // project posted with that JSON raised this review.
+  const batterySources: DesignTextSource[] = [
+    { label: "batteryModel", text: str(project, "batteryModel") },
+    { label: "batteryQty", text: str(project, "batteryQty") },
+    { label: "design text", text: designText(project, ["splitPagesText", "utilityDownloadChecklistText", "packetReadinessText"]) },
+  ];
+  const batteryText = batterySources.map((s) => s.text).join("\n");
   // The suppression list held a bare /fire/i — and since the fire-pathway work every plan set
   // reliably carries "FIRE ACCESS PATHWAY", so that fix would itself have switched off every
   // battery review. It also held an unbounded /ESS/i, which matches "addrESS" and "procESS".
   // Word-boundary the acronym, and take fire SEPARATION/rating rather than the bare word.
   // The acronym itself is a TRIGGER only (#245): it also sat in the suppression list, so an
   // equipment-schedule line reading "ESS" both raised this review and cleared it. Suppression
-  // takes real detail evidence — a 706/R328/1207 citation, clearances, fire separation.
-  if (hasAny(batteryText, [/battery/i, /\bESS\b/i, /powerwall/i, /encharge/i, /backup/i])
+  // takes real detail evidence — a 706/R328/1207/NFPA 855 citation, clearances, fire separation.
+  // A NEGATED mention is not storage scope (#257): "ESS: N/A", "NO ESS PROPOSED",
+  // "BATTERY / ESS: NONE" — affirmedIn's negation read, plus a run of storage words before the
+  // denial ("BATTERY / ESS: NONE", "NO BATTERY / ESS").
+  if (affirmedIn(batterySources, ESS_TRIGGER_PATTERNS, essMentionDenied)
     && !hasAny(batteryText, [
       /clearance/i, /working\s*space/i,
-      /\b706\b/i, /R\s*328/i, /\b1207\b/i,
+      /\b706\b/i, /R\s*328/i, /\b1207\b/i, /NFPA\s*855/i,
       /fire\s*(?:separation|barrier|rating)|fire.?rated/i,
     ])) {
     out.push(finding({
