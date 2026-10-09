@@ -65,53 +65,15 @@ export const SERVICE_FEEDER_200A_LABEL = "Services or feeders: 200 amps or less"
 
 export const SERVICE_FEEDER_400A_LABEL = "Services or feeders: 201 amps to 400 amps";
 
-export type BatteryStatus = "yes" | "no" | "unknown";
-
-/** A battery MODEL field that says there is NO battery ("N/A", "N.A.", "(none)", "None proposed",
- *  "No ESS", "Not in scope", "-"). One answer for the two places a placeholder must not become a
- *  battery: normalize.ts, where hasBattery is DERIVED from the model, and essRequirements, where the
- *  required set grows a blocking spec-sheet row (#246). Normalized first (case, dots, parentheses,
- *  spacing, " / "), so the spellings an operator actually types all read the same. "TBD" is NOT a
- *  placeholder (operator ruling on #256): a battery whose model is undecided is still a battery, and
- *  declaring "no storage" to the utility for it would be false. */
-export function isPlaceholderBatteryModel(value: unknown): boolean {
-  const v = String(value ?? "").toLowerCase().replace(/[().]/g, "").replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").trim();
-  return /^(?:n\/?a|none(?: proposed| planned| installed)?|no(?: battery| batteries| ess| storage)?|nil|null|not (?:included|applicable|used|proposed|in scope)|0|[-\u2013\u2014]+)$/.test(v);
-}
+// Question 1 (does this project have a battery?) and its placeholder rule live in the shared leaf
+// (shared/src/batteryControls.ts), so the portal-bot adapters ask the SAME question (#246).
+import { batteryStatus } from "../../shared/src/batteryControls";
+export { batteryStatus, isPlaceholderBatteryModel, type BatteryStatus } from "../../shared/src/batteryControls";
 
 function str(value: unknown): string {
   return value == null ? "" : String(value).trim();
 }
 
-/** DOES THIS PROJECT HAVE A BATTERY? — tri-state.
- *
- *  THE POSITIVE HALF IS portalRecipes.ts's energySource predicate, exactly: the
- *  one that decides whether a utility portal is told "Solar PV and Battery" and
- *  so whether ~17 storage questions get asked at all. hasBattery Yes (written by
- *  normalize.ts from batteryModel / batteryQuantity), OR a battery model, OR a
- *  battery quantity above zero — the fallback covers a snapshot that never went
- *  through normalisation. Reading the same evidence means the fee line and the
- *  portal's own battery declaration cannot disagree about one job.
- *
- *  THE NEGATIVE HALF IS autoLearn.ts's: only an EXPLICIT "no" is a no.
- *  normalize.ts writes hasBattery "No" whenever a parsed plan set carries no
- *  battery model or quantity, so every parsed project answers; a snapshot with
- *  no hasBattery and no battery evidence was never parsed, and silence about a
- *  battery is not a statement that there isn't one. That case is "unknown", and
- *  every caller must treat it as neither answer (an unknown must not read as
- *  reassurance — a "0" typed into a fee box, or a fee sheet without the line,
- *  would both claim a fact nobody established). */
-export function batteryStatus(snapshot: Record<string, unknown> | null | undefined): BatteryStatus {
-  const s = (snapshot ?? {}) as Record<string, unknown>;
-  const flag = str(s.hasBattery);
-  const qty = Number(str(s.batteryQuantity) || str(s.batteryQty) || 0);
-  // A placeholder model ("N/A", "None") is not battery evidence — the ONE predicate normalize.ts
-  // derives hasBattery with, so the fee line and the portal's declaration agree with the flag (#246).
-  const model = str(s.batteryModel);
-  if (/^(yes|true|y)$/i.test(flag) || (model !== "" && !isPlaceholderBatteryModel(model)) || (Number.isFinite(qty) && qty > 0)) return "yes";
-  if (/^(no|false|none|n)$/i.test(flag)) return "no";
-  return "unknown";
-}
 
 /** DOES THIS FILING CARRY ELECTRICAL FEE ITEMS?
  *

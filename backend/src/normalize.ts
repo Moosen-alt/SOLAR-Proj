@@ -2,7 +2,7 @@ import type { ExistingSystemInfo, IssuerTrackKey, ParserPayload, ProjectRecord, 
 import { nowIso } from "./time";
 import { firstEmail } from "../../shared/src/emailAddress";
 import { isBillHolderName } from "./accountHolders";
-import { isPlaceholderBatteryModel } from "./batteryServiceFeeder";
+import { isPlaceholderBatteryModel } from "../../shared/src/batteryControls";
 
 /** THE OPERATOR'S PER-TRACK ISSUER, as it is stored: flat parser-snapshot keys, written by
  *  PUT /api/projects/:id exactly like permitPathOverride / structureTypeOverride (updateProject merges
@@ -192,8 +192,13 @@ export function canonicalizeSnapshot(payload: ParserPayload): ParserPayload {
   const batteryQty = pick(["batteryQuantity", "batteryQty"]);
   const batteryModel = pick(["batteryModel"]);
   // A placeholder model ("N/A", "None") typed into "Battery model (if any)" says there is NO battery —
-  // deriving "Yes" from it put a blocking battery spec-sheet row on a PV-only job (#246).
-  set("hasBattery", (batteryModel && !isPlaceholderBatteryModel(batteryModel)) || (batteryQty && Number(batteryQty) > 0) ? "Yes" : "No");
+  // deriving "Yes" from it put a blocking battery spec-sheet row on a PV-only job (#246). And REAL
+  // evidence (a model or a quantity) outranks a bare "No"/false (operator ruling on #256: the design
+  // evidence is the plan set), so the stored flag every raw reader (the portal's storage declaration,
+  // replay, the learner's guard) binds agrees with batteryStatus().
+  const batteryEvidence = Boolean((batteryModel && !isPlaceholderBatteryModel(batteryModel)) || (batteryQty && Number(batteryQty) > 0));
+  if (batteryEvidence) canonical["hasBattery"] = "Yes";
+  else set("hasBattery", "No");
 
   // System ADDITION: an existing PV system remains in service alongside the new
   // install. Portals/forms ask "is there existing generation on site?" — answer

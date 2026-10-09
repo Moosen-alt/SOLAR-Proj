@@ -15,6 +15,10 @@
 //   K8 ahjForms / iowaPvWorksheet: the raw battery test again             → (x4) fails;
 //      electricalSizing.essOnBus the same → essBusbar.test "placeholder battery model" fails.
 //   K9 portalRecipes: energySource honours a bare hasBattery "No" again   → (x5) fails.
+//   K10 normalize.ts: a bare "No" beats real evidence again               → (x5) fails.
+//   K11 applicationDocs worksheets: the raw model again                   → (x4) fails.
+//      (codeReviewRules' batteryText placeholder filter is belt and braces: #265's negation reader
+//      already denies "No ESS" / "No battery", so reverting the filter alone is not observable.)
 //   K5 essRequirements: a fire-only cite counts as "cited"             → (c7) fails.
 //   K6 dashboard.js: drop the listed-above filter                      → (r1) fails.
 //
@@ -55,6 +59,8 @@ const { resolveRecipeFieldValues } = await import("../src/portalRecipes");
 const { batteryStatus } = await import("../src/batteryServiceFeeder");
 const { resolveSource } = await import("../src/ahjForms");
 const { iowaPvWorksheetValues } = await import("../src/iowaPvWorksheet");
+const { buildApplicationDocumentPackage } = await import("../src/applicationDocs");
+const { evaluateDesignCodeFindings } = await import("../src/codeReviewRules");
 const { createProject } = repo;
 
 let failures = 0;
@@ -246,10 +252,20 @@ await check("(x4) MUST-EXCLUDE: a saved {batteryModel:'N/A'} job — the flag, t
   assert.notEqual(batteryStatus(snap), "yes");
   assert.equal(fields.energySource, "Solar PV");
   assert.equal(fields.wattsmartBatteryProgram, "No");
+  assert.equal(fields.hasBattery, "No", "the portal's storage declaration (the raw flag replay binds)");
   assert.ok(!docTypes(p as never).includes("battery_spec"));
   // The permit-PDF readers: the description of work, the PV worksheet's battery box.
   assert.doesNotMatch(resolveSource("computed.descriptionOfWork", { project: p, client: {}, snapshot: snap } as never), /battery/i);
   assert.equal(iowaPvWorksheetValues(p).values["p2.battery"], "N");
+  // The packet worksheets and the reviewer: no "N/A" battery, no ESS review for "No ESS".
+  // (An Oregon city with a known utility: the fixture whose packet carries both worksheets.)
+  const sheets = (sn: Record<string, unknown>) => buildApplicationDocumentPackage({ ...(p as object), state: "OR", ahj: "City of Salem", city: "Salem", utility: "Pacific Power", parserSnapshot: sn } as never)
+    .docs.map((d) => /Battery\/ESS: [^\n]*/.exec(d.markdown)?.[0]).filter(Boolean);
+  assert.deepEqual(sheets(snap), ["Battery/ESS: None parsed / verify", "Battery/ESS: None parsed / verify"]);
+  assert.ok(sheets({ hasBattery: "Yes", batteryModel: "EX-13", batteryQty: "1" }).every((l) => /EX-13/.test(String(l))), "a real battery is listed");
+  const essReview = (model: string) => evaluateDesignCodeFindings({ ...(p as object), parserSnapshot: { ...snap, batteryModel: model } } as never, null).some((f) => f.id === "city.ess.details-missing");
+  assert.ok(!essReview("No ESS") && !essReview("No battery"), "a placeholder model raised the ESS review");
+  assert.ok(essReview("Examplecell Battery 13"), "a real battery model still raises it");
   // MUST-PASS: the same agreement for a real battery.
   const real = createProject(db, { clientId: client.id, owner: "ESS Owner", street: "5 Test Way", city: "Sagebrush", state: "CO", ahj: "Sagebrush", utility: "Example Mountain Electric", dcKw: "6", acKw: "5", batteryModel: "EX-13" } as never).project;
   assert.equal(batteryStatus(real.parserSnapshot as Record<string, unknown>), "yes");
@@ -266,6 +282,15 @@ await check("(x5) MUST-PASS (operator ruling on #256): a real model outranks a b
   assert.ok(cards(p).some((t) => "essStep" in t));
   assert.match(resolveSource("computed.descriptionOfWork", { project: p, client: {}, snapshot: snap } as never), /with EX-13 battery storage/);
   assert.equal(iowaPvWorksheetValues(p as never).values["p2.battery"], "Y");
+  // Saved, the stored flag itself follows the evidence, so the portal's storage declaration (the raw
+  // flag replay binds) says Yes too — on create and on a partial update.
+  const client = createClient(db, { companyName: "ESS Evidence Solar", ccbLicenseNumber: "246249" });
+  for (const o of [{ hasBattery: "No", batteryModel: "EX-13" }, { hasBattery: false, batteryQty: "2" }]) {
+    const saved = createProject(db, { clientId: client.id, owner: "ESS Owner", street: "6 Test Way", city: "Sagebrush", state: "CO", ahj: "Sagebrush", utility: "Example Mountain Electric", dcKw: "6", acKw: "5", ...o } as never).project;
+    assert.equal(saved.parserSnapshot?.hasBattery, "Yes", JSON.stringify(o));
+    assert.equal(resolveRecipeFieldValues(db, saved, "powerclerk").hasBattery, "Yes", JSON.stringify(o));
+    assert.equal(repo.updateProject(db, saved.id, { dcKw: "6.5" } as never).project.parserSnapshot?.hasBattery, "Yes", JSON.stringify(o));
+  }
 });
 await check("(c7) MUST-EXCLUDE: a cited fire-only permit or review is never presented as the cited ESS requirement", () => {
   lookup("Town of Mesa Verde Springs", {
