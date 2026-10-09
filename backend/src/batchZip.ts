@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import AdmZip from "adm-zip";
+import { AUTH_ENABLED } from "./auth";
 
 // Where uploaded zips get extracted before the folder scan runs.
 const UPLOAD_ROOT = path.resolve(process.cwd(), process.env.BATCH_UPLOAD_DIR || "backend/data/batch-uploads");
@@ -26,6 +27,45 @@ export function batchUploadRoot(orgId: string): string {
 export function folderWithinRoot(folder: string, root: string): boolean {
   const real = (p: string) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
   return real(folder).startsWith(real(root) + path.sep);
+}
+
+// THE ONE ANSWER to "may this caller scan this server folder?" (#276), asked at every door
+// that enqueues a folder_scan (/api/batch-import/scan, POST /api/jobs) and again by the job
+// worker. The job is stamped with the caller's org, so whatever the folder holds comes back
+// through that org's job list. The operator (superadmin, or local single-operator use with
+// auth off) may scan any folder; everyone else only inside their own org's upload root.
+export function mayScanFolder(scope: { orgId: string; crossOrg: boolean }, folder: string): boolean {
+  if (!AUTH_ENABLED || scope.crossOrg) return true;
+  return folderWithinRoot(folder, batchUploadRoot(scope.orgId));
+}
+
+/**
+ * Build a folder_scan job payload FROM THE SERVER'S OWN VIEW of the caller, or null when the
+ * caller may not scan that folder (the doors answer null with the same 404 as a missing
+ * folder, and queue nothing). Every field is rebuilt, never copied, so a body sent to POST
+ * /api/jobs cannot carry `scanAs` in: the worker trusts that marker to skip re-confinement.
+ */
+export function folderScanPayload(
+  scope: { orgId: string; crossOrg: boolean },
+  body: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const folderPath = typeof body.folderPath === "string" ? body.folderPath : "";
+  if (!folderPath || !mayScanFolder(scope, folderPath)) return null;
+  const opt = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+  return {
+    folderPath,
+    defaultState: opt(body.defaultState),
+    defaultAhj: opt(body.defaultAhj),
+    defaultUtility: opt(body.defaultUtility),
+    useLlm: body.useLlm === true || body.useLlm === "true",
+    scanAs: !AUTH_ENABLED || scope.crossOrg ? "operator" : "org",
+  };
+}
+
+/** The worker's re-check: anything not enqueued as the operator stays inside the job's org root. */
+export function folderScanJobAllowed(payload: Record<string, unknown>, jobOrgId: string): boolean {
+  if (payload.scanAs === "operator") return true;
+  return folderWithinRoot(String(payload.folderPath || ""), batchUploadRoot(jobOrgId));
 }
 
 // Extract a zip buffer into a fresh working folder under the org's own root and report
