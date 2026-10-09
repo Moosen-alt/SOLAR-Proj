@@ -436,26 +436,37 @@ function correctionSignature(correction: KnowledgeFacts["correction"]): string {
   return normalize(`${correction.bucket} ${correction.rootCause} ${correction.requiredAction}`);
 }
 
-// A digit run grouped by spaces/tabs, a dash (ASCII, Unicode or minus), "#", or a dot with a
-// digit straight after it — the separators wordingNamesProject ignores ("/" aside: "120/240 V" is
-// a service voltage). Identifier-shaped once it holds 5+ digits: "80 000 1234", "1234-5678-90",
-// "SA# 1234 5678", or a bare "8000012345". NOT a separator: a newline (a numbered letter's "2."
-// would join the line before it) or a sentence-ending ". ". Applied after the phone rule so a
-// phone keeps its own tag.
-const GROUPED_DIGITS = /(?<!\d)\d+(?:(?:[ \t\-‐-―−#]|\.(?=\d))+\d+)*(?!\d)/g;
-// ...unless EVERY space-separated chunk of the run is a shape a reviewer must still read: a
+// A digit run grouped by spaces/tabs, a dash (ASCII, U+2010-2015 or minus), "#", a dot with a
+// digit straight after it, or a single line break — the separators wordingNamesProject ignores
+// ("/" aside: "120/240 V" is a service voltage). Identifier-shaped once it holds 5+ digits:
+// "80 000 1234", "1234-5678-90", "SA# 1234 5678", a bare "8000012345", or a number a line wrap
+// split ("1234\n5678": clean() rejoins it afterwards). NOT a separator: a sentence-ending ". ",
+// or a line break into a list item (a numbered letter's "2." must not join the line above it).
+// Applied after the phone rule so a phone keeps its own tag.
+const GROUPED_DIGITS = /(?<!\d)\d+(?:(?:[ \t\-‐-―−#]|\.(?=\d)|\n(?!\d{1,3}[.)](?:\s|$)))+\d+)*(?!\d)/g;
+// ...unless EVERY whitespace-separated chunk of the run is a shape a reviewer must still read: a
 // plausible date ("2026-10-08", "10.08.2026" — a 19xx/20xx year, month 1-12, day 1-31, one
 // separator), a code section ("690.12", "R324.6.1" — its letter is outside the run; no leading
-// zero, at most 7 digits, so "1234.567" is not one), an edition ("1547-2018") or a bare year ("690.12 2023").
+// zero, at most 7 digits, so "1234.567" is not one) or a dash-joined pair of them
+// ("690.12-690.15"), an edition ("1547-2018") or a bare year ("690.12 2023"). Or every chunk but
+// the last is a date / section / edition (not a bare year) and the last is a 1-2 digit count or
+// hour: "2026-10-08 10:30 AM", "NEC 690.12 2 disconnects", "IEEE 1547-2018 2 inverters".
 const READABLE_DATE = /^(?:(?:19|20)\d{2}([-.])(?:0?[1-9]|1[0-2])\1(?:0?[1-9]|[12]\d|3[01])|(?:0?[1-9]|1[0-2])([-.])(?:0?[1-9]|[12]\d|3[01])\2(?:(?:19|20)\d{2}|\d{2})|(?:0?[1-9]|[12]\d|3[01])([-.])(?:0?[1-9]|1[0-2])\3(?:19|20)\d{2})$/;
 const READABLE_SECTION = /^(?:[1-9]\d{0,2}\.\d{1,3}(?:\.\d{1,2})*|[1-9]\d{3}(?:\.\d{1,2})+)$/;
 const READABLE_EDITION = /^[1-9]\d{1,4}(?:\.\d{1,2})?-(?:19|20)\d{2}$/;
 const READABLE_YEAR = /^(?:19|20)\d{2}$/;
-const readableChunk = (chunk: string): boolean =>
-  READABLE_DATE.test(chunk) || READABLE_EDITION.test(chunk) || READABLE_YEAR.test(chunk) ||
-  (READABLE_SECTION.test(chunk) && chunk.replace(/\D/g, "").length <= 7);
-const scrubDigitRun = (run: string): string =>
-  run.replace(/\D/g, "").length >= 5 && !run.split(/[ \t]+/).every(readableChunk) ? "[number]" : run;
+const isSection = (chunk: string): boolean => READABLE_SECTION.test(chunk) && chunk.replace(/\D/g, "").length <= 7;
+const namedReference = (chunk: string): boolean =>
+  READABLE_DATE.test(chunk) || READABLE_EDITION.test(chunk) || isSection(chunk) ||
+  (/^[^-]+-[^-]+$/.test(chunk) && chunk.split("-").every(isSection));
+const scrubDigitRun = (run: string): string => {
+  if (run.replace(/\D/g, "").length < 5) return run;
+  const chunks = run.split(/\s+/);
+  const last = chunks[chunks.length - 1];
+  const readable = chunks.every((c) => namedReference(c) || READABLE_YEAR.test(c)) ||
+    (chunks.length > 1 && /^\d{1,2}$/.test(last) && chunks.slice(0, -1).every(namedReference));
+  return readable ? run : "[number]";
+};
 
 // Strip PII (emails, street addresses, identifier-shaped digit runs, phone numbers) from a
 // learning/email sample and cap its length. Shared by redactSample/redactEmailText. Scrubs

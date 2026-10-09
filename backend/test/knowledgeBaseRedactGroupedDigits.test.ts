@@ -43,6 +43,10 @@ async function main(): Promise<void> {
     ["Unicode-dash-grouped meter", "Meter 1234\u20105678 and 2345\u20116789 and 3456\u20127890 and 4567\u20148901 and 5678\u22129012."],
     ["implausible ISO date shape", "Account 1234-56-78 on the bill."],
     ["implausible US date shape", "Account 99-99-9999 on the bill."],
+    ["line-wrapped account", "Account 1234\n5678 on the bill."],
+    ["line-wrapped account, trailing space", "Account 4455 \n6677 on the bill."],
+    ["line-wrapped meter, three lines", "Meter 44\n556\n677 on the photo."],
+    ["year then short count is not a reference", "Account 2023 12 on file."],
     ["dotted 4.3 run", "Meter 1234.567 on the photo."],
     ["section-shaped 3-level run with 3-digit tail", "Meter 123.456.789 on the photo."],
     ["bare long run (prior behaviour kept)", "Account 8000012345 is wrong."],
@@ -70,10 +74,15 @@ async function main(): Promise<void> {
     ["standard edition", "Inverter listed to IEEE 1547-2018 and UL 1741."],
     ["section then year", "Per NEC 690.12 2023 edition."],
     ["sentence-ending section", "Label per NEC 690.56. 2026 rules apply."],
+    ["date then time", "Inspection set for 2026-10-08 10:30 AM."],
+    ["section then a count", "Per NEC 690.12 2 disconnects are required."],
+    ["edition then a count", "Listed to IEEE 1547-2018 2 inverters on site."],
+    ["dash-joined section range", "See NEC 690.12-690.15 for shutdown."],
+    ["section wrapped onto a date", "Per NEC 690.56\n2026-10-08 notice."],
   ];
   for (const [label, input] of readable) {
     const out = kb.redactEmailText(input);
-    check(`MUST-EXCLUDE: ${label} stays readable`, out === input, out);
+    check(`MUST-EXCLUDE: ${label} stays readable`, out === input.replace(/\s+/g, " "), out);
   }
 
   // wordingNamesProject reads the same dashes, so the shared-table guard stays in step.
@@ -97,6 +106,36 @@ async function main(): Promise<void> {
     check(`MUST-EXCLUDE: the numbered letter keeps "${keep}"`, letterOut.includes(keep), letterOut);
   }
   check("MUST-PASS: …while its account number is redacted", !letterOut.includes("80 000 1234") && letterOut.includes("Account [number]"), letterOut);
+
+  // LINE-WRAP FUZZ: a grouped number a line break splits is still one number once clean()
+  // rejoins it. Separators carry no "-" or "." and no group starts with 1 or 2, so no date,
+  // section, edition or year can form: every 5+ digit run must go. (Deterministic PRNG.)
+  let seed = 277;
+  const rnd = (n: number): number => { // mulberry32
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return Math.floor((((t ^ (t >>> 14)) >>> 0) / 4294967296) * n);
+  };
+  const wrapSeps = ["\n", " \n", "\n ", "\t\n", " ", "#", "–", "−", " \n "];
+  let wrapped = 0, survivors = 0; const examples: string[] = [];
+  for (let i = 0; i < 20000; i++) {
+    const groups = 2 + rnd(4);
+    let num = "", digits = 0, hasBreak = false;
+    for (let g = 0; g < groups; g++) {
+      const len = 1 + rnd(4);
+      let d = String(3 + rnd(7));
+      for (let k = 1; k < len; k++) d += String(rnd(10));
+      const sep = g ? wrapSeps[rnd(wrapSeps.length)] : "";
+      if (sep.includes("\n")) hasBreak = true;
+      num += sep + d; digits += len;
+    }
+    if (digits < 5 || !hasBreak) continue;
+    wrapped++;
+    const out = kb.redactEmailText(`Account ${num} is wrong.`);
+    if (/\d(?:[\s#–−]*\d){4,}/.test(out)) { survivors++; if (examples.length < 5) examples.push(JSON.stringify(num)); }
+  }
+  check(`line-wrap fuzz: no 5+ digit survivor across ${wrapped} wrapped numbers`, wrapped > 5000 && survivors === 0, `${survivors} survived, e.g. ${examples.join(", ")}`);
 
   // A phone keeps its own tag (the grouped rule runs after it).
   check("a phone number is still tagged [phone]", kb.redactEmailText("Call 555-010-1234 today.") === "Call [phone] today.", kb.redactEmailText("Call 555-010-1234 today."));
@@ -159,6 +198,45 @@ async function main(): Promise<void> {
   check("…and leaves the shared rollup unchanged", db.query<{ c: string }>("SELECT common_corrections_json c FROM permit_utility_knowledge").map((r) => r.c).join("|") === before.shared);
   const third = await kb.importMboxKnowledge(db, { orgId: "org-redact", mboxText: mbox.replace(BODY, `${BODY} Second notice.`), sourceLabel: LABEL });
   check("positive control: a genuinely different message still imports", third.learningEvents === 1, JSON.stringify({ e: third.learningEvents, d: third.duplicateMessages }));
+
+  // THE EMAIL TRACKER re-reads the whole watched mailbox on every run; email_project_matches is
+  // what stops it filing the same email twice on a live project (status checks, corrections).
+  // A match written before this change carries the legacy signature and must still count.
+  const R = await import("../src/repository");
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const pid = R.createProject(db, {
+    owner: "Wynema Probe", state: "OR", dcKw: "8.4", acKw: "7.7", permitPath: "prescriptive",
+    street: "77 Harbor View Rd", city: "Coos Bay", zip: "97420", ahj: "City of Coos Bay", utility: "Pacific Power",
+  } as never).project.id;
+  db.run("UPDATE projects SET status = 'submitted' WHERE id = ?", [pid]);
+  const mailFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "redact-tracker-")), "watched.mbox");
+  const TSUBJECT = "City of Coos Bay building permit corrections required";
+  const TDATE = "Wed, 17 Jun 2026 10:00:00 -0700";
+  const TBODY = "Corrections required for the solar building permit for Wynema Probe at 77 Harbor View Rd, Coos Bay, OR 97420. Provide the rafter span calculations and resubmit. Utility account 80 000 1234 on the application does not match the bill.";
+  fs.writeFileSync(mailFile, `From sender@example.gov Wed Jun 17 10:00:00 2026\nSubject: ${TSUBJECT}\nDate: ${TDATE}\n\n${TBODY}\n`);
+  const TLABEL = "watched.mbox";
+  const source = R.configureEmailTrackingSource(db, { filePath: mailFile, label: TLABEL }).sources.find((x) => x.label === TLABEL)!;
+  const trackerRows = () => ({
+    matches: Number(db.get<{ c: number }>("SELECT COUNT(*) c FROM email_project_matches WHERE project_id = ?", [pid])?.c ?? 0),
+    checks: Number(db.get<{ c: number }>("SELECT COUNT(*) c FROM permit_status_checks WHERE project_id = ?", [pid])?.c ?? 0),
+    corrections: Number(db.get<{ c: number }>("SELECT COUNT(*) c FROM corrections WHERE project_id = ?", [pid])?.c ?? 0),
+    learned: count("mbox_learning_records"),
+  });
+  const firstRun = await R.runEmailTracker(db, { sourceId: source.id });
+  const afterFirst = trackerRows();
+  check("SETUP: the tracker matched the email to the project and filed a status check",
+    firstRun.projectMatches === 1 && afterFirst.matches === 1 && afterFirst.checks >= 1, JSON.stringify({ firstRun, afterFirst }));
+  // Make that run one from BEFORE the upgrade: every stored signature in the legacy form.
+  const trackerLegacy = crypto.createHash("sha256").update(`${TLABEL}|${TSUBJECT}|${TDATE}|${legacySeed(TBODY)}`).digest("hex");
+  db.run("UPDATE email_project_matches SET source_signature = ? WHERE project_id = ?", [trackerLegacy, pid]);
+  db.run("UPDATE mbox_learning_records SET source_signature = ? WHERE source_label = ?", [trackerLegacy, TLABEL]);
+  const secondRun = await R.runEmailTracker(db, { sourceId: source.id });
+  check("re-running the tracker over a pre-upgrade match skips it as a duplicate",
+    secondRun.skippedDuplicates === 1 && secondRun.projectMatches === 0, JSON.stringify(secondRun));
+  check("…and files no second match, status check, correction or learning record",
+    JSON.stringify(trackerRows()) === JSON.stringify(afterFirst), JSON.stringify({ now: trackerRows(), afterFirst }));
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nall checks passed");
