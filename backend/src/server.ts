@@ -2717,9 +2717,12 @@ app.post(
   },
 );
 
-// Check folder scan job status + get full result
+// Check folder scan job status + get full result. SCOPED to the caller's org: a folder_scan
+// job's payload carries a server folderPath and its results name every scanned PDF's path, and
+// /scan + /upload-zip stamp the caller's org on it. Without the orgId, listJobs fell back to the
+// default org, so every tenant saw the default org's scans and never its own (#276).
 app.get("/api/batch-import/jobs", (req, res) => {
-  res.json(listJobs(db, { jobType: "folder_scan", limit: 20 }));
+  res.json(listJobs(db, { jobType: "folder_scan", limit: 20, orgId: reqOrgFilter(db, req) }));
 });
 
 // LLM-assisted parser extraction. The browser does the PDF text / OCR extraction

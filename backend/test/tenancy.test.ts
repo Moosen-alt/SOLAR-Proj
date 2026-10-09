@@ -384,6 +384,33 @@ try {
     assert.ok(!JSON.stringify(reportB).includes("Alice A"), "B's daily report named A's homeowner");
   });
 
+  // FOLDER SCANS (#276). A folder_scan job's payload carries a server folderPath (and its result
+  // names every scanned PDF's path), so the batch-import job list must be scoped like /api/jobs.
+  // It used to call listJobs with no orgId, which falls back to the DEFAULT org: every tenant
+  // saw the operator's scans and never its own. Synthetic empty folders under this test's tmp dir.
+  const scanJobIds: Record<"a" | "b" | "owner", string> = { a: "", b: "", owner: "" };
+  const listScanIds = async (c: ReturnType<typeof as>): Promise<string[]> => {
+    const res = await c("/api/batch-import/jobs");
+    const text = await res.text();
+    assert.equal(res.status, 200, `GET /api/batch-import/jobs -> ${res.status}: ${text.slice(0, 300)}`);
+    return (JSON.parse(text) as { id: string }[]).map((j) => j.id);
+  };
+  await run("batch-import folder scans list only the caller's own org's jobs", async () => {
+    for (const [who, c] of [["a", a], ["b", b], ["owner", owner]] as const) {
+      const folder = path.join(tmpDir, `scan-${who}`);
+      fs.mkdirSync(folder, { recursive: true });
+      const made = await jsonOk(await c("/api/batch-import/scan", { method: "POST", body: JSON.stringify({ folderPath: folder }) }));
+      scanJobIds[who] = String(made.id);
+    }
+    const seenA = await listScanIds(a);
+    const seenB = await listScanIds(b);
+    const seenOwner = await listScanIds(owner);
+    assert.deepEqual(seenA, [scanJobIds.a], `A saw ${JSON.stringify(seenA)}`);
+    assert.deepEqual(seenB, [scanJobIds.b], `B saw ${JSON.stringify(seenB)}`);
+    // The default org is a tenant too: it sees its own scan and neither tenant's.
+    assert.deepEqual(seenOwner, [scanJobIds.owner], `default org saw ${JSON.stringify(seenOwner)}`);
+  });
+
   await run("the operator (superadmin) sees across every tenant", async () => {
     const usersA = await (await owner("/api/users")).json();
     const ownerRow = (Array.isArray(usersA) ? usersA : usersA.users || []).find((u: { email: string }) => u.email === "owner@operator.test");
@@ -405,6 +432,14 @@ try {
     assert.ok(all.projects.length >= 2, `superadmin saw ${all.projects.length} projects, expected both tenants'`);
     assert.equal((await owner(`/api/projects/${projA}`)).status, 200);
     assert.equal((await owner(`/api/projects/${projB}`)).status, 200);
+  });
+
+  await run("the superadmin's batch-import job list spans every org", async () => {
+    // Runs after the promotion above: reqOrgFilter is null for a superadmin, which reads across orgs.
+    const seen = await listScanIds(owner);
+    for (const who of ["a", "b", "owner"] as const) {
+      assert.ok(seen.includes(scanJobIds[who]), `superadmin missed ${who}'s scan (saw ${JSON.stringify(seen)})`);
+    }
   });
 
 } finally {
