@@ -17,7 +17,7 @@ function str(project: MountInputs, key: string): string {
   return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
 }
 
-export function designText(project: MountInputs): string {
+export function designText(project: MountInputs, omit: readonly string[] = []): string {
   const keys = [
     // Text extracted from the uploaded plan-set-family PDFs (overlaid on the snapshot
     // by getProjectDetail) — so rules check the ACTUAL sheets, not only parser output.
@@ -36,7 +36,7 @@ export function designText(project: MountInputs): string {
     "stampRecommendation",
     "locateCalloutText",
   ];
-  return keys.map((key) => str(project, key)).join("\n");
+  return keys.filter((key) => !omit.includes(key)).map((key) => str(project, key)).join("\n");
 }
 
 // IS THIS ON A ROOF? Everything downstream hangs on the answer: fire access pathways, roof
