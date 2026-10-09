@@ -58,6 +58,7 @@ import { extractZipToWorkdir } from "./batchZip";
 import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser, entitlementGate, requestOrg, createApiKey, ADMIN_ROLES } from "./auth";
 import { PRODUCTS, PRODUCT_KEYS, grantProduct, revokeProduct, orgEntitlements, productsForEdition } from "./entitlements";
 import { requestScope, orgFilter, orgClause, reqOrgFilter, assertInScope, auditCrossOrgAccess } from "./scope";
+import { batchUploadRoot, folderWithinRoot } from "./batchZip";
 import type { RequestScope } from "./scope";
 import { DEFAULT_ORG_ID } from "./db";
 import { ensureStatusShareToken, statusShareUrl } from "./clientNotifier";
@@ -2670,12 +2671,23 @@ app.get("/api/ahj-templates/:id/pdf", (req, res) => {
   res.send(row.pdf_blob);
 });
 
+// A SERVER FOLDER IS NOT A TENANT'S TO NAME (#276). The scan job is stamped with the
+// caller's org, so whatever folder it reads comes back through that org's job list:
+// pointed at PROJECT_DOCS_DIR or another org's upload, it returned their document paths and
+// homeowner-named filenames. Only the operator (superadmin, or local single-operator use
+// with auth off) may scan an arbitrary folder; everyone else may scan only inside their
+// own org's upload root. Anything outside is the SAME 404 as a missing folder (rule 6).
 app.post("/api/batch-import/scan", (req, res) => {
   const { folderPath, defaultState, defaultAhj, defaultUtility, useLlm } = req.body || {};
   if (!folderPath) throw new HttpError(400, "folderPath is required.");
+  const scope = requestScope(db, req);
+  const operator = !AUTH_ENABLED || scope.crossOrg;
+  if (!operator && !folderWithinRoot(String(folderPath), batchUploadRoot(scope.orgId))) {
+    throw new HttpError(404, `Folder not found: ${folderPath}`);
+  }
   if (!fs.existsSync(folderPath)) throw new HttpError(404, `Folder not found: ${folderPath}`);
   if (!fs.statSync(folderPath).isDirectory()) throw new HttpError(400, "Path must be a directory.");
-  const job = enqueueJob(db, "folder_scan", { folderPath, defaultState, defaultAhj, defaultUtility, useLlm: !!useLlm }, { priority: 2, maxRetries: 1, orgId: requestScope(db, req).orgId });
+  const job = enqueueJob(db, "folder_scan", { folderPath, defaultState, defaultAhj, defaultUtility, useLlm: !!useLlm }, { priority: 2, maxRetries: 1, orgId: scope.orgId });
   res.status(201).json(job);
 });
 
@@ -2692,7 +2704,7 @@ app.post(
     const label = String(req.query.label || "batch");
     let extracted;
     try {
-      extracted = extractZipToWorkdir(body, label);
+      extracted = extractZipToWorkdir(body, label, requestScope(db, req).orgId);
     } catch (err) {
       throw new HttpError(400, `Could not read that zip file. ${(err as Error).message || ""}`.trim());
     }
