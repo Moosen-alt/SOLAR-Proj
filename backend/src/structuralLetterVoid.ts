@@ -16,6 +16,9 @@
 // So deleting the newest plan set after its cut was confirmed (the package falls back to the older
 // one) voids it, and so does a cut that a split of an older plan set saved after a newer one landed.
 // A cut with no recorded source (written before the column existed) is void: re-split to confirm.
+// ONLY A CHANGE TO THE SHIPPED PLAN SET voids a cut's confirmation (Helm's ruling at a6ef1b62): a
+// newer alias-typed upload that does not ship (a `plan_set` row exists, so it ships instead) leaves
+// the cut's source the shipped plan set, and the confirmation stands.
 // A person's own upload was looked at alongside whatever plan set stood when they confirmed, so for
 // it a plan set newer than the confirmation voids.
 //
@@ -68,7 +71,10 @@ export function structuralDocumentVoidReason(
   const isCut = s(doc.source) === "split";
   const cutFrom = s(doc.source_document_id);
   if (isCut) {
-    if (!cutFrom || cutFrom !== shippedPlanSetDocumentId(db, projectId)) return "this cut was made from a plan set that is no longer the one on file";
+    // A cut written before lineage was recorded cannot say which plan set it came from: its own words,
+    // so the card does not claim no structural document is on file (Helm's review at a6ef1b62).
+    if (!cutFrom) return "this cut predates lineage — split the plan set again";
+    if (cutFrom !== shippedPlanSetDocumentId(db, projectId)) return "this cut was made from a plan set that is no longer the one on file";
   } else {
     const types = planSetTypes();
     const newestPlanSet = s(db.get<Row>(
@@ -85,7 +91,8 @@ export function structuralDocumentVoidReason(
     const newerIsCut = s(newer.source) === "split";
     // The same cut again (the stage pass's no-op re-split): what ships is what the person saw.
     if (isCut && newerIsCut && s(newer.source_document_id) === cutFrom && fileSha256(s(newer.stored_path)) === sha256) continue;
-    return newerIsCut ? "a re-split cut a different structural document" : "a newer document was filed to the structural slot";
+    if (newerIsCut) return isCut ? "a re-split cut a different structural document" : "a split filed a newer structural document";
+    return "a newer document was filed to the structural slot";
   }
   return null;
 }

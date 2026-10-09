@@ -2907,6 +2907,9 @@ export interface StructuralLetterState {
   /** The latest confirmation that no longer covers what is on file, and why — so the card can say
    *  "re-confirm" rather than silently forgetting it. */
   voided?: { confirmedBy: string; confirmedAt: string; reason: string } | null;
+  /** With no candidate: the structural document on file that cannot be confirmed, and why (a cut
+   *  that predates lineage: "split the plan set again"). null when none is on file. */
+  unconfirmable?: { filename: string; reason: string } | null;
 }
 
 export type InstallerActionCategory =

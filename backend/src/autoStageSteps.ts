@@ -114,10 +114,9 @@ export async function processStageStep(db: AppDb, projectId: string, opts: Stage
   // logged and stepped past — the doc gates downstream still rule honestly on whatever exists.
   const chainOwned = ["parsed", "qc_failed", "qc_passed", "ready_to_stage"].includes(status());
   if (chainOwned) {
-    const planSet = db.get<{ uploaded_at: string }>(
-      "SELECT uploaded_at FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set' ORDER BY uploaded_at DESC LIMIT 1",
-      [projectId],
-    );
+    // The plan set the package ships (#198): the same "newest" rule as the splitter and the gate.
+    const { shippedPlanSet } = await import("./projectDocuments");
+    const planSet = shippedPlanSet(db, projectId);
     // RE-SPLIT ON REPAIR (#29). An existing split is still re-cut when the current classifier
     // finds a sheet type in this plan set that none of its split rows carry — a project split by
     // the old scoring (site plan filed as structural) otherwise kept owing a site plan it had
@@ -147,7 +146,7 @@ export async function processStageStep(db: AppDb, projectId: string, opts: Stage
     const splitNewer = planSet
       ? Number(db.get<{ n: number }>(
           "SELECT COUNT(*) AS n FROM project_documents WHERE project_id = ? AND source = 'split' AND uploaded_at >= ?",
-          [projectId, planSet.uploaded_at],
+          [projectId, planSet.uploadedAt],
         )?.n ?? 0)
       : 0;
     if (planSet && (splitNewer === 0 || gaps.length > 0)) {

@@ -377,6 +377,16 @@ export function shippedPlanSetDocumentId(db: AppDb, projectId: string): string |
   return hit ? hit.id : null;
 }
 
+/** The shipped plan set's row (shippedPlanSetDocumentId), or null: the plan set the splitter's
+ *  recency checks (reconcile, ensurePlanSetSplit, the stage pass's split step) judge against, so
+ *  they agree with the package and the structural-letter gate on WHICH plan set is current —
+ *  rowid tiebreak and aliases included (#198, Helm's review at a6ef1b62). */
+export function shippedPlanSet(db: AppDb, projectId: string): { id: string; storedPath: string; uploadedAt: string } | null {
+  const docId = shippedPlanSetDocumentId(db, projectId);
+  const row = docId ? db.get<Row>("SELECT id, stored_path, uploaded_at FROM project_documents WHERE id = ?", [docId]) : undefined;
+  return row ? { id: s(row.id), storedPath: s(row.stored_path), uploadedAt: s(row.uploaded_at) } : null;
+}
+
 // docType -> stored file path map for a project (latest per type), for the submittal
 // package and the portal bot to attach the right files.
 export function projectDocsByType(db: AppDb, projectId: string): Record<string, string> {

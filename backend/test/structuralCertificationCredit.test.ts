@@ -499,6 +499,34 @@ check("…the split of the new plan set records it as the source, is the candida
   && gate(j2).structuralLetter?.candidate?.documentId === j2Fresh.id
   && (await confirmAs(j2, j2Fresh.id)).documentId === j2Fresh.id && released(j2).ok, released(j2).detail);
 
+// A CUT THAT PREDATES LINEAGE (Helm's review at a6ef1b62, a low): a split row written before
+// source_document_id existed cannot say which plan set it came from, so it is never confirmable —
+// and the card says so in its own words instead of "no structural document on file".
+const legacy = await mk([FRAMING, ...LETTER_PAGES]);
+db.run("UPDATE project_documents SET source_document_id = '' WHERE project_id = ? AND source = 'split'", [legacy]);
+const legacyState = gate(legacy).structuralLetter;
+check("legacy cut: never the candidate; the card names it and says it predates lineage — split the plan set again",
+  legacyState?.candidate === null && /^plan-set - Structural/.test(legacyState?.unconfirmable?.filename ?? "")
+  && /predates lineage — split the plan set again/.test(legacyState?.unconfirmable?.reason ?? ""),
+  JSON.stringify(legacyState));
+check("legacy cut: held exactly as main", heldLikeMain(legacy).ok, heldLikeMain(legacy).detail);
+check("…and a project with a confirmable candidate carries no unconfirmable note",
+  gate(j2).structuralLetter?.unconfirmable === null, JSON.stringify(gate(j2).structuralLetter?.unconfirmable));
+
+// A PERSON'S UPLOAD, then a split files a newer structural cut (optional wording, same review).
+const upl = createProject(db, { clientId: client.id, owner: `Letter Owner ${++seq}`, ...COMPLETE }).project.id;
+saveProjectDocument(db, upl, { docType: "plan_set", filename: "plan-set.pdf", contentType: "application/pdf",
+  buffer: await planSetPdf([FRAMING, ...LETTER_PAGES]), source: "upload" });
+const uplLetter = saveProjectDocument(db, upl, { docType: "structural", filename: "sealed-letter.pdf", contentType: "application/pdf",
+  buffer: await planSetPdf(LETTER_PAGES), source: "upload" });
+await extracted(upl);
+await confirmAs(upl, uplLetter.id);
+check("fixture: the person's uploaded letter, confirmed, releases the hold", released(upl).ok, released(upl).detail);
+await new Promise((r) => setTimeout(r, 5));
+await buildUtilityPackage(db, upl, "permit");
+check("MUST-EXCLUDE: a split filing a newer structural cut voids a confirmed upload — held, and the card says a split filed it",
+  heldLikeMain(upl).ok && /a split filed a newer structural document/.test(reasonOf(upl)), `${heldLikeMain(upl).detail} ${reasonOf(upl)}`);
+
 // Pages come from the PDF, not from extracted text: scanned (empty) pages still count, and the
 // confirmed page is clamped into the document.
 const scanned = await mk([]);

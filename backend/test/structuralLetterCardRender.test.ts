@@ -65,6 +65,13 @@ check("(g) a voided confirmation says why and asks to re-confirm; a score-0 cand
 const none = card({ candidate: null, confirmation: null }, "p");
 check("(h) no structural document: nothing to confirm, no button", !none.includes("<button") && /No structural document on file/.test(none), none);
 
+const legacyCard = card({ candidate: null, confirmation: null, voided: null,
+  unconfirmable: { filename: HOSTILE, reason: "this cut predates lineage — split the plan set again" } }, "p");
+check("(h2) a structural document on file that cannot be confirmed (a pre-lineage cut): named, with its reason, no button, never 'No structural document on file'",
+  /is on file but cannot be confirmed as the engineer's letter: this cut predates lineage — split the plan set again/.test(legacyCard)
+  && !legacyCard.includes("<button") && !/No structural document on file/.test(legacyCard)
+  && !legacyCard.includes("<img") && legacyCard.includes("&lt;img"), legacyCard);
+
 const gate = cut("renderSubmitGate");
 check("(f) renderSubmitGate puts the card on the stamped-structural hold's check and the inventory row's check, and wires its buttons",
   /check\.id === "permit-requirements" \|\| check\.id === "document-inventory"\) && gate\.structuralLetter \? structuralLetterCardHtml\(gate\.structuralLetter, gate\.projectId\)/.test(gate)

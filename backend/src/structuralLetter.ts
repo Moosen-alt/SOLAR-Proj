@@ -130,11 +130,29 @@ export function structuralLetterState(db: AppDb, projectId: string): StructuralL
   const confirmation = c && v && !("reason" in v)
     ? { id: c.id, documentId: c.document_id, filename: v.filename, page: c.page, confirmedBy: c.confirmed_by, confirmedAt: c.confirmed_at }
     : null;
+  const candidate = structuralLetterCandidate(db, projectId);
   return {
-    candidate: structuralLetterCandidate(db, projectId),
+    candidate,
     confirmation,
     voided: c && v && "reason" in v ? { confirmedBy: c.confirmed_by, confirmedAt: c.confirmed_at, reason: v.reason } : null,
+    unconfirmable: candidate ? null : unconfirmableStructuralDocument(db, projectId),
   };
+}
+
+/** With no candidate: the structural document that ships (the newest on disk) and why it cannot be
+ *  confirmed, so the card never says "no structural document on file" over one that is (a cut that
+ *  predates lineage, a cut of a plan set that no longer ships). null when none is on file. */
+function unconfirmableStructuralDocument(db: AppDb, projectId: string): { filename: string; reason: string } | null {
+  for (const row of db.query<Row>(
+    "SELECT id, original_filename, stored_path FROM project_documents WHERE project_id = ? AND doc_type = 'structural' ORDER BY uploaded_at DESC, rowid DESC",
+    [projectId],
+  )) {
+    const sha = s(row.stored_path) ? fileSha256(s(row.stored_path)) : null;
+    if (!sha) continue;
+    const reason = structuralDocumentVoidReason(db, projectId, s(row.id), sha, nowIso());
+    return reason ? { filename: s(row.original_filename), reason } : null;
+  }
+  return null;
 }
 
 /** "Jane Example 2026-10-08": who and the day, for the inventory row and the finding. */

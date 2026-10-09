@@ -7,7 +7,7 @@ import { portalUploadCapBytes } from "../../portal-bot/src/uploadCap";
 import type { AppDb } from "./db";
 import type { LLMProvider, PlanSheetKind } from "../../shared/src/types";
 import { HttpError } from "./httpError";
-import { saveProjectDocument, listProjectDocuments, projectDocsByType, shippedPlanSetDocumentId, documentTypesDeletedSince, withdrawSplitPart } from "./projectDocuments";
+import { saveProjectDocument, listProjectDocuments, projectDocsByType, shippedPlanSet, shippedPlanSetDocumentId, documentTypesDeletedSince, withdrawSplitPart } from "./projectDocuments";
 
 // Sheet/content patterns → upload doc category. Ported from the parser's detectSplitPages;
 // pages are scored against each category and assigned to the best match. The categories are
@@ -330,7 +330,11 @@ function findPlanSet(db: AppDb, projectId: string): { id: string; path: string; 
   // An alias-typed plan set (combined_plan_set…) is the one projectDocsByType ships, so it is cut
   // before the newest-PDF fallback — which could otherwise pick an earlier split part (#198 lineage).
   const shippedId = shippedPlanSetDocumentId(db, projectId);
-  const planSet = docs.find((d) => d.docType === "plan_set") ?? docs.find((d) => d.id === shippedId) ?? docs.find((d) => /\.pdf$/i.test(d.originalFilename));
+  // The newest-PDF fallback (an untyped '(general)' / 'other' plan set) never takes a split part:
+  // a part is a cut OF the plan set, never one. Without this the part a split just saved became
+  // "the plan set", so the mid-split re-check refused every untyped split (Helm, a6ef1b62) and a
+  // later split re-cut a part.
+  const planSet = docs.find((d) => d.docType === "plan_set") ?? docs.find((d) => d.id === shippedId) ?? docs.find((d) => d.source !== "split" && /\.pdf$/i.test(d.originalFilename));
   if (!planSet) throw new HttpError(400, "No plan-set PDF uploaded for this project. Upload the plan set (doc type: plan_set) first.");
   const row = db.get<{ stored_path: string }>("SELECT stored_path FROM project_documents WHERE id = ?", [planSet.id]);
   const stored = row?.stored_path ?? "";
@@ -556,10 +560,9 @@ const pageKey = (text: string): string => text.replace(/\s+/g, " ").trim();
  * standing; a plan set with no text at all withdraws nothing (no classifier answer to judge by).
  */
 export async function reconcileSplitParts(db: AppDb, projectId: string): Promise<ReconcileResult> {
-  const latest = db.get<{ stored_path: string; uploaded_at: string }>(
-    "SELECT stored_path, uploaded_at FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set' ORDER BY uploaded_at DESC LIMIT 1",
-    [projectId],
-  );
+  // The plan set the package ships (#198): one "newest" rule, so reconcile judges the same plan set.
+  const shipped = shippedPlanSet(db, projectId);
+  const latest = shipped ? { stored_path: shipped.storedPath, uploaded_at: shipped.uploadedAt } : undefined;
   const none: ReconcileResult = { withdrawn: [], gaps: [], undecidedSpecPages: [], undecidedSpecFiledAs: {} };
   if (!latest?.stored_path || !fs.existsSync(latest.stored_path)) return none;
   const sheetTypes = CATEGORY_PATTERNS.map((c) => c.docType);
@@ -630,14 +633,11 @@ export async function ensurePlanSetSplit(
   const gaps = allGaps.filter((t) => wanted.includes(t));
   const existing = projectDocsByType(db, projectId);
   if (sheetTypes.every((t) => existing[t])) return { split: false, withdrawn, gaps };
-  const planSet = db.get<{ uploaded_at: string }>(
-    "SELECT uploaded_at FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set' ORDER BY uploaded_at DESC LIMIT 1",
-    [projectId],
-  );
+  const planSet = shippedPlanSet(db, projectId);
   const splitSince = planSet
     ? Number(db.get<{ n: number }>(
         "SELECT COUNT(*) AS n FROM project_documents WHERE project_id = ? AND source = 'split' AND uploaded_at >= ?",
-        [projectId, planSet.uploaded_at],
+        [projectId, planSet.uploadedAt],
       )?.n ?? 0)
     : 0;
   if (splitSince > 0 && gaps.length === 0) return { split: false, withdrawn, gaps };

@@ -4500,6 +4500,12 @@ function structuralLetterCardHtml(sl, projectId) {
   const v = sl.voided;
   const voidedNote = v ? `<p class="muted">The confirmation by ${esc(v.confirmedBy)} ${esc(String(v.confirmedAt || "").slice(0, 10))} no longer covers what is on file: ${esc(v.reason)}. Look again and re-confirm.</p>` : "";
   const k = sl.candidate;
+  const u = sl.unconfirmable;
+  if (!k && u) {
+    return `<div class="kx-inline-tool structural-letter-card" data-structural-letter="unconfirmable">
+      <span class="kx-inline-tool-title">${esc(u.filename || "The structural document")} is on file but cannot be confirmed as the engineer's letter: ${esc(u.reason)}.</span>${voidedNote}
+    </div>`;
+  }
   if (!k) {
     return `<div class="kx-inline-tool structural-letter-card" data-structural-letter="none">
       <span class="kx-inline-tool-title">No structural document on file to confirm as the engineer's letter — split the plan set or upload the sealed letter.</span>${voidedNote}
