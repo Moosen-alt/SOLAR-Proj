@@ -300,12 +300,19 @@ const NEGATION_AFTER = /^[^.;]{0,30}?\b(?:not\s+(?:provided|shown|found|included
 //     an en/em dash or a spaced hyphen starts another label's value; or
 //   - after ONE separator, when everything before it is the mention's own label running on
 //     ("LISTED RSD EQUIPMENT: NOT APPLICABLE", "UL 2703 LISTING - MISSING", "(… ): EXCLUDED").
-//     Another row's label ("EV CHARGER:", "TRENCHING:") is not one of those words.
-const CELL_LABEL_WORD = String.raw`(?:equipment|system|systems|device|devices|switch|initiator|listing|listings|listed|label|labels|hardware|components?|units?|certificat(?:e|ion)|documentation|details|specs?|sheets?|letter|calcs?|calculations?)`;
+//     Another row's label ("EV CHARGER:", "TRENCHING:") is not one of those words. The label also
+//     runs on through its own joiners (Helm on #284): a parenthetical ("LISTED RSD EQUIPMENT (SEE
+//     NOTE 4): BY OTHERS", "MANUFACTURED HOME (HUD): NOT APPLICABLE") and a slash naming an
+//     alternative ("EQUIPMENT/DEVICES", "MANUFACTURED HOME / MOBILE HOME"). A slash never starts
+//     another row, so up to three words after it belong to this label.
+//     Missing a joiner here is the unsafe direction: the denied mention reads as affirmed and the
+//     gap it should raise (690.12(B)(2)) is missed.
+const CELL_LABEL_WORD = String.raw`(?:equipment|system|systems|device|devices|switch|initiator|listing|listings|listed|label|labels|hardware|components?|units?|certificat(?:e|ion)|documentation|details|specs?|sheets?|letter|calcs?|calculations?|modules?|racking|mounting|placards?|location|analysis|gateway|anchoring)(?:-[a-z]+)?`;
+const CELL_LABEL_RUN = String.raw`(?:\s+${CELL_LABEL_WORD}\b|\s*\([^()]{0,30}\)|\s*\/\s*[a-z0-9][\w-]*(?:\s+[a-z0-9][\w-]*){0,2})*`;
 const CELL_DENIAL_WORD = String.raw`(?:not\s+applicable|missing|excluded|by\s+others)`;
 const CELL_DENIAL_AFTER = new RegExp(
   String.raw`^(?:(?!\s-\s)[^.;:\u2013\u2014]){0,30}?\b${CELL_DENIAL_WORD}\b`
-  + String.raw`|^(?:\s+${CELL_LABEL_WORD}\b)*\s*\)?\s*[?:\u2013\u2014-]\s*\(?\s*(?:is\s+|are\s+)?${CELL_DENIAL_WORD}\b`,
+  + String.raw`|^${CELL_LABEL_RUN}\s*\)?\s*[?:\u2013\u2014-]\s*\(?\s*(?:is\s+|are\s+)?${CELL_DENIAL_WORD}\b`,
   "i",
 );
 
@@ -548,7 +555,7 @@ function withoutRsdOptionTitle(sources: DesignTextSource[]): DesignTextSource[] 
 /** city.ess.details-missing's trigger: a mention of storage scope. */
 const ESS_TRIGGER_PATTERNS: RegExp[] = [/battery/i, /\bESS\b/i, /powerwall/i, /encharge/i, /backup/i];
 const STORAGE_WORD = String.raw`(?:batter(?:y|ies)|ESS|backup|powerwall|encharge|energy\s+storage(?:\s+system)?|storage)`;
-const STORAGE_RUN_THEN_DENIAL = new RegExp(String.raw`^(?:\s*(?:\/|&|,|\+|and|or)?\s*${STORAGE_WORD}\b)*\s*\)?\s*(?:[?:]?\s*(?:no|none|n\/a|not\s+(?:used|applicable|included|proposed|provided))\b|[\u2013\u2014-]\s*(?:(?:none|n\/a|not\s+(?:used|applicable|included|proposed|provided))\b|no(?=\s*(?:$|[;,)]|\.(?!\s*\d)))))`, "i");
+const STORAGE_RUN_THEN_DENIAL = new RegExp(String.raw`^(?:\s*(?:\/|&|,|\+|and|or)?\s*${STORAGE_WORD}\b)*\s*\)?\s*(?:[?:]?\s*(?:no|none|n\/a|not\s+(?:used|applicable|included|proposed|provided)|excluded|by\s+others)\b|[\u2013\u2014-]\s*(?:(?:none|n\/a|not\s+(?:used|applicable|included|proposed|provided)|excluded|by\s+others)\b|no(?=\s*(?:$|[;,)]|\.(?!\s*\d)))))`, "i");
 const DENIAL_THEN_STORAGE_RUN = new RegExp(String.raw`\b(?:no|without)\s+(?:${STORAGE_WORD}\s*(?:\/|&|,|\+|and|or)\s*)+$`, "i");
 /** "BATTERY / ESS: NONE", "(BATTERY BACKUP): NOT USED": the denial sits after the next storage
  *  word (or its closing parenthesis), past NEGATION_AFTER's reach. */

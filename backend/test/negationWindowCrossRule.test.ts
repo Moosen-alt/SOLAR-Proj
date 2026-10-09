@@ -10,6 +10,10 @@
 // (#271).
 //
 // Every rule that reads through affirmedIn is probed here, on two synthetic jurisdictions.
+//
+// KNOWN LIMIT (accepted on #284): "NO." followed by a digit is read as the number abbreviation, so a
+// dash-NO that ends one line before a numbered note ("POWERWALL - NO.\n1. SEE E-3") no longer
+// denies — the package text arrives whitespace-flattened, and the line break is gone.
 // Every fixture is SYNTHETIC. No database, no LLM, no network.
 //
 // Run: npx tsx backend/test/negationWindowCrossRule.test.ts
@@ -123,6 +127,34 @@ for (const [state, ahj] of JURISDICTIONS) {
     for (const cell of ["LISTED RSD EQUIPMENT: NOT APPLICABLE", "LISTED RSD EQUIPMENT - BY OTHERS", "LISTED RSD EQUIPMENT MISSING", "LISTED RSD: EXCLUDED"]) {
       const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\n${cell}`), "city.elec.rapid-shutdown-edition-evidence");
       assert.ok(sections(f).includes("690.12(B)(2)"), `${cell}: ${f?.message ?? "no finding"}`);
+    }
+  });
+  // Helm on #284, medium 2 (the safety direction): the label runs on through '/' and '(…)' and
+  // longer label nouns; a denial at its end still denies, so the 690.12(B)(2) gap is still raised.
+  check(`MUST-EXCLUDE ${state}: a joined or longer RSD label then 'BY OTHERS' still denies 690.12(B)(2)`, () => {
+    for (const cell of [
+      "LISTED RSD EQUIPMENT (MLPE): BY OTHERS", "LISTED RSD EQUIPMENT/DEVICES: BY OTHERS",
+      "LISTED RSD EQUIPMENT (SEE NOTE 4): BY OTHERS", "LISTED RSD MODULE-LEVEL EQUIPMENT: BY OTHERS",
+    ]) {
+      const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\n${cell}`), "city.elec.rapid-shutdown-edition-evidence");
+      assert.ok(sections(f).includes("690.12(B)(2)"), `${cell}: ${f?.message ?? "no finding"}`);
+    }
+  });
+  // Medium 3: a denied manufactured-home row does not make the structure a manufactured home.
+  check(`MUST-EXCLUDE ${state}: a joined or longer manufactured-home label then 'NOT APPLICABLE' is not a manufactured home`, () => {
+    for (const cell of ["MANUFACTURED HOME / MOBILE HOME: NOT APPLICABLE", "MANUFACTURED HOME (HUD): NOT APPLICABLE", "MANUFACTURED HOME ANCHORING: NOT APPLICABLE"]) {
+      const project = { id: "mh", state, ahj, parserSnapshot: { mounting: "Roof mount", planSetExtractedText: `ROOF FRAMING: 2X6 RAFTERS @ 24" O.C.\n${cell}` } } as unknown as ProjectRecord;
+      assert.equal(structureType(project).kind, "unknown", cell);
+    }
+  });
+  // Medium 1: the ESS storage-run guard reads EXCLUDED and BY OTHERS like NOT USED.
+  check(`MUST-EXCLUDE ${state}: storage scope that is EXCLUDED or BY OTHERS raises no ESS review`, () => {
+    for (const cell of [
+      "BATTERY BACKUP: EXCLUDED", "BATTERY STORAGE: BY OTHERS", "ENERGY STORAGE (BATTERY BACKUP): EXCLUDED",
+      "ENERGY STORAGE (BATTERY BACKUP): BY OTHERS", "BATTERY / ESS: EXCLUDED", "BATTERY / ESS: BY OTHERS",
+      "POWERWALL - EXCLUDED", "BATTERY BACKUP - BY OTHERS",
+    ]) {
+      assert.ok(!get(runIn(state, ahj, cell), "city.ess.details-missing"), cell);
     }
   });
   check(`MUST-EXCLUDE ${state}: 'POWERWALL - NO.' still denies the ESS mention`, () => {
