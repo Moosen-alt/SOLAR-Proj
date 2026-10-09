@@ -22,6 +22,8 @@
 //
 // Measured against the operator's 23-project book before shipping: zero real customer projects
 // change verdict on framing, ESS or truss. Only projects with no plan text at all newly flag.
+// (That ESS measurement predates #245 and #257, which changed the ESS screen again: the bare
+// acronym no longer clears it, and parser labels and negated mentions no longer raise it.)
 // Run: tsx backend/test/evidenceSpecificity.test.ts
 import assert from "node:assert/strict";
 import type { ProjectRecord } from "../../shared/src/types";
@@ -33,9 +35,11 @@ const check = (label: string, fn: () => void): void => {
   catch (err) { failures++; console.error(`  FAIL - ${label}\n         ${err instanceof Error ? err.message : String(err)}`); }
 };
 
+// `over` overlays the parser snapshot; a `state`/`ahj` in it is also set on the project row
+// itself, so a fixture's jurisdiction is the project's, not only the snapshot's (#257).
 const mk = (text: string, over: Record<string, string> = {}): ProjectRecord => ({
   id: "ev", clientId: "c", homeownerName: "Evidence Probe", projectAddress: "1 Sheet St",
-  city: "Coos Bay", state: "OR", zip: "97420", ahj: "City of Coos Bay",
+  city: "Coos Bay", state: over.state ?? "OR", zip: "97420", ahj: over.ahj ?? "City of Coos Bay",
   utility: "Pacific Power", accountNumber: "1234567890", meterNumber: "987654",
   systemSizeDcKw: 9, systemSizeAcKw: 7.6, interconnectionMethod: "Load-side breaker",
   status: "pending",
@@ -49,6 +53,11 @@ const mk = (text: string, over: Record<string, string> = {}): ProjectRecord => (
 
 const has = (id: string, text: string, over: Record<string, string> = {}): boolean =>
   buildReviewerReport(mk(text, over)).findings.some((f) => f.id === id);
+check("fixture: a jurisdiction override reaches the project row, not only the snapshot", () => {
+  const p = mk("", { state: "AZ", ahj: "Town of Example Mesa" });
+  assert.equal(p.state, "AZ");
+  assert.equal(p.ahj, "Town of Example Mesa");
+});
 
 // A realistic sheet body that satisfies every OTHER screen, so only the rule under test moves.
 const BASE = '36" FIRE ACCESS PATHWAY PER IFC 1205.2. RAPID SHUTDOWN PER NEC 690.12. 705.12 BUSBAR CALC. SITE PLAN AND ROOF PLAN. SINGLE LINE DIAGRAM. LABEL SCHEDULE.';
@@ -136,10 +145,46 @@ for (const [label, over] of [
 for (const [label, detail] of [
   ["NEC 706 detail", "ESS DETAIL SHEET E-5: INSTALLATION PER NEC 706."],
   ["IRC R328 detail", "ESS DETAIL SHEET E-5: LOCATION PER IRC R328.4, GARAGE WALL."],
+  ["NFPA 855 detail", "ESS DETAIL SHEET E-5: INSTALLATION PER NFPA 855, GARAGE WALL."],
 ] as const) {
   check(`MUST EXCLUDE: an ESS detail sheet citing ${label} satisfies it`, () => {
     assert.equal(has("city.ess.details-missing", `${BASE} ${SCHEDULE_ESS} ${detail}`), false,
       `a package with an ESS detail (${label}) was still told the detail is missing`);
+  });
+}
+// #257 (1): the parser's own split map and download checklist always print a Battery / ESS line,
+// even with no battery. Those are the parser's labels, not the designer's sheets.
+const PARSER_LABELS = {
+  splitPagesText: "01 SLD / 3-line: 3\n07 Battery / ESS specs: not detected\n08 Gateway specs: not detected",
+  utilityDownloadChecklistText: "READY - 01 SLD 3-Line Diagram\nOPTIONAL/MISSING - 07 Battery / ESS Spec Sheet\nOPTIONAL/MISSING - 08 Gateway Spec Sheet",
+};
+// #257 (2): a denied mention is not storage scope.
+const NEGATED_ESS = ["ESS: N/A.", "NO ESS PROPOSED.", "BATTERY / ESS: NONE.", "BATTERY: NONE.", "NO BATTERY / ESS.", "ENERGY STORAGE (BATTERY BACKUP): NOT USED."];
+for (const [label, over] of [
+  ["jurisdiction A", { state: "OR", ahj: "City of Sample Falls" }],
+  ["jurisdiction B", { state: "AZ", ahj: "Town of Example Mesa" }],
+] as const) {
+  check(`MUST EXCLUDE: the parser's packet-readiness 'READY - Battery / ESS' raises no ESS finding (${label})`, () => {
+    assert.equal(has("city.ess.details-missing", BASE, { packetReadinessText: "READY - Site plan\nREADY - Battery / ESS\nREADY - Gateway", ...over }), false,
+      "a no-battery project warned on the parser's packet-readiness label");
+  });
+  check(`MUST EXCLUDE: the parser's split-map/checklist battery labels raise no ESS finding (${label})`, () => {
+    assert.equal(has("city.ess.details-missing", BASE, { ...PARSER_LABELS, ...over }), false,
+      "a no-battery project warned on the parser's own '07 Battery / ESS' labels");
+  });
+  for (const note of NEGATED_ESS) {
+    check(`MUST EXCLUDE: '${note}' raises no ESS finding (${label})`, () => {
+      assert.equal(has("city.ess.details-missing", `${BASE} ${note}`, over), false,
+        `a negated storage mention ('${note}') raised the battery-detail review`);
+    });
+  }
+  check(`MUST PASS: a real battery beside the parser labels still warns (${label})`, () => {
+    assert.equal(has("city.ess.details-missing", `${BASE} ${SCHEDULE_ESS}`, { ...PARSER_LABELS, ...BATT, ...over }), true,
+      "dropping the parser labels also dropped a real battery's review");
+  });
+  check(`MUST PASS: 'NO ESS' elsewhere does not hide an affirmed battery (${label})`, () => {
+    assert.equal(has("city.ess.details-missing", `${BASE} GATEWAY: NONE. (1) POWERWALL 3 BATTERY IN GARAGE.`, over), true,
+      "a negation next to a different item hid an affirmed battery");
   });
 }
 
