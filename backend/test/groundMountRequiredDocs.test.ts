@@ -197,6 +197,7 @@ const ROOFTOP_PROSE: Array<[string, string, Record<string, string>]> = [
   ["Roof; ground utility meter", "", {}],
   ["Roof mount, ground pad", "", {}],
   ["Roof; pole-top transformer", "", {}],
+  ["Rooftop, not on ground", "", {}],
 ];
 for (const where of [OREGON, NO_LOOKUP]) {
   for (const [mounting, text, extra] of ROOFTOP_PROSE) {
@@ -250,6 +251,12 @@ const MUST_PASS_GROUND: Array<[string, "ground" | "combination"]> = [
   ["Ground mount concrete pedestals", "ground"], ["Ground mount pedestal foundation", "ground"], ["Ground-mounted pedestal racking", "ground"],
   ["Pole mount pedestal", "ground"], ["Ground mount inverter rack", "ground"], ["Ground mount w/o battery", "ground"],
   ["Roof + ground mount w/o battery", "combination"],
+  // #272 final review: a pole-top mount is a mount noun; a segment may END in a bare ground; a negated
+  // roof ("no roof work") is no roof, for the equipment gate or the combination; "non-penetrating" is.
+  ["Pole-top mount", "ground"], ["Pole top mount", "ground"], ["Pole-top array", "ground"],
+  ["Ballasted ground", "ground"], ["Fixed-tilt ground", "ground"], ["Tracker (ground)", "ground"], ["Mounted on ground", "ground"],
+  ["Ground mount inverter rack, no roof work", "ground"], ["Ground mount, no roof work", "ground"],
+  ["Non-penetrating roof + ground mount", "combination"],
 ];
 for (const [mounting, field] of MUST_PASS_GROUND) {
   check(`MUST PASS: field "${mounting}" — ${field} by the field, ground to the reviewer rules, the same set and path as a plain ${field}`, () => {
