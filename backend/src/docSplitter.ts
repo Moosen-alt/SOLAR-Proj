@@ -7,7 +7,7 @@ import { portalUploadCapBytes } from "../../portal-bot/src/uploadCap";
 import type { AppDb } from "./db";
 import type { LLMProvider, PlanSheetKind } from "../../shared/src/types";
 import { HttpError } from "./httpError";
-import { saveProjectDocument, listProjectDocuments, projectDocsByType, documentTypesDeletedSince, withdrawSplitPart } from "./projectDocuments";
+import { saveProjectDocument, listProjectDocuments, projectDocsByType, shippedPlanSet, shippedPlanSetDocumentId, documentTypesDeletedSince, withdrawSplitPart } from "./projectDocuments";
 
 // Sheet/content patterns → upload doc category. Ported from the parser's detectSplitPages;
 // pages are scored against each category and assigned to the best match. The categories are
@@ -327,7 +327,14 @@ export function undecidedSpecSummary(pages: number[], filedAs: Record<string, st
 // Find the project's stored plan set (doc_type plan_set, else the largest PDF upload).
 function findPlanSet(db: AppDb, projectId: string): { id: string; path: string; name: string } {
   const docs = listProjectDocuments(db, projectId);
-  const planSet = docs.find((d) => d.docType === "plan_set") ?? docs.find((d) => /\.pdf$/i.test(d.originalFilename));
+  // An alias-typed plan set (combined_plan_set…) is the one projectDocsByType ships, so it is cut
+  // before the newest-PDF fallback — which could otherwise pick an earlier split part (#198 lineage).
+  const shippedId = shippedPlanSetDocumentId(db, projectId);
+  // The newest-PDF fallback (an untyped '(general)' / 'other' plan set) never takes a split part:
+  // a part is a cut OF the plan set, never one. Without this the part a split just saved became
+  // "the plan set", so the mid-split re-check refused every untyped split (Helm, a6ef1b62) and a
+  // later split re-cut a part.
+  const planSet = docs.find((d) => d.docType === "plan_set") ?? docs.find((d) => d.id === shippedId) ?? docs.find((d) => d.source !== "split" && /\.pdf$/i.test(d.originalFilename));
   if (!planSet) throw new HttpError(400, "No plan-set PDF uploaded for this project. Upload the plan set (doc type: plan_set) first.");
   const row = db.get<{ stored_path: string }>("SELECT stored_path FROM project_documents WHERE id = ?", [planSet.id]);
   const stored = row?.stored_path ?? "";
@@ -389,13 +396,26 @@ export async function buildUtilityPackage(
 
   const baseName = planSet.name.replace(/\.pdf$/i, "");
   const parts: UtilityPackageResult["parts"] = [];
+  // A PLAN SET THAT LANDS MID-SPLIT (#198 J2, Helm's review at 0116f98a). Classifying (and any page
+  // read) awaits, so a newer plan set can be uploaded meanwhile; parts cut from the old one would then
+  // land as the newest rows of their types and ship. Re-checked right before EACH save (the check and
+  // the synchronous save cannot interleave with another upload); a changed plan set refuses the split.
+  const assertStillThePlanSet = (): void => {
+    let now: string | null = null;
+    try { now = findPlanSet(db, projectId).id; } catch { now = null; }
+    if (now !== planSet.id) throw new HttpError(409, "The plan set changed while it was being split. Split the current plan set again.");
+  };
 
   // Split only the sheet categories this submission type needs (plus any already split).
   for (const cat of CATEGORY_PATTERNS) {
     if (!wanted.includes(cat.docType)) continue;
     const pages = byCategory.get(cat.docType);
     if (!pages || pages.length === 0) continue;
-    const out = await PDFDocument.create();
+    // No save-time timestamp in the part (updateMetadata: false): an unchanged plan set re-cuts
+    // byte-identically, so the stage pass's repair re-split keeps the engineer's-letter
+    // confirmation standing (it is bound to the cut's sha256, structuralLetterVoid.ts), while a cut
+    // whose pages changed does not.
+    const out = await PDFDocument.create({ updateMetadata: false });
     const copied = await out.copyPages(source, pages);
     copied.forEach((p) => out.addPage(p));
     let bytes = Buffer.from(await out.save());
@@ -409,18 +429,22 @@ export async function buildUtilityPackage(
     // permit package would ship an incomplete filing with no error anywhere.
     const CAP = target === "nem" ? portalUploadCapBytes("split") : Number.POSITIVE_INFINITY;
     if (bytes.length > CAP && pages.length > 1) {
-      const lead = await PDFDocument.create();
+      const lead = await PDFDocument.create({ updateMetadata: false });
       const [first] = await lead.copyPages(source, [pages[0]]);
       lead.addPage(first);
       const leadBytes = Buffer.from(await lead.save());
       if (leadBytes.length <= CAP) bytes = leadBytes;
     }
+    assertStillThePlanSet();
     const saved = saveProjectDocument(db, projectId, {
       docType: cat.docType,
       filename: `${baseName} - ${cat.label}${visionTypes.has(cat.docType) ? VISION_PART_MARK : ""}.pdf`,
       contentType: "application/pdf",
       buffer: bytes,
       source: "split",
+      // The cut's lineage: the structural-letter confirmation stands only while this is the plan set
+      // the package ships (structuralLetterVoid.ts).
+      sourceDocumentId: planSet.id,
     });
     parts.push({ docType: cat.docType, label: cat.label, pages: pages.map((n) => n + 1), documentId: saved.id });
   }
@@ -536,10 +560,9 @@ const pageKey = (text: string): string => text.replace(/\s+/g, " ").trim();
  * standing; a plan set with no text at all withdraws nothing (no classifier answer to judge by).
  */
 export async function reconcileSplitParts(db: AppDb, projectId: string): Promise<ReconcileResult> {
-  const latest = db.get<{ stored_path: string; uploaded_at: string }>(
-    "SELECT stored_path, uploaded_at FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set' ORDER BY uploaded_at DESC LIMIT 1",
-    [projectId],
-  );
+  // The plan set the package ships (#198): one "newest" rule, so reconcile judges the same plan set.
+  const shipped = shippedPlanSet(db, projectId);
+  const latest = shipped ? { stored_path: shipped.storedPath, uploaded_at: shipped.uploadedAt } : undefined;
   const none: ReconcileResult = { withdrawn: [], gaps: [], undecidedSpecPages: [], undecidedSpecFiledAs: {} };
   if (!latest?.stored_path || !fs.existsSync(latest.stored_path)) return none;
   const sheetTypes = CATEGORY_PATTERNS.map((c) => c.docType);
@@ -610,14 +633,11 @@ export async function ensurePlanSetSplit(
   const gaps = allGaps.filter((t) => wanted.includes(t));
   const existing = projectDocsByType(db, projectId);
   if (sheetTypes.every((t) => existing[t])) return { split: false, withdrawn, gaps };
-  const planSet = db.get<{ uploaded_at: string }>(
-    "SELECT uploaded_at FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set' ORDER BY uploaded_at DESC LIMIT 1",
-    [projectId],
-  );
+  const planSet = shippedPlanSet(db, projectId);
   const splitSince = planSet
     ? Number(db.get<{ n: number }>(
         "SELECT COUNT(*) AS n FROM project_documents WHERE project_id = ? AND source = 'split' AND uploaded_at >= ?",
-        [projectId, planSet.uploaded_at],
+        [projectId, planSet.uploadedAt],
       )?.n ?? 0)
     : 0;
   if (splitSince > 0 && gaps.length === 0) return { split: false, withdrawn, gaps };

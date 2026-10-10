@@ -6,7 +6,8 @@ import { addAuditLog } from "./audit";
 import { id } from "./ids";
 import { nowIso } from "./time";
 import { text as s } from "./json";
-import { extractPdfText } from "./batchImport";
+import { extractPdfPages, extractPdfText } from "./batchImport";
+import { stampStructuralLetterVoid } from "./structuralLetterVoid";
 import { parseFeeSummary, recordFeeSummary } from "./feeSummary";
 import { parsePaidFeeReceipt, recordPaidFeeReceipt } from "./feeReceipts";
 import { logger } from "./logger";
@@ -36,12 +37,18 @@ async function extractDocumentText(db: AppDb, docId: string, storedPath: string)
   if (extractionsInFlight.has(docId)) return;
   extractionsInFlight.add(docId);
   let extracted = "";
+  let pageTexts = "";
   try {
     extracted = (await extractPdfText(storedPath, 40)).slice(0, MAX_PLAN_TEXT_CHARS);
+    // A `structural` document's pages, one entry each (#198): extracted_text collapses a run of
+    // empty (scanned) pages, so the engineer's-letter candidate takes its page and page count here.
+    if (s(db.get<Row>("SELECT doc_type FROM project_documents WHERE id = ?", [docId])?.doc_type) === "structural") {
+      pageTexts = JSON.stringify((await extractPdfPages(storedPath, 200)).map((t) => t.slice(0, 20_000)));
+    }
   } catch { /* fall through to marker */ } finally {
     extractionsInFlight.delete(docId);
   }
-  db.run("UPDATE project_documents SET extracted_text = ? WHERE id = ?", [extracted || "[no text layer]", docId]);
+  db.run("UPDATE project_documents SET extracted_text = ?, page_texts_json = ? WHERE id = ?", [extracted || "[no text layer]", pageTexts, docId]);
   if (extracted) recordFeeSummaryIfPresent(db, docId, extracted);
   if (extracted && /PHOTOVOLTAIC WORKSHEET/i.test(extracted) && /PV SYSTEM OVERVIEW/i.test(extracted)) await recordFiledWorksheetReading(db, docId, storedPath);
 }
@@ -110,7 +117,7 @@ function recordFeeSummaryIfPresent(db: AppDb, docId: string, extracted: string):
  */
 export function planSetTextForProject(db: AppDb, projectId: string): string {
   const rows = db.query<Row>(
-    "SELECT id, doc_type, stored_path, content_type, original_filename, extracted_text FROM project_documents WHERE project_id = ? ORDER BY uploaded_at DESC",
+    "SELECT id, doc_type, stored_path, content_type, original_filename, extracted_text FROM project_documents WHERE project_id = ? ORDER BY uploaded_at DESC, rowid DESC",
     [projectId],
   );
   const parts: string[] = [];
@@ -218,7 +225,7 @@ function assertUploadUsable(docType: string, filename: string, buffer: Buffer): 
 
 export function listProjectDocuments(db: AppDb, projectId: string): ProjectDocumentView[] {
   return db
-    .query<Row>("SELECT * FROM project_documents WHERE project_id = ? ORDER BY uploaded_at DESC", [projectId])
+    .query<Row>("SELECT * FROM project_documents WHERE project_id = ? ORDER BY uploaded_at DESC, rowid DESC", [projectId])
     .map(mapDoc);
 }
 
@@ -248,7 +255,7 @@ export async function imageToSinglePagePdf(buffer: Buffer, contentType: string):
 export function saveProjectDocument(
   db: AppDb,
   projectId: string,
-  input: { docType?: string; filename: string; contentType?: string; buffer: Buffer; source?: string; uploadedBy?: string },
+  input: { docType?: string; filename: string; contentType?: string; buffer: Buffer; source?: string; uploadedBy?: string; sourceDocumentId?: string },
 ): ProjectDocumentView {
   const project = db.get<Row>("SELECT id FROM projects WHERE id = ?", [projectId]);
   if (!project) throw new HttpError(404, "Project not found.");
@@ -261,10 +268,13 @@ export function saveProjectDocument(
   fs.writeFileSync(stored, input.buffer);
   db.run(
     `INSERT INTO project_documents
-      (id, project_id, doc_type, original_filename, stored_path, content_type, size_bytes, source, uploaded_by, uploaded_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [docId, projectId, s(input.docType), s(input.filename), stored, s(input.contentType), input.buffer.length, input.source || "upload", s(input.uploadedBy), nowIso()],
+      (id, project_id, doc_type, original_filename, stored_path, content_type, size_bytes, source, uploaded_by, uploaded_at, source_document_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [docId, projectId, s(input.docType), s(input.filename), stored, s(input.contentType), input.buffer.length, input.source || "upload", s(input.uploadedBy), nowIso(), s(input.sourceDocumentId)],
   );
+  // A newer `structural` row or plan set can void the engineer's-letter confirmation (#198): stamp it
+  // now, so deleting this row later never revives it.
+  stampStructuralLetterVoid(db, projectId, s(input.docType));
   // Extract PDF text in the background so the reviewer gate can check the actual sheets.
   // Keyed off the sniffed bytes, not the filename — a plan set saved as "plans" with no
   // extension is still a PDF we can read.
@@ -290,6 +300,9 @@ export function deleteProjectDocument(db: AppDb, projectId: string, docId: strin
   // timestamp of its own behind, so the fact is written where the audit trail keeps facts. The
   // doc type only: a filename can carry a homeowner's name.
   addAuditLog(db, projectId, "system", "documents", DOCUMENT_DELETED_ACTION, { docType: s(row.doc_type) });
+  // Deleting the plan set a confirmed cut came from (or the confirmed letter) voids the
+  // confirmation (#198 G2): stamp it, so nothing that lands later revives it.
+  stampStructuralLetterVoid(db, projectId, s(row.doc_type));
   return { deleted: true };
 }
 
@@ -342,15 +355,43 @@ export function documentTypesDeletedSince(db: AppDb, projectId: string, since: s
   return out;
 }
 
+// docType -> the row that ships for it (latest per type, file on disk). ONE "newest" rule
+// everywhere (#198, Helm's review of #218 at 0116f98a): uploaded_at, then rowid on a same-millisecond
+// tie — the order the structural-letter gate judges by, so it never credits one row while the
+// package ships another.
+function shippedDocsByType(db: AppDb, projectId: string): Record<string, { id: string; path: string }> {
+  const out: Record<string, { id: string; path: string }> = {};
+  for (const row of db.query<Row>("SELECT id, doc_type, stored_path FROM project_documents WHERE project_id = ? ORDER BY uploaded_at DESC, rowid DESC", [projectId])) {
+    const t = s(row.doc_type);
+    const p = s(row.stored_path);
+    if (t && p && !out[t] && fs.existsSync(p)) out[t] = { id: s(row.id), path: p };
+  }
+  return out;
+}
+
+/** The id of the plan set projectDocsByType ships as `plan_set` (its own type, else the first alias
+ *  on file), or null. A split cut is current only when it was cut from this one (structuralLetterVoid). */
+export function shippedPlanSetDocumentId(db: AppDb, projectId: string): string | null {
+  const rows = shippedDocsByType(db, projectId);
+  const hit = rows.plan_set ?? DOC_TYPE_ALIASES.plan_set.map((a) => rows[a]).find(Boolean);
+  return hit ? hit.id : null;
+}
+
+/** The shipped plan set's row (shippedPlanSetDocumentId), or null: the plan set the splitter's
+ *  recency checks (reconcile, ensurePlanSetSplit, the stage pass's split step) judge against, so
+ *  they agree with the package and the structural-letter gate on WHICH plan set is current —
+ *  rowid tiebreak and aliases included (#198, Helm's review at a6ef1b62). */
+export function shippedPlanSet(db: AppDb, projectId: string): { id: string; storedPath: string; uploadedAt: string } | null {
+  const docId = shippedPlanSetDocumentId(db, projectId);
+  const row = docId ? db.get<Row>("SELECT id, stored_path, uploaded_at FROM project_documents WHERE id = ?", [docId]) : undefined;
+  return row ? { id: s(row.id), storedPath: s(row.stored_path), uploadedAt: s(row.uploaded_at) } : null;
+}
+
 // docType -> stored file path map for a project (latest per type), for the submittal
 // package and the portal bot to attach the right files.
 export function projectDocsByType(db: AppDb, projectId: string): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const row of db.query<Row>("SELECT doc_type, stored_path FROM project_documents WHERE project_id = ? ORDER BY uploaded_at DESC", [projectId])) {
-    const t = s(row.doc_type);
-    const p = s(row.stored_path);
-    if (t && p && !out[t] && fs.existsSync(p)) out[t] = p;
-  }
+  for (const [t, row] of Object.entries(shippedDocsByType(db, projectId))) out[t] = row.path;
   // The same physical document arrives under several names depending on which upload
   // path produced it (the parser's structural-letter slot, a batch import that called it
   // stamped plans, an operator picking "engineering letter"). Everything downstream —

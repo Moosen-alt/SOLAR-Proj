@@ -1066,6 +1066,7 @@ function migrate(db: AppDb): void {
   `);
 
   runVersionedMigrations(db);
+  healStructuralLetterColumns(db);
 
   // WHO VERIFIED A SHARED FEE ROW IS A TENANT'S FACT (skeptic MF3, 2026-09-27). fee_schedules is
   // shared ON PURPOSE, and so is its "verified" grade — but verified_by is a person's name or
@@ -2516,7 +2517,60 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       addColumnIfMissing(db, "jurisdiction_design_observations", "precedent_json", "TEXT NOT NULL DEFAULT '[]'");
     },
   },
+  {
+    version: 47,
+    name: "structural_letter_confirmations",
+    up: (db) => {
+      // A NAMED PERSON CONFIRMS THE ENGINEER'S STRUCTURAL LETTER (#198; owner ruling 2026-10-08 on
+      // #218). Text matching only suggests which split `structural` document is the letter; this
+      // row is the ONLY thing that credits it and releases city.struct.stamped-engineering-missing
+      // (structuralLetter.ts). Bound to the exact document: its id AND the sha256 of its stored
+      // bytes, so a replaced or re-split document (new id or new bytes), a newer `structural` row
+      // that is not a byte-identical re-cut, or a newer plan set voids it. Withdrawal stamps withdrawn_*; rows are never deleted, so the history stays readable
+      // (the audit trail carries every confirm/withdraw too). A child of the project: it reaches
+      // an org through projects.org_id, so no org_id column here (CLAUDE.md tenancy model).
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS structural_letter_confirmations (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          document_id TEXT NOT NULL,
+          content_sha256 TEXT NOT NULL,
+          page INTEGER NOT NULL DEFAULT 0,
+          confirmed_by TEXT NOT NULL,
+          confirmed_by_user_id TEXT NOT NULL DEFAULT '',
+          confirmed_at TEXT NOT NULL,
+          withdrawn_by TEXT NOT NULL DEFAULT '',
+          withdrawn_at TEXT NOT NULL DEFAULT '',
+          voided_at TEXT NOT NULL DEFAULT '',
+          void_reason TEXT NOT NULL DEFAULT '',
+          FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_structural_letter_confirmations_project ON structural_letter_confirmations(project_id);
+      `);
+      // voided_*: stamped when a document write (a newer `structural` row, a newer plan set) voids
+      // the confirmation (structuralLetterVoid.stampStructuralLetterVoid), so deleting that newer
+      // row later never silently revives it. page_texts_json: a `structural` document's per-page
+      // text (JSON string[]), written by the background extraction — extracted_text collapses
+      // empty (scanned) pages, so the candidate's page and page count come from here.
+      addColumnIfMissing(db, "project_documents", "page_texts_json", "TEXT NOT NULL DEFAULT ''");
+      healStructuralLetterColumns(db);
+    },
+  },
 ];
+
+/** v47 was edited in place while #218 was open (Helm's review at 0116f98a): a DB that ran an earlier
+ *  v47 has the table without voided_at / void_reason (and project_documents without
+ *  source_document_id) and throws on the first upload. Called at the end of v47 (a replay heals) and
+ *  again after runVersionedMigrations on every boot (a DB that already stamped v47 heals too).
+ *  source_document_id: the plan set a `source = 'split'` cut was cut from (buildUtilityPackage), so
+ *  a cut is judged by its lineage, never by timestamps (structuralLetterVoid.ts); '' on an upload. */
+function healStructuralLetterColumns(db: AppDb): void {
+  if (!db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'structural_letter_confirmations'")) return;
+  addColumnIfMissing(db, "structural_letter_confirmations", "voided_at", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "structural_letter_confirmations", "void_reason", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "project_documents", "page_texts_json", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "project_documents", "source_document_id", "TEXT NOT NULL DEFAULT ''");
+}
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the
 // whole existing notes blob as a single item, so the same seed sentence was

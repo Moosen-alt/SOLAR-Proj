@@ -278,6 +278,50 @@ export function hasStampedStructuralEvidence(project: PermitPathInputs): boolean
   return affirmed;
 }
 
+// WHICH STRUCTURAL PAGES LOOK LIKE THE ENGINEER'S LETTER — A SUGGESTION, NEVER A CREDIT (#198).
+//
+// Owner ruling 2026-10-08 (on #218): text matching only SUGGESTS; a named person's one-click
+// confirmation (structuralLetter.ts) is the only thing that credits the letter or releases the
+// stamped-structural hold. Four review rounds showed the text layer cannot tell an engineer's
+// certification from a framing sheet that cites one, a blank signature block, a compass point or a
+// pipe grade — pages are joined with spaces, so "same line" is "rest of page", and a seal is an
+// image it never sees. So this reads text for one job only: to rank the split `structural`
+// documents and their pages, so the gate can put the likeliest letter in front of a person. A false
+// positive costs a person a look; it never releases anything.
+//
+// Every pattern here is linear: no name-shaped token runs (an unbroken capital run at the 150K
+// text cap took 24s under the old NAME regex), only bounded gaps between fixed words.
+const STRUCTURE_NOUN = String.raw`(?:existing\s+)?(?:roof\s+)?(?:structure|framing|roof|trusses|rafters|members?)`;
+const CERTIFYING_CLAUSE = new RegExp(
+  String.raw`\b(?:hereby\s+certif(?:y|ies)|do\s+certify|this\s+is\s+to\s+certify)\b[\w\s/-]{0,60}?\b${STRUCTURE_NOUN}\b`
+  + String.raw`|\b${STRUCTURE_NOUN}\b[\w\s/-]{0,40}?\b(?:is|are)\s+(?:structurally\s+)?adequate\b`, "i");
+/** A clause that points AT another document, or tells someone to check, is not the document speaking. */
+const REFERENCE_CLAUSE = /\b(?:refer(?:\s+to)?|see|per|reference[ds]?)\s+(?:the\s+|separate\s+|attached\s+)?(?:structural|engineering|engineer'?s?)\s+(?:letter|calc\w*|report|sheet|analysis)\b|\bby\s+others\b|\b(?:verify|confirm|contact|check)\b/i;
+/** Any engineer credential MENTIONED — enough to rank a page, never to credit one. */
+const CREDENTIAL_MENTION = /\bP\.?[ \t]?E\.?(?![A-Za-z])|\bS\.[ \t]?E\.(?![A-Za-z])|\bengineer\s+of\s+record\b|\b(?:licensed|professional|registered|structural)\s+engineer/i;
+const LETTER_HEADING = /\bstructural\s+(?:certification|calculations?|analysis|report|letter)\b|\bengineering\s+(?:letter|report|certification)\b/i;
+const DESIGN_BASIS = /\bASCE\s*7\b|\bIRC\s*20\d\d\b|\bIBC\s*20\d\d\b/i;
+
+/** Does any clause of this text certify the existing structure, in its own (un-negated,
+ *  un-hedged, non-pointing) voice? */
+function hasCertifyingClause(body: string): boolean {
+  // "No. 12345" is a licence number: its period must not cut the clause, nor its "No" negate it.
+  const text = body.replace(/\bno\.?\s*(?=[#\d])/gi, (m) => "#".padEnd(m.length, " "));
+  return text.split(new RegExp(CLAUSE_BREAK.source, "gi")).some((raw) => {
+    const c = (raw ?? "").trim();
+    return Boolean(c) && CERTIFYING_CLAUSE.test(c) && !NEGATOR.test(withoutNumberAbbreviation(c)) && !HEDGED.test(c) && !REFERENCE_CLAUSE.test(c);
+  });
+}
+
+/** How much a page (or document) reads like an engineer's structural letter: 0 = nothing, up to 5.
+ *  For RANKING candidates only (structuralLetter.structuralLetterCandidate). */
+export function certificationScore(text: string): number {
+  const body = String(text || "");
+  if (!body.trim() || body === "[no text layer]") return 0;
+  return (hasCertifyingClause(body) ? 2 : 0) + (CREDENTIAL_MENTION.test(body) ? 1 : 0)
+    + (LETTER_HEADING.test(body) ? 1 : 0) + (DESIGN_BASIS.test(body) ? 1 : 0);
+}
+
 // ---------------------------------------------------------------------------
 // SEALED STRUCTURAL STAMP — the single authority.
 //

@@ -37,6 +37,7 @@
 import type { AppDb } from "./db";
 import type { CodeEdition, ProjectRecord } from "../../shared/src/types";
 import { projectDocsByType } from "./projectDocuments";
+import { activeStructuralLetterConfirmation, confirmedByLine } from "./structuralLetter";
 import { duplicateUploads, uploadedSubmissionDocuments } from "./submissionDocuments";
 import { filledFormsByDocType, applicationKindForPath, loadStoredTemplates, formAllowedForPath, formContradictsPath } from "./ahjForms";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
@@ -213,6 +214,9 @@ export interface DocPresence extends RequiredDocItem {
   present: boolean;
   /** How presence was established: "attached file" | "in plan set" | "". */
   via: string;
+  /** Present, but a person still has something to check (the confirmed structural letter's seal,
+   *  #198): the document check reads it as a warning, never a pass. */
+  warning?: string;
 }
 
 export interface DocumentInventory {
@@ -1029,6 +1033,22 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
     const p = sameAs && uploads[sameAs]
       ? { present: true, via: `same file as ${sameAs.replace(/_/g, " ")} — attached once; confirm it covers the ${item.docType.replace(/_spec$/, "").replace(/_/g, " ")}` }
       : present(item, project, docsByType, uploads, filledApplications);
+    // THE ENGINEER'S LETTER BOUND INTO THE PLAN SET, CONFIRMED BY A NAMED PERSON (#198; owner ruling
+    // 2026-10-08). The splitter files it as `structural`, not under a stamped-letter type, so the row
+    // read it as missing while the same letter decided the job was engineered. Text matching only
+    // SUGGESTS which document it is (structuralLetter.structuralLetterCandidate); only a person's
+    // confirmation of that exact document credits the row. It stays a WARNING: the seal is an image
+    // the text layer never sees, so the row asks for it to be verified.
+    if (item.docType === "structural_letter" && !p.present) {
+      const confirmed = activeStructuralLetterConfirmation(db, project.id);
+      if (confirmed) {
+        return {
+          ...item, present: true,
+          via: `engineer's structural letter on file, confirmed by ${confirmedByLine(confirmed)} — verify the seal on its pages`,
+          warning: "verify the seal",
+        };
+      }
+    }
     // HONESTY CHECK on the sealed letter: presence only proves a FILE is in the
     // slot — a placeholder PDF satisfies the gate identically (live-tested with a
     // file literally named "FAKE STAMPS.pdf"). We can't verify a real PE seal

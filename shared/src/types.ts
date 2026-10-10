@@ -2870,6 +2870,46 @@ export interface SubmitGateReport {
   checks: SubmitGateCheck[];
   manualSubmitChecklist: string[];
   reportText: string;
+  /** The engineer's structural letter: the candidate a person can confirm, and the standing
+   *  confirmation (backend/src/structuralLetter.ts, #198). Absent when the job owes no letter. */
+  structuralLetter?: StructuralLetterState;
+}
+
+/** The split `structural` document (and page) whose text reads most like the engineer's letter.
+ *  A SUGGESTION ranked from the text layer — it never credits anything on its own (#198). */
+export interface StructuralLetterCandidate {
+  documentId: string;
+  filename: string;
+  source: string;
+  /** 1-based page of that document that reads most like the letter (1 when nothing stands out). */
+  page: number;
+  /** The document's PDF pages, as the background extraction read them (0 until it has run). */
+  pageCount: number;
+  /** 0–5 (permitPath.certificationScore); 0 = its text says nothing letter-like (or it has none). */
+  score: number;
+}
+
+/** A named person's standing confirmation that a document is the engineer's sealed letter. */
+export interface StructuralLetterConfirmationView {
+  id: string;
+  documentId: string;
+  filename: string;
+  page: number;
+  confirmedBy: string;
+  confirmedAt: string;
+}
+
+export interface StructuralLetterState {
+  candidate: StructuralLetterCandidate | null;
+  /** Set only while it still covers the document as it stands now: same id, same bytes, no newer
+   *  `structural` row but a byte-identical re-cut, no newer plan set (structuralLetterVoid.ts). */
+  confirmation: StructuralLetterConfirmationView | null;
+  /** The latest confirmation that no longer covers what is on file, and why — so the card can say
+   *  "re-confirm" rather than silently forgetting it. */
+  voided?: { confirmedBy: string; confirmedAt: string; reason: string } | null;
+  /** With no candidate: the structural document on file that cannot be confirmed, and why (a cut
+   *  that predates lineage: "split the plan set again"). null when none is on file. */
+  unconfirmable?: { filename: string; reason: string } | null;
 }
 
 export type InstallerActionCategory =

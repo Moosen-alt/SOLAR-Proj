@@ -43,6 +43,7 @@ import {
   deleteProjectDocument,
 } from "./projectDocuments";
 import { buildUtilityPackage } from "./docSplitter";
+import { sniffFileKind } from "./fileTypes";
 import { buildSubmittalEmailDraft } from "./applicationDocs";
 import type { EvidenceTopic } from "./projectEvidence";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
@@ -2251,10 +2252,30 @@ app.post(
     res.status(201).json(saved);
   },
 );
+function storedFileIsPdf(filePath: string): boolean {
+  try {
+    const fd = fs.openSync(filePath, "r");
+    try {
+      const head = Buffer.alloc(16);
+      fs.readSync(fd, head, 0, head.length, 0);
+      return sniffFileKind(head) === "pdf";
+    } finally { fs.closeSync(fd); }
+  } catch {
+    return false;
+  }
+}
 app.get("/api/projects/:id/documents/:docId", (req, res) => {
   const file = getProjectDocumentFile(db, String(req.params.id), String(req.params.docId));
   res.setHeader("Content-Type", file.contentType);
-  res.setHeader("Content-Disposition", `attachment; filename="${file.filename.replace(/[^A-Za-z0-9._-]+/g, "_")}"`);
+  // ?inline=1 opens a PDF in the browser's viewer (the structural-letter card links "#page=N"
+  // into it, #198) — only a file whose BYTES are a PDF, never sniffed into anything else (an
+  // uploaded HTML file labelled application/pdf stays a download). The default stays a download.
+  let disposition = "attachment";
+  if (req.query.inline === "1") {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    if (file.contentType === "application/pdf" && storedFileIsPdf(file.path)) disposition = "inline";
+  }
+  res.setHeader("Content-Disposition", `${disposition}; filename="${file.filename.replace(/[^A-Za-z0-9._-]+/g, "_")}"`);
   res.sendFile(file.path);
 });
 app.delete("/api/projects/:id/documents/:docId", (req, res) => {
@@ -2934,6 +2955,45 @@ app.post("/api/projects/:id/fee-sheet/confirm", asyncHandler(async (req, res) =>
     track: outcome.track, verified: outcome.verified, alreadyVerified: outcome.alreadyVerified,
   });
   res.json({ outcome, feeSheet: buildProjectFeeSheet(db, detail.project) });
+}));
+
+// THE ENGINEER'S STRUCTURAL LETTER: A NAMED PERSON CONFIRMS IT (#198; owner ruling 2026-10-08).
+// Text matching only suggests the candidate; this is the ONLY door that credits the letter and
+// releases city.struct.stamped-engineering-missing (structuralLetter.ts). WHO comes from the
+// session when auth is on, never the body; with auth off it is the name the person typed, and a
+// placeholder is refused (feeConfirm.isConfirmingPerson). The body names the document (and page)
+// the person looked at — it must be one of THIS project's `structural` documents, else 404. Under
+// /api/projects/:id, so the tenant scope guard answers 404 for another org's project (rule 6).
+function structuralLetterPerson(
+  req: Request, typed: unknown, isConfirmingPerson: (n: string) => boolean, act: "confirm" | "withdraw",
+): { name: string; userId: string } {
+  const what = act === "confirm" ? "confirm the structural letter" : "withdraw the structural-letter confirmation";
+  const user = currentUser(db, req);
+  if (AUTH_ENABLED && !user) throw new HttpError(401, `Sign in to ${what}.`);
+  // A signed-in account whose display name is a role ("Admin") is recorded by its email.
+  const name = AUTH_ENABLED
+    ? String((user?.name && isConfirmingPerson(user.name) ? user.name : user?.email) || "").trim()
+    : String(typed || "").trim();
+  if (!isConfirmingPerson(name)) throw new HttpError(400, `A named person must ${what} — type your name.`);
+  return { name, userId: user?.id ?? "" };
+}
+app.post("/api/projects/:id/structural-letter/confirm", asyncHandler(async (req, res) => {
+  const { isConfirmingPerson } = await import("./feeConfirm");
+  const { confirmStructuralLetter, structuralLetterState } = await import("./structuralLetter");
+  const detail = getProjectDetail(db, String(req.params.id));
+  const who = structuralLetterPerson(req, req.body?.confirmedBy, isConfirmingPerson, "confirm");
+  const confirmation = await confirmStructuralLetter(db, detail.project.id, {
+    documentId: String(req.body?.documentId || ""), page: Number(req.body?.page || 0), confirmedBy: who.name, userId: who.userId,
+  });
+  res.json({ confirmation, structuralLetter: structuralLetterState(db, detail.project.id) });
+}));
+app.post("/api/projects/:id/structural-letter/withdraw", asyncHandler(async (req, res) => {
+  const { isConfirmingPerson } = await import("./feeConfirm");
+  const { withdrawStructuralLetterConfirmation, structuralLetterState } = await import("./structuralLetter");
+  const detail = getProjectDetail(db, String(req.params.id));
+  const who = structuralLetterPerson(req, req.body?.withdrawnBy ?? req.body?.confirmedBy, isConfirmingPerson, "withdraw");
+  const outcome = withdrawStructuralLetterConfirmation(db, detail.project.id, who.name, who.userId);
+  res.json({ outcome, structuralLetter: structuralLetterState(db, detail.project.id) });
 }));
 
 // READ THE PORTAL'S OWN FEE NOW (portalFeeReadings.readProjectPortalFees): every filed permit
