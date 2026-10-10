@@ -294,6 +294,16 @@ check("MUST-EXCLUDE: a string inverterModel that differs from pvMicroModel WITHO
 check("MUST-PASS: a person's recorded verify to a string inverter turns MLPE off", () => {
   assert.equal(isMlpeDesignForProject(project(PLACARD, unnamedMicro("DS3D", personSaid(SUNNY)))), false);
 });
+// Helm re-review on PR #274: a person correcting the micro to a DIFFERENT micro records a marker (it
+// is a real statement), so from then on the inverter fields alone must still read as a micro.
+for (const [from, to] of [["IQ8PLUS-72-2-US", "HMS-2000-4T"], ["IQ8PLUS-72-2-US", "M215-60-2LL-S22"], ["HM-800", "DS3D"]]) {
+  check(`MUST-PASS: a person's verify of the micro ${from} → ${to} (another micro) keeps MLPE on`, () => {
+    assert.equal(isMlpeDesignForProject(project(PLACARD, unnamedMicro(from, personSaid(to)))), true);
+  });
+  check(`…and the label reader still reads ${to} as a micro (no DC-circuit labels)`, () => {
+    assert.equal(labelSections(unnamedMicro(from, personSaid(to))), labelSections(unnamedMicro(from)));
+  });
+}
 check("a statement about a model no longer on file is inert (a later parse put the micro back)", () => {
   const snap = { ...unnamedMicro("DS3D", personSaid(SUNNY)), invModel: "DS3D", inverterModel: "DS3D" };
   assert.equal(isMlpeDesignForProject(project(PLACARD, snap)), true);

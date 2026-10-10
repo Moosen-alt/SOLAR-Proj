@@ -149,7 +149,9 @@ const forceSnapshot = (pid: string, patch: Record<string, unknown>) => {
   const hit = report.find((r) => r.projectId === pid);
   const inv = hit?.aliases.find((a) => a.key === "inverterModel");
   check("report lists the diverged inverterModel", inv?.stored === "Enphase IQ8M-72-2-US" && inv?.derived === "Sunny Boy SB7.7-1SP-US-41", hit);
-  check("report leaves the phone alias out entirely", !hit?.aliases.some((a) => a.key === "homeownerPhone") && !JSON.stringify(report).includes("555-"), hit);
+  // Scan the reported VALUES, not the whole JSON: a random project UUID can contain "555-" (it did,
+  // "…-4555-8cf5-…", which made this check flaky).
+  check("report leaves the phone alias out entirely", !hit?.aliases.some((a) => a.key === "homeownerPhone") && !JSON.stringify(report.map((r) => r.aliases)).includes("555-"), hit);
   check("report skips a project whose aliases agree", !!healthyPid && !report.some((r) => r.projectId === healthyPid), report.map((r) => r.projectId));
   const after = db.get<{ parser_json: string; updated_at: string }>("SELECT parser_json, updated_at FROM projects WHERE id = ?", [pid])!;
   check("report writes nothing", after.parser_json === before.parser_json && after.updated_at === before.updated_at);
@@ -197,6 +199,14 @@ const snapshotOf = (pid: string) => JSON.parse(db.get<{ parser_json: string }>("
   check("MUST-PASS: a parser re-save after the verify keeps MLPE off", !isMlpeDesignForProject(resaved.project), resaved.project.parserSnapshot);
   const echoed = updateProject(db, pid, { ...snapshotOf(pid), [MICRO_SUPERSEDED_KEY]: { model: "something else", door: "parser" } });
   check("…a re-sent marker can't move the stored one", (echoed.project.parserSnapshot[MICRO_SUPERSEDED_KEY] as { model?: string })?.model === SUNNY && !isMlpeDesignForProject(echoed.project), echoed.project.parserSnapshot[MICRO_SUPERSEDED_KEY]);
+}
+// Helm re-review on PR #274 — his reproduction: a person correcting the micro to a DIFFERENT micro is
+// a real statement (a marker is recorded), and the design must stay MLPE.
+for (const [from, to] of [["IQ8PLUS-72-2-US", "HMS-2000-4T"], ["IQ8PLUS-72-2-US", "M215-60-2LL-S22"], ["HM-800", "DS3D"]]) {
+  const pid = createProject(db, { ...base, pvMicroMake: "Testmicro", pvMicroModel: from, pvMicroQty: "10" }).project.id;
+  const item = queueReview(pid, "inverterModel", from);
+  const v = humanVerify(db, pid, { reviewItemId: item, action: "edit", fieldValue: to });
+  check(`MUST-PASS: verifying the micro ${from} → ${to} (another micro) keeps MLPE on`, isMlpeDesignForProject(v.project), v.project.parserSnapshot);
 }
 {
   // PUT /api/projects/:id is NOT a human door: the parser sends inverterModel on every save.
@@ -284,6 +294,9 @@ const snapshotOf = (pid: string) => JSON.parse(db.get<{ parser_json: string }>("
     check(`script ${JSON.stringify(args)} exits with a usage error`, run.status === 2 && /usage:/.test(run.stderr), { status: run.status, stderr: run.stderr.slice(0, 300) });
     check(`script ${JSON.stringify(args)} never opens the database`, !fs.existsSync(scratchDb));
   }
+  // An org id that doesn't exist is a usage error, not a clean report (#270, Helm low).
+  const ghost = runScript(["--org=org-does-not-exist"], process.env.AUTOPILOT_DB_PATH!);
+  check("script --org=<unknown org> exits with a usage error", ghost.status === 2 && /no org with id/.test(ghost.stderr) && !/No project has/.test(ghost.stdout), { status: ghost.status, stdout: ghost.stdout.slice(0, 200), stderr: ghost.stderr.slice(-300) });
   // Both spellings of a real org id read ONLY that org (the = form used to fall through to every org).
   const otherOrg = "org-238-other";
   const short = (orgId: string) => db.query<{ id: string }>("SELECT id FROM projects WHERE org_id = ?", [orgId]).map((r) => r.id.slice(0, 8));

@@ -41,6 +41,11 @@ const { openDatabase } = await import("../backend/src/db");
 const { listDivergedAliasProjects } = await import("../backend/src/repository");
 
 const db = await openDatabase();
+// An org id that doesn't exist matches nothing, and "nothing diverged" would read as clean (#270).
+if (orgId !== null && !db.get("SELECT 1 FROM orgs WHERE id = ?", [orgId])) {
+  db.close();
+  usage(`no org with id "${orgId}"`);
+}
 const rows = listDivergedAliasProjects(db, orgId);
 if (!rows.length) console.log("No project has a canonical alias that differs from its source.");
 for (const row of rows) {
