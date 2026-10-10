@@ -5,9 +5,33 @@
 // accepted "N/A" / "NOT USED" ANYWHERE in the window, and "EV CHARGER: N/A" on the line after a
 // real mention denied it: new false blockers on 690.12(B)(2) / 690.12(C) / the 690.13 label, a
 // missed manufactured home, false UL 2703 / 61730 and load-path findings, and a text-only
-// Powerwall that stopped warning. "N/A" and "NOT USED" now deny only DIRECTLY after the mention.
+// Powerwall that stopped warning. "N/A" and "NOT USED" now deny only DIRECTLY after the mention;
+// "NOT APPLICABLE", "MISSING", "EXCLUDED" and "BY OTHERS" only there or in the mention's own cell
+// (#271).
 //
 // Every rule that reads through affirmedIn is probed here, on two synthetic jurisdictions.
+//
+// KNOWN LIMIT (accepted on #284): "NO." followed by a digit is read as the number abbreviation, so a
+// dash-NO that ends one line before a numbered note ("POWERWALL - NO.\n1. SEE E-3") no longer
+// denies — the package text arrives whitespace-flattened, and the line break is gone.
+// KNOWN LIMITS (accepted on #284; the same as main):
+//   - a next row whose label is one of CELL_LABEL_WORD's nouns ("RACKING: BY OTHERS",
+//     "PLACARDS: NOT APPLICABLE", "MOUNTING: EXCLUDED", "LABELS: BY OTHERS") reads as the mention's
+//     own label running on, so it still denies the mention before it;
+//     That includes PACKAGE / INSTALLATION / SCOPE / SUPPLY, and a joined next row ("UL 2703" then
+//     "LABELS & PLACARDS: BY OTHERS");
+//   - a next row with no separator ("EV CHARGER NOT APPLICABLE", "EV CHARGER (NOT APPLICABLE)",
+//     "TRENCHING, BY OTHERS") still bleeds through the no-separator reading.
+// KNOWN LIMITS (accepted on #284; these read as affirmed where main denied):
+//   - a second separator inside the value cell ("LISTED RSD EQUIPMENT: SEE E-3 - BY OTHERS",
+//     "…: PER NOTE 2: BY OTHERS"): the value lead stops at a colon or dash by design, which is what
+//     keeps "LISTED RSD: YES - TRENCHING BY OTHERS" affirmed;
+//   - a joiner after a parenthetical that ends the mention ("RSD EQUIPMENT (UL LISTED) & LABELS: BY
+//     OTHERS": the mention ends at LISTED, so ")" comes before the joiner);
+//   - a joined noun outside the closed lists ("MANUFACTURED HOME & FOUNDATION: NOT APPLICABLE",
+//     "BATTERY & GENERATOR: EXCLUDED").
+//   NEGATION_AFTER's "not provided / not shown …" in the 30-character window is the same bug
+//   class on the next row ("HOA LETTER: NOT PROVIDED"); that is #295, not this suite.
 // Every fixture is SYNTHETIC. No database, no LLM, no network.
 //
 // Run: npx tsx backend/test/negationWindowCrossRule.test.ts
@@ -42,8 +66,12 @@ const runIn = (state: string, ahj: string, text: string, snapshot: Record<string
 const get = (fs: ReviewerFinding[], id: string) => fs.find((f) => f.id === id);
 const sections = (f: ReviewerFinding | undefined) => (f?.codeReferences ?? []).map((r) => r.section);
 
-// The unrelated rows that follow a real mention on a schedule.
-const ROWS = ["EV CHARGER: N/A", "HOA: N/A", "GENERATOR: NOT USED"];
+// The unrelated rows that follow a real mention on a schedule. #271: "NOT APPLICABLE", "MISSING",
+// "EXCLUDED" and "BY OTHERS" on the next row denied the mention too.
+const ROWS = [
+  "EV CHARGER: N/A", "HOA: N/A", "GENERATOR: NOT USED",
+  "EV CHARGER: NOT APPLICABLE", "HOA APPROVAL: MISSING", "TRENCHING: BY OTHERS", "MAIN PANEL UPGRADE: EXCLUDED",
+];
 const RSD_BASE = "SOLAR PV SYSTEM EQUIPPED WITH RAPID SHUTDOWN";
 
 for (const [state, ahj] of JURISDICTIONS) {
@@ -92,12 +120,115 @@ for (const [state, ahj] of JURISDICTIONS) {
     assert.ok(get(runIn(state, ahj, "(1) POWERWALL - NO GENERATOR"), "city.ess.details-missing"));
     assert.ok(!get(runIn(state, ahj, "POWERWALL - NO."), "city.ess.details-missing"));
   });
+  // #271: the issue's own case — the label and an unrelated row joined by affirmedIn.
+  check(`MUST-PASS ${state}: 'LISTED RSD EQUIPMENT' then 'EV CHARGER: NOT APPLICABLE' still answers 690.12(B)(2)`, () => {
+    const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\nINSIDE ARRAY BOUNDARY: LISTED RSD EQUIPMENT\nEV CHARGER: NOT APPLICABLE`), "city.elec.rapid-shutdown-edition-evidence");
+    assert.ok(!sections(f).includes("690.12(B)(2)"), f?.message);
+  });
+  // #271 / Helm on #265: "NO." followed by a number is the number abbreviation, not a denial.
+  check(`MUST-PASS ${state}: 'RAPID SHUTDOWN INITIATOR - NO. 1 AT MAIN SERVICE' still answers 690.12(C)`, () => {
+    const f = get(runIn(state, ahj, `${RSD_BASE}.\nLISTED PV HAZARD CONTROL SYSTEM.\nRAPID SHUTDOWN INITIATOR - NO. 1 AT MAIN SERVICE`), "city.elec.rapid-shutdown-edition-evidence");
+    assert.ok(!sections(f).includes("690.12(C)"), f?.message);
+  });
+  check(`MUST-PASS ${state}: '(2) TESLA POWERWALL - NO. 2 SHOWN ON E-3' still raises the ESS review`, () => {
+    assert.ok(get(runIn(state, ahj, "(2) TESLA POWERWALL - NO. 2 SHOWN ON E-3"), "city.ess.details-missing"));
+  });
   // The direct denials #242 / #257 asked for still deny.
   check(`MUST-EXCLUDE ${state}: a denial DIRECTLY after the mention still denies it`, () => {
     assert.ok(!get(runIn(state, ahj, "POWERWALL: NOT USED"), "city.ess.details-missing"), "POWERWALL: NOT USED");
     assert.ok(!get(runIn(state, ahj, "ENERGY STORAGE (BATTERY BACKUP): NOT USED"), "city.ess.details-missing"), "(BATTERY BACKUP): NOT USED");
     const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\n690.12(B)(2)(3) - NOT USED`), "city.elec.rapid-shutdown-edition-evidence");
     assert.ok(sections(f).includes("690.12(B)(2)"), f?.message ?? "no finding");
+  });
+  // #271: the denial in the mention's own cell still denies it.
+  check(`MUST-EXCLUDE ${state}: 'LISTED RSD EQUIPMENT: NOT APPLICABLE' still denies 690.12(B)(2)`, () => {
+    for (const cell of ["LISTED RSD EQUIPMENT: NOT APPLICABLE", "LISTED RSD EQUIPMENT - BY OTHERS", "LISTED RSD EQUIPMENT MISSING", "LISTED RSD: EXCLUDED"]) {
+      const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\n${cell}`), "city.elec.rapid-shutdown-edition-evidence");
+      assert.ok(sections(f).includes("690.12(B)(2)"), `${cell}: ${f?.message ?? "no finding"}`);
+    }
+  });
+  // Helm on #284, medium 2 (the safety direction): the label runs on through '/' and '(…)' and
+  // longer label nouns; a denial at its end still denies, so the 690.12(B)(2) gap is still raised.
+  check(`MUST-EXCLUDE ${state}: a joined or longer RSD label then 'BY OTHERS' still denies 690.12(B)(2)`, () => {
+    for (const cell of [
+      "LISTED RSD EQUIPMENT (MLPE): BY OTHERS", "LISTED RSD EQUIPMENT/DEVICES: BY OTHERS",
+      "LISTED RSD EQUIPMENT (SEE NOTE 4): BY OTHERS", "LISTED RSD MODULE-LEVEL EQUIPMENT: BY OTHERS",
+    ]) {
+      const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\n${cell}`), "city.elec.rapid-shutdown-edition-evidence");
+      assert.ok(sections(f).includes("690.12(B)(2)"), `${cell}: ${f?.message ?? "no finding"}`);
+    }
+  });
+  // Helm re-review on #284 (the safety direction): words between the separator and the denial
+  // word ("PROVIDED BY OTHERS", "TO BE PROVIDED BY OTHERS", "CURRENTLY MISSING") are still the
+  // mention's own value cell, so the 690.12(B)(2) gap is still raised, as on main. With no
+  // separator at all the same cell already denied.
+  check(`MUST-EXCLUDE ${state}: an RSD label then words before 'BY OTHERS' / 'MISSING' in its own cell still denies 690.12(B)(2)`, () => {
+    for (const cell of [
+      "LISTED RSD EQUIPMENT: PROVIDED BY OTHERS", "LISTED RSD EQUIPMENT - SUPPLIED BY OTHERS",
+      "LISTED RSD EQUIPMENT: TO BE PROVIDED BY OTHERS", "LISTED RSD EQUIPMENT: CURRENTLY MISSING",
+      "LISTED RSD EQUIPMENT: ALL BY OTHERS", "LISTED RSD EQUIPMENT PROVIDED BY OTHERS",
+    ]) {
+      const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\n${cell}`), "city.elec.rapid-shutdown-edition-evidence");
+      assert.ok(sections(f).includes("690.12(B)(2)"), `${cell}: ${f?.message ?? "no finding"}`);
+    }
+  });
+  // Helm's third review on #284 (the safety direction): a second label joined with '&', 'AND', a
+  // comma or '+' is still the mention's own label, so the denial after it still reaches the
+  // mention; and the label nouns PACKAGE / INSTALLATION / SCOPE / SUPPLY run the label on.
+  check(`MUST-EXCLUDE ${state}: an RSD label joined with '&' / 'AND' / ',' / '+' or a longer noun then a denial still denies 690.12(B)(2)`, () => {
+    for (const cell of [
+      "LISTED RSD EQUIPMENT & LABELS: BY OTHERS", "LISTED RSD EQUIPMENT AND LABELS: BY OTHERS",
+      "LISTED RSD EQUIPMENT & LABELS: NOT APPLICABLE", "LISTED RSD EQUIPMENT, LABELS: BY OTHERS",
+      "LISTED RSD DEVICES & PLACARDS - BY OTHERS", "LISTED RSD EQUIPMENT + LABELS: BY OTHERS",
+      "LISTED RSD EQUIPMENT PACKAGE: BY OTHERS", "LISTED RSD EQUIPMENT INSTALLATION: BY OTHERS",
+      "LISTED RSD EQUIPMENT SCOPE: BY OTHERS", "LISTED RSD EQUIPMENT SUPPLY: BY OTHERS",
+      "LISTED RSD EQUIPMENT: SUPPLIED (BY OTHERS)",
+    ]) {
+      const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\n${cell}`), "city.elec.rapid-shutdown-edition-evidence");
+      assert.ok(sections(f).includes("690.12(B)(2)"), `${cell}: ${f?.message ?? "no finding"}`);
+    }
+  });
+  // The value cell's lead does not cross into a parenthetical about something else: the RSD
+  // equipment is installed, the battery is by others (Helm's third review, optional low).
+  check(`MUST-PASS ${state}: 'LISTED RSD EQUIPMENT: INSTALLED (BATTERY BY OTHERS)' still answers 690.12(B)(2)`, () => {
+    const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\nLISTED RSD EQUIPMENT: INSTALLED (BATTERY BY OTHERS)`), "city.elec.rapid-shutdown-edition-evidence");
+    assert.ok(!sections(f).includes("690.12(B)(2)"), f?.message);
+  });
+  check(`MUST-EXCLUDE ${state}: 'MANUFACTURED HOME AND ANCHORING: NOT APPLICABLE' is not a manufactured home`, () => {
+    const project = { id: "mh", state, ahj, parserSnapshot: { mounting: "Roof mount", planSetExtractedText: `ROOF FRAMING: 2X6 RAFTERS @ 24" O.C.\nMANUFACTURED HOME AND ANCHORING: NOT APPLICABLE` } } as unknown as ProjectRecord;
+    assert.equal(structureType(project).kind, "unknown");
+  });
+  check(`MUST-EXCLUDE ${state}: a mobile-home row then words before 'BY OTHERS' is not a manufactured home`, () => {
+    for (const cell of ["EXISTING MOBILE HOME: PROVIDED BY OTHERS", "EXISTING MOBILE HOME: TO BE VERIFIED BY OTHERS"]) {
+      const project = { id: "mh", state, ahj, parserSnapshot: { mounting: "Roof mount", planSetExtractedText: `ROOF FRAMING: 2X6 RAFTERS @ 24" O.C.\n${cell}` } } as unknown as ProjectRecord;
+      assert.equal(structureType(project).kind, "unknown", cell);
+    }
+  });
+  check(`MUST-EXCLUDE ${state}: storage scope with words before 'BY OTHERS' raises no ESS review`, () => {
+    for (const cell of ["BATTERY: PROVIDED BY OTHERS", "BATTERY STORAGE - FURNISHED BY OTHERS"]) {
+      assert.ok(!get(runIn(state, ahj, cell), "city.ess.details-missing"), cell);
+    }
+  });
+  // Medium 3: a denied manufactured-home row does not make the structure a manufactured home.
+  check(`MUST-EXCLUDE ${state}: a joined or longer manufactured-home label then 'NOT APPLICABLE' is not a manufactured home`, () => {
+    for (const cell of ["MANUFACTURED HOME / MOBILE HOME: NOT APPLICABLE", "MANUFACTURED HOME (HUD): NOT APPLICABLE", "MANUFACTURED HOME ANCHORING: NOT APPLICABLE"]) {
+      const project = { id: "mh", state, ahj, parserSnapshot: { mounting: "Roof mount", planSetExtractedText: `ROOF FRAMING: 2X6 RAFTERS @ 24" O.C.\n${cell}` } } as unknown as ProjectRecord;
+      assert.equal(structureType(project).kind, "unknown", cell);
+    }
+  });
+  // Medium 1: the ESS storage-run guard reads EXCLUDED and BY OTHERS like NOT USED.
+  check(`MUST-EXCLUDE ${state}: storage scope that is EXCLUDED or BY OTHERS raises no ESS review`, () => {
+    for (const cell of [
+      "BATTERY BACKUP: EXCLUDED", "BATTERY STORAGE: BY OTHERS", "ENERGY STORAGE (BATTERY BACKUP): EXCLUDED",
+      "ENERGY STORAGE (BATTERY BACKUP): BY OTHERS", "BATTERY / ESS: EXCLUDED", "BATTERY / ESS: BY OTHERS",
+      "POWERWALL - EXCLUDED", "BATTERY BACKUP - BY OTHERS",
+    ]) {
+      assert.ok(!get(runIn(state, ahj, cell), "city.ess.details-missing"), cell);
+    }
+  });
+  check(`MUST-EXCLUDE ${state}: 'POWERWALL - NO.' still denies the ESS mention`, () => {
+    assert.ok(!get(runIn(state, ahj, "POWERWALL - NO."), "city.ess.details-missing"));
+    assert.ok(!get(runIn(state, ahj, "POWERWALL - NO. "), "city.ess.details-missing"));
   });
 }
 
