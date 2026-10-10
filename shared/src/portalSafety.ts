@@ -1740,7 +1740,9 @@ export function capturedFieldIsSecret(p: { sensitive?: boolean; identity?: Field
  *  every planner call) and the learner's page text, once it has typed the project's own account or
  *  meter number into the portal (a review page echoes it back as text).
  *  Identifier-shaped secrets (5+ digits) are matched digit-for-digit with separators ignored
- *  (spaces, dashes, dots, '#', '/'), never inside a longer digit run; other secrets only when
+ *  (whitespace — line breaks and CRLF included, so a wrapped number is still one number — any
+ *  dash: ASCII, U+2010-2015 and the U+2212 minus, dots, '#', '/'), never inside a longer digit
+ *  run; the class wordingNamesProject reads too ('/' aside). Other secrets only when
  *  they carry a digit and are 6+ chars (a meter-keyed word like "exterior" is not an identifier
  *  and must not erase that word from the notes). `replace` decides what a hit becomes — default
  *  "[redacted]"; a caller whose downstream check reads a last-4 may keep one (maskId). */
@@ -1749,7 +1751,7 @@ export function redactSecretValues(text: string, secrets: Iterable<string>, repl
   for (const secret of secrets) {
     const digits = String(secret ?? "").replace(/\D/g, "");
     if (digits.length >= 5) {
-      const pattern = digits.split("").join("[\\s\\-\\u2013.#/]*");
+      const pattern = digits.split("").join("[\\s\\-\\u2010-\\u2015\\u2212.#/]*");
       out = out.replace(new RegExp(`(?<!\\d)${pattern}(?!\\d)`, "g"), (m) => replace(m));
     } else if (String(secret ?? "").length >= 6 && /\d/.test(String(secret))) {
       out = out.replace(new RegExp(String(secret).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), (m) => replace(m));
