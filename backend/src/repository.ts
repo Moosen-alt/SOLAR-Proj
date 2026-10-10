@@ -134,7 +134,7 @@ import {
   isVerifiedKnowledge,
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
-import { canonicalAliasForVerifiedField, canonicalizeSnapshot, compactAlnum, divergedAliases, existingSystemFromSnapshot, fieldAliases, mergeEditOverSnapshot, normalizeProject, normalizeTokens, TRACK_ISSUER_SNAPSHOT_KEYS, withTrackIssuers } from "./normalize";
+import { canonicalAliasForVerifiedField, canonicalizeSnapshot, compactAlnum, divergedAliases, existingSystemFromSnapshot, fieldAliases, mergeEditOverSnapshot, MICRO_SUPERSEDED_KEY, normalizeProject, recordMicroSupersession, normalizeTokens, TRACK_ISSUER_SNAPSHOT_KEYS, withTrackIssuers } from "./normalize";
 import {
   classificationDrift, classifyPermitStatusText, effectiveCheckDays, extractStatusDate, isAuthWallText, isNemApprovalOutcome, nextCheckIso, outcomeTrack, portalStatedStatus,
   readingMayFinishTrack, shouldRecordStatusCheck, trackKind, UNCONFIRMED_READING_LABEL,
@@ -688,7 +688,9 @@ export function createProject(
    *  knowledge base (L3). Written in the INSERT, so even the birth learn below skips it. */
   options: { learningExcluded?: boolean } = {},
 ): ProjectDetail {
-  const project = normalizeProject(id(), payload);
+  // A new project is parser/intake output: it never carries a human micro-supersession (#270).
+  const { [MICRO_SUPERSEDED_KEY]: _forgedMarker, ...parsed } = payload as Record<string, unknown>;
+  const project = normalizeProject(id(), parsed as ParserPayload);
   db.transaction(() => {
     db.run(
       `INSERT INTO projects (
@@ -820,7 +822,14 @@ export { researchWithFittedUrl };
 // over the existing parser snapshot — so a re-parse of a corrected plan set
 // updates the record (including the canonical electrical/structural/evidence
 // keys) without losing prior data — then re-runs QC.
-export function updateProject(db: AppDb, projectId: string, payload: ParserPayload): ProjectDetail {
+export function updateProject(
+  db: AppDb,
+  projectId: string,
+  payload: ParserPayload,
+  /** humanInverterEdit: ONLY a human-only caller (corrections-apply, a person's approval) may set it —
+   *  never PUT /api/projects/:id, which the parser and API keys use (#270). See recordMicroSupersession. */
+  options: { humanInverterEdit?: boolean } = {},
+): ProjectDetail {
   const existing = getProjectDetail(db, projectId).project;
   // Drop the non-persistent plan-set text overlay (re-derived from project_documents
   // on every load) so document text never bloats the stored parser_json.
@@ -834,7 +843,12 @@ export function updateProject(db: AppDb, projectId: string, payload: ParserPaylo
   // so editing invModel moves inverterModel with it. An alias set on its own (differs from its
   // source) is kept, and one sent in THIS payload wins over everything via the merge.
   // normalizeProject canonicalizes the result. (The review queue's applyVerifiedField shares this.)
-  const mergedSnapshot: ParserPayload = mergeEditOverSnapshot(existingSnapshot as ParserPayload, payload);
+  // THE MICRO-SUPERSESSION MARKER IS NEVER RECEIVED (#270): a re-sent snapshot can't forge or move it,
+  // and the stored one rides through the merge. A payload's inverterModel is NOT a person's statement
+  // (the parser sends it on every save); only a human-only caller's explicit option records one.
+  const { [MICRO_SUPERSEDED_KEY]: _forgedMarker, ...edit } = payload as Record<string, unknown>;
+  const mergedSnapshot: ParserPayload = mergeEditOverSnapshot(existingSnapshot as ParserPayload, edit as ParserPayload);
+  if (options.humanInverterEdit && String(edit.inverterModel ?? "").trim()) recordMicroSupersession(mergedSnapshot, "correction_apply");
   // WHICH PORTAL THIS FILES ON IS NOT A SIDE EFFECT OF AN EDIT.
   //
   // normalizeProject re-derives every column from the snapshot, so a project whose stored
@@ -5532,7 +5546,9 @@ export function applyCorrectionProposals(
     const key = CORRECTION_FIELD_TO_PAYLOAD[p.field] || p.field;
     payload[key] = p.proposedValue;
   }
-  if (Object.keys(payload).length) updateProject(db, projectId, payload);
+  // A person approved these proposals (/api/corrections/:id/apply): their inverter model is a human
+  // statement (#270).
+  if (Object.keys(payload).length) updateProject(db, projectId, payload, { humanInverterEdit: true });
 
   const ts = nowIso();
   db.run("UPDATE corrections SET human_approved = 1 WHERE id = ?", [correctionId]);
@@ -9810,6 +9826,10 @@ function applyVerifiedField(db: AppDb, projectId: string, stored: ParserPayload,
   const canonicalKey = canonicalAliasForVerifiedField(fieldName, aliases[0]);
   const edit: ParserPayload = { [aliases[0]]: value, ...(canonicalKey ? { [canonicalKey]: value } : {}) };
   const payload = canonicalizeSnapshot(mergeEditOverSnapshot(stored, edit));
+  // A person verified the inverter model: record it, so the reader can tell their word from the
+  // parser's own inv*/pvMicro* split (#270). recordMicroSupersession decides whether it is a statement
+  // at all (not a spelling fix of the micro, not the ESS inverter).
+  if (canonicalKey === "inverterModel") recordMicroSupersession(payload, "review_queue");
   const numeric = Number.parseFloat(value.replace(/[^0-9.-]/g, ""));
   const numberValue = Number.isFinite(numeric) ? numeric : null;
 
@@ -9850,8 +9870,9 @@ export function listDivergedAliasProjects(
   orgId: string | null = DEFAULT_ORG_ID,
 ): Array<{ projectId: string; status: string; aliases: Array<{ key: string; stored: string; derived: string }> }> {
   const rows = db.query<{ id: string; status: string; parser_json: string }>(
-    `SELECT id, status, parser_json FROM projects${orgId ? " WHERE org_id = ?" : ""} ORDER BY created_at ASC`,
-    orgId ? [orgId] : [],
+    // null — and only null — reads every org (#270): '' is an org id that matches nothing, never "all".
+    `SELECT id, status, parser_json FROM projects${orgId !== null ? " WHERE org_id = ?" : ""} ORDER BY created_at ASC`,
+    orgId !== null ? [orgId] : [],
   );
   const out: Array<{ projectId: string; status: string; aliases: Array<{ key: string; stored: string; derived: string }> }> = [];
   for (const row of rows) {

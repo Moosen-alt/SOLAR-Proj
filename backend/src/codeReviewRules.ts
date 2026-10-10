@@ -19,6 +19,7 @@ import {
 import { adoptedNecEdition, necEditionRequirements, NEC_EDITION_REQUIREMENTS } from "./necEditions";
 import { moduleLevelElectronicsEquipment, type ModuleLevelElectronicsEvidence } from "./moduleLevelElectronics";
 import { designText, mountKind, type MountKind } from "./mountKind";
+import { microEvidenceSupersededIn } from "./normalize";
 export { designText, engineeredGroundMount, groundMountFromField, isGroundMount, mountKind, mountKindForProject, type MountKind } from "./mountKind";
 
 const oregonElectrical2023: CodeReference = {
@@ -237,9 +238,24 @@ const MLPE_TOPOLOGY = [
 // characters — so a field holding just the model read as a string design and was hard-blocked
 // (#213). The suffix is letters only, so "IQ Battery 5P" (no digit after IQ) stays out.
 const ENPHASE_MICRO = /enphase|\biq\s?[678](?:[a-z]+)?\b/i;
+// A MICRO IS NAMED BY ITS MODEL FAMILY TOO (#270, Helm re-review on PR #274). A person correcting the
+// micro to a different micro ("the micros are HMS-2000-4T") records a supersession, and from then on
+// only the inverter fields answer — so a model with no make in it (Hoymiles HM/HMS/HMT, APsystems
+// DS3/QS1/EZ1/YC, Enphase M215/M250) must still read as a micro, or a correct human statement fires
+// the rapid-shutdown blocker. Read from the inverter fields only, never the sheets (the fallback below
+// asks for topology words).
+const MICRO_MODEL_FAMILIES = [
+  /\bhm[st]?-?\d/i,
+  /\bds3/i,
+  /\bqs1\b/i,
+  /\bez1\b/i,
+  /\byc\d{3,4}\b/i,
+  /\bm2(?:15|50)\b/i,
+];
 const MLPE_INVERTER_BRANDS = [
   ENPHASE_MICRO,
-  /ap\s?systems|apsystems|\bds3\b|\bqs1\b|\byc600\b/i,
+  /ap\s?systems|apsystems/i,
+  ...MICRO_MODEL_FAMILIES,
   /hoymiles/i,
   /tigo\s?(ts4|rsd)/i,
 ];
@@ -256,11 +272,22 @@ function mlpeDesign(project: ProjectRecord, allText: string, texts: DesignTextSo
   return { mlpe: equipment.present || isMicroOrMlpeInverter(project, allText), equipment };
 }
 
+// A PERSON'S "THAT IS NOT THE MICRO" OUTRANKS THE RAW MICRO EVIDENCE (#270). Both human edit doors
+// write inverterModel but keep the parser's pvMicro* fields — evidence is never deleted — so joined
+// here, a micro-parsed design verified to "Sunny Boy …" kept its rapid-shutdown blocker softened.
+// The supersession is a recorded human statement (normalize.recordMicroSupersession), NEVER string
+// inequality: the parser itself writes a Powerwall into invModel next to a micro, and a verify that
+// only fixes the micro's spelling is no change of inverter (Helm rulings on PR #274). Can only turn
+// MLPE off, and only on a person's word.
+function microEvidenceSuperseded(project: ProjectRecord): boolean {
+  return microEvidenceSupersededIn(project.parserSnapshot ?? {});
+}
+
 function isMicroOrMlpeInverter(project: ProjectRecord, allText: string): boolean {
-  const microModel = str(project, "pvMicroModel");
+  const superseded = microEvidenceSuperseded(project);
   const inverterText = [
-    microModel,
-    str(project, "pvMicroQty") ? "microinverter" : "",
+    superseded ? "" : str(project, "pvMicroModel"),
+    !superseded && str(project, "pvMicroQty") ? "microinverter" : "",
     str(project, "invModel"),
     str(project, "inverterModel"),
   ].filter(Boolean).join("\n");
@@ -553,9 +580,11 @@ function readableDocumentText(text: unknown): boolean {
 
 /** A microinverter design has no DC PV source circuits to label beyond the module leads. */
 function isMicroinverterDesign(project: ProjectRecord, allText: string): boolean {
-  if (str(project, "pvMicroModel") || str(project, "pvMicroQty")) return true;
+  // Same supersession rule as isMicroOrMlpeInverter (#270), so the two readers agree on a row
+  // verified away from its micro parse: its DC-circuit labels come back.
+  if (!microEvidenceSuperseded(project) && (str(project, "pvMicroModel") || str(project, "pvMicroQty"))) return true;
   const inverter = [str(project, "invModel"), str(project, "inverterModel")].filter(Boolean).join("\n");
-  if (inverter.trim()) return /micro.?inverter|hoymiles|apsystems/i.test(inverter) || ENPHASE_MICRO.test(inverter);
+  if (inverter.trim()) return /micro.?inverter|hoymiles|apsystems/i.test(inverter) || ENPHASE_MICRO.test(inverter) || hasAny(inverter, MICRO_MODEL_FAMILIES);
   return /micro.?inverter/i.test(allText);
 }
 
