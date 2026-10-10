@@ -311,11 +311,15 @@ const NEGATION_AFTER = /^[^.;]{0,30}?\b(?:not\s+(?:provided|shown|found|included
 //     After the separator, the value cell may carry words before the denial word ("PROVIDED BY
 //     OTHERS", "TO BE VERIFIED BY OTHERS", "CURRENTLY MISSING"), up to 25 characters that do not
 //     cross another separator (CELL_VALUE_LEAD; Helm re-review on #284). Only "is"/"are" used to be
-//     allowed, so "LISTED RSD EQUIPMENT: PROVIDED BY OTHERS" read as affirmed.
-const CELL_LABEL_WORD = String.raw`(?:equipment|system|systems|device|devices|switch|initiator|listing|listings|listed|label|labels|hardware|components?|units?|certificat(?:e|ion)|documentation|details|specs?|sheets?|letter|calcs?|calculations?|modules?|racking|mounting|placards?|location|analysis|gateway|anchoring)(?:-[a-z]+)?`;
-const CELL_LABEL_RUN = String.raw`(?:\s+${CELL_LABEL_WORD}\b|\s*\([^()]{0,30}\)|\s*\/\s*[a-z0-9][\w-]*(?:\s+[a-z0-9][\w-]*){0,2})*`;
+//     allowed, so "LISTED RSD EQUIPMENT: PROVIDED BY OTHERS" read as affirmed. The lead does not
+//     enter a parenthetical unless the denial opens it: "INSTALLED (BATTERY BY OTHERS)" is about
+//     the battery, "SUPPLIED (BY OTHERS)" is this cell's own denial.
+//     A second label joined with "&", "AND"/"OR", a comma or "+" ("LISTED RSD EQUIPMENT & LABELS:
+//     BY OTHERS") is the same label running on — the joiners STORAGE_RUN_THEN_DENIAL already takes.
+const CELL_LABEL_WORD = String.raw`(?:equipment|system|systems|device|devices|switch|initiator|listing|listings|listed|label|labels|hardware|components?|units?|certificat(?:e|ion)|documentation|details|specs?|sheets?|letter|calcs?|calculations?|modules?|racking|mounting|placards?|location|analysis|gateway|anchoring|package|installation|scope|supply)(?:-[a-z]+)?`;
+const CELL_LABEL_RUN = String.raw`(?:(?:\s*(?:&|,|\+)\s*|\s+(?:and|or)\s+|\s+)${CELL_LABEL_WORD}\b|\s*\([^()]{0,30}\)|\s*\/\s*[a-z0-9][\w-]*(?:\s+[a-z0-9][\w-]*){0,2})*`;
 const CELL_DENIAL_WORD = String.raw`(?:not\s+applicable|missing|excluded|by\s+others)`;
-const CELL_VALUE_LEAD = String.raw`(?:(?!\s-\s)[^.;:\u2013\u2014]){0,25}?`;
+const CELL_VALUE_LEAD = String.raw`(?:(?!\s-\s)[^.;:\u2013\u2014(]|\((?=\s*${CELL_DENIAL_WORD})){0,25}?`;
 const CELL_DENIAL_AFTER = new RegExp(
   String.raw`^(?:(?!\s-\s)[^.;:\u2013\u2014]){0,30}?\b${CELL_DENIAL_WORD}\b`
   + String.raw`|^${CELL_LABEL_RUN}\s*\)?\s*[?:\u2013\u2014-]\s*\(?${CELL_VALUE_LEAD}\b${CELL_DENIAL_WORD}\b`,

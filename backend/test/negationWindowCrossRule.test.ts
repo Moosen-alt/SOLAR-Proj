@@ -18,8 +18,18 @@
 //   - a next row whose label is one of CELL_LABEL_WORD's nouns ("RACKING: BY OTHERS",
 //     "PLACARDS: NOT APPLICABLE", "MOUNTING: EXCLUDED", "LABELS: BY OTHERS") reads as the mention's
 //     own label running on, so it still denies the mention before it;
+//     That includes PACKAGE / INSTALLATION / SCOPE / SUPPLY, and a joined next row ("UL 2703" then
+//     "LABELS & PLACARDS: BY OTHERS");
 //   - a next row with no separator ("EV CHARGER NOT APPLICABLE", "EV CHARGER (NOT APPLICABLE)",
 //     "TRENCHING, BY OTHERS") still bleeds through the no-separator reading.
+// KNOWN LIMITS (accepted on #284; these read as affirmed where main denied):
+//   - a second separator inside the value cell ("LISTED RSD EQUIPMENT: SEE E-3 - BY OTHERS",
+//     "…: PER NOTE 2: BY OTHERS"): the value lead stops at a colon or dash by design, which is what
+//     keeps "LISTED RSD: YES - TRENCHING BY OTHERS" affirmed;
+//   - a joiner after a parenthetical that ends the mention ("RSD EQUIPMENT (UL LISTED) & LABELS: BY
+//     OTHERS": the mention ends at LISTED, so ")" comes before the joiner);
+//   - a joined noun outside the closed lists ("MANUFACTURED HOME & FOUNDATION: NOT APPLICABLE",
+//     "BATTERY & GENERATOR: EXCLUDED").
 //   NEGATION_AFTER's "not provided / not shown …" in the 30-character window is the same bug
 //   class on the next row ("HOA LETTER: NOT PROVIDED"); that is #295, not this suite.
 // Every fixture is SYNTHETIC. No database, no LLM, no network.
@@ -161,6 +171,32 @@ for (const [state, ahj] of JURISDICTIONS) {
       const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\n${cell}`), "city.elec.rapid-shutdown-edition-evidence");
       assert.ok(sections(f).includes("690.12(B)(2)"), `${cell}: ${f?.message ?? "no finding"}`);
     }
+  });
+  // Helm's third review on #284 (the safety direction): a second label joined with '&', 'AND', a
+  // comma or '+' is still the mention's own label, so the denial after it still reaches the
+  // mention; and the label nouns PACKAGE / INSTALLATION / SCOPE / SUPPLY run the label on.
+  check(`MUST-EXCLUDE ${state}: an RSD label joined with '&' / 'AND' / ',' / '+' or a longer noun then a denial still denies 690.12(B)(2)`, () => {
+    for (const cell of [
+      "LISTED RSD EQUIPMENT & LABELS: BY OTHERS", "LISTED RSD EQUIPMENT AND LABELS: BY OTHERS",
+      "LISTED RSD EQUIPMENT & LABELS: NOT APPLICABLE", "LISTED RSD EQUIPMENT, LABELS: BY OTHERS",
+      "LISTED RSD DEVICES & PLACARDS - BY OTHERS", "LISTED RSD EQUIPMENT + LABELS: BY OTHERS",
+      "LISTED RSD EQUIPMENT PACKAGE: BY OTHERS", "LISTED RSD EQUIPMENT INSTALLATION: BY OTHERS",
+      "LISTED RSD EQUIPMENT SCOPE: BY OTHERS", "LISTED RSD EQUIPMENT SUPPLY: BY OTHERS",
+      "LISTED RSD EQUIPMENT: SUPPLIED (BY OTHERS)",
+    ]) {
+      const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\n${cell}`), "city.elec.rapid-shutdown-edition-evidence");
+      assert.ok(sections(f).includes("690.12(B)(2)"), `${cell}: ${f?.message ?? "no finding"}`);
+    }
+  });
+  // The value cell's lead does not cross into a parenthetical about something else: the RSD
+  // equipment is installed, the battery is by others (Helm's third review, optional low).
+  check(`MUST-PASS ${state}: 'LISTED RSD EQUIPMENT: INSTALLED (BATTERY BY OTHERS)' still answers 690.12(B)(2)`, () => {
+    const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\nLISTED RSD EQUIPMENT: INSTALLED (BATTERY BY OTHERS)`), "city.elec.rapid-shutdown-edition-evidence");
+    assert.ok(!sections(f).includes("690.12(B)(2)"), f?.message);
+  });
+  check(`MUST-EXCLUDE ${state}: 'MANUFACTURED HOME AND ANCHORING: NOT APPLICABLE' is not a manufactured home`, () => {
+    const project = { id: "mh", state, ahj, parserSnapshot: { mounting: "Roof mount", planSetExtractedText: `ROOF FRAMING: 2X6 RAFTERS @ 24" O.C.\nMANUFACTURED HOME AND ANCHORING: NOT APPLICABLE` } } as unknown as ProjectRecord;
+    assert.equal(structureType(project).kind, "unknown");
   });
   check(`MUST-EXCLUDE ${state}: a mobile-home row then words before 'BY OTHERS' is not a manufactured home`, () => {
     for (const cell of ["EXISTING MOBILE HOME: PROVIDED BY OTHERS", "EXISTING MOBILE HOME: TO BE VERIFIED BY OTHERS"]) {
