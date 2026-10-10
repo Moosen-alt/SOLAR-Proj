@@ -67,6 +67,11 @@ check("baseline without a battery: 1.25 x 24.2 + 200 = 230.25 A <= 240 A passes"
   const { batteryMake: _m, batteryModel: _b, batteryQty: _q, batteryOutputKw: _k, ...noBattery } = MICRO;
   assert.equal(busbars(noBattery, []).length, 0);
 });
+check("a placeholder battery model (\"N/A\", #246) is not an ESS on the bus; a real model under a bare hasBattery \"No\" still is", () => {
+  const { batteryMake: _m, batteryModel: _b, batteryQty: _q, batteryOutputKw: _k, ...noBattery } = MICRO;
+  assert.equal(busbars({ ...noBattery, batteryModel: "N/A", batteryOutputKw: "11.52" }, [ESS_STATED]).length, 0);
+  assert.equal(busbars({ ...MICRO, hasBattery: "No" }, [ESS_STATED]).length, 1);
+});
 check("every number on the sheets: (24.2 + 48) x 1.25 + 200 = 290.25 A > 240 A BLOCKS", () => {
   const all = busbars(MICRO, [ESS_STATED]);
   assert.equal(all.length, 1, "exactly one busbar finding");

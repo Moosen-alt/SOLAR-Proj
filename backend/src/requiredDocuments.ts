@@ -60,6 +60,7 @@ import {
 import { FIRE_PATHWAY_PATTERNS } from "./projectEvidence";
 import { groundMountFromField } from "./mountKind";
 import { adoptedNecEdition } from "./necEditions";
+import { essDocumentRows, projectHasBattery } from "./essRequirements";
 
 export interface RequiredDocItem {
   /** project_documents.doc_type this maps to (or a synthetic key for path docs). */
@@ -241,6 +242,10 @@ const PLAN_SHEET_HINT_TABLE = {
   module_spec: /\bmodule\s*spec/i,
   inverter_spec: /\b(inverter|microinverter)\s*spec|\bUL[\s-]*1741\b/i,
   labels: /\b(label|placard)/i,
+  // Storage rows (#246) — only ever on the required set of a job that HAS a battery. The parser's
+  // own lines are "READY - 07 Battery / ESS Spec Sheet" / "07 Battery / ESS specs: 12".
+  battery_spec: /\b(?:battery|ESS|energy[\s-]*storage)\b[\s/A-Z]{0,8}spec|\bUL[\s-]*9540\b/i,
+  ess_detail: /\b(?:battery|ESS|energy[\s-]*storage)\b[\s/A-Z]{0,10}(?:detail|location|layout|placement|elevation)|\bR328\b|\b(?:NEC|article)\s*706\b/i,
   // A ground array's structural sheet IS its footing sheet (#247), so every structural word counts too.
   ground_footing: /\b(structural|footings?|foundation|piers?|piles?|helical|mount\s*detail|racking\s*detail|attachment\s*detail|rafter|truss)\b/i,
   trench_detail: /\b(trench(?:ing)?|burial\s*depth|underground\s*(?:conduit|conductors?|feeder|run))\b/i,
@@ -459,6 +464,10 @@ export function requiredDocuments(
       blocking: !stamp.waivable,
     });
   }
+
+  // BATTERY / ESS (#246): only where the one predicate says the job HAS storage — a no-battery or
+  // unknown job keeps exactly the set it always had.
+  if (projectHasBattery(project)) items.push(...essDocumentRows());
 
   // If there is no utility, the NEM-only doc (inverter spec is dual-purpose) stays
   // permit-side; drop the pure-NEM framing. inverter_spec is required either way, so
