@@ -4664,7 +4664,7 @@ export async function runEmailTracker(
 
       for (const message of classified.messages) {
         if (message.record.type === "spam_irrelevant") continue;
-        if (db.get<Row>("SELECT id FROM email_project_matches WHERE source_signature = ?", [message.sourceSignature])) {
+        if (db.get<Row>("SELECT id FROM email_project_matches WHERE source_signature IN (?, ?)", [message.sourceSignature, message.legacySourceSignature])) {
           result.skippedDuplicates += 1;
           continue;
         }

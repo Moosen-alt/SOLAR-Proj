@@ -181,8 +181,9 @@ export function wordingNamesProject(
   secrets: Iterable<string> = [],
 ): boolean {
   const raw = String(phrase || "");
-  // Separators as redactSecretValues reads them, except "/": "120/240 V" is a service voltage.
-  if (/@/.test(raw) || /\d(?:[\s\-\u2013.#]*\d){4,}/.test(raw)) return true;
+  // Separators as redactSecretValues reads them (whitespace, any dash: ASCII, U+2010-2015, the
+  // U+2212 minus; ".", "#"), except "/": "120/240 V" is a service voltage.
+  if (/@/.test(raw) || /\d(?:[\s\-\u2010-\u2015\u2212.#]*\d){4,}/.test(raw)) return true;
   if (redactSecretValues(raw, secrets) !== raw) return true;
   const p = ` ${raw.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
   if (nameWords(project.homeownerName).some((w) => p.includes(` ${w} `))) return true;
