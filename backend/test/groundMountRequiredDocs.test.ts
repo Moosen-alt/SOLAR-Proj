@@ -7,7 +7,8 @@
 //   ONE PREDICATE     — permitPath and requiredDocuments read mountKind.ts, and only the MOUNTING
 //                       FIELD (groundMountFromField): plan prose and parser flags never vote for a
 //                       blocking row or the engineered path. "ground" counts as a mount noun or a whole
-//                       field segment, never "ground lugs" / "ground floor" / "non-ground".
+//                       field segment, never "ground lugs" / "ground floor" / "non-ground(-mount)" or
+//                       ground-mounted EQUIPMENT; the advisory mountKind reads the field the same way.
 //   MUST PASS         — a ground job on two permit platforms (Accela, Tyler EnerGov) gets footing/
 //                       racking + trench rows, no roof-framing row, and a zoning row read from the
 //                       per-job lookup: cited "required" names its source, cited "not_required" adds
@@ -181,6 +182,31 @@ const ROOFTOP_PROSE: Array<[string, string, Record<string, string>]> = [
   ["Roof Mount (non-ground)", "", {}],
   ["Roof mount, ground fault protection", "", {}],
   ["Roof mount - not a ground mount", "", {}],
+  // #269: 'non' negates a mount phrase; ground- or pole-mounted EQUIPMENT in the field is not an array.
+  ["Roof mount (non-ground-mount)", "", {}],
+  ["Roof mount, non-ground-mounted", "", {}],
+  ["Roof mount with ground-mounted inverter", "", {}],
+  ["Roof mount; ground-mounted AC disconnect", "", {}],
+  ["Flush roof + ground mounted meter pedestal", "", {}],
+  ["Roof mount, ground-mounted battery", "", {}],
+  ["Roof mount w/ ground mount ESS", "", {}],
+  ["Roof; pole-mounted transformer", "", {}],
+  ["Roof; ground inverter", "", {}],
+  // #272 re-review: a qualified equipment noun or a non-mount noun after a bare ground / pole.
+  ["Roof; ground AC disconnect", "", {}],
+  ["Roof; ground utility meter", "", {}],
+  ["Roof mount, ground pad", "", {}],
+  ["Roof; pole-top transformer", "", {}],
+  ["Rooftop, not on ground", "", {}],
+  // #272 review 4: a trailing ground / pole in a segment about equipment or wiring, or after a negation.
+  ["Roof mount, inverter on ground", "", {}],
+  ["Roof mount, battery on ground", "", {}],
+  ["Roof mount, ESS on ground", "", {}],
+  ["Roof; disconnect at ground", "", {}],
+  ["Roof; meter on pole", "", {}],
+  ["Roof; utility pole", "", {}],
+  ["Roof mount, bonded to ground", "", {}],
+  ["Roof mount, not mounted on the ground", "", {}],
 ];
 for (const where of [OREGON, NO_LOOKUP]) {
   for (const [mounting, text, extra] of ROOFTOP_PROSE) {
@@ -209,6 +235,57 @@ for (const mounting of ["Ground-mounted carport", "Carport (ground mount)", "Pol
 check("rooftop permit path is not touched by the shared predicate", () => {
   assert.ok(!resolvePermitPath(job(ACCELA, "Roof mount")).basis.some((b) => /Ground\/pole mount/.test(b)));
 });
+
+// #269: the advisory reviewer predicate reads the field the way the blocking consumers do — a field
+// the required set calls roof is "roof" to the reviewer rules too, and the ground vocabulary is unchanged.
+check("advisory mountKind agrees with groundMountFromField on every rooftop field value", () => {
+  for (const [mounting] of ROOFTOP_PROSE.filter(([m]) => m)) {
+    const p = job(OREGON, mounting);
+    assert.equal(mountKindForProject(p), "roof", mounting);
+    assert.equal(reviewerMountKind(p), "roof", mounting);
+  }
+});
+// Each must read exactly as "Ground mount" (or "Roof + ground mount" for a combination) does: the same
+// required set, path and stamp row. #272 review: a ground array whose field also names its equipment
+// ("w/ battery", "on concrete pedestals") is still a ground array, and a bare ground with a qualifier
+// ("Ground (ballasted)", "On ground") is one to the blocking and the advisory rules alike.
+const MUST_PASS_GROUND: Array<[string, "ground" | "combination"]> = [
+  ["Ground", "ground"], ["Roof and Ground", "combination"], ["Roof + Ground", "combination"], ["Ground mount", "ground"], ["Top of pole", "ground"],
+  ["Ground-mounted array with ground-mounted inverter", "ground"],
+  ["Ground mount with battery", "ground"], ["Ground mount w/ inverter", "ground"], ["Ground mount on concrete pedestals", "ground"],
+  ["Pole mount w/ disconnect", "ground"], ["Roof + ground mount w/ battery", "combination"],
+  ["Ground (ballasted)", "ground"], ["Ground - fixed tilt", "ground"], ["Ground based", "ground"], ["Ground-based rack", "ground"],
+  ["Ground install", "ground"], ["Ground mtd", "ground"], ["On ground", "ground"], ["Ground (piers)", "ground"],
+  // #272 re-review: with no roof in the field, nothing is cut as equipment; "pedestal" is a foundation.
+  ["Ground mount concrete pedestals", "ground"], ["Ground mount pedestal foundation", "ground"], ["Ground-mounted pedestal racking", "ground"],
+  ["Pole mount pedestal", "ground"], ["Ground mount inverter rack", "ground"], ["Ground mount w/o battery", "ground"],
+  ["Roof + ground mount w/o battery", "combination"],
+  // #272 final review: a pole-top mount is a mount noun; a segment may END in a bare ground; a negated
+  // roof ("no roof work") is no roof, for the equipment gate or the combination; "non-penetrating" is.
+  ["Pole-top mount", "ground"], ["Pole top mount", "ground"], ["Pole-top array", "ground"],
+  ["Ballasted ground", "ground"], ["Fixed-tilt ground", "ground"], ["Tracker (ground)", "ground"], ["Mounted on ground", "ground"],
+  ["Ground mount inverter rack, no roof work", "ground"], ["Ground mount, no roof work", "ground"],
+  ["Non-penetrating roof + ground mount", "combination"],
+  // #272 review 4: only an article may sit between "no" and "roof" — a "no penetration" roof is a roof
+  // and keeps its blocking roof-framing row; a bare "Pole-top" is a pole.
+  ["No penetration roof mount + ground mount", "combination"], ["Ground mount, not a roof mount", "ground"],
+  ["Pole-top", "ground"], ["Pole top", "ground"],
+];
+for (const [mounting, field] of MUST_PASS_GROUND) {
+  check(`MUST PASS: field "${mounting}" — ${field} by the field, ground to the reviewer rules, the same set and path as a plain ${field}`, () => {
+    for (const where of [OREGON, NO_LOOKUP]) {
+      const p = job(where, mounting);
+      const ref = job(where, field === "ground" ? "Ground mount" : "Roof + ground mount");
+      assert.equal(groundMountFromField(p), field);
+      assert.equal(mountKindForProject(p), "ground");
+      assert.equal(reviewerMountKind(p), "ground");
+      assert.deepEqual(requiredDocuments(p), requiredDocuments(ref));
+      assert.equal(resolvePermitPath(p).path, "engineered");
+      assert.deepEqual(resolvePermitPath(p).basis, resolvePermitPath(ref).basis);
+      assert.ok(types(p).includes("ground_footing"));
+    }
+  });
+}
 
 console.log("\n4. THE LOOKUP ASKS — bounded, cited, pointing the same way");
 check("the process prompt asks how the AHJ permits a ground mount, as one enum", () => {
@@ -239,6 +316,21 @@ check("polarity is the requirement phrase's: a height limit's 'not' never flips 
 check("'not exempt' is a requirement; 'need(s) no' is not", () => {
   assert.equal(groundZoningPolarity("Ground-mounted solar arrays are not exempt from zoning review."), "required");
   assert.equal(groundZoningPolarity("Ground-mounted arrays need no zoning permit."), "not_required");
+});
+check("#269: every 'not exempt' polarity variant is a requirement; a 'not' elsewhere leaves the exemption", () => {
+  for (const q of [
+    "Ground-mounted solar arrays aren't exempt from zoning review.",
+    "Ground-mounted solar arrays aren’t exempt from zoning review.",
+    "Ground-mounted solar arrays are not exempt from zoning review.",
+    "A ground-mounted array isn't exempt from accessory structure setbacks.",
+    "Ground-mounted arrays are not considered exempt from planning review.",
+    "Ground-mounted arrays will not be exempt from zoning.",
+  ]) {
+    assert.equal(groundZoningPolarity(q), "required", q);
+    assert.equal(parseProcessPart(answer("not_required", q), [ACCELA.page], "end_turn").groundMountZoning?.value, null, q);
+    assert.equal(parseProcessPart(answer("required", q), [ACCELA.page], "end_turn").groundMountZoning?.value, "required", q);
+  }
+  assert.equal(groundZoningPolarity("Ground-mounted arrays not visible from the street are exempt from zoning review."), "not_required");
 });
 check("an unknown value or a quote from a page the search never returned is dropped", () => {
   assert.equal(parseProcessPart(answer("maybe", "Ground-mounted solar requires zoning approval."), [ACCELA.page], "end_turn").groundMountZoning?.value, null);
