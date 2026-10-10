@@ -137,6 +137,43 @@ async function main(): Promise<void> {
   }
   check(`line-wrap fuzz: no 5+ digit survivor across ${wrapped} wrapped numbers`, wrapped > 5000 && survivors === 0, `${survivors} survived, e.g. ${examples.join(", ")}`);
 
+  // MUST-PASS: a wrap whose next line is a 1-3 digit tail before "." or ")" looks like a list
+  // item to GROUPED_DIGITS, so only the pass after clean() catches it.
+  const listShapedTails: Array<[string, string]> = [
+    ["tail before \". Please\"", "The meter number on the photo is 9535-\n70. Please resubmit."],
+    ["tail before \")\"", "The meter number on the photo is 9535-\n70) on the bill."],
+    ["tail before a final \".\"", "The meter number on the photo is 9535-\n70."],
+    ["tail before a final \")\"", "(meter 9535-\n70)"],
+    ["3-digit tail before \".\"", "Account 4455\n667. Please resubmit."],
+    ["1-digit tail before \")\"", "Account 4455\n7) on file."],
+  ];
+  for (const [label, input] of listShapedTails) {
+    const out = kb.redactEmailText(input);
+    check(`MUST-PASS: line-wrapped number with a list-shaped ${label} is redacted`, out.includes("[number]") && !/\d(?:[\s\-#–−]*\d){4,}/.test(out), out);
+  }
+  // ...and the same as a fuzz: the last line is a 1-3 digit tail followed by "." or ")".
+  const tailSuffixes = [". Please resubmit.", ") on the bill.", ".", ")"];
+  let tailWrapped = 0, tailSurvivors = 0; const tailExamples: string[] = [];
+  for (let i = 0; i < 5000; i++) {
+    const groups = 1 + rnd(3);
+    let num = "", digits = 0;
+    for (let g = 0; g < groups; g++) {
+      const len = 1 + rnd(4);
+      let d = String(3 + rnd(7));
+      for (let k = 1; k < len; k++) d += String(rnd(10));
+      num += (g ? wrapSeps[rnd(wrapSeps.length)] : "") + d; digits += len;
+    }
+    const tailLen = 1 + rnd(3);
+    let tail = String(3 + rnd(7));
+    for (let k = 1; k < tailLen; k++) tail += String(rnd(10));
+    num += ["-\n", "\n", " \n", "–\n"][rnd(4)] + tail; digits += tailLen;
+    if (digits < 5) continue;
+    tailWrapped++;
+    const out = kb.redactEmailText(`Meter ${num}${tailSuffixes[rnd(tailSuffixes.length)]}`);
+    if (/\d(?:[\s\-#–−]*\d){4,}/.test(out)) { tailSurvivors++; if (tailExamples.length < 5) tailExamples.push(JSON.stringify(num)); }
+  }
+  check(`line-wrap fuzz: no 5+ digit survivor across ${tailWrapped} wraps onto a list-shaped tail`, tailWrapped > 2000 && tailSurvivors === 0, `${tailSurvivors} survived, e.g. ${tailExamples.join(", ")}`);
+
   // A phone keeps its own tag (the grouped rule runs after it).
   check("a phone number is still tagged [phone]", kb.redactEmailText("Call 555-010-1234 today.") === "Call [phone] today.", kb.redactEmailText("Call 555-010-1234 today."));
 

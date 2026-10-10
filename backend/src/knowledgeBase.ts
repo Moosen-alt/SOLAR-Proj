@@ -480,7 +480,12 @@ function redact(value: string, maxLen: number): string {
       .replace(/\b\d{2,6}\s+[A-Z0-9\s.'-]{3,60}\s+(?:ST|STREET|AVE|AVENUE|RD|ROAD|DR|DRIVE|LN|LANE|CT|COURT|PL|PLACE|WAY|BLVD|CIR|CIRCLE)\b(?:[,\s]+[A-Z\s.'-]{2,40})?/gi, "[address]")
       .replace(/\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b/g, "[phone]")
       .replace(GROUPED_DIGITS, scrubDigitRun),
-  ).slice(0, maxLen);
+  )
+    // Second pass on the collapsed text: the list-item carve-out above keeps a wrapped secret
+    // whose next line is a 1-3 digit tail before "." or ")" ("9535-\n70. Please" would leave
+    // "9535- 70." once clean() rejoins it). Now that the line break is a space, the run is whole.
+    .replace(GROUPED_DIGITS, scrubDigitRun)
+    .slice(0, maxLen);
 }
 
 function redactSample(value: string): string {
