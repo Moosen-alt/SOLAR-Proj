@@ -14,6 +14,14 @@
 // KNOWN LIMIT (accepted on #284): "NO." followed by a digit is read as the number abbreviation, so a
 // dash-NO that ends one line before a numbered note ("POWERWALL - NO.\n1. SEE E-3") no longer
 // denies — the package text arrives whitespace-flattened, and the line break is gone.
+// KNOWN LIMITS (accepted on #284; the same as main):
+//   - a next row whose label is one of CELL_LABEL_WORD's nouns ("RACKING: BY OTHERS",
+//     "PLACARDS: NOT APPLICABLE", "MOUNTING: EXCLUDED", "LABELS: BY OTHERS") reads as the mention's
+//     own label running on, so it still denies the mention before it;
+//   - a next row with no separator ("EV CHARGER NOT APPLICABLE", "EV CHARGER (NOT APPLICABLE)",
+//     "TRENCHING, BY OTHERS") still bleeds through the no-separator reading.
+//   NEGATION_AFTER's "not provided / not shown …" in the 30-character window is the same bug
+//   class on the next row ("HOA LETTER: NOT PROVIDED"); that is #295, not this suite.
 // Every fixture is SYNTHETIC. No database, no LLM, no network.
 //
 // Run: npx tsx backend/test/negationWindowCrossRule.test.ts
@@ -138,6 +146,31 @@ for (const [state, ahj] of JURISDICTIONS) {
     ]) {
       const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\n${cell}`), "city.elec.rapid-shutdown-edition-evidence");
       assert.ok(sections(f).includes("690.12(B)(2)"), `${cell}: ${f?.message ?? "no finding"}`);
+    }
+  });
+  // Helm re-review on #284 (the safety direction): words between the separator and the denial
+  // word ("PROVIDED BY OTHERS", "TO BE PROVIDED BY OTHERS", "CURRENTLY MISSING") are still the
+  // mention's own value cell, so the 690.12(B)(2) gap is still raised, as on main. With no
+  // separator at all the same cell already denied.
+  check(`MUST-EXCLUDE ${state}: an RSD label then words before 'BY OTHERS' / 'MISSING' in its own cell still denies 690.12(B)(2)`, () => {
+    for (const cell of [
+      "LISTED RSD EQUIPMENT: PROVIDED BY OTHERS", "LISTED RSD EQUIPMENT - SUPPLIED BY OTHERS",
+      "LISTED RSD EQUIPMENT: TO BE PROVIDED BY OTHERS", "LISTED RSD EQUIPMENT: CURRENTLY MISSING",
+      "LISTED RSD EQUIPMENT: ALL BY OTHERS", "LISTED RSD EQUIPMENT PROVIDED BY OTHERS",
+    ]) {
+      const f = get(runIn(state, ahj, `${RSD_BASE}.\nRAPID SHUTDOWN INITIATOR AT SERVICE.\n${cell}`), "city.elec.rapid-shutdown-edition-evidence");
+      assert.ok(sections(f).includes("690.12(B)(2)"), `${cell}: ${f?.message ?? "no finding"}`);
+    }
+  });
+  check(`MUST-EXCLUDE ${state}: a mobile-home row then words before 'BY OTHERS' is not a manufactured home`, () => {
+    for (const cell of ["EXISTING MOBILE HOME: PROVIDED BY OTHERS", "EXISTING MOBILE HOME: TO BE VERIFIED BY OTHERS"]) {
+      const project = { id: "mh", state, ahj, parserSnapshot: { mounting: "Roof mount", planSetExtractedText: `ROOF FRAMING: 2X6 RAFTERS @ 24" O.C.\n${cell}` } } as unknown as ProjectRecord;
+      assert.equal(structureType(project).kind, "unknown", cell);
+    }
+  });
+  check(`MUST-EXCLUDE ${state}: storage scope with words before 'BY OTHERS' raises no ESS review`, () => {
+    for (const cell of ["BATTERY: PROVIDED BY OTHERS", "BATTERY STORAGE - FURNISHED BY OTHERS"]) {
+      assert.ok(!get(runIn(state, ahj, cell), "city.ess.details-missing"), cell);
     }
   });
   // Medium 3: a denied manufactured-home row does not make the structure a manufactured home.

@@ -308,12 +308,17 @@ const NEGATION_AFTER = /^[^.;]{0,30}?\b(?:not\s+(?:provided|shown|found|included
 //     another row, so up to three words after it belong to this label.
 //     Missing a joiner here is the unsafe direction: the denied mention reads as affirmed and the
 //     gap it should raise (690.12(B)(2)) is missed.
+//     After the separator, the value cell may carry words before the denial word ("PROVIDED BY
+//     OTHERS", "TO BE VERIFIED BY OTHERS", "CURRENTLY MISSING"), up to 25 characters that do not
+//     cross another separator (CELL_VALUE_LEAD; Helm re-review on #284). Only "is"/"are" used to be
+//     allowed, so "LISTED RSD EQUIPMENT: PROVIDED BY OTHERS" read as affirmed.
 const CELL_LABEL_WORD = String.raw`(?:equipment|system|systems|device|devices|switch|initiator|listing|listings|listed|label|labels|hardware|components?|units?|certificat(?:e|ion)|documentation|details|specs?|sheets?|letter|calcs?|calculations?|modules?|racking|mounting|placards?|location|analysis|gateway|anchoring)(?:-[a-z]+)?`;
 const CELL_LABEL_RUN = String.raw`(?:\s+${CELL_LABEL_WORD}\b|\s*\([^()]{0,30}\)|\s*\/\s*[a-z0-9][\w-]*(?:\s+[a-z0-9][\w-]*){0,2})*`;
 const CELL_DENIAL_WORD = String.raw`(?:not\s+applicable|missing|excluded|by\s+others)`;
+const CELL_VALUE_LEAD = String.raw`(?:(?!\s-\s)[^.;:\u2013\u2014]){0,25}?`;
 const CELL_DENIAL_AFTER = new RegExp(
   String.raw`^(?:(?!\s-\s)[^.;:\u2013\u2014]){0,30}?\b${CELL_DENIAL_WORD}\b`
-  + String.raw`|^${CELL_LABEL_RUN}\s*\)?\s*[?:\u2013\u2014-]\s*\(?\s*(?:is\s+|are\s+)?${CELL_DENIAL_WORD}\b`,
+  + String.raw`|^${CELL_LABEL_RUN}\s*\)?\s*[?:\u2013\u2014-]\s*\(?${CELL_VALUE_LEAD}\b${CELL_DENIAL_WORD}\b`,
   "i",
 );
 
@@ -556,10 +561,12 @@ function withoutRsdOptionTitle(sources: DesignTextSource[]): DesignTextSource[] 
 /** city.ess.details-missing's trigger: a mention of storage scope. */
 const ESS_TRIGGER_PATTERNS: RegExp[] = [/battery/i, /\bESS\b/i, /powerwall/i, /encharge/i, /backup/i];
 const STORAGE_WORD = String.raw`(?:batter(?:y|ies)|ESS|backup|powerwall|encharge|energy\s+storage(?:\s+system)?|storage)`;
-const STORAGE_RUN_THEN_DENIAL = new RegExp(String.raw`^(?:\s*(?:\/|&|,|\+|and|or)?\s*${STORAGE_WORD}\b)*\s*\)?\s*(?:[?:]?\s*(?:no|none|n\/a|not\s+(?:used|applicable|included|proposed|provided)|excluded|by\s+others)\b|[\u2013\u2014-]\s*(?:(?:none|n\/a|not\s+(?:used|applicable|included|proposed|provided)|excluded|by\s+others)\b|no(?=\s*(?:$|[;,)]|\.(?!\s*\d)))))`, "i");
+const STORAGE_RUN_THEN_DENIAL = new RegExp(String.raw`^(?:\s*(?:\/|&|,|\+|and|or)?\s*${STORAGE_WORD}\b)*\s*\)?\s*(?:[?:]?\s*(?:no|none|n\/a|not\s+(?:used|applicable|included|proposed|provided)|excluded|by\s+others)\b|[\u2013\u2014-]\s*(?:(?:none|n\/a|not\s+(?:used|applicable|included|proposed|provided)|excluded|by\s+others)\b|no(?=\s*(?:$|[;,)]|\.(?!\s*\d))))|[?:\u2013\u2014-]\s*\(?${CELL_VALUE_LEAD}\b${CELL_DENIAL_WORD}\b)`, "i");
 const DENIAL_THEN_STORAGE_RUN = new RegExp(String.raw`\b(?:no|without)\s+(?:${STORAGE_WORD}\s*(?:\/|&|,|\+|and|or)\s*)+$`, "i");
 /** "BATTERY / ESS: NONE", "(BATTERY BACKUP): NOT USED": the denial sits after the next storage
- *  word (or its closing parenthesis), past NEGATION_AFTER's reach. */
+ *  word (or its closing parenthesis), past NEGATION_AFTER's reach. After an explicit separator the
+ *  cell's own words may lead up to the cell denial ("BATTERY STORAGE - FURNISHED BY OTHERS"), as in
+ *  CELL_DENIAL_AFTER. */
 const essMentionDenied: MentionGuard = (text, index, matched) =>
   STORAGE_RUN_THEN_DENIAL.test(text.slice(index + matched.length, index + matched.length + 60))
   || DENIAL_THEN_STORAGE_RUN.test(text.slice(Math.max(0, index - 60), index));
