@@ -448,23 +448,41 @@ const GROUPED_DIGITS = /(?<!\d)\d+(?:(?:[ \t\-‐-―−#]|\.(?=\d)|\n(?!\d{1,3}
 // plausible date ("2026-10-08", "10.08.2026" — a 19xx/20xx year, month 1-12, day 1-31, one
 // separator), a code section ("690.12", "R324.6.1" — its letter is outside the run; no leading
 // zero, at most 7 digits, so "1234.567" is not one) or a dash-joined pair of them
-// ("690.12-690.15"), an edition ("1547-2018") or a bare year ("690.12 2023"). Or every chunk but
-// the last is a date / section / edition (not a bare year) and the last is a 1-2 digit count or
-// hour: "2026-10-08 10:30 AM", "NEC 690.12 2 disconnects", "IEEE 1547-2018 2 inverters".
+// ("690.12-690.15"), an edition ("1547-2018"; at most a 4-digit head, so "Meter 12345-2018" is
+// not one) or a bare year ("690.12 2023"). Or every chunk but the last is a date / section /
+// edition or a bare year, at least one of them not a year, and the last is a 1-2 digit count or
+// hour: "2026-10-08 10:30 AM", "NEC 690.12 2 disconnects", "IEEE 1547-2018 2 inverters",
+// "NEC 690.12 2023" before a list item's "2.".
 const READABLE_DATE = /^(?:(?:19|20)\d{2}([-.])(?:0?[1-9]|1[0-2])\1(?:0?[1-9]|[12]\d|3[01])|(?:0?[1-9]|1[0-2])([-.])(?:0?[1-9]|[12]\d|3[01])\2(?:(?:19|20)\d{2}|\d{2})|(?:0?[1-9]|[12]\d|3[01])([-.])(?:0?[1-9]|1[0-2])\3(?:19|20)\d{2})$/;
 const READABLE_SECTION = /^(?:[1-9]\d{0,2}\.\d{1,3}(?:\.\d{1,2})*|[1-9]\d{3}(?:\.\d{1,2})+)$/;
-const READABLE_EDITION = /^[1-9]\d{1,4}(?:\.\d{1,2})?-(?:19|20)\d{2}$/;
+const READABLE_EDITION = /^[1-9]\d{1,3}(?:\.\d{1,2})?-(?:19|20)\d{2}$/;
 const READABLE_YEAR = /^(?:19|20)\d{2}$/;
 const isSection = (chunk: string): boolean => READABLE_SECTION.test(chunk) && chunk.replace(/\D/g, "").length <= 7;
 const namedReference = (chunk: string): boolean =>
   READABLE_DATE.test(chunk) || READABLE_EDITION.test(chunk) || isSection(chunk) ||
   (/^[^-]+-[^-]+$/.test(chunk) && chunk.split("-").every(isSection));
-const scrubDigitRun = (run: string): string => {
+// The run's FIRST chunk may also be a standard's number by context: a 3-5 digit head (optionally
+// "-19xx/20xx") right after a standards body ("UL 1741", "IEEE 1547", "IEC 61730-2016",
+// "NEC 2023"), or a 3-4 digit head right after a rating word ("Max system voltage 1000"). That
+// keeps the head readable when the pass after clean() joins it to a list item's number
+// ("UL 1741\n4. Provide placards." -> "UL 1741 4."), where the run alone looks exactly like a
+// wrapped secret ("Account 4455\n7)"); only the words before it tell them apart.
+const STANDARDS_BODY_BEFORE = /\b(?:UL|IEEE|IEC|ANSI|NEC|NFPA|IBC|IRC|IFC|CBC|CRC|CEC|ASCE)\s+$/;
+const RATING_WORD_BEFORE = /\b(?:voltage|current|amperage|rating)\s+$/i;
+const STANDARD_NUMBER = /^[1-9]\d{2,4}(?:-(?:19|20)\d{2})?$/;
+const RATING_NUMBER = /^[1-9]\d{2,3}$/;
+const scrubDigitRun = (run: string, offset = 0, whole = ""): string => {
   if (run.replace(/\D/g, "").length < 5) return run;
   const chunks = run.split(/\s+/);
+  const before = whole.slice(Math.max(0, offset - 40), offset);
+  const citedHead = (STANDARDS_BODY_BEFORE.test(before) && STANDARD_NUMBER.test(chunks[0])) ||
+    (RATING_WORD_BEFORE.test(before) && RATING_NUMBER.test(chunks[0]));
+  const named = (c: string, i: number): boolean => namedReference(c) || (i === 0 && citedHead);
+  const nameOrYear = (c: string, i: number): boolean => named(c, i) || READABLE_YEAR.test(c);
   const last = chunks[chunks.length - 1];
-  const readable = chunks.every((c) => namedReference(c) || READABLE_YEAR.test(c)) ||
-    (chunks.length > 1 && /^\d{1,2}$/.test(last) && chunks.slice(0, -1).every(namedReference));
+  const lead = chunks.slice(0, -1);
+  const readable = chunks.every(nameOrYear) ||
+    (lead.length > 0 && /^\d{1,2}$/.test(last) && lead.every(nameOrYear) && lead.some(named));
   return readable ? run : "[number]";
 };
 

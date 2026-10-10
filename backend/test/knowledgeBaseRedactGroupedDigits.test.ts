@@ -47,6 +47,10 @@ async function main(): Promise<void> {
     ["line-wrapped account, trailing space", "Account 4455 \n6677 on the bill."],
     ["line-wrapped meter, three lines", "Meter 44\n556\n677 on the photo."],
     ["year then short count is not a reference", "Account 2023 12 on file."],
+    ["five-digit head is not an edition", "Meter 12345-2018 on the photo."],
+    ["five-digit head is not an edition (2024)", "Account 98765-2024 is past due."],
+    ["five-digit head with a decimal is not an edition", "Ref 12345.67-2019 on file."],
+    ["five-digit head then a count is not an edition", "Ref 12345-2018 2 inverters on file."],
     ["dotted 4.3 run", "Meter 1234.567 on the photo."],
     ["section-shaped 3-level run with 3-digit tail", "Meter 123.456.789 on the photo."],
     ["bare long run (prior behaviour kept)", "Account 8000012345 is wrong."],
@@ -79,6 +83,7 @@ async function main(): Promise<void> {
     ["edition then a count", "Listed to IEEE 1547-2018 2 inverters on site."],
     ["dash-joined section range", "See NEC 690.12-690.15 for shutdown."],
     ["section wrapped onto a date", "Per NEC 690.56\n2026-10-08 notice."],
+    ["five-digit standard after its body", "Modules listed to IEC 61730-2016."],
   ];
   for (const [label, input] of readable) {
     const out = kb.redactEmailText(input);
@@ -151,6 +156,21 @@ async function main(): Promise<void> {
     const out = kb.redactEmailText(input);
     check(`MUST-PASS: line-wrapped number with a list-shaped ${label} is redacted`, out.includes("[number]") && !/\d(?:[\s\-#–−]*\d){4,}/.test(out), out);
   }
+  // MUST-EXCLUDE: the same shape when the head is a standard or a rating the words before it name:
+  // the pass after clean() must not swallow it into the next list item's number.
+  const listAfterReference: Array<[string, string]> = [
+    ["a UL standard", "Inverter must be listed to UL 1741\n4. Provide placards."],
+    ["a section and year", "Per NEC 690.12 2023\n2. Provide labels."],
+    ["an IEEE standard", "Per IEEE 1547\n2. Provide labels."],
+    ["an NEC edition", "Per NEC 2023\n2. Provide labels."],
+    ["an IBC edition", "Per IBC 2021\n2. Provide labels."],
+    ["a voltage rating", "Max system voltage 1000\n2. Provide labels."],
+  ];
+  for (const [label, input] of listAfterReference) {
+    const out = kb.redactEmailText(input);
+    check(`MUST-EXCLUDE: ${label} before a list item stays readable`, out === input.replace(/\s+/g, " "), out);
+  }
+
   // ...and the same as a fuzz: the last line is a 1-3 digit tail followed by "." or ")".
   const tailSuffixes = [". Please resubmit.", ") on the bill.", ".", ")"];
   let tailWrapped = 0, tailSurvivors = 0; const tailExamples: string[] = [];
