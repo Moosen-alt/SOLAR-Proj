@@ -1,6 +1,8 @@
 import type { HistoricalChecklistItem, ProjectRecord } from "../../shared/src/types";
 import { text } from "./json";
 import { hasStampedStructuralEvidence } from "./permitPath";
+import { projectSecretValues } from "./projectSecrets";
+import { redactSecretValues } from "../../shared/src/portalSafety";
 
 export type EvidenceConfidence = "high" | "medium" | "low";
 
@@ -120,8 +122,13 @@ function sourcesFor(project: ProjectRecord): EvidenceSource[] {
     ["pvMicroModel", "Microinverter model"],
   ];
 
+  // RULE 2 AT THE SOURCE (#260 review). An excerpt is a window cut from these texts and capped, and it
+  // lands in a finding's evidence, its evidenceNeeded and the vision prompt. A window that ENDS inside
+  // a meter number keeps a digit prefix the whole-number scrub can no longer match, so the texts are
+  // scrubbed whole, before any window — as the design digest does (autoLearn.digestLines).
+  const secrets = projectSecretValues(project);
   for (const [key, label] of keys) {
-    const value = text(snapshot[key]).trim();
+    const value = redactSecretValues(text(snapshot[key]).trim(), secrets);
     if (value) base.push({ label, text: value });
   }
   return base.filter((source) => text(source.text).trim());

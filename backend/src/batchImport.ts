@@ -13,7 +13,8 @@ type PdfjsModule = {
   GlobalWorkerOptions: { workerSrc: string };
 };
 type PdfjsDoc = { numPages: number; getPage: (n: number) => Promise<PdfjsPage> };
-type PdfjsPage = { getTextContent: () => Promise<{ items: Array<{ str: string }> }> };
+type PdfjsTextItem = { str?: string; hasEOL?: boolean; transform?: number[] };
+type PdfjsPage = { getTextContent: () => Promise<{ items: PdfjsTextItem[] }> };
 
 let _pdfjs: PdfjsModule | null = null;
 async function getPdfjs(): Promise<PdfjsModule> {
@@ -35,10 +36,10 @@ async function getPdfjs(): Promise<PdfjsModule> {
 // only affects IMAGE decoding, not the TEXT extraction we do here, so it's safe to drop.
 const PDFJS_WARN_RE = /^Warning: (TT: undefined function:|Font "[^"]+" is not available|getHexString|Indexing all PDF objects|#instantiateWasm|#getJsModule|Unable to decode image|Dependent image isn't ready|.*[Jj]Big2|.*JBIG2|.*wasmUrl|.*nulljbig2|.*OpenJPEG|.*JpxError)/;
 
-// Shared pdfjs driver: open the PDF, suppress the harmless image-decode warnings, and
-// run `perPage` over each page's RAW concatenated text (items joined by a space), up to
-// maxPages. The two public extractors below differ only in how they post-process pages.
-async function withPdfPages<T>(filePath: string, maxPages: number, perPage: (rawPageText: string) => T): Promise<T[]> {
+// Shared pdfjs driver: open the PDF, suppress the harmless image-decode warnings, and run
+// `perPage` over each page's text items, up to maxPages. The extractors below differ only in how
+// they turn a page's items into text.
+async function withPdfPages<T>(filePath: string, maxPages: number, perPage: (items: PdfjsTextItem[]) => T): Promise<T[]> {
   const pdfjs = await getPdfjs();
   const data = new Uint8Array(fs.readFileSync(filePath));
   const origWarn = console.warn;
@@ -53,7 +54,7 @@ async function withPdfPages<T>(filePath: string, maxPages: number, perPage: (raw
     for (let i = 1; i <= pages; i++) {
       const page = await doc.getPage(i);
       const content = await page.getTextContent();
-      out.push(perPage(content.items.map((item) => item.str).join(" ")));
+      out.push(perPage(content.items));
     }
     return out;
   } finally {
@@ -61,15 +62,78 @@ async function withPdfPages<T>(filePath: string, maxPages: number, perPage: (raw
   }
 }
 
+// ONE LINE PER PAGE: the page's items joined by a space. This is the text every stored and
+// model-bound consumer was tuned on (#260): the plan-set text, the design digest, the reviewer's
+// evidence windows, the splitter's sheet names. A sheet's wrapped phrase ("FIRE / SETBACK",
+// "ATTACHMENT / DETAIL", a framing table's header over its values) reads as one run here, and a
+// period-free schedule stays one long segment the digest skips. Kept byte-for-byte as it was.
+const onePageLine = (items: PdfjsTextItem[]) => items.map((item) => item.str ?? "").join(" ");
+
 export async function extractPdfText(filePath: string, maxPages = 30): Promise<string> {
   // Whole-document cleanup: join raw pages with newlines, THEN collapse whitespace once.
-  return (await withPdfPages(filePath, maxPages, (s) => s)).join("\n").replace(/\s{3,}/g, "  ").trim();
+  return (await withPdfPages(filePath, maxPages, onePageLine)).join("\n").replace(/\s{3,}/g, "  ").trim();
 }
 
 // Per-page text (1-based index → text). Used by the plan-set splitter to map sheets
 // to page ranges. maxPages caps the work for very large sets.
 export async function extractPdfPages(filePath: string, maxPages = 60): Promise<string[]> {
-  return withPdfPages(filePath, maxPages, (s) => s.replace(/\s{3,}/g, "  ").trim());
+  return withPdfPages(filePath, maxPages, (items) => onePageLine(items).replace(/\s{3,}/g, "  ").trim());
+}
+
+// THE PAGE'S OWN LINES, for a reader that reasons about "the same line" (#260). pdf.js marks the
+// item that ends a line (`hasEOL`, from its own position test); that boundary is "\n", every other
+// boundary the " " it always was, so text within a line is what onePageLine gives. OPT-IN: a reader
+// moves to these only with a before/after on fixtures, because a line break splits what the
+// one-line readers above join (see onePageLine).
+//
+// A PARAGRAPH is a blank line. pdf.js emits nothing for the gap between paragraphs, so a reader that
+// ends a numbered item "at a blank line" never saw one inside a page, and a letter's closing text
+// joined its last item (#260 review). A line break is "\n\n" when its vertical gap is more than 1.5x
+// the line height of the lines on either side (1.2x their larger font size, transform[3]) — measured
+// against the TYPE, not the page's usual spacing: on a letter whose items are all separated by blank
+// lines, the usual spacing IS the paragraph gap. Only items without a transform fall back to the
+// page's median gap. Pages are joined by a blank line too.
+export function pageTextFromItems(items: PdfjsTextItem[]): string {
+  // An empty item carries only its end-of-line mark; folding it into the item before keeps it from
+  // reading as a line of its own.
+  const kept: PdfjsTextItem[] = [];
+  for (const item of items) {
+    if (item.str) kept.push({ ...item });
+    else if (item.hasEOL && kept.length) kept[kept.length - 1].hasEOL = true;
+  }
+  const y = (item: PdfjsTextItem) => item.transform?.[5];
+  const gapAt = (i: number) => {
+    const a = y(kept[i - 1]), b = y(kept[i]);
+    return a === undefined || b === undefined ? 0 : Math.abs(a - b);
+  };
+  const gaps = kept.map((_, i) => (i > 0 && kept[i - 1].hasEOL ? gapAt(i) : 0)).filter((g) => g > 0).sort((a, b) => a - b);
+  const median = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
+  const fontSize = (item: PdfjsTextItem) => Math.abs(item.transform?.[3] ?? 0);
+  const paragraphAt = (i: number) => {
+    const lineHeight = 1.2 * Math.max(fontSize(kept[i - 1]), fontSize(kept[i]));
+    const unit = lineHeight > 0 ? lineHeight : median;
+    return unit > 0 && gapAt(i) > 1.5 * unit;
+  };
+  let out = "";
+  kept.forEach((item, i) => {
+    if (i > 0) out += !kept[i - 1].hasEOL ? " " : paragraphAt(i) ? "\n\n" : "\n";
+    out += item.str;
+  });
+  return out;
+}
+
+// A run of 3+ spaces is two (as onePageLine's cleanup does); spaces around a line break go; and a
+// run of breaks is at most one blank line (a paragraph).
+function tidyLines(text: string): string {
+  return text.replace(/[^\S\n]*\n[^\S\n]*/g, "\n").replace(/\n{3,}/g, "\n\n").replace(/[^\S\n]{3,}/g, "  ").trim();
+}
+
+export async function extractPdfTextLines(filePath: string, maxPages = 30): Promise<string> {
+  return (await withPdfPages(filePath, maxPages, (items) => tidyLines(pageTextFromItems(items)))).join("\n\n").trim();
+}
+
+export async function extractPdfPageLines(filePath: string, maxPages = 60): Promise<string[]> {
+  return withPdfPages(filePath, maxPages, (items) => tidyLines(pageTextFromItems(items)));
 }
 
 // ---------------------------------------------------------------------------
@@ -127,15 +191,25 @@ interface CorrectionFields {
 // Pull numbered correction / plan-check items out of a correction document.
 function quickExtractCorrections(text: string): Partial<CorrectionFields> {
   const appMatch = text.match(/(?:application|app|record|permit)\s*(?:number|no\.?|#)[:\s]+([A-Z0-9\-]{4,20})/i);
-  const lines = text.split(/\n/);
-  // Numbered correction items
-  const items = lines
-    .filter((l) => /^\s*\d+[\.\)]\s+.{20,}/.test(l))
-    .map((l) => l.replace(/^\s*\d+[\.\)]\s+/, "").trim())
-    .slice(0, 20);
+  // Numbered correction items. An item WRAPS: the lines after its number belong to it until the next
+  // number or a blank line (a paragraph gap or a page break — pageTextFromItems), so "1. Please clarify the mounting on the / rafters shown
+  // on PV-3." is one item — its first line alone is learned truncated and in the wrong bucket.
+  const items: string[] = [];
+  let current: string | null = null;
+  for (const line of text.split(/\n/)) {
+    const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    if (numbered || !line.trim()) {
+      if (current !== null) items.push(current);
+      current = numbered ? numbered[1].trim() : null;
+    } else if (current !== null) {
+      current = `${current} ${line.trim()}`;
+    }
+  }
+  if (current !== null) items.push(current);
+  const kept = items.filter((item) => item.length >= 20).slice(0, 20);
   return {
     applicationNumber: appMatch?.[1],
-    correctionItems: items.length > 0 ? items : undefined,
+    correctionItems: kept.length > 0 ? kept : undefined,
   };
 }
 // ---------------------------------------------------------------------------
@@ -323,7 +397,15 @@ export async function scanFolder(
       summary.scanned++;
 
       try {
-        const text = await extractPdfText(filePath, 12);
+        // Lines (#260) for quickExtractCorrections only: it reads numbered items line by line, and on
+        // one-line pages it never found any — a correction PDF taught nothing. The classifier and the
+        // utility match read the ONE-LINE view they were tuned on: "SINGLE LINE / DIAGRAM" wrapped
+        // across lines filed an SLD as a permit application (#260 review). Both views come from the
+        // same pages: a blank line inside a page is a paragraph, not a page break, so the one-line
+        // view folds every break in a page.
+        const pages = await extractPdfPageLines(filePath, 12);
+        const lines = pages.join("\n\n");
+        const text = pages.map((page) => page.replace(/\n+/g, " ")).join("\n");
         const docType = classifyDoc(filePath, text);
         summary.byType[docType]++;
 
@@ -337,7 +419,7 @@ export async function scanFolder(
         // Pull a correction sample if this is a correction/plan-check doc.
         let correctionText: string | undefined;
         if (docType === "correction") {
-          const items = quickExtractCorrections(text).correctionItems;
+          const items = quickExtractCorrections(lines).correctionItems;
           if (items && items.length) correctionText = items.join("\n");
         }
 
