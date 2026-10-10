@@ -1,4 +1,5 @@
 import type { AhjProcessProfile, CodeReference, NecEditionRequirements, ProjectRecord, ReviewerFinding, ReviewerFindingEvidence, StructureTypeFact } from "../../shared/src/types";
+import { isPlaceholderBatteryModel } from "../../shared/src/batteryControls";
 import type { EffectiveCodeContext } from "./codeProfiles";
 import { FIRE_PATHWAY_PATTERNS, packageShowsSld } from "./projectEvidence";
 import { evaluateElectricalSizingFindings } from "./electricalSizing";
@@ -1615,7 +1616,8 @@ export function evaluateDesignCodeFindings(
   // "OPTIONAL/MISSING - 07 Battery / ESS Spec Sheet" / "READY - Battery / ESS", so a no-battery
   // project posted with that JSON raised this review.
   const batterySources: DesignTextSource[] = [
-    { label: "batteryModel", text: str(project, "batteryModel") },
+    // A placeholder model ("No ESS", "No battery", "N/A") is not storage scope (#246).
+    { label: "batteryModel", text: isPlaceholderBatteryModel(str(project, "batteryModel")) ? "" : str(project, "batteryModel") },
     { label: "batteryQty", text: str(project, "batteryQty") },
     { label: "design text", text: designText(project, ["splitPagesText", "utilityDownloadChecklistText", "packetReadinessText"]) },
   ];

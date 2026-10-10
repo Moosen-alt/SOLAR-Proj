@@ -171,7 +171,7 @@ function safeName(name: string): string {
 const PDF_REQUIRED_DOC_TYPES = new Set([
   "plan_set", "plan", "plan_pdf", "combined_plan_set", "full_plan_set",
   "sld", "site_plan", "structural", "structural_letter", "stamped_plans",
-  "engineering_letter", "electrical", "module_spec", "inverter_spec", "labels",
+  "engineering_letter", "electrical", "module_spec", "inverter_spec", "battery_spec", "ess_detail", "labels",
   "permit_application", "building_application", "electrical_application", "solar_checklist", "pv_worksheet",
   "ground_footing", "trench_detail", "zoning_approval",
 ]);

@@ -11,7 +11,8 @@
 //                awaiting_human_submit, lookup in flight) -> no stop, no pull; dirty tree / not on
 //                main / diverged -> nothing; lockfile unchanged -> no npm ci; failed pull -> the
 //                install is restarted unchanged; dry-run -> no side effect; a `to` that already
-//                failed -> no retry until origin/main moves; a fresh lock is never taken over.
+//                failed -> no retry until origin/main moves; a fresh lock is never taken over;
+//                no server answering /health -> nothing: only a running install is updated (#290).
 //   BOOKKEEPING  the lock is touched before every long step; pre-update snapshots capped at 3;
 //                /health counts only a git-sourced sha.
 //   #99          a waiting portal run / filing holds the update only while its window can be open:
@@ -47,6 +48,9 @@ type World = {
   lockfileChanged?: boolean; mergeFails?: boolean; npmCiFails?: boolean; busy?: string[];
   supervisor?: boolean; serverRunning?: boolean; healthy?: boolean; paused?: boolean; snapshotFails?: boolean;
   stopFails?: boolean; failedTo?: string | null;
+  /** /health answers at the start of the cycle (default true). `serverRunning` is the later, separate
+   *  question of what `stopServer` found: false there = the server went away between the two. */
+  serverUp?: boolean;
 };
 
 /** A fake checkout + server. `calls` records every side effect in order. */
@@ -81,6 +85,7 @@ function harness(w: World) {
     clearFailed: () => { marker.to = null; },
     git,
     npmCi: () => { calls.push("npm ci"); npmCiRuns++; return { code: w.npmCiFails && npmCiRuns === 1 ? 1 : 0, out: "" }; },
+    serverUp: async () => w.serverUp !== false,
     busy: async () => w.busy ?? [],
     supervisorRunning: () => !!w.supervisor,
     snapshot: async () => { calls.push("snapshot"); return w.snapshotFails ? { ok: false, detail: "disk full" } : { ok: true, file: "autopilot-pre-update-x.sqlite" }; },
@@ -196,7 +201,17 @@ await check("supervised server -> skip (the supervisor owns restarts)", async ()
   assert.deepEqual(mutating(h.calls), []);
 });
 
-await check("no server running -> update the checkout but do not start one", async () => {
+await check("no server answering /health -> skip: no snapshot, no stop, no pull (#290)", async () => {
+  const h = harness({ serverUp: false });
+  const r = await runCycle(h.deps, {});
+  assert.equal(r.outcome, "no-server");
+  assert.deepEqual(mutating(h.calls), [], `side effects with no server up: ${h.calls.join(", ")}`);
+  assert.equal(h.head(), OLD, "the checkout stays on the code the owner left");
+  assert.ok(h.lines.some((l) => l.includes("no server") && l.includes(OLD.slice(0, 7)) && l.includes(NEW.slice(0, 7))), "the skip names the missing server and the shas it is holding back");
+  assert.equal(h.marker.to, null, "a skip never writes the failure marker");
+});
+
+await check("server went away between the check and the stop -> update the checkout but do not start one", async () => {
   const h = harness({ serverRunning: false });
   assert.equal((await runCycle(h.deps, {})).outcome, "updated");
   assert.ok(!h.calls.includes("start"));

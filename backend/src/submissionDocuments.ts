@@ -77,7 +77,7 @@ function utilityDocsNamedByAhj(db: AppDb, project: ProjectRecord): Set<string> {
 // two different documents. The first doc type in DUPLICATE_PRECEDENCE keeps the file; the later one
 // is dropped from the upload set and reported, so the inventory can say "same file as …".
 const DUPLICATE_PRECEDENCE = ["plan_set", "sld", "site_plan", "structural", "structural_letter", "stamped_plans", "module_spec", "inverter_spec",
-  "racking_spec", "battery_spec", "labels", "utility_bill", "meter_photo"];
+  "racking_spec", "battery_spec", "ess_detail", "labels", "utility_bill", "meter_photo"];
 export function duplicateUploads(docs: Record<string, string>): Array<{ docType: string; sameAs: string }> {
   const rank = (t: string) => { const i = DUPLICATE_PRECEDENCE.indexOf(t); return i < 0 ? DUPLICATE_PRECEDENCE.length : i; };
   const hashes = new Map<string, string>();
