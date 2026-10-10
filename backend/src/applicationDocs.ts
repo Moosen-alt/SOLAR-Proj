@@ -5,6 +5,7 @@ import type {
   GeneratedApplicationDocument,
   ProjectRecord,
 } from "../../shared/src/types";
+import { batteryStatus } from "../../shared/src/batteryControls";
 import { isBillHolderName } from "./accountHolders";
 import { nowIso } from "./time";
 import { hasMpuScope } from "./serviceScope";
@@ -1270,7 +1271,7 @@ Install ${(payload(project, "projectType") || "roof-mounted photovoltaic system"
 Equipment:
 - Modules: ${yesNo(payload(project, "moduleQty"))} x ${yesNo(payload(project, "moduleMake"))} ${yesNo(payload(project, "moduleModel"))}, ${yesNo(payload(project, "moduleWattage"))} W
 - Inverters/microinverters: ${yesNo(payload(project, "invQty") || payload(project, "pvMicroQty"))} x ${yesNo(payload(project, "invMake") || payload(project, "pvMicroMake"))} ${yesNo(payload(project, "invModel") || payload(project, "pvMicroModel"))}
-- Battery/ESS: ${payload(project, "batteryModel") ? `${payload(project, "batteryQty")} x ${payload(project, "batteryMake")} ${payload(project, "batteryModel")}` : "None parsed / verify"}
+- Battery/ESS: ${batteryStatus(project.parserSnapshot as Record<string, unknown> | undefined) === "yes" ? `${payload(project, "batteryQty")} x ${payload(project, "batteryMake")} ${payload(project, "batteryModel")}` : "None parsed / verify"}
 - Racking: ${yesNo(payload(project, "racking"))}
 
 Electrical:
@@ -1522,7 +1523,7 @@ System:
 - AC kW: ${project.systemSizeAcKw ?? "[verify]"}
 - Export kW: ${project.totalExportKw ?? "[verify]"}
 - Interconnection: ${project.interconnectionMethod || "[verify]"}
-- Battery/ESS: ${payload(project, "batteryModel") || "None parsed / verify"}
+- Battery/ESS: ${batteryStatus(project.parserSnapshot as Record<string, unknown> | undefined) === "yes" ? payload(project, "batteryModel") || "battery (model not parsed)" : "None parsed / verify"}
 
 Upload package:
 ${payload(project, "utilityDownloadChecklistText") || "[build utility ZIP/checklist first]"}

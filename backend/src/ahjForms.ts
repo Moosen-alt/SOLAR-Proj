@@ -31,6 +31,7 @@ import { registryTermMatches } from "./processProfiles";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { isDocumentDateStale } from "./documentDate";
 import { mountAdjective, mountKindForProject } from "./codeReviewRules";
+import { batteryStatus } from "./batteryServiceFeeder";
 import { findFeeScheduleForProject, feeForProject, knownElectricalReviewRequired, type FeeScheduleLine } from "./feeSchedules";
 import { curatedPrintedFees, curatedFormMapForHash, curatedFormSourcesFor, CURATED_SAVED_FEE_NOTE, type PrintedFeeLadder } from "./curatedAhjForms";
 import { bcd5952TemplateForHash } from "./bcd5952Template";
@@ -862,7 +863,9 @@ function computed(name: string, ctx: FillContext): string {
       const qty = str(s["moduleQuantity"] ?? s["module_quantity"]);
       const model = str(s["moduleModel"] ?? s["module_model"]);
       const size = ctx.project.systemSizeDcKw ? `${ctx.project.systemSizeDcKw} kW DC` : "";
-      const battery = str(s["batteryModel"] ?? s["battery_model"]);
+      // THE ONE BATTERY PREDICATE (batteryServiceFeeder.batteryStatus, #246): a placeholder model
+      // ("N/A") is not storage, so the description never says "with N/A battery storage".
+      const battery = batteryStatus(s as Record<string, unknown>) === "yes" ? str(s["batteryModel"] ?? s["battery_model"]) : "";
       // System addition: an existing PV system stays in service — the scope is
       // the NEW equipment, but the AHJ/utility must see it's an addition.
       // Both flags demand an explicit "yes" — existingSystem:"no" must not read

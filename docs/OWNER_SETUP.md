@@ -126,7 +126,7 @@ the difference. The constitution forbids them, and Helm treats any bot-applied a
 ## 7. Automatic updates (pull `main` and restart when idle)
 
 `scripts/local-auto-update.mjs` keeps this checkout on current `main` so you never have to
-`git pull` by hand. Every 15 minutes, if `main` has moved and nothing is in progress, it:
+`git pull` by hand. Every 15 minutes, if the server is up, `main` has moved and nothing is in progress, it:
 snapshots the database into `BACKUP_DIR` (`autopilot-pre-update-<sha>-<time>.sqlite` plus its
 `.sha256`; the normal backup rotation never deletes these, and the updater keeps the newest 3),
 stops this install's server, fast-forwards, runs `npm ci` only when `package-lock.json` changed,
@@ -137,6 +137,9 @@ minimized window titled "SOLAR-Proj server"; read the server's output there from
 
 **It does nothing (and says why in the log) when:**
 
+- no server is up (nothing answers `/health` on `PORT`): it only updates a running install. A server
+  you stopped stays stopped, on the code it had, until you start it again; the first tick after
+  that updates as usual;
 - the checkout is not on `main`, has changes to tracked files, or has commits `main` doesn't have;
 - anything is in progress: a background job running or due, a portal run queued, running, staged
   or paused for you (review window, MFA/CAPTCHA), a filing `awaiting_human_submit`, or a lookup in
@@ -153,8 +156,8 @@ minimized window titled "SOLAR-Proj server"; read the server's output there from
 If the pull or `npm ci` fails, it puts the checkout back on the old commit and restarts the old
 server. If the new server doesn't come up on the new commit within 3 minutes, it logs
 `HEALTH CHECK FAILED` and leaves it for you (no automatic rollback: the new version's migrations
-may already have run; the pre-update snapshot is the way back). It starts the server again only if
-one was running before the update.
+may already have run; the pre-update snapshot is the way back). It starts the server again only when
+it stopped one: a server that vanished between the health check and the stop is not started.
 
 Do not set `BUILD_SHA`, `APP_VERSION` or `BUILD_DATE` in this install's `.env`. With those set
 `/health` reports the stamped build instead of the checkout's commit, and the updater only accepts
