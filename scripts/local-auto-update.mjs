@@ -11,6 +11,9 @@
 //   4b. a cycle already failed for THIS origin/main sha (data/auto-update.failed) -> skip until
 //      origin/main moves; otherwise a failed pull/npm ci would bounce the server and copy the DB
 //      every tick
+//   4c. no server answering /health on PORT                 -> skip: it only updates a RUNNING
+//      install (issue #290). A stopped server is usually deliberate (a restore, maintenance, the
+//      owner in the tree), and a hand start must boot the code the owner left, not a surprise
 //   5. NOT IDLE: a job running or due, a portal run queued/running/staged/paused for a human,
 //      a filing awaiting_human_submit, a lookup in flight   -> skip, try again next cycle
 //      (a waiting portal run / filing counts only while its window can be open: written since the
@@ -21,7 +24,7 @@
 //   9. `git merge --ff-only origin/main`; failure -> restart the old code, install unchanged
 //  10. `npm ci` only when package-lock.json changed; failure -> `git reset --keep` back to the old
 //      commit and `npm ci` again, BEFORE any start (so no migration of the new code has run)
-//  11. restart `npm start` in its own minimized window (only if a server was running before) and
+//  11. restart `npm start` in its own minimized window (unless the server vanished between 4c and 8) and
 //      wait for /health to report the new commit (source "git" only: an env-stamped BUILD_SHA
 //      names a build, not this checkout). Failure is logged loudly; no automatic rollback,
 //      because the new code's migrations may already have run.
@@ -187,8 +190,8 @@ export function touchLock(lockFile) {
 
 /**
  * @returns {Promise<{ outcome: string, from?: string, to?: string, reasons?: string[] }>}
- * Outcomes: paused | refused | fetch-failed | up-to-date | busy | supervised | would-update |
- * snapshot-failed | stop-failed | pull-failed | npm-ci-failed | updated | unhealthy | failed-before
+ * Outcomes: paused | refused | fetch-failed | up-to-date | failed-before | no-server | busy | supervised |
+ * would-update | snapshot-failed | stop-failed | pull-failed | npm-ci-failed | updated | unhealthy
  */
 export async function runCycle(deps, opts = {}) {
   const { branch = "main", remote = "origin", dryRun = false } = opts;
@@ -227,6 +230,13 @@ export async function runCycle(deps, opts = {}) {
   if (failedTo === to) {
     log(`skipped: a previous cycle already failed on ${short(to)} (see earlier lines); waiting for ${remote}/${branch} to move. Delete data/auto-update.failed to retry now`);
     return { outcome: "failed-before", from, to };
+  }
+
+  // Only a running install is updated (#290): no server up means the owner stopped it, and the
+  // checkout stays on the code they left until they start it again.
+  if (!(await deps.serverUp())) {
+    log(`skipped ${short(from)} -> ${short(to)}: no server answering /health; the updater only updates a running install`);
+    return { outcome: "no-server", from, to };
   }
 
   const busy = await deps.busy();
@@ -292,7 +302,7 @@ export async function runCycle(deps, opts = {}) {
   }
 
   deps.clearFailed?.();
-  if (!wasRunning) { log(`updated ${short(from)} -> ${short(to)} in ${took()}; server was not running, not started`); return { outcome: "updated", from, to }; }
+  if (!wasRunning) { log(`updated ${short(from)} -> ${short(to)} in ${took()}; the server went away after the check and before the stop, not started`); return { outcome: "updated", from, to }; }
   beat();
   deps.startServer();
   log("started server");
@@ -385,6 +395,9 @@ function realDeps(cfg, log) {
     clearFailed: () => { try { fs.unlinkSync(cfg.failedFile); } catch { /* none */ } },
     git: (args) => run("git", args, cfg.root),
     npmCi: () => run("npm", ["ci"], cfg.root, 900_000),
+    // Up = /health answered. A process that listens but does not answer is not an install worth
+    // updating under; skipping is the conservative reading of "only while the server is up".
+    serverUp: async () => (await getHealth(cfg.port)) !== null,
     async busy() {
       const health = await getHealth(cfg.port);
       // Only ask Windows for the server process when /health did not answer (no server, or a hung one).
