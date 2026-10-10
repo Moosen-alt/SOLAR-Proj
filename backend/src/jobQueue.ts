@@ -8,6 +8,7 @@ import { importMboxKnowledge } from "./knowledgeBase";
 import { restoreRecipeSnapshotIfAbandoned, upsertRecipeNote } from "./portalRecipes";
 import { lookupLandingMark, runDuePermitChecks } from "./repository";
 import { scanFolder } from "./batchImport";
+import { folderScanJobAllowed } from "./batchZip";
 import { nowIso } from "./time";
 import { logger } from "./logger";
 import { runWithLlmContext } from "./llmAccounting";
@@ -276,6 +277,9 @@ async function runFolderScanJob(db: AppDb, job: JobRecord): Promise<Record<strin
     defaultUtility?: string;
     useLlm?: boolean;
   };
+  // RE-CHECKED AT RUN TIME (#276), so a folder_scan queued by any path that skipped the
+  // doors' check still cannot read outside its org's upload root. Same words as the doors.
+  if (!folderScanJobAllowed(job.payload, job.orgId)) throw new Error(`Folder not found: ${folderPath}`);
   const summary = await scanFolder(db, folderPath, {
     // The job row's org (stamped at enqueue from the session) — never the payload.
     orgId: job.orgId,

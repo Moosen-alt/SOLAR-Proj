@@ -38,6 +38,11 @@ const handler = vm.runInNewContext(callback, {
     assert.equal(table, "projects");
     if (projectId === "other-tenant") throw new HttpError(404, "Project not found.");
   },
+  // The folder_scan confinement (#276) is batchZip's predicate; here only its wiring is pinned.
+  folderScanPayload: (_scope: unknown, payload: { folderPath?: string }) => {
+    events.push("folder scope");
+    return payload.folderPath === "/elsewhere" ? null : { rebuiltBy: "folderScanPayload" };
+  },
   enqueueJob: (_db: unknown, jobType: unknown, payload: unknown, options: Record<string, unknown>) => {
     events.push("enqueue");
     const job = { jobType, payload, options };
@@ -62,16 +67,27 @@ for (const jobType of ["permit_checks", "nem_checks", "mbox_import", "folder_sca
   const payload = { track: "permit" };
   handler({ body: { jobType, payload, projectId: "own-project", priority: 7, scheduledAt: "2030-01-01T00:00:00Z", assignedToUser: "operator" } }, response);
   assert.equal(response.code, 201);
-  assert.deepEqual(events, ["scope", "project guard", "enqueue"], "scope is checked before enqueue");
+  assert.deepEqual(events, jobType === "folder_scan" ? ["scope", "project guard", "folder scope", "enqueue"] : ["scope", "project guard", "enqueue"], "scope is checked before enqueue");
   const job = queued.at(-1)!;
   assert.equal(job.jobType, jobType);
   if (jobType === "prepare_submission") assert.deepEqual(plain(job.payload), payload);
+  // A folder scan reaches the queue only as the server rebuilt it, never as the body sent it.
+  else if (jobType === "folder_scan") assert.deepEqual(plain(job.payload), { rebuiltBy: "folderScanPayload" });
   else assert.equal(job.payload, payload);
   assert.equal(job.options.orgId, "org-test");
   assert.equal(job.options.projectId, "own-project");
   assert.equal(job.options.priority, 7);
   assert.equal(job.options.assignedToUser, "operator");
   assert.equal(job.options.scheduledAt, "2030-01-01T00:00:00Z");
+}
+// #276: a folder the caller may not scan is the same 404 as a missing one, and queues nothing.
+// KILL: enqueue folder_scan payloads verbatim again → this fails.
+{
+  const before = queued.length;
+  assert.throws(() => handler({ body: { jobType: "folder_scan", payload: { folderPath: "/elsewhere" } } }, response),
+    (error: unknown) => error instanceof HttpError && error.status === 404,
+    "an out-of-scope folder_scan is refused with 404");
+  assert.equal(queued.length, before, "a refused folder_scan must not reach the queue");
 }
 // Close M1-jobs: final-submit authority never rides the generic route. A prepare_submission body
 // carrying autoSubmit / allowFinalSubmit / someone's approvalId reaches the queue as its track only.

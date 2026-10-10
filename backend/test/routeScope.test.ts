@@ -112,9 +112,10 @@ const UNSCOPED_BY_DESIGN: Record<string, string> = {
   "/api/communications": "subject id arrives in the body; checked with assertRefInScope",
   "/api/learn-runs": "portal debug bundles are operator artifacts; admin-gated",
 
-  // Learns into the SHARED knowledge base only — creates no projects, clients or
-  // documents (verified: no createProject/saveProjectDocument in batchImport.ts).
-  "/api/batch-import": "shared-knowledge learning; creates no tenant rows",
+  // Learns into the SHARED knowledge base, but each scan IS a tenant row: /scan and
+  // /upload-zip stamp the caller's org on the folder_scan job (its historical-failure rows
+  // land under the job's org), and GET /jobs lists through reqOrgFilter (#276).
+  "/api/batch-import": "folder_scan jobs stamped with the caller's org; GET /jobs lists via reqOrgFilter",
 
   // Operator-level integrations and global background triggers. Reachable only by
   // autopilot-entitled orgs; in the service-bureau model that is the operator alone.

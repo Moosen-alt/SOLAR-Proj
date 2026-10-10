@@ -61,6 +61,8 @@ const env = {
   AUTOPILOT_DB_PATH: path.join(tmpDir, "test.sqlite"),
   PROJECT_DOCS_DIR: path.join(tmpDir, "docs"),
   BACKUP_DIR: path.join(tmpDir, "backups"),
+  BATCH_UPLOAD_DIR: path.join(tmpDir, "batch-uploads"),
+  BATCH_REPORT_DIR: path.join(tmpDir, "batch-reports"),
   AUTOPILOT_AUTO_START: "0",
   PORT: String(PORT),
   SEED_TEST_INSTALLER: "false",
@@ -384,6 +386,147 @@ try {
     assert.ok(!JSON.stringify(reportB).includes("Alice A"), "B's daily report named A's homeowner");
   });
 
+  // FOLDER SCANS (#276). A folder_scan job's payload carries a server folderPath (and its result
+  // names every scanned PDF's path), so the batch-import job list must be scoped like /api/jobs.
+  // It used to call listJobs with no orgId, which falls back to the DEFAULT org: every tenant
+  // saw the operator's scans and never its own. And because the job is stamped with the
+  // CALLER's org, the folder itself is a tenancy boundary too: a tenant that could name any
+  // server folder read other orgs' document paths back through its own, correctly scoped list.
+  // Synthetic zips holding one dummy PDF each; all paths are under this test's tmp dir.
+  const AdmZip = (await import("adm-zip")).default;
+  const zipWith = (name: string): Buffer => {
+    const z = new AdmZip();
+    z.addFile(`${name}.pdf`, Buffer.from("%PDF-1.4\n% synthetic test file\n%%EOF\n"));
+    return z.toBuffer();
+  };
+  type Scan = { id: string; folderPath: string };
+  const scans: Record<"a" | "b" | "def", Scan> = { a: { id: "", folderPath: "" }, b: { id: "", folderPath: "" }, def: { id: "", folderPath: "" } };
+  // THE DEFAULT ORG IS A TENANT TOO, asserted through a PLAIN default-org user: the owner is
+  // promoted to superadmin later in this file (and earlier, in a sibling PR), and a superadmin
+  // reads across orgs by design, so it cannot stand in for "the default org sees its own".
+  let defCookie = "";
+  await run("a plain default-org user can be created", async () => {
+    const r = await owner("/api/orgs/org-default/users", { method: "POST", body: JSON.stringify({ name: "Default Staff", email: "staff@default.test", password: "tenant-pass-12345" }) });
+    assert.equal(r.status, 201, (await r.text()).slice(0, 300));
+    defCookie = await loginAs("staff@default.test", "tenant-pass-12345");
+  });
+  const def = as(defCookie);
+  const listScanIds = async (c: ReturnType<typeof as>): Promise<string[]> => {
+    const res = await c("/api/batch-import/jobs");
+    const text = await res.text();
+    assert.equal(res.status, 200, `GET /api/batch-import/jobs -> ${res.status}: ${text.slice(0, 300)}`);
+    return (JSON.parse(text) as { id: string }[]).map((j) => j.id);
+  };
+  await run("batch-import folder scans list only the caller's own org's jobs", async () => {
+    for (const [who, c] of [["a", a], ["b", b], ["def", def]] as const) {
+      const made = await jsonOk(await c(`/api/batch-import/upload-zip?label=${who}`, { method: "POST", headers: { "content-type": "application/zip" }, body: zipWith(`plans-${who}`) }));
+      scans[who] = { id: String(made.id), folderPath: String(made.folderPath) };
+    }
+    const seenA = await listScanIds(a);
+    const seenB = await listScanIds(b);
+    const seenDef = await listScanIds(def);
+    assert.deepEqual(seenA, [scans.a.id], `A saw ${JSON.stringify(seenA)}`);
+    assert.deepEqual(seenB, [scans.b.id], `B saw ${JSON.stringify(seenB)}`);
+    assert.deepEqual(seenDef, [scans.def.id], `default org saw ${JSON.stringify(seenDef)}`);
+  });
+
+  await run("each org's zip extracts under its own upload root", async () => {
+    const uploadRoot = path.resolve(env.BATCH_UPLOAD_DIR);
+    assert.ok(scans.a.folderPath.startsWith(path.join(uploadRoot, orgA) + path.sep), `A extracted to ${scans.a.folderPath}`);
+    assert.ok(scans.b.folderPath.startsWith(path.join(uploadRoot, orgB) + path.sep), `B extracted to ${scans.b.folderPath}`);
+    assert.ok(scans.def.folderPath.startsWith(path.join(uploadRoot, "org-default") + path.sep), `default extracted to ${scans.def.folderPath}`);
+  });
+
+  await run("a tenant cannot scan a server folder outside its own upload root (404, no job)", async () => {
+    // MUST-EXCLUDE. Every one exists on disk, so a 404 here is the scope check, not a missing
+    // folder, and it reads exactly like one (rule 6: out of scope is 404, never 403).
+    fs.mkdirSync(env.PROJECT_DOCS_DIR, { recursive: true });
+    const bRoot = path.join(path.resolve(env.BATCH_UPLOAD_DIR), orgB);
+    const forbidden: Record<string, string> = {
+      "PROJECT_DOCS_DIR": env.PROJECT_DOCS_DIR,
+      "the shared upload root": env.BATCH_UPLOAD_DIR,
+      "B's own root (every upload at once)": bRoot,
+      "A's extracted zip folder": scans.a.folderPath,
+      "a traversal out of B's root into A's": `${bRoot}${path.sep}..${path.sep}${orgA}${path.sep}${path.basename(scans.a.folderPath)}`,
+      "the test's tmp dir": tmpDir,
+    };
+    for (const [what, folderPath] of Object.entries(forbidden)) {
+      assert.ok(fs.existsSync(folderPath), `fixture missing: ${what} (${folderPath})`);
+      const res = await b("/api/batch-import/scan", { method: "POST", body: JSON.stringify({ folderPath }) });
+      assert.equal(res.status, 404, `B scanning ${what} returned ${res.status}`);
+    }
+    assert.deepEqual(await listScanIds(b), [scans.b.id], "a refused scan still queued a job");
+  });
+
+  await run("a tenant may re-scan its OWN extracted folder", async () => {
+    const made = await jsonOk(await b("/api/batch-import/scan", { method: "POST", body: JSON.stringify({ folderPath: scans.b.folderPath }) }));
+    const seen = await listScanIds(b);
+    assert.ok(seen.includes(String(made.id)) && seen.length === 2, `B saw ${JSON.stringify(seen)}`);
+  });
+
+  // THE OTHER DOOR. folder_scan is a public job type, and POST /api/jobs used to enqueue the
+  // body verbatim, so every refusal above was one URL away from not applying.
+  await run("POST /api/jobs folder_scan is confined the same way (404, no job)", async () => {
+    const before = await listScanIds(b);
+    const bRoot = path.join(path.resolve(env.BATCH_UPLOAD_DIR), orgB);
+    for (const [what, folderPath] of Object.entries({
+      "PROJECT_DOCS_DIR": env.PROJECT_DOCS_DIR,
+      "the shared upload root": env.BATCH_UPLOAD_DIR,
+      "A's extracted zip folder": scans.a.folderPath,
+      "a traversal out of B's root into A's": `${bRoot}${path.sep}..${path.sep}${orgA}${path.sep}${path.basename(scans.a.folderPath)}`,
+    })) {
+      // A forged operator marker in the body must buy nothing.
+      const res = await b("/api/jobs", { method: "POST", body: JSON.stringify({ jobType: "folder_scan", payload: { folderPath, scanAs: "operator" } }) });
+      assert.equal(res.status, 404, `B queuing a scan of ${what} through /api/jobs returned ${res.status}`);
+    }
+    assert.deepEqual(await listScanIds(b), before, "a refused /api/jobs scan still queued a job");
+  });
+
+  await run("POST /api/jobs may scan the caller's own folder, and the marker is the server's", async () => {
+    const made = await jsonOk(await b("/api/jobs", { method: "POST", body: JSON.stringify({ jobType: "folder_scan", payload: { folderPath: scans.b.folderPath, scanAs: "operator" } }) }));
+    const job = await jsonOk(await b(`/api/jobs/${String(made.id)}`), 200);
+    assert.equal((job.payload as { scanAs?: string }).scanAs, "org", "the body's scanAs was stored");
+  });
+
+  await run("a symlink inside a tenant's own root cannot reach out of it", async () => {
+    const bRoot = path.join(path.resolve(env.BATCH_UPLOAD_DIR), orgB);
+    const links: Record<string, string> = { "PROJECT_DOCS_DIR": env.PROJECT_DOCS_DIR, "A's extracted zip folder": scans.a.folderPath };
+    for (const [what, target] of Object.entries(links)) {
+      const link = path.join(bRoot, `link-${what.replace(/[^a-z]+/gi, "-")}`);
+      try { fs.symlinkSync(target, link, "dir"); }
+      catch (err) {
+        // Windows without developer mode cannot create symlinks; nothing to pin there.
+        if ((err as NodeJS.ErrnoException).code === "EPERM") { console.log(`  skip - symlink to ${what}: EPERM`); continue; }
+        throw err;
+      }
+      for (const door of ["/api/batch-import/scan", "/api/jobs"]) {
+        const body = door === "/api/jobs" ? { jobType: "folder_scan", payload: { folderPath: link } } : { folderPath: link };
+        const res = await b(door, { method: "POST", body: JSON.stringify(body) });
+        assert.equal(res.status, 404, `B scanning a symlink to ${what} via ${door} returned ${res.status}`);
+      }
+    }
+  });
+
+  await run("the worker re-checks a folder_scan that reached the queue without a door", async () => {
+    // Inserted straight into the server's database: no door ran, no `scanAs` marker.
+    const Database = (await import("better-sqlite3")).default;
+    const sdb = new Database(env.AUTOPILOT_DB_PATH);
+    const id = `job-direct-${Date.now()}`;
+    sdb.prepare(
+      `INSERT INTO job_queue (id, job_type, payload, status, priority, created_at, progress, progress_total, retry_count, max_retries, org_id)
+       VALUES (?, 'folder_scan', ?, 'pending', 9, ?, 0, 0, 0, 0, ?)`,
+    ).run(id, JSON.stringify({ folderPath: env.PROJECT_DOCS_DIR }), new Date().toISOString(), orgB);
+    sdb.close();
+    let job: Record<string, unknown> = {};
+    for (let i = 0; i < 60; i++) {
+      job = await jsonOk(await b(`/api/jobs/${id}`), 200);
+      if (job.status === "failed" || job.status === "done") break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    assert.equal(job.status, "failed", `the worker ran it: status ${String(job.status)}`);
+    assert.ok(/Folder not found/.test(String(job.error)), `error was ${String(job.error)}`);
+  });
+
   await run("the operator (superadmin) sees across every tenant", async () => {
     const usersA = await (await owner("/api/users")).json();
     const ownerRow = (Array.isArray(usersA) ? usersA : usersA.users || []).find((u: { email: string }) => u.email === "owner@operator.test");
@@ -405,6 +548,19 @@ try {
     assert.ok(all.projects.length >= 2, `superadmin saw ${all.projects.length} projects, expected both tenants'`);
     assert.equal((await owner(`/api/projects/${projA}`)).status, 200);
     assert.equal((await owner(`/api/projects/${projB}`)).status, 200);
+  });
+
+  await run("the superadmin's batch-import job list spans every org, and it may scan any folder", async () => {
+    // Runs after the promotion above: reqOrgFilter is null for a superadmin, which reads across orgs.
+    const seen = await listScanIds(owner);
+    for (const who of ["a", "b", "def"] as const) {
+      assert.ok(seen.includes(scans[who].id), `superadmin missed ${who}'s scan (saw ${JSON.stringify(seen)})`);
+    }
+    // The operator keeps the arbitrary-folder scan the tenants lost.
+    const folder = path.join(tmpDir, "operator-scan");
+    fs.mkdirSync(folder, { recursive: true });
+    const made = await jsonOk(await owner("/api/batch-import/scan", { method: "POST", body: JSON.stringify({ folderPath: folder }) }));
+    assert.equal((made.payload as { scanAs?: string }).scanAs, "operator", "the operator's scan was not marked as such");
   });
 
 } finally {

@@ -58,6 +58,7 @@ import { extractZipToWorkdir } from "./batchZip";
 import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser, entitlementGate, requestOrg, createApiKey, ADMIN_ROLES } from "./auth";
 import { PRODUCTS, PRODUCT_KEYS, grantProduct, revokeProduct, orgEntitlements, productsForEdition } from "./entitlements";
 import { requestScope, orgFilter, orgClause, reqOrgFilter, assertInScope, auditCrossOrgAccess } from "./scope";
+import { folderScanPayload } from "./batchZip";
 import type { RequestScope } from "./scope";
 import { DEFAULT_ORG_ID } from "./db";
 import { ensureStatusShareToken, statusShareUrl } from "./clientNotifier";
@@ -2331,9 +2332,16 @@ app.post("/api/jobs", (req, res) => {
   // (GET /api/jobs returns payloads) at a higher priority, was a run that person never approved.
   // Approve & Submit enqueues through POST /api/projects/:id/prepare-submission, which mints the
   // approval for THIS request; through /api/jobs a staging run carries its track and nothing else.
+  // A FOLDER SCAN IS CONFINED HERE TOO (#276): this door used to enqueue the body verbatim,
+  // so a tenant could scan any server folder that /api/batch-import/scan refuses.
+  let scanPayload: Record<string, unknown> | null = null;
+  if (jobType === "folder_scan") {
+    scanPayload = folderScanPayload(scope, payload || {});
+    if (!scanPayload) throw new HttpError(404, `Folder not found: ${String(payload?.folderPath || "")}`);
+  }
   const jobPayload = jobType === "prepare_submission"
     ? (typeof payload?.track === "string" && payload.track.trim() ? { track: payload.track.trim() } : {})
-    : payload || {};
+    : scanPayload || payload || {};
   res.status(201).json(enqueueJob(db, jobType, jobPayload, { priority, assignedToUser, projectId, scheduledAt, orgId: scope.orgId }));
 });
 // Batch folder scan — enqueues a background job to classify + import all PDFs in a folder
@@ -2670,12 +2678,20 @@ app.get("/api/ahj-templates/:id/pdf", (req, res) => {
   res.send(row.pdf_blob);
 });
 
+// A SERVER FOLDER IS NOT A TENANT'S TO NAME (#276). The scan job is stamped with the
+// caller's org, so whatever folder it reads comes back through that org's job list:
+// pointed at PROJECT_DOCS_DIR or another org's upload, it returned their document paths and
+// homeowner-named filenames. folderScanPayload (batchZip.ts) is the one answer, shared with
+// POST /api/jobs and re-checked by the worker. Refused is the SAME 404 as missing (rule 6).
 app.post("/api/batch-import/scan", (req, res) => {
-  const { folderPath, defaultState, defaultAhj, defaultUtility, useLlm } = req.body || {};
+  const { folderPath } = req.body || {};
   if (!folderPath) throw new HttpError(400, "folderPath is required.");
+  const scope = requestScope(db, req);
+  const payload = folderScanPayload(scope, req.body || {});
+  if (!payload) throw new HttpError(404, `Folder not found: ${folderPath}`);
   if (!fs.existsSync(folderPath)) throw new HttpError(404, `Folder not found: ${folderPath}`);
   if (!fs.statSync(folderPath).isDirectory()) throw new HttpError(400, "Path must be a directory.");
-  const job = enqueueJob(db, "folder_scan", { folderPath, defaultState, defaultAhj, defaultUtility, useLlm: !!useLlm }, { priority: 2, maxRetries: 1, orgId: requestScope(db, req).orgId });
+  const job = enqueueJob(db, "folder_scan", payload, { priority: 2, maxRetries: 1, orgId: scope.orgId });
   res.status(201).json(job);
 });
 
@@ -2692,23 +2708,27 @@ app.post(
     const label = String(req.query.label || "batch");
     let extracted;
     try {
-      extracted = extractZipToWorkdir(body, label);
+      extracted = extractZipToWorkdir(body, label, requestScope(db, req).orgId);
     } catch (err) {
       throw new HttpError(400, `Could not read that zip file. ${(err as Error).message || ""}`.trim());
     }
     if (extracted.pdfCount === 0) {
       throw new HttpError(400, `Zip extracted (${extracted.totalEntries} entries) but contained no PDF files.`);
     }
+    // Through the same payload builder as /scan, so the job carries its `scanAs` marker. The
+    // folder was just extracted under the caller's own root, so it always passes.
+    const scanPayload = folderScanPayload(requestScope(db, req), {
+      folderPath: extracted.folderPath,
+      defaultState: req.query.defaultState ? String(req.query.defaultState) : undefined,
+      defaultAhj: req.query.defaultAhj ? String(req.query.defaultAhj) : undefined,
+      defaultUtility: req.query.defaultUtility ? String(req.query.defaultUtility) : undefined,
+      useLlm: String(req.query.useLlm || "") === "true",
+    });
+    if (!scanPayload) throw new HttpError(404, "Folder not found.");
     const job = enqueueJob(
       db,
       "folder_scan",
-      {
-        folderPath: extracted.folderPath,
-        defaultState: req.query.defaultState ? String(req.query.defaultState) : undefined,
-        defaultAhj: req.query.defaultAhj ? String(req.query.defaultAhj) : undefined,
-        defaultUtility: req.query.defaultUtility ? String(req.query.defaultUtility) : undefined,
-        useLlm: String(req.query.useLlm || "") === "true",
-      },
+      scanPayload,
       // The scan writes org-scoped historical-failure rows under the JOB's org, so the job
       // must carry the caller's — /scan above already did; this one fell back to the default.
       { priority: 2, maxRetries: 1, orgId: requestScope(db, req).orgId },
@@ -2717,9 +2737,12 @@ app.post(
   },
 );
 
-// Check folder scan job status + get full result
+// Check folder scan job status + get full result. SCOPED to the caller's org: a folder_scan
+// job's payload carries a server folderPath and its results name every scanned PDF's path, and
+// /scan + /upload-zip stamp the caller's org on it. Without the orgId, listJobs fell back to the
+// default org, so every tenant saw the default org's scans and never its own (#276).
 app.get("/api/batch-import/jobs", (req, res) => {
-  res.json(listJobs(db, { jobType: "folder_scan", limit: 20 }));
+  res.json(listJobs(db, { jobType: "folder_scan", limit: 20, orgId: reqOrgFilter(db, req) }));
 });
 
 // LLM-assisted parser extraction. The browser does the PDF text / OCR extraction
